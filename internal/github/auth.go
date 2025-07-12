@@ -23,7 +23,7 @@ import (
 //  1. Authenticate as the GitHub App itself using a JSON Web Token (JWT).
 //  2. Use the app-level authentication to request a temporary, installation-specific
 //     OAuth token.
-func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64, logger *slog.Logger) (GitHubClient, error) {
+func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64, logger *slog.Logger) (Client, error) {
 	logger.Info("Creating GitHub installation client", "installation_id", installationID)
 
 	// The private key is used to sign the JWT, proving the request is from our app.

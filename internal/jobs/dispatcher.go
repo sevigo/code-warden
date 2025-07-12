@@ -57,7 +57,7 @@ func (d *dispatcher) startWorkers() {
 // Dispatch queues a GitHub event for processing by a worker.
 // Returns an error if the queue is full.
 func (d *dispatcher) Dispatch(ctx context.Context, event *core.GitHubEvent) error {
-	d.logger.Info("queuing code review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+	d.logger.InfoContext(ctx, "queuing code review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 	select {
 	case d.jobQueue <- event:
 		return nil

@@ -15,9 +15,9 @@ type ChangedFile struct {
 	Patch    string
 }
 
-// GitHubClient defines a set of operations for interacting with the GitHub API,
+// Client defines a set of operations for interacting with the GitHub API,
 // focusing on pull requests, comments, and check runs.
-type GitHubClient interface {
+type Client interface {
 	GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
 	GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error)
 	GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]ChangedFile, error)
@@ -33,7 +33,7 @@ type gitHubClient struct {
 
 // NewGitHubClient wraps the official go-github client to provide a focused,
 // testable interface for application-specific GitHub operations.
-func NewGitHubClient(client *github.Client, logger *slog.Logger) GitHubClient {
+func NewGitHubClient(client *github.Client, logger *slog.Logger) Client {
 	return &gitHubClient{client: client, logger: logger}
 }
 

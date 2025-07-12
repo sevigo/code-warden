@@ -20,11 +20,11 @@ type StatusUpdater interface {
 }
 
 type statusUpdater struct {
-	client GitHubClient
+	client Client
 }
 
 // NewStatusUpdater creates and returns a new instance of a statusUpdater.
-func NewStatusUpdater(client GitHubClient) StatusUpdater {
+func NewStatusUpdater(client Client) StatusUpdater {
 	return &statusUpdater{client: client}
 }
 

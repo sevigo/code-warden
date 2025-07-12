@@ -20,7 +20,7 @@ import (
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, collectionName, repoPath string) error
-	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient github.GitHubClient) (string, error)
+	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient github.Client) (string, error)
 }
 
 type ragService struct {
@@ -71,7 +71,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoP
 // GenerateReview executes the full RAG pipeline to generate a code review for a pull request.
 // It retrieves the PR diff, identifies changed files, fetches relevant code context
 // using vector search, constructs a prompt, and queries the LLM to produce the review.
-func (r *ragService) GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient github.GitHubClient) (string, error) {
+func (r *ragService) GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient github.Client) (string, error) {
 	r.logger.Info("generating code review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
