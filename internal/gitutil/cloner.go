@@ -29,18 +29,18 @@ func NewCloner(logger *slog.Logger) *Cloner {
 
 // Clone clones the repository at repoURL into a temporary directory,
 // checks out the given commit SHA, and returns the path along with a cleanup function.
-func (c *Cloner) Clone(ctx context.Context, repoURL, sha string) (repoPath string, cleanup func(), err error) {
+func (c *Cloner) Clone(ctx context.Context, repoURL, sha string) (string, func(), error) {
 	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
 		return "", nil, fmt.Errorf("invalid repository URL: %s", repoURL)
 	}
 
-	repoPath, err = os.MkdirTemp("", "code-warden-repo-*")
+	repoPath, err := os.MkdirTemp("", "code-warden-repo-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
-	// Define cleanup to remove the temp directory.
-	cleanup = func() {
+	// Define the cleanup function. It captures the repoPath variable from the outer scope.
+	cleanup := func() {
 		c.Logger.Info("cleaning up temporary repository", "path", repoPath)
 		if removeErr := os.RemoveAll(repoPath); removeErr != nil {
 			c.Logger.Error("failed to remove temporary repository directory", "path", repoPath, "error", removeErr)

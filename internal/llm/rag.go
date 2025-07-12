@@ -42,8 +42,6 @@ func NewRAGService(vs storage.VectorStore, gen llms.Model, pr parsers.ParserRegi
 }
 
 // SetupRepoContext processes a repository and stores its embeddings into the vector store.
-// It loads files from the repository, parses them into documents, and indexes them
-// under the specified collection name for later retrieval during review generation
 func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoPath string) error {
 	r.logger.Info("indexing repository for code review context", "path", repoPath, "collection", collectionName)
 

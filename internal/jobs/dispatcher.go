@@ -38,26 +38,45 @@ func NewDispatcher(reviewJob core.Job, maxWorkers int, logger *slog.Logger) core
 
 // startWorkers launches maxWorkers goroutines to process jobs from the queue.
 func (d *dispatcher) startWorkers() {
-	for i := 0; i < d.maxWorkers; i++ {
+	for i := range d.maxWorkers {
 		d.wg.Add(1)
-		go func(workerID int) {
-			defer d.wg.Done()
-			d.logger.Info("starting review worker", "id", workerID)
-			for event := range d.jobQueue {
-				d.logger.Info("worker processing job", "worker_id", workerID, "repo", event.RepoFullName)
-				if err := d.reviewJob.Run(context.Background(), event); err != nil {
-					d.logger.Error("code review job failed", "repo", event.RepoFullName, "pr", event.PRNumber, "error", err)
-				}
-			}
-			d.logger.Info("shutting down review worker", "id", workerID)
-		}(i)
+		go d.startWorker(i)
+	}
+}
+
+// startWorker processes events from the queue until it's closed.
+func (d *dispatcher) startWorker(workerID int) {
+	defer d.wg.Done()
+	d.logger.Info("starting review worker", "id", workerID)
+
+	for event := range d.jobQueue {
+		d.processEvent(workerID, event)
+	}
+
+	d.logger.Info("shutting down review worker", "id", workerID)
+}
+
+// processEvent logs and runs a review job for a GitHub event.
+func (d *dispatcher) processEvent(workerID int, event *core.GitHubEvent) {
+	d.logger.Info("worker processing job",
+		"worker_id", workerID,
+		"repo", event.RepoFullName,
+	)
+
+	err := d.reviewJob.Run(context.Background(), event)
+	if err != nil {
+		d.logger.Error("code review job failed",
+			"repo", event.RepoFullName,
+			"pr", event.PRNumber,
+			"error", err,
+		)
 	}
 }
 
 // Dispatch queues a GitHub event for processing by a worker.
-// Returns an error if the queue is full.
-func (d *dispatcher) Dispatch(ctx context.Context, event *core.GitHubEvent) error {
-	d.logger.InfoContext(ctx, "queuing code review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+func (d *dispatcher) Dispatch(_ context.Context, event *core.GitHubEvent) error {
+	d.logger.Info("queuing code review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+
 	select {
 	case d.jobQueue <- event:
 		return nil
