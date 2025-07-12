@@ -1,4 +1,3 @@
-// Package storage provides an abstraction for vector database interactions.
 package storage
 
 import (
@@ -6,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/sevigo/goframe/embeddings"
 	"github.com/sevigo/goframe/schema"
@@ -13,23 +13,21 @@ import (
 	"github.com/sevigo/goframe/vectorstores/qdrant"
 )
 
-// VectorStore defines the contract for interacting with vector databases.
+// VectorStore defines a generic interface for vector database operations.
 type VectorStore interface {
-	// AddDocuments embeds and stores documents into a collection.
 	AddDocuments(ctx context.Context, collectionName string, docs []schema.Document) error
-
-	// SimilaritySearch finds the most relevant documents based on a query.
 	SimilaritySearch(ctx context.Context, collectionName, query string, numDocs int) ([]schema.Document, error)
-
-	// DeleteCollection removes a collection and all its data.
 	DeleteCollection(ctx context.Context, collectionName string) error
 }
 
-// qdrantVectorStore implements VectorStore using Qdrant as the backend.
+// qdrantVectorStore implements VectorStore using Qdrant with client caching.
 type qdrantVectorStore struct {
 	qdrantHost string
 	embedder   embeddings.Embedder
 	logger     *slog.Logger
+
+	mu      sync.Mutex
+	clients map[string]vectorstores.VectorStore
 }
 
 // NewQdrantVectorStore creates a new Qdrant-backed vector store.
@@ -38,52 +36,97 @@ func NewQdrantVectorStore(qdrantHost string, embedder embeddings.Embedder, logge
 		qdrantHost: qdrantHost,
 		embedder:   embedder,
 		logger:     logger,
+		clients:    make(map[string]vectorstores.VectorStore),
 	}
 }
 
-// getStoreForCollection creates a Qdrant client for the specified collection.
-func (q *qdrantVectorStore) getStoreForCollection(collectionName string) (vectorstores.VectorStore, error) {
+// validateCollectionName checks if collection name is valid.
+func (q *qdrantVectorStore) validateCollectionName(collectionName string) error {
 	if strings.TrimSpace(collectionName) == "" {
-		return nil, fmt.Errorf("collection name cannot be empty")
+		return fmt.Errorf("collection name cannot be empty")
 	}
-	return qdrant.New(
+	return nil
+}
+
+// getStoreForCollection retrieves or creates a Qdrant client for the specified collection.
+func (q *qdrantVectorStore) getStoreForCollection(collectionName string) (vectorstores.VectorStore, error) {
+	if err := q.validateCollectionName(collectionName); err != nil {
+		return nil, err
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if client, ok := q.clients[collectionName]; ok {
+		return client, nil
+	}
+
+	newClient, err := qdrant.New(
 		qdrant.WithHost(q.qdrantHost),
 		qdrant.WithEmbedder(q.embedder),
 		qdrant.WithCollectionName(collectionName),
 		qdrant.WithLogger(q.logger),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create qdrant client for collection %s: %w", collectionName, err)
+	}
+
+	q.clients[collectionName] = newClient
+	return newClient, nil
 }
 
-// AddDocuments adds documents to the specified collection.
 func (q *qdrantVectorStore) AddDocuments(ctx context.Context, collectionName string, docs []schema.Document) error {
+	if len(docs) == 0 {
+		return nil
+	}
+
 	store, err := q.getStoreForCollection(collectionName)
 	if err != nil {
-		return fmt.Errorf("failed to get qdrant store for collection %s: %w", collectionName, err)
+		return fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
 	}
 
 	_, err = store.AddDocuments(ctx, docs)
 	if err != nil {
-		return fmt.Errorf("failed to add documents to qdrant collection %s: %w", collectionName, err)
+		return fmt.Errorf("failed to add documents to collection %s: %w", collectionName, err)
 	}
 	return nil
 }
 
-// SimilaritySearch performs vector similarity search in the specified collection.
 func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName, query string, numDocs int) ([]schema.Document, error) {
-	store, err := q.getStoreForCollection(collectionName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get qdrant store for collection %s: %w", collectionName, err)
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("query cannot be empty")
+	}
+	if numDocs <= 0 {
+		return nil, fmt.Errorf("numDocs must be positive, got %d", numDocs)
 	}
 
-	return store.SimilaritySearch(ctx, query, numDocs)
+	store, err := q.getStoreForCollection(collectionName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
+	}
+
+	results, err := store.SimilaritySearch(ctx, query, numDocs)
+	if err != nil {
+		return nil, fmt.Errorf("similarity search failed in collection %s: %w", collectionName, err)
+	}
+	return results, nil
 }
 
-// DeleteCollection removes the specified collection and all its data.
 func (q *qdrantVectorStore) DeleteCollection(ctx context.Context, collectionName string) error {
 	store, err := q.getStoreForCollection(collectionName)
 	if err != nil {
-		return fmt.Errorf("failed to get qdrant store for collection %s: %w", collectionName, err)
+		return fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
 	}
 
-	return store.DeleteCollection(ctx, collectionName)
+	err = store.DeleteCollection(ctx, collectionName)
+	if err != nil {
+		return fmt.Errorf("failed to delete collection %s: %w", collectionName, err)
+	}
+
+	// Remove from cache after successful deletion to prevent memory leaks
+	q.mu.Lock()
+	delete(q.clients, collectionName)
+	q.mu.Unlock()
+
+	return nil
 }
