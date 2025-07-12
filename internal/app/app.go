@@ -17,6 +17,7 @@ import (
 	"github.com/sevigo/goframe/parsers"
 
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/server"
@@ -25,10 +26,11 @@ import (
 
 // App holds the main application components.
 type App struct {
-	ctx    context.Context
-	cfg    *config.Config
-	server *server.Server
-	logger *slog.Logger
+	ctx        context.Context
+	cfg        *config.Config
+	server     *server.Server
+	logger     *slog.Logger
+	dispatcher core.JobDispatcher
 }
 
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
@@ -98,15 +100,16 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	logger.Info("initializing RAG service")
 	ragService := llm.NewRAGService(vectorStore, generatorLLM, parserRegistry, logger)
 	reviewJob := jobs.NewReviewJob(cfg, ragService, logger)
-	dispatcher := jobs.NewDispatcher(reviewJob, cfg.MaxWorkers, logger)
+	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
 
 	logger.Info("Code Warden application initialized successfully")
 	return &App{
-		ctx:    ctx,
-		cfg:    cfg,
-		server: httpServer,
-		logger: logger,
+		ctx:        ctx,
+		cfg:        cfg,
+		server:     httpServer,
+		logger:     logger,
+		dispatcher: dispatcher,
 	}, nil
 }
 
@@ -127,12 +130,21 @@ func (a *App) Start() error {
 
 // Stop shuts down the application cleanly.
 func (a *App) Stop() error {
-	a.logger.Info("shutting down Code Warden gracefully")
+	a.logger.Info("shutting down Code Warden services")
 
-	err := a.server.Stop()
-	if err != nil {
-		a.logger.Error("error during server shutdown", "error", err)
-		return err
+	// Stop the HTTP server first to prevent new incoming requests.
+	serverErr := a.server.Stop()
+	if serverErr != nil {
+		a.logger.Error("error during HTTP server shutdown", "error", serverErr)
+		// Continue to stop other components even if the server failed.
+	}
+
+	// Stop the job dispatcher, allowing in-flight jobs to finish.
+	a.dispatcher.Stop()
+
+	if serverErr != nil {
+		a.logger.Error("Code Warden stopped with errors", "error", serverErr)
+		return serverErr
 	}
 
 	a.logger.Info("Code Warden stopped successfully")

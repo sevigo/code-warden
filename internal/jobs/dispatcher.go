@@ -10,27 +10,34 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 )
 
+type jobPayload struct {
+	ctx   context.Context
+	event *core.GitHubEvent
+}
+
 // dispatcher implements core.JobDispatcher and manages a pool of worker goroutines
 // for processing GitHub events as code review jobs.
 type dispatcher struct {
-	reviewJob  core.Job               // Job implementation executed by each worker.
-	jobQueue   chan *core.GitHubEvent // Queue of incoming GitHub events.
-	maxWorkers int                    // Number of concurrent workers.
-	wg         sync.WaitGroup         // Tracks active workers for graceful shutdown.
-	logger     *slog.Logger           // Logger instance for the dispatcher.
+	reviewJob  core.Job
+	jobQueue   chan *jobPayload
+	maxWorkers int
+	wg         sync.WaitGroup
+	logger     *slog.Logger
+	mainCtx    context.Context
 }
 
 // NewDispatcher initializes a dispatcher with a worker pool.
 // If maxWorkers is 0 or negative, it defaults to 1.
-func NewDispatcher(reviewJob core.Job, maxWorkers int, logger *slog.Logger) core.JobDispatcher {
+func NewDispatcher(ctx context.Context, reviewJob core.Job, maxWorkers int, logger *slog.Logger) core.JobDispatcher {
 	if maxWorkers <= 0 {
 		maxWorkers = 1
 	}
 	d := &dispatcher{
 		reviewJob:  reviewJob,
 		maxWorkers: maxWorkers,
-		jobQueue:   make(chan *core.GitHubEvent, 100),
+		jobQueue:   make(chan *jobPayload, 100),
 		logger:     logger,
+		mainCtx:    ctx,
 	}
 	d.startWorkers()
 	return d
@@ -49,21 +56,21 @@ func (d *dispatcher) startWorker(workerID int) {
 	defer d.wg.Done()
 	d.logger.Info("starting review worker", "id", workerID)
 
-	for event := range d.jobQueue {
-		d.processEvent(workerID, event)
+	for payload := range d.jobQueue {
+		d.processEvent(payload.ctx, workerID, payload.event)
 	}
 
 	d.logger.Info("shutting down review worker", "id", workerID)
 }
 
 // processEvent logs and runs a review job for a GitHub event.
-func (d *dispatcher) processEvent(workerID int, event *core.GitHubEvent) {
+func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core.GitHubEvent) {
 	d.logger.Info("worker processing job",
 		"worker_id", workerID,
 		"repo", event.RepoFullName,
 	)
 
-	err := d.reviewJob.Run(context.Background(), event)
+	err := d.reviewJob.Run(ctx, event)
 	if err != nil {
 		d.logger.Error("code review job failed",
 			"repo", event.RepoFullName,
@@ -74,11 +81,13 @@ func (d *dispatcher) processEvent(workerID int, event *core.GitHubEvent) {
 }
 
 // Dispatch queues a GitHub event for processing by a worker.
-func (d *dispatcher) Dispatch(_ context.Context, event *core.GitHubEvent) error {
+func (d *dispatcher) Dispatch(ctx context.Context, event *core.GitHubEvent) error {
 	d.logger.Info("queuing code review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
+	jobCtx := d.mainCtx
+
 	select {
-	case d.jobQueue <- event:
+	case d.jobQueue <- &jobPayload{ctx: jobCtx, event: event}:
 		return nil
 	default:
 		return fmt.Errorf("job queue is full, cannot accept new review job")

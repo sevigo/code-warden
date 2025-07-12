@@ -14,7 +14,11 @@ type JobDispatcher interface {
 	// Dispatch accepts a GitHubEvent and queues it for processing.
 	// It returns an error if the job cannot be queued, for example, if the
 	// queue is full, providing a mechanism for backpressure.
+	// The provided ctx can be used for tracing or a short deadline for the
+	// enqueue operation itself.
 	Dispatch(ctx context.Context, event *GitHubEvent) error
+	// Stop gracefully shuts down the dispatcher and its worker pool, waiting for active jobs to complete.
+	Stop()
 }
 
 // Job represents a single, executable unit of work that can be processed by the
