@@ -10,16 +10,17 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sevigo/code-warden/internal/config"
-	"github.com/sevigo/code-warden/internal/jobs"
-	"github.com/sevigo/code-warden/internal/llm"
-	"github.com/sevigo/code-warden/internal/server"
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/embeddings"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
+
+	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/jobs"
+	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/server"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // App holds the main application components.

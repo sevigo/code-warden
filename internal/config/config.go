@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/viper"
@@ -41,7 +42,8 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("LLM_PROVIDER", "ollama")
 
 	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+		var notFound viper.ConfigFileNotFoundError
+		if !errors.As(err, &notFound) {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
 	}
