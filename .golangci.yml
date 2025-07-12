@@ -25,8 +25,7 @@ linters:
 issues:
   max-same-issues: 0
   
-  exclusions:
-    rules:
-      - path: '_test\.go'
-        linters:
-          - errcheck
+  exclude-rules:
+    - path: '_test\.go'
+      linters:
+        - errcheck
