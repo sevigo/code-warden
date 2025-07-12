@@ -24,9 +24,7 @@ type Config struct {
 	MaxWorkers           int
 }
 
-// LoadConfig reads configuration from environment variables and a .env file,
-// sets sensible defaults, and validates required fields. It uses the Viper
-// library to handle configuration loading and precedence.
+// LoadConfig loads configuration from environment variables and .env file.
 func LoadConfig() (*Config, error) {
 	viper.SetConfigFile(".env")
 
@@ -55,7 +53,7 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("GITHUB_WEBHOOK_SECRET must be set")
 	}
 
-	// Special handling for Gemini generator model name.
+	// Handle Gemini model name separately since it has different defaults
 	generatorModel := viper.GetString("GENERATOR_MODEL_NAME")
 	if viper.GetString("LLM_PROVIDER") == "gemini" {
 		geminiModel := viper.GetString("GEMINI_GENERATOR_MODEL_NAME")

@@ -22,8 +22,7 @@ import (
 	"github.com/sevigo/goframe/parsers"
 )
 
-// App encapsulates the core components of the application, including the server,
-// configuration, and the main context.
+// App holds the main application components.
 type App struct {
 	ctx    context.Context
 	cfg    *config.Config
@@ -31,9 +30,8 @@ type App struct {
 	logger *slog.Logger
 }
 
-// newOllamaHTTPClient creates a custom http.Client optimized for long-running
-// requests to the Ollama server. It includes specific timeouts for dialing,
-// TLS handshakes, and the overall request to prevent indefinite hangs.
+// newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
+// Ollama can take a while to process requests, so we need more generous timeouts.
 func newOllamaHTTPClient() *http.Client {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
@@ -53,9 +51,7 @@ func newOllamaHTTPClient() *http.Client {
 	}
 }
 
-// NewApp initializes and wires together all components of the Code Warden application.
-// It sets up the LLM clients, vector store, job dispatcher, and HTTP server based
-// on the provided configuration.
+// NewApp sets up the application with all its dependencies.
 func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
 	logger.Info("initializing Code Warden application",
 		"ollama_host", cfg.OllamaHost,
@@ -113,7 +109,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	}, nil
 }
 
-// Start begins the application by starting the HTTP server.
+// Start runs the HTTP server.
 func (a *App) Start() error {
 	a.logger.Info("starting Code Warden",
 		"server_port", a.cfg.ServerPort,
@@ -128,7 +124,7 @@ func (a *App) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the application and its components.
+// Stop shuts down the application cleanly.
 func (a *App) Stop() error {
 	a.logger.Info("shutting down Code Warden gracefully")
 
@@ -142,10 +138,7 @@ func (a *App) Stop() error {
 	return nil
 }
 
-// createLLM is a factory function that constructs an LLM client based on the
-// provider specified in the application's configuration. It supports multiple
-// providers like Gemini and Ollama, abstracting the specific initialization
-// logic for each.
+// createLLM creates the appropriate LLM client based on the configured provider.
 func createLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
 	switch cfg.LLMProvider {
 	case "gemini":

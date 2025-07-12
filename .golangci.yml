@@ -1,13 +1,20 @@
-version: 2
+version: "2"
 
 run:
   timeout: 5m
   go: "1.23"
 
+formatters:
+  enable:
+    - goimports
+
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/sevigo/code-warden
+
 linters:
   enable:
-    - gofmt
-    - goimports
     - govet
     - ineffassign
     - misspell
@@ -15,16 +22,11 @@ linters:
     - staticcheck
     - errcheck
 
-linters-settings:
-  gofmt:
-    simplify: true
-  goimports:
-    local-prefixes: github.com/sevigo/code-warden
-
 issues:
-  exclude-use-default: false
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
+  
+  exclusions:
+    rules:
+      - path: '_test\.go'
+        linters:
+          - errcheck
