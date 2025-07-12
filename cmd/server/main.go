@@ -10,6 +10,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/logger"
 )
 
 func main() {
@@ -28,12 +29,12 @@ func run() error {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger := logger.NewLogger(cfg.LoggerConfig, nil)
 	slog.SetDefault(logger)
 
 	slog.Info("starting Code-Warden application")
 
-	application, err := app.NewApp(ctx, cfg)
+	application, err := app.NewApp(ctx, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("failed to initialize application: %w", err)
 	}

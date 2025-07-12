@@ -2,10 +2,10 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
-	"strings"
 
 	"github.com/spf13/viper"
+
+	"github.com/sevigo/code-warden/internal/logger"
 )
 
 // Config holds the application's configuration values.
@@ -13,7 +13,7 @@ type Config struct {
 	ServerPort           string
 	LLMProvider          string
 	GeminiAPIKey         string
-	LogLevel             slog.Level
+	LoggerConfig         logger.Config
 	GitHubAppID          int64
 	GitHubWebhookSecret  string
 	GitHubPrivateKeyPath string
@@ -32,6 +32,8 @@ func LoadConfig() (*Config, error) {
 
 	viper.SetDefault("SERVER_PORT", "8080")
 	viper.SetDefault("LOG_LEVEL", "info")
+	viper.SetDefault("LOG_FORMAT", "text")
+	viper.SetDefault("LOG_OUTPUT", "stdout")
 	viper.SetDefault("OLLAMA_HOST", "http://localhost:11434")
 	viper.SetDefault("QDRANT_HOST", "localhost:6334")
 	viper.SetDefault("GENERATOR_MODEL_NAME", "gemma3:latest")
@@ -42,7 +44,7 @@ func LoadConfig() (*Config, error) {
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			slog.Error("failed to read config file", "error", err)
+			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
 	}
 
@@ -64,24 +66,13 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
-	// Parse the log level string into a slog.Level type.
-	var logLevel slog.Level
-	logLevelStr := strings.ToLower(viper.GetString("LOG_LEVEL"))
-	switch logLevelStr {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	default:
-		slog.Warn("unrecognized log level, defaulting to info", "provided", logLevelStr)
-		logLevel = slog.LevelInfo
-	}
-
 	return &Config{
-		ServerPort:           viper.GetString("SERVER_PORT"),
-		LogLevel:             logLevel,
+		ServerPort: viper.GetString("SERVER_PORT"),
+		LoggerConfig: logger.Config{
+			Level:  viper.GetString("LOG_LEVEL"),
+			Format: viper.GetString("LOG_FORMAT"),
+			Output: viper.GetString("LOG_OUTPUT"),
+		},
 		GitHubAppID:          viper.GetInt64("GITHUB_APP_ID"),
 		GitHubWebhookSecret:  viper.GetString("GITHUB_WEBHOOK_SECRET"),
 		GitHubPrivateKeyPath: viper.GetString("GITHUB_PRIVATE_KEY_PATH"),

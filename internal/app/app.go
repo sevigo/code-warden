@@ -28,6 +28,7 @@ type App struct {
 	ctx    context.Context
 	cfg    *config.Config
 	server *server.Server
+	logger *slog.Logger
 }
 
 // newOllamaHTTPClient creates a custom http.Client optimized for long-running
@@ -55,8 +56,8 @@ func newOllamaHTTPClient() *http.Client {
 // NewApp initializes and wires together all components of the Code Warden application.
 // It sets up the LLM clients, vector store, job dispatcher, and HTTP server based
 // on the provided configuration.
-func NewApp(ctx context.Context, cfg *config.Config) (*App, error) {
-	slog.Info("initializing Code Warden application",
+func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
+	logger.Info("initializing Code Warden application",
 		"ollama_host", cfg.OllamaHost,
 		"generator_model", cfg.GeneratorModelName,
 		"embedder_model", cfg.EmbedderModelName,
@@ -64,62 +65,63 @@ func NewApp(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	httpClient := newOllamaHTTPClient()
 
-	slog.Info("connecting to generator LLM", "model", cfg.GeneratorModelName)
-	generatorLLM, err := createLLM(ctx, cfg)
+	logger.Info("connecting to generator LLM", "model", cfg.GeneratorModelName)
+	generatorLLM, err := createLLM(ctx, cfg, logger)
 	if err != nil {
-		slog.Error("failed to connect to generator LLM", "error", err)
+		logger.Error("failed to connect to generator LLM", "error", err)
 		return nil, fmt.Errorf("failed to create generator LLM: %w", err)
 	}
 
-	slog.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
+	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
 	embedderLLM, err := ollama.New(
 		ollama.WithServerURL(cfg.OllamaHost),
 		ollama.WithModel(cfg.EmbedderModelName),
 		ollama.WithHTTPClient(httpClient),
-		ollama.WithLogger(slog.Default()),
+		ollama.WithLogger(logger),
 	)
 	if err != nil {
-		slog.Error("failed to connect to embedder LLM", "error", err)
+		logger.Error("failed to connect to embedder LLM", "error", err)
 		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
 	}
 
 	embedder, err := embeddings.NewEmbedder(embedderLLM)
 	if err != nil {
-		slog.Error("failed to create embedder service", "error", err)
+		logger.Error("failed to create embedder service", "error", err)
 		return nil, fmt.Errorf("failed to create embedder: %w", err)
 	}
 
-	parserRegistry, err := parsers.RegisterLanguagePlugins(slog.Default())
+	parserRegistry, err := parsers.RegisterLanguagePlugins(logger)
 	if err != nil {
-		slog.Error("failed to register language parsers", "error", err)
+		logger.Error("failed to register language parsers", "error", err)
 		return nil, fmt.Errorf("failed to register language parsers: %w", err)
 	}
 
-	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, slog.Default())
+	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 
-	slog.Info("initializing RAG service")
-	ragService := llm.NewRAGService(vectorStore, generatorLLM, parserRegistry, slog.Default())
-	reviewJob := jobs.NewReviewJob(cfg, ragService, slog.Default())
-	dispatcher := jobs.NewDispatcher(reviewJob, cfg.MaxWorkers)
-	httpServer := server.NewServer(ctx, cfg, dispatcher)
+	logger.Info("initializing RAG service")
+	ragService := llm.NewRAGService(vectorStore, generatorLLM, parserRegistry, logger)
+	reviewJob := jobs.NewReviewJob(cfg, ragService, logger)
+	dispatcher := jobs.NewDispatcher(reviewJob, cfg.MaxWorkers, logger)
+	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
 
-	slog.Info("Code Warden application initialized successfully")
+	logger.Info("Code Warden application initialized successfully")
 	return &App{
 		ctx:    ctx,
 		cfg:    cfg,
 		server: httpServer,
+		logger: logger,
 	}, nil
 }
 
 // Start begins the application by starting the HTTP server.
 func (a *App) Start() error {
-	slog.Info("starting Code Warden",
+	a.logger.Info("starting Code Warden",
 		"server_port", a.cfg.ServerPort,
 		"max_workers", a.cfg.MaxWorkers)
 
 	err := a.server.Start()
 	if err != nil {
-		slog.Error("failed to start HTTP server", "error", err)
+		a.logger.Error("failed to start HTTP server", "error", err)
 		return err
 	}
 
@@ -128,15 +130,15 @@ func (a *App) Start() error {
 
 // Stop gracefully shuts down the application and its components.
 func (a *App) Stop() error {
-	slog.Info("shutting down Code Warden gracefully")
+	a.logger.Info("shutting down Code Warden gracefully")
 
 	err := a.server.Stop()
 	if err != nil {
-		slog.Error("error during server shutdown", "error", err)
+		a.logger.Error("error during server shutdown", "error", err)
 		return err
 	}
 
-	slog.Info("Code Warden stopped successfully")
+	a.logger.Info("Code Warden stopped successfully")
 	return nil
 }
 
@@ -144,10 +146,10 @@ func (a *App) Stop() error {
 // provider specified in the application's configuration. It supports multiple
 // providers like Gemini and Ollama, abstracting the specific initialization
 // logic for each.
-func createLLM(ctx context.Context, cfg *config.Config) (llms.Model, error) {
+func createLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
 	switch cfg.LLMProvider {
 	case "gemini":
-		slog.Info("Using Gemini LLM provider", "model", cfg.GeneratorModelName)
+		logger.Info("Using Gemini LLM provider", "model", cfg.GeneratorModelName)
 		if cfg.GeminiAPIKey == "" {
 			return nil, fmt.Errorf("GEMINI_API_KEY is not set in environment for gemini provider")
 		}
@@ -157,11 +159,11 @@ func createLLM(ctx context.Context, cfg *config.Config) (llms.Model, error) {
 		)
 
 	case "ollama":
-		slog.Info("Using Ollama LLM provider", "model", cfg.GeneratorModelName)
+		logger.Info("Using Ollama LLM provider", "model", cfg.GeneratorModelName)
 		return ollama.New(
 			ollama.WithHTTPClient(newOllamaHTTPClient()),
 			ollama.WithModel(cfg.GeneratorModelName),
-			ollama.WithLogger(slog.Default()),
+			ollama.WithLogger(logger),
 		)
 
 	default:

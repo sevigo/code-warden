@@ -46,7 +46,7 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 
 	j.logger.Info("Starting review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
-	ghClient, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID)
+	ghClient, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
 	if err != nil {
 		j.logger.Error("Failed to create GitHub client", "error", err)
 		return fmt.Errorf("failed to create GitHub client: %w", err)
