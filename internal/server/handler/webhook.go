@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/google/go-github/v73/github"
+
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 )
@@ -49,7 +50,7 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleIssueComment(r.Context(), w, e)
 	default:
 		h.logger.Debug("ignoring unhandled webhook event type", "type", github.WebHookType(r))
-		fmt.Fprint(w, "Event type not handled")
+		_, _ = fmt.Fprint(w, "Event type not handled")
 	}
 }
 
@@ -58,7 +59,7 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 	reviewEvent, err := core.EventFromIssueComment(event)
 	if err != nil {
 		h.logger.Debug("ignoring issue comment", "reason", err.Error(), "repo", event.GetRepo().GetFullName())
-		fmt.Fprint(w, "Comment ignored")
+		_, _ = fmt.Fprint(w, "Comment ignored")
 		return
 	}
 
@@ -70,5 +71,5 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 
 	h.logger.Info("review job dispatched successfully", "repo", reviewEvent.RepoFullName, "pr", reviewEvent.PRNumber)
 	w.WriteHeader(http.StatusAccepted)
-	fmt.Fprint(w, "Review job accepted")
+	_, _ = fmt.Fprint(w, "Review job accepted")
 }

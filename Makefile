@@ -1,8 +1,11 @@
 BINARY_NAME=code-warden
 CMD_PATH=./cmd/server
-GOLANGCI_LINT := ./bin/golangci-lint
-.DEFAULT_GOAL := all
 
+GOLINT_BIN_DIR=$(CURDIR)/bin
+GOLINT_CMD=$(GOLINT_BIN_DIR)/golangci-lint
+GOLINT_VERSION=v2.1.6
+
+.DEFAULT_GOAL := all
 .PHONY: all build run clean test lint
 
 all: build
@@ -19,17 +22,16 @@ test:
 	@echo "Running tests..."
 	@go test -v ./...
 
-lint: $(GOLANGCI_LINT)
-	@echo "Running linter..."
-	@$(GOLANGCI_LINT) run ./...
+lint: 
+	@echo "Linting Go code..."
+	@if ! command -v $(GOLINT_CMD) &> /dev/null; then \
+		echo "golangci-lint $(GOLINT_VERSION) not found or wrong version, installing to $(GOLINT_BIN_DIR)..."; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOLINT_BIN_DIR) $(GOLINT_VERSION); \
+	fi
+	$(GOLINT_CMD) run ./...
 
 # Clean up the built binary and tools
 clean:
 	@echo "Cleaning up..."
 	@rm -f $(BINARY_NAME)
 	@rm -rf ./bin
-
-# Installs golangci-lint binary into the local ./bin directory
-$(GOLANGCI_LINT):
-	@echo "Installing golangci-lint..."
-	@curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell dirname $(GOLANGCI_LINT)) v1.59.1
