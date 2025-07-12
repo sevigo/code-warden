@@ -16,27 +16,28 @@ import (
 )
 
 // CreateInstallationClient creates a GitHub client that is authenticated as a specific application installation.
-func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64, logger *slog.Logger) (Client, error) {
+// It will now return the client, the raw token string, and an error.
+func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64, logger *slog.Logger) (Client, string, error) {
 	logger.Info("Creating GitHub installation client", "installation_id", installationID)
 
 	privateKeyBytes, err := os.ReadFile(cfg.GitHubPrivateKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read GitHub private key file from '%s': %w", cfg.GitHubPrivateKeyPath, err)
+		return nil, "", fmt.Errorf("failed to read GitHub private key file from '%s': %w", cfg.GitHubPrivateKeyPath, err)
 	}
 
 	jwtToken, err := createJWT(cfg.GitHubAppID, privateKeyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create JWT for GitHub App: %w", err)
+		return nil, "", fmt.Errorf("failed to create JWT for GitHub App: %w", err)
 	}
 
 	appClient := github.NewClient(nil).WithAuthToken(jwtToken)
 
 	token, _, err := appClient.Apps.CreateInstallationToken(ctx, installationID, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create installation token for installation ID %d: %w", installationID, err)
+		return nil, "", fmt.Errorf("failed to create installation token for installation ID %d: %w", installationID, err)
 	}
 	if token.GetToken() == "" {
-		return nil, fmt.Errorf("received an empty installation token")
+		return nil, "", fmt.Errorf("received an empty installation token")
 	}
 	logger.Info("Successfully created installation token", "installation_id", installationID, "expires_at", token.GetExpiresAt())
 
@@ -44,7 +45,7 @@ func CreateInstallationClient(ctx context.Context, cfg *config.Config, installat
 	tc := oauth2.NewClient(ctx, ts)
 	installationClient := github.NewClient(tc)
 
-	return NewGitHubClient(installationClient, logger), nil
+	return NewGitHubClient(installationClient, logger), token.GetToken(), nil
 }
 
 // createJWT generates a JSON Web Token (JWT) used to authenticate as a GitHub App.

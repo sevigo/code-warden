@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 
@@ -19,7 +20,6 @@ type Cloner struct {
 }
 
 // NewCloner returns a new Cloner instance.
-// If logger is nil, the default slog logger is used.
 func NewCloner(logger *slog.Logger) *Cloner {
 	if logger == nil {
 		logger = slog.Default()
@@ -29,10 +29,21 @@ func NewCloner(logger *slog.Logger) *Cloner {
 
 // Clone clones the repository at repoURL into a temporary directory,
 // checks out the given commit SHA, and returns the path along with a cleanup function.
-func (c *Cloner) Clone(ctx context.Context, repoURL, sha string) (string, func(), error) {
+func (c *Cloner) Clone(ctx context.Context, repoURL, sha, token string) (string, func(), error) {
 	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
 		return "", nil, fmt.Errorf("invalid repository URL: %s", repoURL)
 	}
+	if token == "" {
+		return "", nil, fmt.Errorf("github token cannot be empty for cloning")
+	}
+
+	parsedURL, err := url.Parse(repoURL)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to parse repository URL '%s': %w", repoURL, err)
+	}
+	// Set the user information for authentication. GitHub Apps use 'x-access-token'.
+	parsedURL.User = url.UserPassword("x-access-token", token)
+	authenticatedURL := parsedURL.String()
 
 	repoPath, err := os.MkdirTemp("", "code-warden-repo-*")
 	if err != nil {
@@ -50,7 +61,7 @@ func (c *Cloner) Clone(ctx context.Context, repoURL, sha string) (string, func()
 	c.Logger.InfoContext(ctx, "cloning repository", "url", repoURL, "path", repoPath, "sha", sha)
 
 	repo, err := git.PlainCloneContext(ctx, repoPath, false, &git.CloneOptions{
-		URL: repoURL,
+		URL: authenticatedURL,
 	})
 	if err != nil {
 		cleanup()
