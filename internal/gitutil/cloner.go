@@ -29,13 +29,6 @@ func NewCloner(logger *slog.Logger) *Cloner {
 
 // Clone clones the repository at repoURL into a temporary directory,
 // checks out the given commit SHA, and returns the path along with a cleanup function.
-//
-// The returned cleanup function should be deferred to avoid leaving temp directories.
-//
-// Example:
-//
-//	path, cleanup, err := cloner.Clone(ctx, url, sha)
-//	defer cleanup()
 func (c *Cloner) Clone(ctx context.Context, repoURL, sha string) (repoPath string, cleanup func(), err error) {
 	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
 		return "", nil, fmt.Errorf("invalid repository URL: %s", repoURL)
