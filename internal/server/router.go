@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 // NewRouter creates and configures a new HTTP router with middleware and API routes.
-func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher) *chi.Mux {
+func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Configure middleware stack
@@ -30,7 +31,7 @@ func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher) *chi.Mux {
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
-		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher)
+		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
 		r.Post("/webhook/github", webhookHandler.Handle)
 	})
 

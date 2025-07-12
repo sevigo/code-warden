@@ -23,8 +23,8 @@ import (
 //  1. Authenticate as the GitHub App itself using a JSON Web Token (JWT).
 //  2. Use the app-level authentication to request a temporary, installation-specific
 //     OAuth token.
-func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64) (GitHubClient, error) {
-	slog.Info("Creating GitHub installation client", "installation_id", installationID)
+func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64, logger *slog.Logger) (GitHubClient, error) {
+	logger.Info("Creating GitHub installation client", "installation_id", installationID)
 
 	// The private key is used to sign the JWT, proving the request is from our app.
 	privateKeyBytes, err := os.ReadFile(cfg.GitHubPrivateKeyPath)
@@ -49,7 +49,7 @@ func CreateInstallationClient(ctx context.Context, cfg *config.Config, installat
 	if token.GetToken() == "" {
 		return nil, fmt.Errorf("received an empty installation token")
 	}
-	slog.Info("Successfully created installation token", "installation_id", installationID, "expires_at", token.GetExpiresAt())
+	logger.Info("Successfully created installation token", "installation_id", installationID, "expires_at", token.GetExpiresAt())
 
 	// This client is authenticated with the installation token and is what the application
 	// will use to perform all its operations (e.g., commenting on PRs, updating checks).
@@ -57,7 +57,7 @@ func CreateInstallationClient(ctx context.Context, cfg *config.Config, installat
 	tc := oauth2.NewClient(ctx, ts)
 	installationClient := github.NewClient(tc)
 
-	return NewGitHubClient(installationClient), nil
+	return NewGitHubClient(installationClient, logger), nil
 }
 
 // createJWT generates a JSON Web Token (JWT) used to authenticate as a GitHub App.
@@ -88,6 +88,6 @@ func createJWT(appID int64, privateKeyBytes []byte) (string, error) {
 		return "", fmt.Errorf("failed to sign JWT: %w", err)
 	}
 
-	slog.Debug("Successfully created and signed JWT token", "app_id", appID)
+	// slog.Debug("Successfully created and signed JWT token", "app_id", appID)
 	return signedString, nil
 }

@@ -29,12 +29,12 @@ func run() error {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	logger := logger.NewLogger(cfg.LoggerConfig)
+	logger := logger.NewLogger(cfg.LoggerConfig, nil)
 	slog.SetDefault(logger)
 
 	slog.Info("starting Code-Warden application")
 
-	application, err := app.NewApp(ctx, cfg)
+	application, err := app.NewApp(ctx, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("failed to initialize application: %w", err)
 	}

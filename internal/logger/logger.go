@@ -14,17 +14,18 @@ type Config struct {
 }
 
 // NewLogger initializes a new slog logger based on the provided configuration.
-func NewLogger(cfg Config) *slog.Logger {
+func NewLogger(cfg Config, output io.Writer) *slog.Logger {
 	var handler slog.Handler
-	var output io.Writer
 
-	switch cfg.Output {
-	case "stdout":
-		output = os.Stdout
-	case "stderr":
-		output = os.Stderr
-	default:
-		output = os.Stdout // Default to stdout
+	if output == nil {
+		switch cfg.Output {
+		case "stdout":
+			output = os.Stdout
+		case "stderr":
+			output = os.Stderr
+		default:
+			output = os.Stdout // Default to stdout
+		}
 	}
 
 	level := new(slog.Level)

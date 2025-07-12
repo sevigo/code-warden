@@ -17,11 +17,12 @@ import (
 type Server struct {
 	ctx    context.Context
 	server *http.Server
+	logger *slog.Logger
 }
 
 // NewServer creates a new HTTP server with the given configuration and job dispatcher.
-func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher) *Server {
-	router := NewRouter(cfg, dispatcher)
+func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *Server {
+	router := NewRouter(cfg, dispatcher, logger)
 
 	return &Server{
 		ctx: ctx,
@@ -32,12 +33,13 @@ func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispa
 			WriteTimeout: 10 * time.Second,
 			IdleTimeout:  120 * time.Second,
 		},
+		logger: logger,
 	}
 }
 
 // Start starts the HTTP server and blocks until shutdown or error.
 func (s *Server) Start() error {
-	slog.Info("starting HTTP server", "address", s.server.Addr)
+	s.logger.Info("starting HTTP server", "address", s.server.Addr)
 
 	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("server failed to start: %w", err)
@@ -47,7 +49,7 @@ func (s *Server) Start() error {
 
 // Stop gracefully shuts down the server with a 30-second timeout.
 func (s *Server) Stop() error {
-	slog.Info("shutting down HTTP server")
+	s.logger.Info("shutting down HTTP server")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -28,19 +28,20 @@ type GitHubClient interface {
 
 type gitHubClient struct {
 	client *github.Client
+	logger *slog.Logger
 }
 
 // NewGitHubClient wraps the official go-github client to provide a focused,
 // testable interface for application-specific GitHub operations.
-func NewGitHubClient(client *github.Client) GitHubClient {
-	return &gitHubClient{client: client}
+func NewGitHubClient(client *github.Client, logger *slog.Logger) GitHubClient {
+	return &gitHubClient{client: client, logger: logger}
 }
 
 // GetPullRequest retrieves a single pull request by its number.
 func (g *gitHubClient) GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error) {
 	pr, _, err := g.client.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
-		slog.Error("failed to get pull request", "owner", owner, "repo", repo, "pr", number, "error", err)
+		g.logger.Error("failed to get pull request", "owner", owner, "repo", repo, "pr", number, "error", err)
 		return nil, err
 	}
 	return pr, nil
@@ -52,7 +53,7 @@ func (g *gitHubClient) GetPullRequestDiff(ctx context.Context, owner, repo strin
 		Type: github.Diff,
 	})
 	if err != nil {
-		slog.Error("failed to get pull request diff", "owner", owner, "repo", repo, "pr", number, "error", err)
+		g.logger.Error("failed to get pull request diff", "owner", owner, "repo", repo, "pr", number, "error", err)
 		return "", err
 	}
 	return diff, nil
@@ -68,7 +69,7 @@ func (g *gitHubClient) GetChangedFiles(ctx context.Context, owner, repo string, 
 	for {
 		files, resp, err := g.client.PullRequests.ListFiles(ctx, owner, repo, number, opts)
 		if err != nil {
-			slog.Error("failed to list files for pull request", "owner", owner, "repo", repo, "pr", number, "error", err)
+			g.logger.Error("failed to list files for pull request", "owner", owner, "repo", repo, "pr", number, "error", err)
 			return nil, err
 		}
 
@@ -97,7 +98,7 @@ func (g *gitHubClient) CreateComment(ctx context.Context, owner, repo string, nu
 	comment := &github.IssueComment{Body: &body}
 	_, _, err := g.client.Issues.CreateComment(ctx, owner, repo, number, comment)
 	if err != nil {
-		slog.Error("failed to create comment", "owner", owner, "repo", repo, "pr", number, "error", err)
+		g.logger.Error("failed to create comment", "owner", owner, "repo", repo, "pr", number, "error", err)
 	}
 	return err
 }
@@ -106,7 +107,7 @@ func (g *gitHubClient) CreateComment(ctx context.Context, owner, repo string, nu
 func (g *gitHubClient) CreateCheckRun(ctx context.Context, owner, repo string, opts github.CreateCheckRunOptions) (*github.CheckRun, error) {
 	checkRun, _, err := g.client.Checks.CreateCheckRun(ctx, owner, repo, opts)
 	if err != nil {
-		slog.Error("failed to create check run", "owner", owner, "repo", repo, "error", err)
+		g.logger.Error("failed to create check run", "owner", owner, "repo", repo, "error", err)
 	}
 	return checkRun, err
 }
@@ -115,7 +116,7 @@ func (g *gitHubClient) CreateCheckRun(ctx context.Context, owner, repo string, o
 func (g *gitHubClient) UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, opts github.UpdateCheckRunOptions) (*github.CheckRun, error) {
 	checkRun, _, err := g.client.Checks.UpdateCheckRun(ctx, owner, repo, checkRunID, opts)
 	if err != nil {
-		slog.Error("failed to update check run", "owner", owner, "repo", repo, "checkRunID", checkRunID, "error", err)
+		g.logger.Error("failed to update check run", "owner", owner, "repo", repo, "checkRunID", checkRunID, "error", err)
 	}
 	return checkRun, err
 }
