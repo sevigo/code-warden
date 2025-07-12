@@ -1,0 +1,90 @@
+# docker-compose.yml (Unified Version with Profiles)
+#
+# To run one-time setup:  docker-compose up --profile setup -d
+# To run normal services: docker-compose up -d
+
+services:
+  setup:
+    image: ollama/ollama:latest
+    container_name: ollama-model-setup
+    profiles: ["setup"]
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - warden-net
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - EMBEDDER_MODEL_NAME=${EMBEDDER_MODEL_NAME:-nomic-embed-text}
+      - GENERATOR_MODEL_NAME=${GENERATOR_MODEL_NAME:-gemma3:latest}
+    command: >
+      sh -c "
+        echo 'Waiting for Ollama service to be ready...' &&
+        while ! wget -q -T 1 -O - http://ollama:11434/ > /dev/null 2>&1; do
+          echo 'Still waiting for Ollama...'; sleep 1;
+        done;
+        echo 'Ollama is ready. Pulling models...' &&
+        ollama pull ${EMBEDDER_MODEL_NAME} &&
+        ollama pull ${GENERATOR_MODEL_NAME} &&
+        echo '---' &&
+        echo '✅ Model setup complete. This container will now exit.' &&
+        echo '---'
+      "
+
+  db:
+    image: postgres:16-alpine
+    container_name: postgres-db
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - warden-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/var/lib/qdrant/storage
+    networks:
+      - warden-net
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.9.6
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - warden-net
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--timeout=1", "-O", "-", "http://localhost:11434/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  warden-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  ollama_data:
+  qdrant_data:
