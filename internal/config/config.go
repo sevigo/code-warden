@@ -48,7 +48,9 @@ type DBConfig struct {
 // LoadConfig loads configuration from environment variables and .env file.
 func LoadConfig() (*Config, error) {
 	setDefaults()
-	loadEnvFile()
+	if err := loadEnvFile(); err != nil {
+		return nil, err
+	}
 
 	viper.AutomaticEnv()
 
@@ -103,15 +105,16 @@ func setDefaults() {
 	viper.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
 }
 
-func loadEnvFile() {
+func loadEnvFile() error {
 	viper.SetConfigFile(".env")
 	viper.AddConfigPath(".")
 	if err := viper.MergeInConfig(); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			slog.Error("failed to read config file", "err", err)
+			return fmt.Errorf("failed to read config file: %w", err)
 		}
 		slog.Warn("config file .env not found, relying on environment variables and defaults")
 	}
+	return nil
 }
 
 func validateRequired() error {
