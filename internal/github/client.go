@@ -108,8 +108,9 @@ func (g *gitHubClient) CreateCheckRun(ctx context.Context, owner, repo string, o
 	checkRun, _, err := g.client.Checks.CreateCheckRun(ctx, owner, repo, opts)
 	if err != nil {
 		g.logger.Error("failed to create check run", "owner", owner, "repo", repo, "error", err)
+		return nil, err
 	}
-	return checkRun, err
+	return checkRun, nil
 }
 
 // UpdateCheckRun updates an existing check run.
