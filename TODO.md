@@ -1,3 +1,7 @@
+# TODO
+
+This document outlines planned improvements and future work for Code-Warden.
+
 ### 1. **Implement Intelligent RAG Context Caching and Invalidation**
 
 This is the most critical next step to make the tool practical and efficient.

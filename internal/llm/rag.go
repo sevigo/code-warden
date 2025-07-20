@@ -102,12 +102,6 @@ func (r *ragService) GenerateReview(ctx context.Context, collectionName string, 
 	changedFilesList := r.formatChangedFiles(changedFiles)
 	contextContent := r.buildRelevantContext(ctx, collectionName, changedFiles)
 
-	// If context was found, wrap it in clear headers for the LLM.
-	// This prevents the model from confusing the context with the main diff.
-	if contextContent != "" {
-		contextContent = fmt.Sprintf("--- START OF RELEVANT CODEBASE CONTEXT ---\n%s--- END OF RELEVANT CODEBASE CONTEXT ---", contextContent)
-	}
-
 	promptData := map[string]string{
 		"Title":        event.PRTitle,
 		"Description":  event.PRBody,
