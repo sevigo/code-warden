@@ -12,6 +12,7 @@ import (
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/parsers"
 
+	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -24,6 +25,8 @@ type RAGService interface {
 }
 
 type ragService struct {
+	cfg            *config.Config
+	promptMgr      *PromptManager
 	vectorStore    storage.VectorStore
 	generatorLLM   llms.Model
 	parserRegistry parsers.ParserRegistry
@@ -32,8 +35,17 @@ type ragService struct {
 
 // NewRAGService creates a new RAGService instance with a vector store, LLM model,
 // parser registry, and logger. This service powers the indexing and code review flow.
-func NewRAGService(vs storage.VectorStore, gen llms.Model, pr parsers.ParserRegistry, logger *slog.Logger) RAGService {
+func NewRAGService(
+	cfg *config.Config,
+	promptMgr *PromptManager,
+	vs storage.VectorStore,
+	gen llms.Model,
+	pr parsers.ParserRegistry,
+	logger *slog.Logger,
+) RAGService {
 	return &ragService{
+		cfg:            cfg,
+		promptMgr:      promptMgr,
 		vectorStore:    vs,
 		generatorLLM:   gen,
 		parserRegistry: pr,
@@ -99,7 +111,20 @@ func (r *ragService) GenerateReview(ctx context.Context, collectionName string, 
 		"Diff":         diff,
 	}
 
-	prompt := CodeReviewPrompt.Format(promptData)
+	// The GeneratorModelName from configuration (e.g., "gemini-2.5-flash")
+	// is used as the ModelProvider to fetch model-specific prompts.
+	// Prompt filenames should follow the convention `[prompt_key]_[model_provider].prompt`
+	// or fall back to `[prompt_key]_default.prompt`.
+	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
+	prompt, err := r.promptMgr.Render(
+		CodeReviewPrompt,
+		modelForPrompt,
+		promptData,
+	)
+	if err != nil {
+		r.logger.Error("could not retrieve prompt from the manager", "error", err)
+		return "", err
+	}
 
 	r.logger.Info("calling LLM for review generation",
 		"repo", event.RepoFullName,
@@ -135,7 +160,11 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 	for _, file := range changedFiles {
 		r.logger.Debug("searching for relevant context", "file", file.Filename)
 
-		query := fmt.Sprintf("Code changes in file: %s\n%s", file.Filename, file.Patch)
+		query := fmt.Sprintf(
+			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
+			file.Filename,
+			file.Patch,
+		)
 		relevantDocs, err := r.vectorStore.SimilaritySearch(ctx, collectionName, query, 3)
 		if err != nil {
 			r.logger.Warn("context search failed", "file", file.Filename, "error", err)

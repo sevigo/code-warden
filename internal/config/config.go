@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/spf13/viper"
 
@@ -27,8 +29,6 @@ type Config struct {
 
 // LoadConfig loads configuration from environment variables and .env file.
 func LoadConfig() (*Config, error) {
-	viper.SetConfigFile(".env")
-
 	viper.SetDefault("SERVER_PORT", "8080")
 	viper.SetDefault("LOG_LEVEL", "info")
 	viper.SetDefault("LOG_FORMAT", "text")
@@ -41,12 +41,17 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
 	viper.SetDefault("LLM_PROVIDER", "ollama")
 
-	if err := viper.ReadInConfig(); err != nil {
-		var notFound viper.ConfigFileNotFoundError
-		if !errors.As(err, &notFound) {
+	viper.SetConfigFile(".env")
+	viper.AddConfigPath(".")
+
+	if err := viper.MergeInConfig(); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
+		slog.Warn("config file .env not found, relying on environment variables and defaults")
 	}
+
+	viper.AutomaticEnv()
 
 	if viper.GetInt64("GITHUB_APP_ID") == 0 {
 		return nil, fmt.Errorf("GITHUB_APP_ID must be set")

@@ -1,6 +1,6 @@
-Excellent! Now that you have a solid, working foundation, it's time to think about the next steps to make `Code-Warden` more robust, useful, and user-friendly. Here are five high-impact `TODO` items, ordered from most critical to "nice-to-have."
+# TODO
 
----
+This document outlines planned improvements and future work for Code-Warden.
 
 ### 1. **Implement Intelligent RAG Context Caching and Invalidation**
 
