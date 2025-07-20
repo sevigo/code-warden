@@ -74,7 +74,7 @@ func (db *DB) RunMigrations() error {
 
 	// If the schema is dirty, force it to the last known good version before retrying.
 	if dirty {
-		if err := migrator.Force(int(version)); err != nil {
+		if err := migrator.Force(int(version)); err != nil { //nolint:gosec //db migration
 			return fmt.Errorf("failed to force migration version: %w", err)
 		}
 	}

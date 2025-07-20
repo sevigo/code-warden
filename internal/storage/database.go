@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	// import db drivers
 	"github.com/jmoiron/sqlx"
+	// import db drivers
 	_ "github.com/lib/pq"
 	"github.com/sevigo/code-warden/internal/core"
 )
@@ -22,7 +22,7 @@ type postgresStore struct {
 	db *sqlx.DB
 }
 
-// NewStore	 creates a new RepositoryStore.
+// NewStore creates a new Store
 func NewStore(db *sqlx.DB) Store {
 	return &postgresStore{db: db}
 }
