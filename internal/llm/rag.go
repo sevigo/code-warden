@@ -14,15 +14,15 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
-	"github.com/sevigo/code-warden/internal/github"
+	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, collectionName, repoPath string) error
-	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient github.Client) (string, error)
-	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient github.Client) (string, error)
+	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error)
+	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 }
 
 type ragService struct {
@@ -82,7 +82,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoP
 // GenerateReview executes the full RAG pipeline to generate a code review for a pull request.
 // It retrieves the PR diff, identifies changed files, fetches relevant code context
 // using vector search, constructs a prompt, and queries the LLM to produce the review.
-func (r *ragService) GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient github.Client) (string, error) {
+func (r *ragService) GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error) {
 	r.logger.Info("generating code review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
@@ -142,7 +142,7 @@ func (r *ragService) GenerateReview(ctx context.Context, collectionName string, 
 }
 
 // GenerateReReview creates a prompt with the original review and new diff, then calls the LLM.
-func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient github.Client) (string, error) {
+func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error) {
 	r.logger.Info("generating re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	newDiff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
@@ -181,7 +181,7 @@ func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEve
 
 // formatChangedFiles returns a markdown-formatted list of changed file paths
 // to include in the LLM prompt.
-func (r *ragService) formatChangedFiles(files []github.ChangedFile) string {
+func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) string {
 	var builder strings.Builder
 	for _, file := range files {
 		builder.WriteString(fmt.Sprintf("- `%s`\n", file.Filename))
@@ -192,7 +192,7 @@ func (r *ragService) formatChangedFiles(files []github.ChangedFile) string {
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
-func (r *ragService) buildRelevantContext(ctx context.Context, collectionName string, changedFiles []github.ChangedFile) string {
+func (r *ragService) buildRelevantContext(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) string {
 	var contextBuilder strings.Builder
 	seenDocs := make(map[string]struct{})
 
