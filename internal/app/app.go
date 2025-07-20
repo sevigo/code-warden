@@ -91,7 +91,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	}
 
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
-	ragService := ll.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
+	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
 	reviewDB := storage.NewStore(dbConn.DB)
 	reviewJob := jobs.NewReviewJob(cfg, ragService, reviewDB, logger)
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
@@ -118,7 +118,7 @@ func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Lo
 	return llm, nil
 }
 
-func createEmbedder(cfg *config.Config, logger *slog.Logger) (*embeddings.Embedder, error) {
+func createEmbedder(cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
 	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
 	embedderLLM, err := ollama.New(
 		ollama.WithServerURL(cfg.OllamaHost),
