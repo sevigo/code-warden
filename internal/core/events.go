@@ -10,6 +10,14 @@ import (
 	"github.com/google/go-github/v73/github"
 )
 
+// ReviewType distinguishes between a full review and a follow-up.
+type ReviewType int
+
+const (
+	FullReview ReviewType = iota
+	ReReview
+)
+
 // GitHubEvent represents a simplified, internal view of a GitHub webhook event.
 type GitHubEvent struct {
 	// Repository details
@@ -23,6 +31,7 @@ type GitHubEvent struct {
 	PRTitle  string
 	PRBody   string
 	HeadSHA  string
+	Type     ReviewType
 
 	Commenter      string
 	InstallationID int64
@@ -38,8 +47,16 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 		return nil, fmt.Errorf("comment is not on a pull request")
 	}
 
-	if !strings.EqualFold(strings.TrimSpace(event.GetComment().GetBody()), "/review") {
-		return nil, fmt.Errorf("comment is not a review command")
+	commentBody := strings.TrimSpace(strings.ToLower(event.GetComment().GetBody()))
+	var reviewType ReviewType
+
+	switch commentBody {
+	case "/review":
+		reviewType = FullReview
+	case "/rereview":
+		reviewType = ReReview
+	default:
+		return nil, fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
 	}
 
 	repo := event.GetRepo()
@@ -61,6 +78,7 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	return &GitHubEvent{
+		Type:           reviewType,
 		RepoOwner:      repo.GetOwner().GetLogin(),
 		RepoName:       repo.GetName(),
 		RepoFullName:   repo.GetFullName(),

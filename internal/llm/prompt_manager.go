@@ -19,6 +19,7 @@ const (
 	DefaultProvider      ModelProvider = "default"
 	CodeReviewPrompt     PromptKey     = "code_review"
 	CodeGenerationPrompt PromptKey     = "code_generation"
+	ReReviewPrompt       PromptKey     = "rereview"
 )
 
 type PromptManager struct {

@@ -10,50 +10,54 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-github/v73/github"
-
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
-	githubutil "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// collectionNameRegexp is compiled once at package level for efficiency.
 var collectionNameRegexp = regexp.MustCompile("[^a-z0-9_-]+")
 
-// ReviewJob is a background job that performs AI-assisted code reviews.
+// ReviewJob performs AI-assisted code reviews.
 type ReviewJob struct {
 	cfg         *config.Config
 	ragService  llm.RAGService
-	logger      *slog.Logger
 	reviewStore storage.Store
+	logger      *slog.Logger
 }
 
-// NewReviewJob creates a new ReviewJob with config, RAG service, and logger.
+// NewReviewJob creates a new ReviewJob with all its dependencies.
 func NewReviewJob(cfg *config.Config, rag llm.RAGService, reviewStore storage.Store, logger *slog.Logger) core.Job {
-	return &ReviewJob{
-		cfg:         cfg,
-		ragService:  rag,
-		logger:      logger,
-		reviewStore: reviewStore,
+	if cfg == nil || rag == nil || reviewStore == nil || logger == nil {
+		panic("NewReviewJob received a nil dependency")
+	}
+	return &ReviewJob{cfg: cfg, ragService: rag, reviewStore: reviewStore, logger: logger}
+}
+
+// Run acts as a router, directing the event to the correct review flow.
+func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
+	if err := j.validateInputs(event); err != nil {
+		j.logger.Error("Input validation failed", "error", err)
+		return err
+	}
+
+	switch event.Type {
+	case core.FullReview:
+		return j.runFullReview(ctx, event)
+	case core.ReReview:
+		return j.runReReview(ctx, event)
+	default:
+		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
 }
 
-// Run orchestrates the code review job for a given GitHub event.
-// It handles setup, execution, status updates, and error handling.
-//
-//nolint:nonamedreturns // A named return is used here to inspect the error in a defer block.
-func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) (err error) {
-	if validationErr := j.validateInputs(event); validationErr != nil {
-		j.logger.Error("Input validation failed", "error", validationErr)
-		return fmt.Errorf("input validation failed: %w", validationErr)
-	}
+// runFullReview handles the initial `/review` command.
+func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) (err error) {
+	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
-	j.logger.Info("Starting review job", "repo", event.RepoFullName, "pr", event.PRNumber)
-
-	ghClient, ghToken, err := githubutil.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create GitHub client: %w", err)
 	}
@@ -63,75 +67,46 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) (err error
 		return fmt.Errorf("failed to get PR details: %w", err)
 	}
 	if pr.GetHead() == nil || pr.GetHead().GetSHA() == "" {
-		return fmt.Errorf("PR %d has no valid head SHA", event.PRNumber)
+		return fmt.Errorf("PR #%d has no valid head SHA", event.PRNumber)
 	}
 	event.HeadSHA = pr.GetHead().GetSHA()
 
-	// create the status updater and the "in-progress" check
-	statusUpdater := githubutil.NewStatusUpdater(ghClient)
+	statusUpdater := github.NewStatusUpdater(ghClient)
 	checkRunID, err := statusUpdater.InProgress(ctx, event, "Code Review", "AI analysis in progress...")
 	if err != nil {
-		// This was the point of failure. The error message will now be more informative if it still fails.
 		return fmt.Errorf("failed to set in-progress status: %w", err)
 	}
 
-	// Defer a centralized error handler that updates the GitHub status on failure.
+	// Defer a handler to update GitHub status on any subsequent error.
 	defer func() {
 		if err != nil {
-			j.handleError(ctx, statusUpdater, event, checkRunID, err)
+			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
 		}
 	}()
 
-	// Perform the core review process, passing the already-fetched PR details
-	review, err := j.processPullRequest(ctx, event, ghClient, ghToken, pr)
-	if err != nil {
-		return err // The deferred handler will catch this.
-	}
-
-	// Finalize the review by posting comments and setting the success status.
-	if err = j.finalizeSuccess(ctx, statusUpdater, event, checkRunID, review); err != nil {
-		return err // The deferred handler will catch this.
-	}
-
-	j.logger.Info("Review job completed successfully", "repo", event.RepoFullName, "pr", event.PRNumber)
-	return nil
-}
-
-// processPullRequest contains the core logic for reviewing a pull request.
-func (j *ReviewJob) processPullRequest(ctx context.Context, event *core.GitHubEvent, ghClient githubutil.Client, ghToken string, pr *github.PullRequest) (string, error) {
-	event.PRTitle = pr.GetTitle()
-	event.PRBody = pr.GetBody()
-
-	// Clone repository with a timeout.
 	cloneCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	cloner := gitutil.NewCloner(j.logger)
 	repoPath, cleanup, err := cloner.Clone(cloneCtx, event.RepoCloneURL, event.HeadSHA, ghToken)
 	if err != nil {
-		return "", fmt.Errorf("failed to clone repository: %w", err)
+		return fmt.Errorf("failed to clone repository: %w", err)
 	}
 	defer cleanup()
 
-	// Setup RAG context and generate review.
 	collectionName := j.generateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
-	if err := j.ragService.SetupRepoContext(ctx, collectionName, repoPath); err != nil {
-		return "", fmt.Errorf("failed to setup repository context: %w", err)
+	if err = j.ragService.SetupRepoContext(ctx, collectionName, repoPath); err != nil {
+		return fmt.Errorf("failed to setup repository context: %w", err)
 	}
 
 	review, err := j.ragService.GenerateReview(ctx, collectionName, event, ghClient)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate review: %w", err)
+		return fmt.Errorf("failed to generate review: %w", err)
 	}
 	if strings.TrimSpace(review) == "" {
-		return "", errors.New("generated review is empty")
+		return errors.New("generated review is empty")
 	}
 
-	return review, nil
-}
-
-// finalizeSuccess handles the successful completion of a review.
-func (j *ReviewJob) finalizeSuccess(ctx context.Context, statusUpdater githubutil.StatusUpdater, event *core.GitHubEvent, checkRunID int64, reviewContent string) error {
-	if err := statusUpdater.PostReviewComment(ctx, event, reviewContent); err != nil {
+	if err = statusUpdater.PostReviewComment(ctx, event, review); err != nil {
 		return fmt.Errorf("failed to post review comment: %w", err)
 	}
 
@@ -139,25 +114,75 @@ func (j *ReviewJob) finalizeSuccess(ctx context.Context, statusUpdater githubuti
 		RepoFullName:  event.RepoFullName,
 		PRNumber:      event.PRNumber,
 		HeadSHA:       event.HeadSHA,
-		ReviewContent: reviewContent,
+		ReviewContent: review,
 	}
-	if err := j.reviewStore.SaveReview(ctx, dbReview); err != nil {
-		// Log the error but don't fail the entire job, as the user-facing part is done.
+	if err = j.reviewStore.SaveReview(ctx, dbReview); err != nil {
 		j.logger.Error("failed to save review to database", "error", err)
+		// We log this but don't fail the job, as the user has received the review.
 	}
 
-	if err := statusUpdater.Completed(ctx, event, checkRunID, "success", "Review Complete", "AI analysis finished successfully"); err != nil {
+	if err = statusUpdater.Completed(ctx, event, checkRunID, "success", "Review Complete", "AI analysis finished."); err != nil {
 		return fmt.Errorf("failed to update completion status: %w", err)
 	}
+
+	j.logger.Info("Full review job completed successfully")
 	return nil
 }
 
-// handleError updates the GitHub check run to a "failure" state.
-func (j *ReviewJob) handleError(ctx context.Context, statusUpdater githubutil.StatusUpdater, event *core.GitHubEvent, checkRunID int64, jobErr error) {
-	j.logger.Error("Review job failed", "error", jobErr, "repo", event.RepoFullName, "pr", event.PRNumber)
-	message := jobErr.Error()
-	if err := statusUpdater.Completed(ctx, event, checkRunID, "failure", "Review Failed", message); err != nil {
-		j.logger.Error("Failed to update failure status", "error", err)
+// runReReview handles the follow-up `/rereview` command.
+func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (err error) {
+	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+
+	ghClient, _, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub client: %w", err)
+	}
+
+	pr, err := ghClient.GetPullRequest(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR details: %w", err)
+	}
+	event.HeadSHA = pr.GetHead().GetSHA()
+
+	statusUpdater := github.NewStatusUpdater(ghClient)
+	checkRunID, err := statusUpdater.InProgress(ctx, event, "Follow-up Review", "Checking for fixes...")
+	if err != nil {
+		return fmt.Errorf("failed to set in-progress status: %w", err)
+	}
+
+	defer func() {
+		if err != nil {
+			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
+		}
+	}()
+
+	originalReview, err := j.reviewStore.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("could not find a previous review to check against: %w", err)
+	}
+
+	followUp, err := j.ragService.GenerateReReview(ctx, event, originalReview, ghClient)
+	if err != nil {
+		return fmt.Errorf("failed to generate follow-up review: %w", err)
+	}
+
+	if err = statusUpdater.PostReviewComment(ctx, event, followUp); err != nil {
+		return fmt.Errorf("failed to post follow-up comment: %w", err)
+	}
+
+	if err = statusUpdater.Completed(ctx, event, checkRunID, "success", "Follow-up Complete", "Analysis finished."); err != nil {
+		return fmt.Errorf("failed to update completion status: %w", err)
+	}
+
+	j.logger.Info("Re-review job completed successfully")
+	return nil
+}
+
+// updateStatusOnError logs the job error and updates the GitHub check run.
+func (j *ReviewJob) updateStatusOnError(ctx context.Context, statusUpdater github.StatusUpdater, event *core.GitHubEvent, checkRunID int64, jobErr error) {
+	j.logger.Error("Review job step failed", "error", jobErr, "repo", event.RepoFullName, "pr", event.PRNumber)
+	if err := statusUpdater.Completed(ctx, event, checkRunID, "failure", "Review Failed", jobErr.Error()); err != nil {
+		j.logger.Error("Failed to update failure status on GitHub", "original_error", jobErr, "status_update_error", err)
 	}
 }
 

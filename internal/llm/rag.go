@@ -22,6 +22,7 @@ import (
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, collectionName, repoPath string) error
 	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient github.Client) (string, error)
+	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient github.Client) (string, error)
 }
 
 type ragService struct {
@@ -137,6 +138,44 @@ func (r *ragService) GenerateReview(ctx context.Context, collectionName string, 
 	}
 
 	r.logger.Info("code review generated successfully", "review_chars", len(review))
+	return review, nil
+}
+
+// GenerateReReview creates a prompt with the original review and new diff, then calls the LLM.
+func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient github.Client) (string, error) {
+	r.logger.Info("generating re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
+
+	newDiff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return "", fmt.Errorf("failed to get new PR diff: %w", err)
+	}
+
+	if strings.TrimSpace(newDiff) == "" {
+		r.logger.Info("no new code changes found to re-review", "pr", event.PRNumber)
+		return "This pull request contains no new code changes to re-review.", nil
+	}
+
+	promptData := core.ReReviewData{
+		Language:       event.Language,
+		OriginalReview: originalReview.ReviewContent,
+		NewDiff:        newDiff,
+	}
+
+	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
+	prompt, err := r.promptMgr.Render(ReReviewPrompt, modelForPrompt, promptData)
+	if err != nil {
+		return "", fmt.Errorf("could not render re-review prompt: %w", err)
+	}
+
+	r.logger.Info("calling LLM for re-review generation", "pr", event.PRNumber)
+
+	// 5. Call the LLM to get the follow-up review.
+	review, err := r.generatorLLM.Call(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("LLM re-review generation failed: %w", err)
+	}
+
+	r.logger.Info("re-review generated successfully", "review_chars", len(review))
 	return review, nil
 }
 
