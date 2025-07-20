@@ -70,8 +70,6 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		return fmt.Errorf("PR #%d has no valid head SHA", event.PRNumber)
 	}
 	event.HeadSHA = pr.GetHead().GetSHA()
-	event.PRTitle = pr.GetTitle()
-	event.PRBody = pr.GetBody()
 
 	statusUpdater := github.NewStatusUpdater(ghClient)
 	checkRunID, err := statusUpdater.InProgress(ctx, event, "Code Review", "AI analysis in progress...")
@@ -82,7 +80,7 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	// Defer a handler to update GitHub status on any subsequent error.
 	defer func() {
 		if err != nil {
-			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err.Error())
+			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
 		}
 	}()
 
@@ -154,7 +152,7 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (e
 
 	defer func() {
 		if err != nil {
-			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err.Error())
+			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
 		}
 	}()
 
@@ -181,10 +179,10 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (e
 }
 
 // updateStatusOnError logs the job error and updates the GitHub check run.
-func (j *ReviewJob) updateStatusOnError(ctx context.Context, statusUpdater github.StatusUpdater, event *core.GitHubEvent, checkRunID int64, message string) {
-	j.logger.Error("Review job step failed", "error", message, "repo", event.RepoFullName, "pr", event.PRNumber)
-	if err := statusUpdater.Completed(ctx, event, checkRunID, "failure", "Review Failed", message); err != nil {
-		j.logger.Error("Failed to update failure status on GitHub", "original_error", message, "status_update_error", err)
+func (j *ReviewJob) updateStatusOnError(ctx context.Context, statusUpdater github.StatusUpdater, event *core.GitHubEvent, checkRunID int64, jobErr error) {
+	j.logger.Error("Review job step failed", "error", jobErr, "repo", event.RepoFullName, "pr", event.PRNumber)
+	if err := statusUpdater.Completed(ctx, event, checkRunID, "failure", "Review Failed", jobErr.Error()); err != nil {
+		j.logger.Error("Failed to update failure status on GitHub", "original_error", jobErr, "status_update_error", err)
 	}
 }
 
