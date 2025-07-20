@@ -6,7 +6,10 @@ require (
 	github.com/go-chi/chi/v5 v5.2.2
 	github.com/go-git/go-git/v5 v5.16.2
 	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/golang-migrate/migrate/v4 v4.18.3
 	github.com/google/go-github/v73 v73.0.0
+	github.com/jmoiron/sqlx v1.4.0
+	github.com/lib/pq v1.10.9
 	github.com/sevigo/goframe v0.5.1
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
@@ -43,6 +46,8 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/hcl/v2 v2.24.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect

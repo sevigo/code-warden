@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/server"
@@ -31,6 +33,7 @@ type App struct {
 	server     *server.Server
 	logger     *slog.Logger
 	dispatcher core.JobDispatcher
+	dbConn     *db.DB
 }
 
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
@@ -71,6 +74,18 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		return nil, fmt.Errorf("failed to create generator LLM: %w", err)
 	}
 
+	dbConn, err := db.NewDatabase(cfg.Database)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	if err := dbConn.RunMigrations(); err != nil {
+		_ = dbConn.Close()
+		return nil, fmt.Errorf("failed to run database migrations: %w", err)
+	}
+
+	reviewDB := storage.NewStore(dbConn.DB)
+
 	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
 	embedderLLM, err := ollama.New(
 		ollama.WithServerURL(cfg.OllamaHost),
@@ -104,7 +119,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	logger.Info("initializing RAG service")
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
-	reviewJob := jobs.NewReviewJob(cfg, ragService, logger)
+	reviewJob := jobs.NewReviewJob(cfg, ragService, reviewDB, logger)
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
 
@@ -115,6 +130,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		server:     httpServer,
 		logger:     logger,
 		dispatcher: dispatcher,
+		dbConn:     dbConn,
 	}, nil
 }
 
@@ -135,25 +151,32 @@ func (a *App) Start() error {
 
 // Stop shuts down the application cleanly.
 func (a *App) Stop() error {
+	var shutdownErr error
 	a.logger.Info("shutting down Code Warden services")
 
 	// Stop the HTTP server first to prevent new incoming requests.
 	serverErr := a.server.Stop()
 	if serverErr != nil {
 		a.logger.Error("error during HTTP server shutdown", "error", serverErr)
-		// Continue to stop other components even if the server failed.
+		shutdownErr = errors.Join(shutdownErr, serverErr)
 	}
 
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
 	a.dispatcher.Stop()
 
-	if serverErr != nil {
-		a.logger.Error("Code Warden stopped with errors", "error", serverErr)
-		return serverErr
+	a.logger.Info("closing database connection")
+	dbCloseErr := a.dbConn.Close()
+	if dbCloseErr != nil {
+		a.logger.Error("error closing database", "error", dbCloseErr)
+		shutdownErr = errors.Join(shutdownErr, dbCloseErr)
 	}
 
-	a.logger.Info("Code Warden stopped successfully")
-	return nil
+	if shutdownErr != nil {
+		a.logger.Error("Code Warden stopped with errors", "error", shutdownErr)
+	} else {
+		a.logger.Info("Code Warden stopped successfully")
+	}
+	return shutdownErr
 }
 
 // createLLM creates the appropriate LLM client based on the configured provider.

@@ -14,27 +14,25 @@ import (
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // ReviewJob is a background job that performs AI-assisted code reviews.
 type ReviewJob struct {
-	cfg        *config.Config
-	ragService llm.RAGService
-	logger     *slog.Logger
+	cfg         *config.Config
+	ragService  llm.RAGService
+	logger      *slog.Logger
+	reviewStore storage.Store
 }
 
 // NewReviewJob creates a new ReviewJob with config, RAG service, and logger.
-func NewReviewJob(cfg *config.Config, rag llm.RAGService, logger *slog.Logger) core.Job {
-	if cfg == nil {
-		panic("config cannot be nil")
+func NewReviewJob(cfg *config.Config, rag llm.RAGService, reviewStore storage.Store, logger *slog.Logger) core.Job {
+	return &ReviewJob{
+		cfg:         cfg,
+		ragService:  rag,
+		logger:      logger,
+		reviewStore: reviewStore,
 	}
-	if rag == nil {
-		panic("RAG service cannot be nil")
-	}
-	if logger == nil {
-		panic("logger cannot be nil")
-	}
-	return &ReviewJob{cfg: cfg, ragService: rag, logger: logger}
 }
 
 // Run executes the code review job for a given GitHub event.
@@ -99,6 +97,18 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 	if err := statusUpdater.PostReviewComment(ctx, event, review); err != nil {
 		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, "Failed to post review comment")
 		return fmt.Errorf("failed to post review comment: %w", err)
+	}
+
+	dbReview := &core.Review{
+		RepoFullName:  event.RepoFullName,
+		PRNumber:      event.PRNumber,
+		HeadSHA:       event.HeadSHA,
+		ReviewContent: review,
+	}
+	if err := j.reviewStore.SaveReview(ctx, dbReview); err != nil {
+		j.logger.Error("failed to save review to database", "error", err)
+		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, "Failed to save review to database for history")
+		return fmt.Errorf("failed to save review to database: %w", err)
 	}
 
 	if err := statusUpdater.Completed(ctx, event, checkRunID, "success", "Review Complete", "AI analysis finished successfully"); err != nil {
