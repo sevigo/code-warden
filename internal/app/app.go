@@ -95,10 +95,15 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		return nil, fmt.Errorf("failed to register language parsers: %w", err)
 	}
 
+	promptMgr, err := llm.NewPromptManager()
+	if err != nil {
+		logger.Error("failed to register prompt manager", "error", err)
+		return nil, fmt.Errorf("failed to register language parsers: %w", err)
+	}
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 
 	logger.Info("initializing RAG service")
-	ragService := llm.NewRAGService(vectorStore, generatorLLM, parserRegistry, logger)
+	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
 	reviewJob := jobs.NewReviewJob(cfg, ragService, logger)
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)

@@ -1,9 +1,4 @@
-package llm
-
-import "github.com/sevigo/goframe/prompts"
-
-var CodeReviewPrompt = prompts.NewPromptTemplate(
-	`You are an expert {{.Language}} developer conducting a thorough code review. Your goal is to provide actionable, constructive feedback that improves the code's quality, security, and maintainability.
+You are an expert {{.Language}} developer conducting a thorough code review. Your goal is to provide actionable, constructive feedback that improves the code's quality, security, and maintainability.
 
 ## Review Guidelines
 - Focus on potential bugs, race conditions, logical errors, and security vulnerabilities.
@@ -50,4 +45,3 @@ A final thought or recommendation for the author.
 
 If the code looks good, you may simply state: "LGTM! This is a clean implementation with no major issues found."
 Otherwise say "Code Review: Request for Changes - Critical Issues Found"
-`)
