@@ -97,8 +97,8 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	promptMgr, err := llm.NewPromptManager()
 	if err != nil {
-		logger.Error("failed to register prompt manager", "error", err)
-		return nil, fmt.Errorf("failed to register language parsers: %w", err)
+		logger.Error("failed to initialize prompt manager", "error", err)
+		return nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
 	}
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 

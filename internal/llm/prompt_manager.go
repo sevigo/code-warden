@@ -43,8 +43,8 @@ func NewPromptManager() (*PromptManager, error) {
 		fileName := file.Name()
 		baseName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
 		lastUnderscore := strings.LastIndex(baseName, "_")
-		if lastUnderscore == -1 {
-			return nil, fmt.Errorf("invalid prompt filename format: %s (expected key_provider.prompt)", fileName)
+		if lastUnderscore == -1 || lastUnderscore == 0 || lastUnderscore == len(baseName)-1 {
+			return nil, fmt.Errorf("invalid prompt filename format: %s (expected 'key_provider.prompt' with non-empty key and provider)", fileName)
 		}
 
 		key := PromptKey(baseName[:lastUnderscore])
