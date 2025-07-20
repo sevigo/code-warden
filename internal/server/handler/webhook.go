@@ -54,7 +54,6 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleIssueComment processes issue comment events from GitHub.
 func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.ResponseWriter, event *github.IssueCommentEvent) {
 	reviewEvent, err := core.EventFromIssueComment(event)
 	if err != nil {

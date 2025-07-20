@@ -11,3 +11,10 @@ type Review struct {
 	ReviewContent string
 	CreatedAt     time.Time
 }
+
+// ReReviewData is a type-safe struct for rendering re-review prompts.
+type ReReviewData struct {
+	Language       string
+	OriginalReview string
+	NewDiff        string
+}
