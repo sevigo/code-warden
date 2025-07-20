@@ -152,7 +152,7 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (e
 }
 
 // setupReview initializes the GitHub client, gets PR details, and sets the initial status.
-func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, title, summary string) (*github.Client, string, github.StatusUpdater, int64, error) {
+func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, title, summary string) (github.Client, string, github.StatusUpdater, int64, error) {
 	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
 	if err != nil {
 		return nil, "", nil, 0, fmt.Errorf("failed to create GitHub client: %w", err)
