@@ -41,6 +41,8 @@ func NewReviewJob(cfg *config.Config, rag llm.RAGService, reviewStore storage.St
 
 // Run orchestrates the code review job for a given GitHub event.
 // It handles setup, execution, status updates, and error handling.
+//
+//nolint:nonamedreturns // A named return is used here to inspect the error in a defer block.
 func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) (err error) {
 	if validationErr := j.validateInputs(ctx, event); validationErr != nil {
 		j.logger.Error("Input validation failed", "error", validationErr)
