@@ -18,6 +18,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/server"
@@ -31,6 +32,7 @@ type App struct {
 	server     *server.Server
 	logger     *slog.Logger
 	dispatcher core.JobDispatcher
+	dbConn     *db.DB
 }
 
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
@@ -71,6 +73,18 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		return nil, fmt.Errorf("failed to create generator LLM: %w", err)
 	}
 
+	dbConn, err := db.NewDatabase(cfg.Database)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	if err := dbConn.RunMigrations(); err != nil {
+		_ = dbConn.Close()
+		return nil, fmt.Errorf("failed to run database migrations: %w", err)
+	}
+
+	reviewDB := storage.NewStore(dbConn.DB)
+
 	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
 	embedderLLM, err := ollama.New(
 		ollama.WithServerURL(cfg.OllamaHost),
@@ -104,7 +118,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	logger.Info("initializing RAG service")
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
-	reviewJob := jobs.NewReviewJob(cfg, ragService, logger)
+	reviewJob := jobs.NewReviewJob(cfg, ragService, reviewDB, logger)
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
 
@@ -115,6 +129,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		server:     httpServer,
 		logger:     logger,
 		dispatcher: dispatcher,
+		dbConn:     dbConn,
 	}, nil
 }
 
@@ -146,6 +161,11 @@ func (a *App) Stop() error {
 
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
 	a.dispatcher.Stop()
+
+	a.logger.Info("closing database connection")
+	if err := a.dbConn.Close(); err != nil {
+		a.logger.Error("error closing database", "error", err)
+	}
 
 	if serverErr != nil {
 		a.logger.Error("Code Warden stopped with errors", "error", serverErr)

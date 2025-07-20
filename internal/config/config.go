@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/spf13/viper"
 
@@ -25,6 +26,23 @@ type Config struct {
 	GeneratorModelName   string
 	EmbedderModelName    string
 	MaxWorkers           int
+	Database             *DBConfig
+}
+
+// DBConfig holds all database connection settings.
+type DBConfig struct {
+	Driver          string
+	DSN             string
+	Host            string
+	Port            int
+	Database        string
+	Username        string
+	Password        string
+	SSLMode         string
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
 }
 
 // LoadConfig loads configuration from environment variables and .env file.
@@ -40,6 +58,18 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("MAX_WORKERS", 5)
 	viper.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
 	viper.SetDefault("LLM_PROVIDER", "ollama")
+
+	viper.SetDefault("DB_DRIVER", "postgres")
+	viper.SetDefault("DB_HOST", "localhost")
+	viper.SetDefault("DB_PORT", 5432)
+	viper.SetDefault("DB_NAME", "codewarden")
+	viper.SetDefault("DB_USERNAME", "postgres")
+	viper.SetDefault("DB_PASSWORD", "password")
+	viper.SetDefault("DB_SSL_MODE", "disable")
+	viper.SetDefault("DB_MAX_OPEN_CONNS", 25)
+	viper.SetDefault("DB_MAX_IDLE_CONNS", 5)
+	viper.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
+	viper.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
 
 	viper.SetConfigFile(".env")
 	viper.AddConfigPath(".")
@@ -71,6 +101,16 @@ func LoadConfig() (*Config, error) {
 		}
 	}
 
+	// Create the DSN (Data Source Name) string for Postgres
+	dbDSN := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		viper.GetString("DB_HOST"),
+		viper.GetInt("DB_PORT"),
+		viper.GetString("DB_USERNAME"),
+		viper.GetString("DB_PASSWORD"),
+		viper.GetString("DB_NAME"),
+		viper.GetString("DB_SSL_MODE"),
+	)
+
 	return &Config{
 		ServerPort: viper.GetString("SERVER_PORT"),
 		LoggerConfig: logger.Config{
@@ -88,5 +128,19 @@ func LoadConfig() (*Config, error) {
 		LLMProvider:          viper.GetString("LLM_PROVIDER"),
 		EmbedderModelName:    viper.GetString("EMBEDDER_MODEL_NAME"),
 		MaxWorkers:           viper.GetInt("MAX_WORKERS"),
+		Database: &DBConfig{
+			Driver:          viper.GetString("DB_DRIVER"),
+			DSN:             dbDSN,
+			Host:            viper.GetString("DB_HOST"),
+			Port:            viper.GetInt("DB_PORT"),
+			Database:        viper.GetString("DB_NAME"),
+			Username:        viper.GetString("DB_USERNAME"),
+			Password:        viper.GetString("DB_PASSWORD"),
+			SSLMode:         viper.GetString("DB_SSL_MODE"),
+			MaxOpenConns:    viper.GetInt("DB_MAX_OPEN_CONNS"),
+			MaxIdleConns:    viper.GetInt("DB_MAX_IDLE_CONNS"),
+			ConnMaxLifetime: time.Duration(viper.GetInt("DB_CONN_MAX_LIFETIME")) * time.Minute,
+			ConnMaxIdleTime: time.Duration(viper.GetInt("DB_CONN_MAX_IDLE_TIME")) * time.Minute,
+		},
 	}, nil
 }

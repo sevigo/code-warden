@@ -17,7 +17,7 @@ This is the most critical next step to make the tool practical and efficient.
 
 ### 2. **Refine the Review Prompt and Add Structured Output**
 
-Improve the quality and consistency of the AI's feedback.
+Improve the quality and consistency of the AI's feedback (partly done).
 
 *   **Problem:** The current prompt is good, but the LLM's output is free-form Markdown. It can be inconsistent and hard to parse for metrics or UI enhancements.
 *   **TODO:**
