@@ -111,6 +111,18 @@ func LoadConfig() (*Config, error) {
 		viper.GetString("DB_SSL_MODE"),
 	)
 
+	lifetimeStr := viper.GetString("DB_CONN_MAX_LIFETIME")
+	idleTimeStr := viper.GetString("DB_CONN_MAX_IDLE_TIME")
+
+	connMaxLifetime, err := time.ParseDuration(lifetimeStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DB_CONN_MAX_LIFETIME format: %w", err)
+	}
+	connMaxIdleTime, err := time.ParseDuration(idleTimeStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DB_CONN_MAX_IDLE_TIME format: %w", err)
+	}
+
 	return &Config{
 		ServerPort: viper.GetString("SERVER_PORT"),
 		LoggerConfig: logger.Config{
@@ -139,8 +151,8 @@ func LoadConfig() (*Config, error) {
 			SSLMode:         viper.GetString("DB_SSL_MODE"),
 			MaxOpenConns:    viper.GetInt("DB_MAX_OPEN_CONNS"),
 			MaxIdleConns:    viper.GetInt("DB_MAX_IDLE_CONNS"),
-			ConnMaxLifetime: time.Duration(viper.GetInt("DB_CONN_MAX_LIFETIME")) * time.Minute,
-			ConnMaxIdleTime: time.Duration(viper.GetInt("DB_CONN_MAX_IDLE_TIME")) * time.Minute,
+			ConnMaxLifetime: connMaxLifetime,
+			ConnMaxIdleTime: connMaxIdleTime,
 		},
 	}, nil
 }
