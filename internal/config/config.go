@@ -47,112 +47,141 @@ type DBConfig struct {
 
 // LoadConfig loads configuration from environment variables and .env file.
 func LoadConfig() (*Config, error) {
-	viper.SetDefault("SERVER_PORT", "8080")
-	viper.SetDefault("LOG_LEVEL", "info")
-	viper.SetDefault("LOG_FORMAT", "text")
-	viper.SetDefault("LOG_OUTPUT", "stdout")
-	viper.SetDefault("OLLAMA_HOST", "http://localhost:11434")
-	viper.SetDefault("QDRANT_HOST", "localhost:6334")
-	viper.SetDefault("GENERATOR_MODEL_NAME", "gemma3:latest")
-	viper.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text")
-	viper.SetDefault("MAX_WORKERS", 5)
-	viper.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
-	viper.SetDefault("LLM_PROVIDER", "ollama")
+	v := viper.New()
 
-	viper.SetDefault("DB_DRIVER", "postgres")
-	viper.SetDefault("DB_HOST", "localhost")
-	viper.SetDefault("DB_PORT", 5432)
-	viper.SetDefault("DB_NAME", "codewarden")
-	viper.SetDefault("DB_USERNAME", "postgres")
-	viper.SetDefault("DB_PASSWORD", "password")
-	viper.SetDefault("DB_SSL_MODE", "disable")
-	viper.SetDefault("DB_MAX_OPEN_CONNS", 25)
-	viper.SetDefault("DB_MAX_IDLE_CONNS", 5)
-	viper.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
-	viper.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
+	setDefaults(v)
 
-	viper.SetConfigFile(".env")
-	viper.AddConfigPath(".")
+	if err := loadEnvFile(v); err != nil {
+		return nil, err
+	}
 
-	if err := viper.MergeInConfig(); err != nil {
+	v.AutomaticEnv()
+
+	if err := validateRequired(v); err != nil {
+		return nil, err
+	}
+
+	dbConfig, err := configureDB(v)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Config{
+		ServerPort:           v.GetString("SERVER_PORT"),
+		LLMProvider:          v.GetString("LLM_PROVIDER"),
+		GeminiAPIKey:         v.GetString("GEMINI_API_KEY"),
+		LoggerConfig:         configureLogger(v),
+		GitHubAppID:          v.GetInt64("GITHUB_APP_ID"),
+		GitHubWebhookSecret:  v.GetString("GITHUB_WEBHOOK_SECRET"),
+		GitHubPrivateKeyPath: v.GetString("GITHUB_PRIVATE_KEY_PATH"),
+		OllamaHost:           v.GetString("OLLAMA_HOST"),
+		QdrantHost:           v.GetString("QDRANT_HOST"),
+		GeneratorModelName:   getGeneratorModelName(v),
+		EmbedderModelName:    v.GetString("EMBEDDER_MODEL_NAME"),
+		MaxWorkers:           v.GetInt("MAX_WORKERS"),
+		Database:             dbConfig,
+	}, nil
+}
+
+func setDefaults(v *viper.Viper) {
+	v.SetDefault("SERVER_PORT", "8080")
+	v.SetDefault("LOG_LEVEL", "info")
+	v.SetDefault("LOG_FORMAT", "text")
+	v.SetDefault("LOG_OUTPUT", "stdout")
+	v.SetDefault("OLLAMA_HOST", "http://localhost:11434")
+	v.SetDefault("QDRANT_HOST", "localhost:6334")
+	v.SetDefault("GENERATOR_MODEL_NAME", "gemma3:latest")
+	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text")
+	v.SetDefault("MAX_WORKERS", 5)
+	v.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
+	v.SetDefault("LLM_PROVIDER", "ollama")
+	v.SetDefault("DB_DRIVER", "postgres")
+	v.SetDefault("DB_HOST", "localhost")
+	v.SetDefault("DB_PORT", 5432)
+	v.SetDefault("DB_NAME", "codewarden")
+	v.SetDefault("DB_USERNAME", "postgres")
+	v.SetDefault("DB_PASSWORD", "password")
+	v.SetDefault("DB_SSL_MODE", "disable")
+	v.SetDefault("DB_MAX_OPEN_CONNS", 25)
+	v.SetDefault("DB_MAX_IDLE_CONNS", 5)
+	v.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
+	v.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
+}
+
+func loadEnvFile(v *viper.Viper) error {
+	v.SetConfigFile(".env")
+	v.AddConfigPath(".")
+	if err := v.MergeInConfig(); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("failed to read config file: %w", err)
+			return fmt.Errorf("failed to read config file: %w", err)
 		}
 		slog.Warn("config file .env not found, relying on environment variables and defaults")
 	}
+	return nil
+}
 
-	viper.AutomaticEnv()
-
-	if viper.GetInt64("GITHUB_APP_ID") == 0 {
-		return nil, fmt.Errorf("GITHUB_APP_ID must be set")
+func validateRequired(v *viper.Viper) error {
+	if v.GetInt64("GITHUB_APP_ID") == 0 {
+		return errors.New("GITHUB_APP_ID must be set")
 	}
-	if viper.GetString("GITHUB_WEBHOOK_SECRET") == "" {
-		return nil, fmt.Errorf("GITHUB_WEBHOOK_SECRET must be set")
+	if v.GetString("GITHUB_WEBHOOK_SECRET") == "" {
+		return errors.New("GITHUB_WEBHOOK_SECRET must be set")
 	}
+	return nil
+}
 
-	// Handle Gemini model name separately since it has different defaults
-	generatorModel := viper.GetString("GENERATOR_MODEL_NAME")
-	if viper.GetString("LLM_PROVIDER") == "gemini" {
-		geminiModel := viper.GetString("GEMINI_GENERATOR_MODEL_NAME")
+func configureLogger(v *viper.Viper) logger.Config {
+	return logger.Config{
+		Level:  v.GetString("LOG_LEVEL"),
+		Format: v.GetString("LOG_FORMAT"),
+		Output: v.GetString("LOG_OUTPUT"),
+	}
+}
+
+func getGeneratorModelName(v *viper.Viper) string {
+	if v.GetString("LLM_PROVIDER") == "gemini" {
+		geminiModel := v.GetString("GEMINI_GENERATOR_MODEL_NAME")
 		if geminiModel != "" {
-			generatorModel = geminiModel
-		} else {
-			generatorModel = "gemini-2.5-flash"
+			return geminiModel
 		}
+		return "gemini-2.5-flash"
 	}
+	return v.GetString("GENERATOR_MODEL_NAME")
+}
 
-	// Create the DSN (Data Source Name) string for Postgres
-	dbDSN := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		viper.GetString("DB_HOST"),
-		viper.GetInt("DB_PORT"),
-		viper.GetString("DB_USERNAME"),
-		viper.GetString("DB_PASSWORD"),
-		viper.GetString("DB_NAME"),
-		viper.GetString("DB_SSL_MODE"),
-	)
-
-	lifetimeStr := viper.GetString("DB_CONN_MAX_LIFETIME")
-	idleTimeStr := viper.GetString("DB_CONN_MAX_IDLE_TIME")
-
-	connMaxLifetime, err := time.ParseDuration(lifetimeStr)
+func configureDB(v *viper.Viper) (*DBConfig, error) {
+	connMaxLifetime, err := time.ParseDuration(v.GetString("DB_CONN_MAX_LIFETIME"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid DB_CONN_MAX_LIFETIME format: %w", err)
 	}
-	connMaxIdleTime, err := time.ParseDuration(idleTimeStr)
+	connMaxIdleTime, err := time.ParseDuration(v.GetString("DB_CONN_MAX_IDLE_TIME"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid DB_CONN_MAX_IDLE_TIME format: %w", err)
 	}
 
-	return &Config{
-		ServerPort: viper.GetString("SERVER_PORT"),
-		LoggerConfig: logger.Config{
-			Level:  viper.GetString("LOG_LEVEL"),
-			Format: viper.GetString("LOG_FORMAT"),
-			Output: viper.GetString("LOG_OUTPUT"),
-		},
-		GitHubAppID:          viper.GetInt64("GITHUB_APP_ID"),
-		GitHubWebhookSecret:  viper.GetString("GITHUB_WEBHOOK_SECRET"),
-		GitHubPrivateKeyPath: viper.GetString("GITHUB_PRIVATE_KEY_PATH"),
-		OllamaHost:           viper.GetString("OLLAMA_HOST"),
-		QdrantHost:           viper.GetString("QDRANT_HOST"),
-		GeneratorModelName:   generatorModel,
-		GeminiAPIKey:         viper.GetString("GEMINI_API_KEY"),
-		LLMProvider:          viper.GetString("LLM_PROVIDER"),
-		EmbedderModelName:    viper.GetString("EMBEDDER_MODEL_NAME"),
-		MaxWorkers:           viper.GetInt("MAX_WORKERS"),
-		Database: &DBConfig{
-			Driver:          viper.GetString("DB_DRIVER"),
-			DSN:             dbDSN,
-			Host:            viper.GetString("DB_HOST"),
-			Port:            viper.GetInt("DB_PORT"),
-			Database:        viper.GetString("DB_NAME"),
-			Username:        viper.GetString("DB_USERNAME"),
-			Password:        viper.GetString("DB_PASSWORD"),
-			SSLMode:         viper.GetString("DB_SSL_MODE"),
-			MaxOpenConns:    viper.GetInt("DB_MAX_OPEN_CONNS"),
-			MaxIdleConns:    viper.GetInt("DB_MAX_IDLE_CONNS"),
-			ConnMaxLifetime: connMaxLifetime,
-			ConnMaxIdleTime: connMaxIdleTime,
-		},
+	return &DBConfig{
+		Driver:          v.GetString("DB_DRIVER"),
+		DSN:             getDSN(v),
+		Host:            v.GetString("DB_HOST"),
+		Port:            v.GetInt("DB_PORT"),
+		Database:        v.GetString("DB_NAME"),
+		Username:        v.GetString("DB_USERNAME"),
+		Password:        v.GetString("DB_PASSWORD"),
+		SSLMode:         v.GetString("DB_SSL_MODE"),
+		MaxOpenConns:    v.GetInt("DB_MAX_OPEN_CONNS"),
+		MaxIdleConns:    v.GetInt("DB_MAX_IDLE_CONNS"),
+		ConnMaxLifetime: connMaxLifetime,
+		ConnMaxIdleTime: connMaxIdleTime,
 	}, nil
+}
+
+func getDSN(v *viper.Viper) string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		v.GetString("DB_HOST"),
+		v.GetInt("DB_PORT"),
+		v.GetString("DB_USERNAME"),
+		v.GetString("DB_PASSWORD"),
+		v.GetString("DB_NAME"),
+		v.GetString("DB_SSL_MODE"),
+	)
 }

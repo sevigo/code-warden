@@ -60,59 +60,39 @@ func newOllamaHTTPClient() *http.Client {
 // NewApp sets up the application with all its dependencies.
 func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
 	logger.Info("initializing Code Warden application",
-		"ollama_host", cfg.OllamaHost,
+		"llm_provider", cfg.LLMProvider,
 		"generator_model", cfg.GeneratorModelName,
 		"embedder_model", cfg.EmbedderModelName,
 		"max_workers", cfg.MaxWorkers)
-
-	httpClient := newOllamaHTTPClient()
-
-	logger.Info("connecting to generator LLM", "model", cfg.GeneratorModelName)
-	generatorLLM, err := createLLM(ctx, cfg, logger)
-	if err != nil {
-		logger.Error("failed to connect to generator LLM", "error", err)
-		return nil, fmt.Errorf("failed to create generator LLM: %w", err)
-	}
 
 	dbConn, err := initDatabase(cfg.Database)
 	if err != nil {
 		return nil, err
 	}
-	reviewDB := storage.NewStore(dbConn.DB)
 
-	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
-	embedderLLM, err := ollama.New(
-		ollama.WithServerURL(cfg.OllamaHost),
-		ollama.WithModel(cfg.EmbedderModelName),
-		ollama.WithHTTPClient(httpClient),
-		ollama.WithLogger(logger),
-	)
+	generatorLLM, err := createGeneratorLLM(ctx, cfg, logger)
 	if err != nil {
-		logger.Error("failed to connect to embedder LLM", "error", err)
-		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
+		return nil, err
 	}
 
-	embedder, err := embeddings.NewEmbedder(embedderLLM)
+	embedder, err := createEmbedder(cfg, logger)
 	if err != nil {
-		logger.Error("failed to create embedder service", "error", err)
-		return nil, fmt.Errorf("failed to create embedder: %w", err)
+		return nil, err
 	}
 
 	parserRegistry, err := parsers.RegisterLanguagePlugins(logger)
 	if err != nil {
-		logger.Error("failed to register language parsers", "error", err)
 		return nil, fmt.Errorf("failed to register language parsers: %w", err)
 	}
 
 	promptMgr, err := llm.NewPromptManager()
 	if err != nil {
-		logger.Error("failed to initialize prompt manager", "error", err)
 		return nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
 	}
-	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 
-	logger.Info("initializing RAG service")
+	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
+	reviewDB := storage.NewStore(dbConn.DB)
 	reviewJob := jobs.NewReviewJob(cfg, ragService, reviewDB, logger)
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
@@ -126,6 +106,37 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		dispatcher: dispatcher,
 		dbConn:     dbConn,
 	}, nil
+}
+
+func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
+	logger.Info("connecting to generator LLM", "model", cfg.GeneratorModelName)
+	llm, err := createLLM(ctx, cfg, logger)
+	if err != nil {
+		logger.Error("failed to connect to generator LLM", "error", err)
+		return nil, fmt.Errorf("failed to create generator LLM: %w", err)
+	}
+	return llm, nil
+}
+
+func createEmbedder(cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
+	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
+	embedderLLM, err := ollama.New(
+		ollama.WithServerURL(cfg.OllamaHost),
+		ollama.WithModel(cfg.EmbedderModelName),
+		ollama.WithHTTPClient(newOllamaHTTPClient()),
+		ollama.WithLogger(logger),
+	)
+	if err != nil {
+		logger.Error("failed to connect to embedder LLM", "error", err)
+		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
+	}
+
+	embedder, err := embeddings.NewEmbedder(embedderLLM)
+	if err != nil {
+		logger.Error("failed to create embedder service", "error", err)
+		return nil, fmt.Errorf("failed to create embedder: %w", err)
+	}
+	return embedder, nil
 }
 
 // Start runs the HTTP server.

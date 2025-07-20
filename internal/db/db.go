@@ -73,7 +73,7 @@ func (db *DB) RunMigrations() error {
 	}
 
 	if dirty {
-		return fmt.Errorf("failed to apply migrations: database is in dirty state. You might need to manually fix it (e.g., 'migrate force <version>') or check logs for previous migration errors.")
+		return fmt.Errorf("failed to apply migrations: database is in dirty state. You might need to manually fix it (e.g., 'migrate force <version>') or check logs for previous migration errors")
 	}
 
 	err = migrator.Up()
