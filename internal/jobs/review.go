@@ -10,9 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/go-github/v73/github"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
-	"github.com/sevigo/code-warden/internal/github"
+	githubutil "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -51,13 +52,25 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) (err error
 
 	j.logger.Info("Starting review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
-	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	ghClient, ghToken, err := githubutil.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create GitHub client: %w", err)
 	}
-	statusUpdater := github.NewStatusUpdater(ghClient)
+
+	pr, err := ghClient.GetPullRequest(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR details: %w", err)
+	}
+	if pr.GetHead() == nil || pr.GetHead().GetSHA() == "" {
+		return fmt.Errorf("PR %d has no valid head SHA", event.PRNumber)
+	}
+	event.HeadSHA = pr.GetHead().GetSHA()
+
+	// create the status updater and the "in-progress" check
+	statusUpdater := githubutil.NewStatusUpdater(ghClient)
 	checkRunID, err := statusUpdater.InProgress(ctx, event, "Code Review", "AI analysis in progress...")
 	if err != nil {
+		// This was the point of failure. The error message will now be more informative if it still fails.
 		return fmt.Errorf("failed to set in-progress status: %w", err)
 	}
 
@@ -68,15 +81,15 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) (err error
 		}
 	}()
 
-	// Fetch PR details and perform the core review process.
-	review, err := j.processPullRequest(ctx, event, ghClient, ghToken)
+	// Perform the core review process, passing the already-fetched PR details
+	review, err := j.processPullRequest(ctx, event, ghClient, ghToken, pr)
 	if err != nil {
-		return err
+		return err // The deferred handler will catch this.
 	}
 
 	// Finalize the review by posting comments and setting the success status.
 	if err = j.finalizeSuccess(ctx, statusUpdater, event, checkRunID, review); err != nil {
-		return err
+		return err // The deferred handler will catch this.
 	}
 
 	j.logger.Info("Review job completed successfully", "repo", event.RepoFullName, "pr", event.PRNumber)
@@ -84,16 +97,9 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) (err error
 }
 
 // processPullRequest contains the core logic for reviewing a pull request.
-// It fetches PR data, clones the repo, generates embeddings, and produces the review.
-func (j *ReviewJob) processPullRequest(ctx context.Context, event *core.GitHubEvent, ghClient github.Client, ghToken string) (string, error) {
-	pr, err := ghClient.GetPullRequest(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return "", fmt.Errorf("failed to get PR details: %w", err)
-	}
-	if pr.GetHead() == nil || pr.GetHead().GetSHA() == "" {
-		return "", fmt.Errorf("PR %d has no valid head SHA", event.PRNumber)
-	}
-	event.HeadSHA = pr.GetHead().GetSHA()
+func (j *ReviewJob) processPullRequest(ctx context.Context, event *core.GitHubEvent, ghClient githubutil.Client, ghToken string, pr *github.PullRequest) (string, error) {
+	event.PRTitle = pr.GetTitle()
+	event.PRBody = pr.GetBody()
 
 	// Clone repository with a timeout.
 	cloneCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -115,7 +121,7 @@ func (j *ReviewJob) processPullRequest(ctx context.Context, event *core.GitHubEv
 	if err != nil {
 		return "", fmt.Errorf("failed to generate review: %w", err)
 	}
-	if review == "" {
+	if strings.TrimSpace(review) == "" {
 		return "", errors.New("generated review is empty")
 	}
 
@@ -123,8 +129,7 @@ func (j *ReviewJob) processPullRequest(ctx context.Context, event *core.GitHubEv
 }
 
 // finalizeSuccess handles the successful completion of a review.
-// It posts the review comment, saves it to storage, and updates the GitHub status.
-func (j *ReviewJob) finalizeSuccess(ctx context.Context, statusUpdater github.StatusUpdater, event *core.GitHubEvent, checkRunID int64, reviewContent string) error {
+func (j *ReviewJob) finalizeSuccess(ctx context.Context, statusUpdater githubutil.StatusUpdater, event *core.GitHubEvent, checkRunID int64, reviewContent string) error {
 	if err := statusUpdater.PostReviewComment(ctx, event, reviewContent); err != nil {
 		return fmt.Errorf("failed to post review comment: %w", err)
 	}
@@ -147,7 +152,7 @@ func (j *ReviewJob) finalizeSuccess(ctx context.Context, statusUpdater github.St
 }
 
 // handleError updates the GitHub check run to a "failure" state.
-func (j *ReviewJob) handleError(ctx context.Context, statusUpdater github.StatusUpdater, event *core.GitHubEvent, checkRunID int64, jobErr error) {
+func (j *ReviewJob) handleError(ctx context.Context, statusUpdater githubutil.StatusUpdater, event *core.GitHubEvent, checkRunID int64, jobErr error) {
 	j.logger.Error("Review job failed", "error", jobErr, "repo", event.RepoFullName, "pr", event.PRNumber)
 	message := jobErr.Error()
 	if err := statusUpdater.Completed(ctx, event, checkRunID, "failure", "Review Failed", message); err != nil {
@@ -160,7 +165,7 @@ func (j *ReviewJob) validateInputs(ctx context.Context, event *core.GitHubEvent)
 	if event == nil {
 		return errors.New("event cannot be nil")
 	}
-	// A switch statement can be cleaner for multiple simple checks.
+
 	switch {
 	case ctx == nil:
 		return errors.New("context cannot be nil")
@@ -185,7 +190,6 @@ func (j *ReviewJob) generateCollectionName(repoFullName, embedderName string) st
 	safeRepoName := strings.ToLower(strings.ReplaceAll(repoFullName, "/", "-"))
 	safeEmbedderName := strings.ToLower(strings.Split(embedderName, ":")[0])
 
-	// Use the pre-compiled package-level regexp
 	safeRepoName = collectionNameRegexp.ReplaceAllString(safeRepoName, "")
 	safeEmbedderName = collectionNameRegexp.ReplaceAllString(safeEmbedderName, "")
 

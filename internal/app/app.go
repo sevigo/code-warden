@@ -74,16 +74,10 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		return nil, fmt.Errorf("failed to create generator LLM: %w", err)
 	}
 
-	dbConn, err := db.NewDatabase(cfg.Database)
+	dbConn, err := initDatabase(cfg.Database)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, err
 	}
-
-	if err := dbConn.RunMigrations(); err != nil {
-		_ = dbConn.Close()
-		return nil, fmt.Errorf("failed to run database migrations: %w", err)
-	}
-
 	reviewDB := storage.NewStore(dbConn.DB)
 
 	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
@@ -177,6 +171,19 @@ func (a *App) Stop() error {
 		a.logger.Info("Code Warden stopped successfully")
 	}
 	return shutdownErr
+}
+
+// initDatabase connects to the DB and runs migrations
+func initDatabase(cfg *config.DBConfig) (*db.DB, error) {
+	dbConn, err := db.NewDatabase(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+	if err := dbConn.RunMigrations(); err != nil {
+		_ = dbConn.Close()
+		return nil, fmt.Errorf("failed to run database migrations: %w", err)
+	}
+	return dbConn, nil
 }
 
 // createLLM creates the appropriate LLM client based on the configured provider.
