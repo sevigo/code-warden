@@ -64,7 +64,7 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 
 	// Defer a handler to update GitHub status on any subsequent error.
 	defer func() {
-		if err != nil {
+		if err != nil && statusUpdater != nil {
 			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
 		}
 	}()
@@ -124,7 +124,7 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (e
 	}
 
 	defer func() {
-		if err != nil {
+		if err != nil && statusUpdater != nil {
 			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
 		}
 	}()
