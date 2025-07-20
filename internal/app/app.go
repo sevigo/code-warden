@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -150,30 +151,32 @@ func (a *App) Start() error {
 
 // Stop shuts down the application cleanly.
 func (a *App) Stop() error {
+	var shutdownErr error
 	a.logger.Info("shutting down Code Warden services")
 
 	// Stop the HTTP server first to prevent new incoming requests.
 	serverErr := a.server.Stop()
 	if serverErr != nil {
 		a.logger.Error("error during HTTP server shutdown", "error", serverErr)
-		// Continue to stop other components even if the server failed.
+		shutdownErr = errors.Join(shutdownErr, serverErr)
 	}
 
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
 	a.dispatcher.Stop()
 
 	a.logger.Info("closing database connection")
-	if err := a.dbConn.Close(); err != nil {
-		a.logger.Error("error closing database", "error", err)
+	dbCloseErr := a.dbConn.Close()
+	if dbCloseErr != nil {
+		a.logger.Error("error closing database", "error", dbCloseErr)
+		shutdownErr = errors.Join(shutdownErr, dbCloseErr)
 	}
 
-	if serverErr != nil {
-		a.logger.Error("Code Warden stopped with errors", "error", serverErr)
-		return serverErr
+	if shutdownErr != nil {
+		a.logger.Error("Code Warden stopped with errors", "error", shutdownErr)
+	} else {
+		a.logger.Info("Code Warden stopped successfully")
 	}
-
-	a.logger.Info("Code Warden stopped successfully")
-	return nil
+	return shutdownErr
 }
 
 // createLLM creates the appropriate LLM client based on the configured provider.

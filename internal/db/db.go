@@ -67,16 +67,13 @@ func (db *DB) RunMigrations() error {
 	}
 
 	// Check the current migration version and if the schema is dirty.
-	version, dirty, err := migrator.Version()
+	_, dirty, err := migrator.Version()
 	if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
 		return fmt.Errorf("failed to get migration version: %w", err)
 	}
 
-	// If the schema is dirty, force it to the last known good version before retrying.
 	if dirty {
-		if err := migrator.Force(int(version)); err != nil { //nolint:gosec //db migration
-			return fmt.Errorf("failed to force migration version: %w", err)
-		}
+		return errors.New("failed to apply migrations: database is in dirty state")
 	}
 
 	err = migrator.Up()

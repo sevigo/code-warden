@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jmoiron/sqlx"
 	// import db drivers
@@ -29,8 +28,8 @@ func NewStore(db *sqlx.DB) Store {
 
 // SaveReview inserts a new review record into the database.
 func (s *postgresStore) SaveReview(ctx context.Context, review *core.Review) error {
-	query := `INSERT INTO reviews (repo_full_name, pr_number, head_sha, review_content, created_at) VALUES ($1, $2, $3, $4, $5)`
-	_, err := s.db.ExecContext(ctx, query, review.RepoFullName, review.PRNumber, review.HeadSHA, review.ReviewContent, time.Now())
+	query := `INSERT INTO reviews (repo_full_name, pr_number, head_sha, review_content) VALUES ($1, $2, $3, $4)`
+	_, err := s.db.ExecContext(ctx, query, review.RepoFullName, review.PRNumber, review.HeadSHA, review.ReviewContent)
 	return err
 }
 

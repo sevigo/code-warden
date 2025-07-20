@@ -107,6 +107,8 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 	}
 	if err := j.reviewStore.SaveReview(ctx, dbReview); err != nil {
 		j.logger.Error("failed to save review to database", "error", err)
+		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, "Failed to save review to database for history")
+		return fmt.Errorf("failed to save review to database: %w", err)
 	}
 
 	if err := statusUpdater.Completed(ctx, event, checkRunID, "success", "Review Complete", "AI analysis finished successfully"); err != nil {
