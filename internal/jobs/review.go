@@ -57,24 +57,9 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) (err error) {
 	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
-	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Code Review", "AI analysis in progress...")
 	if err != nil {
-		return fmt.Errorf("failed to create GitHub client: %w", err)
-	}
-
-	pr, err := ghClient.GetPullRequest(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return fmt.Errorf("failed to get PR details: %w", err)
-	}
-	if pr.GetHead() == nil || pr.GetHead().GetSHA() == "" {
-		return fmt.Errorf("PR #%d has no valid head SHA", event.PRNumber)
-	}
-	event.HeadSHA = pr.GetHead().GetSHA()
-
-	statusUpdater := github.NewStatusUpdater(ghClient)
-	checkRunID, err := statusUpdater.InProgress(ctx, event, "Code Review", "AI analysis in progress...")
-	if err != nil {
-		return fmt.Errorf("failed to set in-progress status: %w", err)
+		return err
 	}
 
 	// Defer a handler to update GitHub status on any subsequent error.
@@ -133,21 +118,9 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (err error) {
 	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
-	ghClient, _, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	ghClient, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Checking for fixes...")
 	if err != nil {
-		return fmt.Errorf("failed to create GitHub client: %w", err)
-	}
-
-	pr, err := ghClient.GetPullRequest(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return fmt.Errorf("failed to get PR details: %w", err)
-	}
-	event.HeadSHA = pr.GetHead().GetSHA()
-
-	statusUpdater := github.NewStatusUpdater(ghClient)
-	checkRunID, err := statusUpdater.InProgress(ctx, event, "Follow-up Review", "Checking for fixes...")
-	if err != nil {
-		return fmt.Errorf("failed to set in-progress status: %w", err)
+		return err
 	}
 
 	defer func() {
@@ -176,6 +149,31 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (e
 
 	j.logger.Info("Re-review job completed successfully")
 	return nil
+}
+
+// setupReview initializes the GitHub client, gets PR details, and sets the initial status.
+func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, title, summary string) (*github.Client, string, github.StatusUpdater, int64, error) {
+	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	if err != nil {
+		return nil, "", nil, 0, fmt.Errorf("failed to create GitHub client: %w", err)
+	}
+
+	pr, err := ghClient.GetPullRequest(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, "", nil, 0, fmt.Errorf("failed to get PR details: %w", err)
+	}
+	if pr.GetHead() == nil || pr.GetHead().GetSHA() == "" {
+		return nil, "", nil, 0, fmt.Errorf("PR #%d has no valid head SHA", event.PRNumber)
+	}
+	event.HeadSHA = pr.GetHead().GetSHA()
+
+	statusUpdater := github.NewStatusUpdater(ghClient)
+	checkRunID, err := statusUpdater.InProgress(ctx, event, title, summary)
+	if err != nil {
+		return nil, "", nil, 0, fmt.Errorf("failed to set in-progress status: %w", err)
+	}
+
+	return ghClient, ghToken, statusUpdater, checkRunID, nil
 }
 
 // updateStatusOnError logs the job error and updates the GitHub check run.
