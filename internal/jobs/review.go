@@ -152,28 +152,32 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (e
 }
 
 // setupReview initializes the GitHub client, gets PR details, and sets the initial status.
-func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, title, summary string) (github.Client, string, github.StatusUpdater, int64, error) {
-	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, title, summary string) (ghClient github.Client, ghToken string, statusUpdater github.StatusUpdater, checkRunID int64, err error) {
+	ghClient, ghToken, err = github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
 	if err != nil {
-		return nil, "", nil, 0, fmt.Errorf("failed to create GitHub client: %w", err)
+		err = fmt.Errorf("failed to create GitHub client: %w", err)
+		return
 	}
 
 	pr, err := ghClient.GetPullRequest(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		return nil, "", nil, 0, fmt.Errorf("failed to get PR details: %w", err)
+		err = fmt.Errorf("failed to get PR details: %w", err)
+		return
 	}
 	if pr.GetHead() == nil || pr.GetHead().GetSHA() == "" {
-		return nil, "", nil, 0, fmt.Errorf("PR #%d has no valid head SHA", event.PRNumber)
+		err = fmt.Errorf("PR #%d has no valid head SHA", event.PRNumber)
+		return
 	}
 	event.HeadSHA = pr.GetHead().GetSHA()
 
-	statusUpdater := github.NewStatusUpdater(ghClient)
-	checkRunID, err := statusUpdater.InProgress(ctx, event, title, summary)
+	statusUpdater = github.NewStatusUpdater(ghClient)
+	checkRunID, err = statusUpdater.InProgress(ctx, event, title, summary)
 	if err != nil {
-		return nil, "", nil, 0, fmt.Errorf("failed to set in-progress status: %w", err)
+		err = fmt.Errorf("failed to set in-progress status: %w", err)
+		return
 	}
 
-	return ghClient, ghToken, statusUpdater, checkRunID, nil
+	return
 }
 
 // updateStatusOnError logs the job error and updates the GitHub check run.
