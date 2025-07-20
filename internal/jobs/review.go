@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v73/github"
+
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	githubutil "github.com/sevigo/code-warden/internal/github"
@@ -45,7 +46,7 @@ func NewReviewJob(cfg *config.Config, rag llm.RAGService, reviewStore storage.St
 //
 //nolint:nonamedreturns // A named return is used here to inspect the error in a defer block.
 func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) (err error) {
-	if validationErr := j.validateInputs(ctx, event); validationErr != nil {
+	if validationErr := j.validateInputs(event); validationErr != nil {
 		j.logger.Error("Input validation failed", "error", validationErr)
 		return fmt.Errorf("input validation failed: %w", validationErr)
 	}
@@ -161,14 +162,12 @@ func (j *ReviewJob) handleError(ctx context.Context, statusUpdater githubutil.St
 }
 
 // validateInputs ensures the event contains all required fields.
-func (j *ReviewJob) validateInputs(ctx context.Context, event *core.GitHubEvent) error {
+func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 	if event == nil {
 		return errors.New("event cannot be nil")
 	}
 
 	switch {
-	case ctx == nil:
-		return errors.New("context cannot be nil")
 	case event.RepoOwner == "":
 		return errors.New("repository owner cannot be empty")
 	case event.RepoName == "":
