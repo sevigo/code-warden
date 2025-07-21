@@ -25,15 +25,17 @@ type ReviewJob struct {
 	cfg         *config.Config
 	ragService  llm.RAGService
 	reviewStore storage.Store
+	repoStore   storage.Store
 	logger      *slog.Logger
+	repoPath    string
 }
 
 // NewReviewJob creates a new ReviewJob with all its dependencies.
-func NewReviewJob(cfg *config.Config, rag llm.RAGService, reviewStore storage.Store, logger *slog.Logger) core.Job {
-	if cfg == nil || rag == nil || reviewStore == nil || logger == nil {
-		panic("NewReviewJob received a nil dependency")
+func NewReviewJob(cfg *config.Config, rag llm.RAGService, reviewStore storage.Store, repoStore storage.Store, logger *slog.Logger, repoPath string) core.Job {
+	if cfg == nil || rag == nil || reviewStore == nil || repoStore == nil || logger == nil || repoPath == "" {
+		panic("NewReviewJob received a nil or empty dependency")
 	}
-	return &ReviewJob{cfg: cfg, ragService: rag, reviewStore: reviewStore, logger: logger}
+	return &ReviewJob{cfg: cfg, ragService: rag, reviewStore: reviewStore, repoStore: repoStore, logger: logger, repoPath: repoPath}
 }
 
 // Run acts as a router, directing the event to the correct review flow.
@@ -69,17 +71,48 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		}
 	}()
 
-	cloneCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	cloner := gitutil.NewCloner(j.logger)
-	repoPath, cleanup, err := cloner.Clone(cloneCtx, event.RepoCloneURL, event.HeadSHA, ghToken)
-	if err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
+	// Get or create repository entry
+	repo, err := j.repoStore.GetRepositoryByFullName(ctx, event.RepoFullName)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to get repository from DB: %w", err)
 	}
-	defer cleanup()
 
+	var clonePath string
 	collectionName := j.generateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
-	if err = j.ragService.SetupRepoContext(ctx, collectionName, repoPath); err != nil {
+	cloner := gitutil.NewCloner(j.logger)
+
+	if repo == nil {
+		// First time seeing this repo, clone it
+		cloneCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		var cleanup func()
+		clonePath, cleanup, err = cloner.Clone(cloneCtx, event.RepoCloneURL, event.HeadSHA, ghToken)
+		if err != nil {
+			return fmt.Errorf("failed to clone repository: %w", err)
+		}
+		defer cleanup()
+
+		repo = &storage.Repository{
+			FullName:             event.RepoFullName,
+			ClonePath:            clonePath,
+			QdrantCollectionName: collectionName,
+			LastIndexedSHA:       event.HeadSHA,
+		}
+		if err := j.repoStore.CreateRepository(ctx, repo); err != nil {
+			return fmt.Errorf("failed to create repository entry in DB: %w", err)
+		}
+	} else {
+		// Repo already exists, update it
+		clonePath = repo.ClonePath
+		// TODO: Implement intelligent diff and update for existing repos
+		// For now, just update the SHA and assume the repo is already cloned
+		repo.LastIndexedSHA = event.HeadSHA
+		if err := j.repoStore.UpdateRepository(ctx, repo); err != nil {
+			return fmt.Errorf("failed to update repository entry in DB: %w", err)
+		}
+	}
+
+	if err = j.ragService.SetupRepoContext(ctx, collectionName, clonePath); err != nil {
 		return fmt.Errorf("failed to setup repository context: %w", err)
 	}
 

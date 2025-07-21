@@ -93,7 +93,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
 	reviewDB := storage.NewStore(dbConn.DB)
-	reviewJob := jobs.NewReviewJob(cfg, ragService, reviewDB, logger)
+	reviewJob := jobs.NewReviewJob(cfg, ragService, reviewDB, logger, cfg.RepoPath)
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
 
