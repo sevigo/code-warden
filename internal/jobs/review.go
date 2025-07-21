@@ -3,12 +3,17 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -104,8 +109,23 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	} else {
 		// Repo already exists, update it
 		clonePath = repo.ClonePath
-		// TODO: Implement intelligent diff and update for existing repos
-		// For now, just update the SHA and assume the repo is already cloned
+
+		// Pull latest changes and calculate diff
+		currentSHA := repo.LastIndexedSHA
+		if err := cloner.Pull(ctx, clonePath, event.HeadSHA, ghToken); err != nil {
+			return fmt.Errorf("failed to pull repository: %w", err)
+		}
+
+		// Calculate diff and update Qdrant
+		added, modified, deleted, err := cloner.Diff(ctx, clonePath, currentSHA, event.HeadSHA)
+		if err != nil {
+			return fmt.Errorf("failed to calculate diff: %w", err)
+		}
+
+		if err := j.ragService.UpdateRepoContext(ctx, collectionName, clonePath, added, modified, deleted); err != nil {
+			return fmt.Errorf("failed to update repository context: %w", err)
+		}
+
 		repo.LastIndexedSHA = event.HeadSHA
 		if err := j.repoStore.UpdateRepository(ctx, repo); err != nil {
 			return fmt.Errorf("failed to update repository entry in DB: %w", err)
