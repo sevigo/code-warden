@@ -49,7 +49,10 @@ func New(cfg *config.Config, store storage.Store, logger *slog.Logger) RepoManag
 // SyncRepo is the core method that handles cloning or updating a repository.
 func (m *manager) SyncRepo(ctx context.Context, event *core.GitHubEvent, token string) (*core.UpdateResult, error) {
 	val, _ := m.repoMux.LoadOrStore(event.RepoFullName, &sync.Mutex{})
-	mux := val.(*sync.Mutex)
+	mux, ok := val.(*sync.Mutex)
+	if !ok {
+		return nil, fmt.Errorf("internal error: failed to assert mutex type")
+	}
 	mux.Lock()
 	defer mux.Unlock()
 
@@ -76,7 +79,7 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 	defer cancel()
 
 	// Prepare directory and clean up any previous failed attempts
-	if err := os.MkdirAll(filepath.Dir(clonePath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(clonePath), 0750); err != nil {
 		return nil, fmt.Errorf("failed to create repo parent directory: %w", err)
 	}
 	_ = os.RemoveAll(clonePath)

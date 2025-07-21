@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/config"
@@ -17,8 +16,6 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/internal/util"
 )
-
-var collectionNameRegexp = regexp.MustCompile("[^a-z0-9_-]+")
 
 // ReviewJob performs AI-assisted code reviews.
 type ReviewJob struct {
@@ -87,19 +84,20 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	collectionName := util.GenerateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
 
 	// Update the vector store based on the results from the manager.
-	if updateResult.IsInitialClone {
+	switch {
+	case updateResult.IsInitialClone:
 		// If it's the first time, perform a full indexing.
 		err = j.ragService.SetupRepoContext(ctx, collectionName, updateResult.RepoPath)
 		if err != nil {
 			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}
-	} else if len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0 {
+	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
 		// Otherwise, perform an incremental update.
 		err = j.ragService.UpdateRepoContext(ctx, collectionName, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
 		if err != nil {
 			return fmt.Errorf("failed to update repository context in vector store: %w", err)
 		}
-	} else {
+	default:
 		j.logger.Info("no file changes detected between SHAs, skipping vector store update", "repo", event.RepoFullName)
 	}
 
