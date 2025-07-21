@@ -9,6 +9,8 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	// The blank import is required to register the PostgreSQL driver.
+	_ "github.com/lib/pq"
+
 	"github.com/sevigo/code-warden/internal/core"
 )
 
@@ -88,7 +90,7 @@ func (s *postgresStore) GetRepositoryByFullName(ctx context.Context, fullName st
 	err := s.db.GetContext(ctx, &repo, query, fullName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("repository with full name %s not found", fullName)
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get repository by full name %s: %w", fullName, err)
 	}
