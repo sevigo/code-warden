@@ -21,6 +21,7 @@ import (
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, collectionName, repoPath string) error
+	UpdateRepoContext(ctx context.Context, collectionName, repoPath string, added, modified, deleted []string) error
 	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 }
@@ -77,6 +78,40 @@ func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoP
 
 	r.logger.Info("storing documents in vector database", "collection", collectionName, "doc_count", len(docs))
 	return r.vectorStore.AddDocuments(ctx, collectionName, docs)
+}
+
+func (r *ragService) UpdateRepoContext(ctx context.Context, collectionName, repoPath string, added, modified, deleted []string) error {
+	r.logger.Info("updating repository context", "collection", collectionName, "added", len(added), "modified", len(modified), "deleted", len(deleted))
+
+	// Handle deleted files
+	for _, file := range deleted {
+		r.logger.Info("deleting embeddings for file", "file", file)
+		if err := r.vectorStore.DeleteDocuments(ctx, collectionName, []string{file}); err != nil {
+			r.logger.Error("failed to delete embeddings for file", "file", file, "error", err)
+			// Continue to process other files even if one fails
+		}
+	}
+
+	// Handle added and modified files
+	filesToProcess := append(added, modified...)
+	for _, file := range filesToProcess {
+		r.logger.Info("processing file for embeddings", "file", file)
+		fullPath := fmt.Sprintf("%s/%s", repoPath, file)
+		loader := documentloaders.NewFile(fullPath, r.parserRegistry, documentloaders.WithLogger(r.logger))
+		docs, err := loader.Load(ctx)
+		if err != nil {
+			r.logger.Error("failed to load document for file", "file", file, "error", err)
+			continue
+		}
+		if len(docs) > 0 {
+			if err := r.vectorStore.AddDocuments(ctx, collectionName, docs); err != nil {
+				r.logger.Error("failed to add/update embeddings for file", "file", file, "error", err)
+				continue
+			}
+		}
+	}
+
+	return nil
 }
 
 // GenerateReview executes the full RAG pipeline to generate a code review for a pull request.
