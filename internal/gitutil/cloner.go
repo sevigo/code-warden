@@ -1,5 +1,4 @@
-// Package gitutil provides utilities for working with Git repositories,
-// including cloning and checking out specific commits.
+// Package gitutil provides a client for working with Git repositories.
 package gitutil
 
 import (
@@ -15,135 +14,84 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/utils/merkletrie"
 )
 
-// Cloner handles cloning Git repositories and checking out specific commits.
-type Cloner struct {
+// Client handles interacting with Git repositories.
+type Client struct {
 	Logger *slog.Logger
 }
 
-// NewCloner returns a new Cloner instance.
-func NewCloner(logger *slog.Logger) *Cloner {
+// NewClient returns a new Client instance.
+func NewClient(logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Cloner{Logger: logger}
+	return &Client{Logger: logger}
 }
 
-// Clone clones the repository at repoURL into a temporary directory,
-// checks out the given commit SHA, and returns the path along with a cleanup function.
-func (c *Cloner) Clone(ctx context.Context, repoURL, sha, token string) (string, func(), error) {
-	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
-		return "", nil, fmt.Errorf("invalid repository URL: %s", repoURL)
-	}
-	if token == "" {
-		return "", nil, fmt.Errorf("github token cannot be empty for cloning")
-	}
-
-	parsedURL, err := url.Parse(repoURL)
+// Open opens a Git repository at a given path.
+func (c *Client) Open(path string) (*git.Repository, error) {
+	repo, err := git.PlainOpen(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to parse repository URL '%s': %w", repoURL, err)
+		return nil, fmt.Errorf("failed to open repository at %s: %w", path, err)
 	}
-	// Set the user information for authentication. GitHub Apps use 'x-access-token'.
-	parsedURL.User = url.UserPassword("x-access-token", token)
-	authenticatedURL := parsedURL.String()
-
-	repoPath, err := os.MkdirTemp("", "code-warden-repo-*")
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to create temp directory: %w", err)
-	}
-
-	// Define the cleanup function. It captures the repoPath variable from the outer scope.
-	cleanup := func() {
-		c.Logger.Info("cleaning up temporary repository", "path", repoPath)
-		if removeErr := os.RemoveAll(repoPath); removeErr != nil {
-			c.Logger.Error("failed to remove temporary repository directory", "path", repoPath, "error", removeErr)
-		}
-	}
-
-	c.Logger.InfoContext(ctx, "cloning repository", "url", repoURL, "path", repoPath, "sha", sha)
-
-	repo, err := git.PlainCloneContext(ctx, repoPath, false, &git.CloneOptions{
-		URL: authenticatedURL,
-	})
-	if err != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("failed to clone repo '%s': %w", repoURL, err)
-	}
-
-	worktree, err := repo.Worktree()
-	if err != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("failed to get worktree for repo '%s': %w", repoURL, err)
-	}
-
-	c.Logger.InfoContext(ctx, "checking out commit", "sha", sha)
-
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Hash:  plumbing.NewHash(sha),
-		Force: true,
-	})
-	if err != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("failed to checkout commit '%s': %w", sha, err)
-	}
-
-	c.Logger.InfoContext(ctx, "repository cloned and checked out")
-
-	return repoPath, cleanup, nil
+	return repo, nil
 }
 
-// Pull updates the repository at repoPath to the given SHA.
-func (c *Cloner) Pull(ctx context.Context, repoPath, sha, token string) error {
-	if token == "" {
-		return fmt.Errorf("github token cannot be empty for pulling")
-	}
-
-	c.Logger.InfoContext(ctx, "pulling latest changes", "path", repoPath, "sha", sha)
-
-	repo, err := git.PlainOpen(repoPath)
+// Clone clones a repository to a specific path. It does not checkout a specific SHA.
+func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.Repository, error) {
+	authURL, err := c.getAuthenticatedURL(repoURL, token)
 	if err != nil {
-		return fmt.Errorf("failed to open repository at %s: %w", repoPath, err)
+		return nil, err
 	}
 
-	worktree, err := repo.Worktree()
+	c.Logger.InfoContext(ctx, "cloning repository", "url", repoURL, "path", path)
+	repo, err := git.PlainCloneContext(ctx, path, false, &git.CloneOptions{
+		URL: authURL,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get worktree for repo %s: %w", repoPath, err)
+		return nil, fmt.Errorf("failed to clone repo '%s' to '%s': %w", repoURL, path, err)
 	}
+	return repo, nil
+}
 
-	// Fetch the latest changes from the remote
-	err = worktree.PullContext(ctx, &git.PullOptions{
+// Fetch fetches updates from the 'origin' remote.
+func (c *Client) Fetch(ctx context.Context, repo *git.Repository, token string) error {
+	c.Logger.InfoContext(ctx, "fetching latest changes from origin")
+	err := repo.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: "origin",
-		Auth: &githttp.BasicAuth{
-			Username: "x-access-token",
-			Password: token,
-		},
+		Auth:       c.getBasicAuth(token),
+		Force:      true, // Allow fetching unrelated histories
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("failed to pull latest changes for repo %s: %w", repoPath, err)
+		return fmt.Errorf("failed to fetch from remote: %w", err)
 	}
-
-	// Checkout the specific SHA
-	c.Logger.InfoContext(ctx, "checking out commit", "sha", sha)
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Hash:  plumbing.NewHash(sha),
-		Force: true,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to checkout commit %s for repo %s: %w", sha, repoPath, err)
-	}
-
+	c.Logger.InfoContext(ctx, "fetch complete")
 	return nil
 }
 
-// Diff calculates the difference between two SHAs and returns lists of added, modified, and deleted files.
-func (c *Cloner) Diff(ctx context.Context, repoPath, oldSHA, newSHA string) (added, modified, deleted []string, err error) {
-	repo, err := git.PlainOpen(repoPath)
+// Checkout switches the repository's worktree to a specific commit.
+func (c *Client) Checkout(repo *git.Repository, sha string) error {
+	worktree, err := repo.Worktree()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to open repository at %s: %w", repoPath, err)
+		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	// Get the commit objects for oldSHA and newSHA
+	c.Logger.Info("checking out commit", "sha", sha)
+	err = worktree.Checkout(&git.CheckoutOptions{
+		Hash:  plumbing.NewHash(sha),
+		Force: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to checkout commit '%s': %w", sha, err)
+	}
+	return nil
+}
+
+// Diff calculates the difference between two SHAs in an open repository.
+func (c *Client) Diff(repo *git.Repository, oldSHA, newSHA string) (added, modified, deleted []string, err error) {
+	// Get commit objects
 	oldCommit, err := repo.CommitObject(plumbing.NewHash(oldSHA))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get commit object for old SHA %s: %w", oldSHA, err)
@@ -153,7 +101,7 @@ func (c *Cloner) Diff(ctx context.Context, repoPath, oldSHA, newSHA string) (add
 		return nil, nil, nil, fmt.Errorf("failed to get commit object for new SHA %s: %w", newSHA, err)
 	}
 
-	// Get the tree objects for the commits
+	// Get tree objects
 	oldTree, err := oldCommit.Tree()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get tree for old commit %s: %w", oldSHA, err)
@@ -163,28 +111,83 @@ func (c *Cloner) Diff(ctx context.Context, repoPath, oldSHA, newSHA string) (add
 		return nil, nil, nil, fmt.Errorf("failed to get tree for new commit %s: %w", newSHA, err)
 	}
 
-	// Compare the trees
+	// Compare trees
 	changes, err := object.DiffTree(oldTree, newTree)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get diff between %s and %s: %w", oldSHA, newSHA, err)
+		return nil, nil, nil, fmt.Errorf("failed to diff trees between %s and %s: %w", oldSHA, newSHA, err)
 	}
 
+	// Process changes
 	for _, change := range changes {
 		action, err := change.Action()
 		if err != nil {
-			c.Logger.ErrorContext(ctx, "failed to get action for change", "error", err)
+			c.Logger.Error("failed to get action for change, skipping", "error", err)
 			continue
 		}
 
-		switch action.String() {
-		case "Add":
+		switch action {
+		case merkletrie.Insert:
 			added = append(added, change.To.Name)
-		case "Modify":
+		case merkletrie.Modify:
 			modified = append(modified, change.To.Name)
-		case "Delete":
+		case merkletrie.Delete:
 			deleted = append(deleted, change.From.Name)
 		}
 	}
-
 	return added, modified, deleted, nil
+}
+
+// CloneAndCheckoutTemp clones a repo into a temporary directory, checks out a commit,
+// and returns the path with a cleanup function. This preserves the original Cloner.Clone functionality.
+func (c *Client) CloneAndCheckoutTemp(ctx context.Context, repoURL, sha, token string) (string, func(), error) {
+	repoPath, err := os.MkdirTemp("", "code-warden-repo-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	cleanup := func() {
+		c.Logger.Info("cleaning up temporary repository", "path", repoPath)
+		if removeErr := os.RemoveAll(repoPath); removeErr != nil {
+			c.Logger.Error("failed to remove temp repo", "path", repoPath, "error", removeErr)
+		}
+	}
+
+	repo, err := c.Clone(ctx, repoURL, repoPath, token)
+	if err != nil {
+		cleanup()
+		return "", nil, err // Error is already well-formatted
+	}
+
+	if err := c.Checkout(repo, sha); err != nil {
+		cleanup()
+		return "", nil, err // Error is already well-formatted
+	}
+
+	c.Logger.InfoContext(ctx, "repository cloned and checked out successfully")
+	return repoPath, cleanup, nil
+}
+
+func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
+	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
+		return "", fmt.Errorf("invalid repository URL: %s", repoURL)
+	}
+	if token == "" {
+		return "", errors.New("github token cannot be empty")
+	}
+
+	parsedURL, err := url.Parse(repoURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse repository URL '%s': %w", repoURL, err)
+	}
+	parsedURL.User = url.UserPassword("x-access-token", token)
+	return parsedURL.String(), nil
+}
+
+func (c *Client) getBasicAuth(token string) *githttp.BasicAuth {
+	if token == "" {
+		return nil
+	}
+	return &githttp.BasicAuth{
+		Username: "x-access-token",
+		Password: token,
+	}
 }
