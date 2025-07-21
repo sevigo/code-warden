@@ -6,11 +6,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/parsers"
+	"github.com/sevigo/goframe/schema"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -21,6 +24,7 @@ import (
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, collectionName, repoPath string) error
+	UpdateRepoContext(ctx context.Context, collectionName, repoPath string, filesToProcess, filesToDelete []string) error
 	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 }
@@ -54,9 +58,9 @@ func NewRAGService(
 	}
 }
 
-// SetupRepoContext processes a repository and stores its embeddings into the vector store.
+// SetupRepoContext processes a repository for the first time, storing all its embeddings.
 func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoPath string) error {
-	r.logger.Info("indexing repository for code review context", "path", repoPath, "collection", collectionName)
+	r.logger.Info("performing initial full indexing of repository", "path", repoPath, "collection", collectionName)
 
 	gitLoader := documentloaders.NewGit(
 		repoPath,
@@ -75,21 +79,81 @@ func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoP
 		return nil
 	}
 
-	r.logger.Info("storing documents in vector database", "collection", collectionName, "doc_count", len(docs))
+	r.logger.Info("storing initial documents in vector database", "collection", collectionName, "doc_count", len(docs))
 	return r.vectorStore.AddDocuments(ctx, collectionName, docs)
 }
 
-// GenerateReview executes the full RAG pipeline to generate a code review for a pull request.
-// It retrieves the PR diff, identifies changed files, fetches relevant code context
-// using vector search, constructs a prompt, and queries the LLM to produce the review.
+// UpdateRepoContext incrementally updates the vector store based on file changes.
+func (r *ragService) UpdateRepoContext(ctx context.Context, collectionName, repoPath string, filesToProcess, filesToDelete []string) error {
+	r.logger.Info("updating repository context", "collection", collectionName, "process", len(filesToProcess), "delete", len(filesToDelete))
+
+	// Handle deleted files first
+	if len(filesToDelete) > 0 {
+		r.logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
+		if err := r.vectorStore.DeleteDocuments(ctx, collectionName, filesToDelete); err != nil {
+			// Log the error but continue; we might still be able to process other changes.
+			r.logger.Error("failed to delete some embeddings", "error", err)
+		}
+	}
+
+	// Handle added and modified files
+	if len(filesToProcess) == 0 {
+		return nil
+	}
+
+	var allDocs []schema.Document
+	for _, file := range filesToProcess {
+		fullPath := filepath.Join(repoPath, file)
+		contentBytes, err := os.ReadFile(fullPath)
+		if err != nil {
+			r.logger.Error("failed to read file for update, skipping", "file", file, "error", err)
+			continue
+		}
+
+		parser, err := r.parserRegistry.GetParserForFile(fullPath, nil)
+		if err != nil {
+			r.logger.Warn("no suitable parser found for file, skipping", "file", file, "error", err)
+			continue
+		}
+
+		// Use the parser to create semantic chunks from the file's content
+		chunks, err := parser.Chunk(string(contentBytes), file, nil)
+		if err != nil {
+			r.logger.Error("failed to chunk file", "file", file, "error", err)
+			continue
+		}
+
+		// Convert chunks to documents for the vector store
+		for _, chunk := range chunks {
+			doc := schema.NewDocument(chunk.Content, map[string]any{
+				"source":     file, // Use the relative path as the source for filtering
+				"identifier": chunk.Identifier,
+				"chunk_type": chunk.Type,
+				"line_start": chunk.LineStart,
+				"line_end":   chunk.LineEnd,
+			})
+			allDocs = append(allDocs, doc)
+		}
+	}
+
+	if len(allDocs) > 0 {
+		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
+		if err := r.vectorStore.AddDocuments(ctx, collectionName, allDocs); err != nil {
+			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// REFACTORED: GenerateReview now focuses on data preparation and delegates to the helper.
 func (r *ragService) GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error) {
-	r.logger.Info("generating code review", "repo", event.RepoFullName, "pr", event.PRNumber)
+	r.logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return "", fmt.Errorf("failed to get PR diff: %w", err)
 	}
-
 	if diff == "" {
 		r.logger.Info("no code changes in pull request", "pr", event.PRNumber)
 		return "This pull request contains no code changes. LGTM!", nil
@@ -100,56 +164,26 @@ func (r *ragService) GenerateReview(ctx context.Context, collectionName string, 
 		r.logger.Warn("could not retrieve changed files list", "error", err)
 	}
 
-	changedFilesList := r.formatChangedFiles(changedFiles)
-	contextContent := r.buildRelevantContext(ctx, collectionName, changedFiles)
-
 	promptData := map[string]string{
 		"Title":        event.PRTitle,
 		"Description":  event.PRBody,
 		"Language":     event.Language,
-		"ChangedFiles": changedFilesList,
-		"Context":      contextContent,
+		"ChangedFiles": r.formatChangedFiles(changedFiles),
+		"Context":      r.buildRelevantContext(ctx, collectionName, changedFiles),
 		"Diff":         diff,
 	}
 
-	// The GeneratorModelName from configuration (e.g., "gemini-2.5-flash")
-	// is used as the ModelProvider to fetch model-specific prompts.
-	// Prompt filenames should follow the convention `[prompt_key]_[model_provider].prompt`
-	// or fall back to `[prompt_key]_default.prompt`.
-	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
-	prompt, err := r.promptMgr.Render(
-		CodeReviewPrompt,
-		modelForPrompt,
-		promptData,
-	)
-	if err != nil {
-		r.logger.Error("could not retrieve prompt from the manager", "error", err)
-		return "", err
-	}
-
-	r.logger.Info("calling LLM for review generation",
-		"repo", event.RepoFullName,
-		"pr", event.PRNumber,
-	)
-
-	review, err := r.generatorLLM.Call(ctx, prompt)
-	if err != nil {
-		return "", fmt.Errorf("LLM review generation failed: %w", err)
-	}
-
-	r.logger.Info("code review generated successfully", "review_chars", len(review))
-	return review, nil
+	return r.generateResponseWithPrompt(ctx, event, CodeReviewPrompt, promptData)
 }
 
-// GenerateReReview creates a prompt with the original review and new diff, then calls the LLM.
+// REFACTORED: GenerateReReview now focuses on data preparation and delegates to the helper.
 func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error) {
-	r.logger.Info("generating re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
+	r.logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	newDiff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return "", fmt.Errorf("failed to get new PR diff: %w", err)
 	}
-
 	if strings.TrimSpace(newDiff) == "" {
 		r.logger.Info("no new code changes found to re-review", "pr", event.PRNumber)
 		return "This pull request contains no new code changes to re-review.", nil
@@ -161,22 +195,29 @@ func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEve
 		NewDiff:        newDiff,
 	}
 
+	return r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)
+}
+
+func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey PromptKey, promptData any) (string, error) {
 	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
-	prompt, err := r.promptMgr.Render(ReReviewPrompt, modelForPrompt, promptData)
+	prompt, err := r.promptMgr.Render(promptKey, modelForPrompt, promptData)
 	if err != nil {
-		return "", fmt.Errorf("could not render re-review prompt: %w", err)
+		return "", fmt.Errorf("could not render prompt '%s': %w", promptKey, err)
 	}
 
-	r.logger.Info("calling LLM for re-review generation", "pr", event.PRNumber)
+	r.logger.Info("calling LLM for response generation",
+		"repo", event.RepoFullName,
+		"pr", event.PRNumber,
+		"prompt_key", promptKey,
+	)
 
-	// 5. Call the LLM to get the follow-up review.
-	review, err := r.generatorLLM.Call(ctx, prompt)
+	response, err := r.generatorLLM.Call(ctx, prompt)
 	if err != nil {
-		return "", fmt.Errorf("LLM re-review generation failed: %w", err)
+		return "", fmt.Errorf("LLM generation failed for prompt '%s': %w", promptKey, err)
 	}
 
-	r.logger.Info("re-review generated successfully", "review_chars", len(review))
-	return review, nil
+	r.logger.Info("LLM response generated successfully", "chars", len(response))
+	return response, nil
 }
 
 // formatChangedFiles returns a markdown-formatted list of changed file paths

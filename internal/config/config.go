@@ -27,6 +27,7 @@ type Config struct {
 	EmbedderModelName    string
 	MaxWorkers           int
 	Database             *DBConfig
+	RepoPath             string
 }
 
 // DBConfig holds all database connection settings.
@@ -80,6 +81,7 @@ func LoadConfig() (*Config, error) {
 		EmbedderModelName:    v.GetString("EMBEDDER_MODEL_NAME"),
 		MaxWorkers:           v.GetInt("MAX_WORKERS"),
 		Database:             dbConfig,
+		RepoPath:             v.GetString("REPO_PATH"),
 	}, nil
 }
 
@@ -106,6 +108,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("DB_MAX_IDLE_CONNS", 5)
 	v.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
 	v.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
+	v.SetDefault("REPO_PATH", "./data/repos")
 }
 
 func loadEnvFile(v *viper.Viper) error {

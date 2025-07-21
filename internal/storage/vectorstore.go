@@ -18,6 +18,8 @@ type VectorStore interface {
 	AddDocuments(ctx context.Context, collectionName string, docs []schema.Document) error
 	SimilaritySearch(ctx context.Context, collectionName, query string, numDocs int) ([]schema.Document, error)
 	DeleteCollection(ctx context.Context, collectionName string) error
+	DeleteDocuments(ctx context.Context, collectionName string, documentIDs []string) error
+	DeleteDocumentsByFilter(ctx context.Context, collectionName string, filters map[string]any) error
 }
 
 // qdrantVectorStore implements VectorStore using Qdrant with client caching.
@@ -128,5 +130,40 @@ func (q *qdrantVectorStore) DeleteCollection(ctx context.Context, collectionName
 	delete(q.clients, collectionName)
 	q.mu.Unlock()
 
+	return nil
+}
+
+func (q *qdrantVectorStore) DeleteDocuments(ctx context.Context, collectionName string, documentIDs []string) error {
+	if len(documentIDs) == 0 {
+		return nil
+	}
+
+	store, err := q.getStoreForCollection(collectionName)
+	if err != nil {
+		return fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
+	}
+
+	sourcePaths := documentIDs
+	filters := map[string]any{
+		"source": sourcePaths,
+	}
+
+	err = store.DeleteDocumentsByFilter(ctx, filters)
+	if err != nil {
+		return fmt.Errorf("failed to delete documents from collection %s: %w", collectionName, err)
+	}
+	return nil
+}
+
+func (q *qdrantVectorStore) DeleteDocumentsByFilter(ctx context.Context, collectionName string, filters map[string]any) error {
+	store, err := q.getStoreForCollection(collectionName)
+	if err != nil {
+		return fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
+	}
+
+	err = store.DeleteDocumentsByFilter(ctx, filters)
+	if err != nil {
+		return fmt.Errorf("failed to delete documents by filter from collection %s: %w", collectionName, err)
+	}
 	return nil
 }
