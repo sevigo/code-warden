@@ -1,4 +1,3 @@
-// File: ./internal/jobs/review.go
 // Package jobs defines background tasks such as code reviews.
 package jobs
 
@@ -16,6 +15,7 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
+	"github.com/sevigo/code-warden/internal/util"
 )
 
 var collectionNameRegexp = regexp.MustCompile("[^a-z0-9_-]+")
@@ -77,16 +77,16 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		}
 	}()
 
-	// 1. Sync the repository using the manager. This single call handles both
+	// Sync the repository using the manager. This single call handles both
 	// the initial clone and subsequent incremental updates.
 	updateResult, err := j.repoMgr.SyncRepo(ctx, event, ghToken)
 	if err != nil {
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
-	collectionName := j.generateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
+	collectionName := util.GenerateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
 
-	// 2. Update the vector store based on the results from the manager.
+	// Update the vector store based on the results from the manager.
 	if updateResult.IsInitialClone {
 		// If it's the first time, perform a full indexing.
 		err = j.ragService.SetupRepoContext(ctx, collectionName, updateResult.RepoPath)
@@ -103,13 +103,13 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		j.logger.Info("no file changes detected between SHAs, skipping vector store update", "repo", event.RepoFullName)
 	}
 
-	// 3. After a successful vector store update, persist the new SHA in our database.
+	// After a successful vector store update, persist the new SHA in our database.
 	if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
 		// This is a critical error, as it could lead to incorrect diffs in the future.
 		return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database: %w", err)
 	}
 
-	// 4. Generate the review using the now-up-to-date context.
+	// Generate the review using the now-up-to-date context.
 	review, err := j.ragService.GenerateReview(ctx, collectionName, event, ghClient)
 	if err != nil {
 		return fmt.Errorf("failed to generate review: %w", err)
@@ -118,7 +118,7 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		return errors.New("generated review is empty")
 	}
 
-	// 5. Post comment, save review record, and complete the check run.
+	// Post comment, save review record, and complete the check run.
 	if err = statusUpdater.PostReviewComment(ctx, event, review); err != nil {
 		return fmt.Errorf("failed to post review comment: %w", err)
 	}
@@ -235,21 +235,4 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 		return fmt.Errorf("installation ID must be positive, got: %d", event.InstallationID)
 	}
 	return nil
-}
-
-// generateCollectionName builds a valid vector DB collection name from repo and model info.
-func (j *ReviewJob) generateCollectionName(repoFullName, embedderName string) string {
-	safeRepoName := strings.ToLower(strings.ReplaceAll(repoFullName, "/", "-"))
-	safeEmbedderName := strings.ToLower(strings.Split(embedderName, ":")[0])
-
-	safeRepoName = collectionNameRegexp.ReplaceAllString(safeRepoName, "")
-	safeEmbedderName = collectionNameRegexp.ReplaceAllString(safeEmbedderName, "")
-
-	collectionName := fmt.Sprintf("repo-%s-%s", safeRepoName, safeEmbedderName)
-
-	const maxCollectionNameLength = 255
-	if len(collectionName) > maxCollectionNameLength {
-		collectionName = collectionName[:maxCollectionNameLength]
-	}
-	return collectionName
 }

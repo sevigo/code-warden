@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/storage"
+	"github.com/sevigo/code-warden/internal/util"
 )
 
 // manager implements the core.RepoManager interface.
@@ -42,7 +42,7 @@ func New(cfg *config.Config, store storage.Store, logger *slog.Logger) RepoManag
 		cfg:       cfg,
 		store:     store,
 		logger:    logger,
-		gitClient: gitutil.NewClient(logger.With("component", "gitutil")), // Initialize the client
+		gitClient: gitutil.NewClient(logger.With("component", "gitutil")),
 	}
 }
 
@@ -103,7 +103,7 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 	newRepo := &storage.Repository{
 		FullName:             event.RepoFullName,
 		ClonePath:            clonePath,
-		QdrantCollectionName: generateCollectionName(event.RepoFullName, m.cfg.EmbedderModelName),
+		QdrantCollectionName: util.GenerateCollectionName(event.RepoFullName, m.cfg.EmbedderModelName),
 		LastIndexedSHA:       event.HeadSHA,
 	}
 	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
@@ -188,16 +188,4 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 		return nil
 	})
 	return files, err
-}
-
-func generateCollectionName(repoFullName, embedderName string) string {
-	safeRepoName := strings.ToLower(strings.ReplaceAll(repoFullName, "/", "-"))
-	safeEmbedderName := strings.ToLower(strings.Split(embedderName, ":")[0])
-	safeRepoName = regexp.MustCompile("[^a-z0-9_-]+").ReplaceAllString(safeRepoName, "")
-	safeEmbedderName = regexp.MustCompile("[^a-z0-9_-]+").ReplaceAllString(safeEmbedderName, "")
-	collectionName := fmt.Sprintf("repo-%s-%s", safeRepoName, safeEmbedderName)
-	if len(collectionName) > 255 {
-		collectionName = collectionName[:255]
-	}
-	return collectionName
 }
