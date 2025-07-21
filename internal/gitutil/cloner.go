@@ -164,7 +164,7 @@ func (c *Cloner) Diff(ctx context.Context, repoPath, oldSHA, newSHA string) (add
 	}
 
 	// Compare the trees
-	changes, err := object.Diff(oldTree, newTree)
+	changes, err := object.DiffTree(oldTree, newTree)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to get diff between %s and %s: %w", oldSHA, newSHA, err)
 	}
@@ -177,11 +177,11 @@ func (c *Cloner) Diff(ctx context.Context, repoPath, oldSHA, newSHA string) (add
 		}
 
 		switch action {
-		case object.Add:
+		case object.ChangeTypeAdd:
 			added = append(added, change.To.Name)
-		case object.Modify:
+		case object.ChangeTypeModify:
 			modified = append(modified, change.To.Name)
-		case object.Delete:
+		case object.ChangeTypeDelete:
 			deleted = append(deleted, change.From.Name)
 		}
 	}
