@@ -98,6 +98,11 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	reviewJob := jobs.NewReviewJob(cfg, ragService, store, repoManager, logger)
 
+	// TODO(follow-up): Initialize and start the repository cleanup service (janitor).
+	// This service will periodically scan for and delete old/unused repositories
+	// and their associated Qdrant collections to manage long-term resource usage.
+	// The implementation plan is documented in `TODO.md`.
+
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
 

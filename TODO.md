@@ -2,7 +2,7 @@
 
 This document outlines planned improvements and future work for Code-Warden.
 
-### 1. **Implement Intelligent RAG Context Caching and Invalidation**
+### 1. **Implement Intelligent RAG Context Caching and Invalidation** (DONE)
 
 This is the most critical next step to make the tool practical and efficient.
 
@@ -77,3 +77,21 @@ Provide a user-friendly way to see what the app is doing.
     3.  **Show Job History:** Create a page that lists recent review jobs from your database, showing their status (success/failure) and linking to the PR.
     4.  **Real-time Updates:** Use Server-Sent Events (SSE) or WebSockets to update the UI in real-time when a new job starts or finishes.
 *   **Benefit:** Improves transparency and makes the tool feel more like a complete product rather than just a backend service.
+
+### 6. **Implement Resource Lifecycle Management (Garbage Collection)**
+
+To ensure long-term stability and manage resource consumption, a garbage collection mechanism is needed to clean up old, unused, or abandoned resources.
+
+*   **Problem:** The application currently persists Git repository clones and Qdrant vector collections indefinitely. This will lead to unbounded disk and memory usage over time, especially if repositories are abandoned or the app is uninstalled.
+*   **TODO:**
+    1.  **Create a "Janitor" Service:** A new background service responsible for cleanup tasks. This service will run periodically (e.g., every 24 hours), controlled by a configuration setting.
+    2.  **Implement TTL-based Cleanup:**
+        *   The janitor will query the `repositories` table for entries where the `updated_at` timestamp is older than a configurable Time-To-Live (TTL), e.g., `90 days`.
+        *   For each expired repository, the janitor will perform a three-step cleanup:
+            1.  Delete the corresponding Qdrant collection using the `qdrant_collection_name`.
+            2.  Delete the local Git repository clone from the disk using the `clone_path`.
+            3.  Delete the record from the `repositories` table in the database.
+    3.  **Handle External Deletion Events:**
+        *   Implement a new webhook handler for the `installation_repositories` event with `action: "removed"` and the `installation` event with `action: "deleted"`.
+        *   When a repository is removed from the app installation or the app is uninstalled, trigger an immediate, explicit deletion of all associated resources (DB record, Qdrant collection, disk files) for the affected repositories.
+*   **Benefit:** Prevents resource leaks, controls operational costs, and ensures the application remains performant and stable over its lifetime.
