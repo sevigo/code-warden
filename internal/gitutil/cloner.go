@@ -176,12 +176,12 @@ func (c *Cloner) Diff(ctx context.Context, repoPath, oldSHA, newSHA string) (add
 			continue
 		}
 
-		switch action {
-		case object.Add:
+		switch action.String() {
+		case "Add":
 			added = append(added, change.To.Name)
-		case object.Modify:
+		case "Modify":
 			modified = append(modified, change.To.Name)
-		case object.Delete:
+		case "Delete":
 			deleted = append(deleted, change.From.Name)
 		}
 	}
