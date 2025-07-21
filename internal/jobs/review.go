@@ -14,7 +14,6 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
-	"github.com/sevigo/code-warden/internal/util"
 )
 
 // ReviewJob performs AI-assisted code reviews.
@@ -81,7 +80,15 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
-	collectionName := util.GenerateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
+	// Retrieve the repository record to get the correct collection name from the database.
+	repoRecord, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve repository record after sync: %w", err)
+	}
+	if repoRecord == nil {
+		return fmt.Errorf("repository record is unexpectedly nil after sync for %s", event.RepoFullName)
+	}
+	collectionName := repoRecord.QdrantCollectionName
 
 	// Update the vector store based on the results from the manager.
 	switch {
