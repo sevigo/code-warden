@@ -8,9 +8,8 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	// The blank import is required to register the PostgreSQL driver.
 	"github.com/sevigo/code-warden/internal/core"
-	// import db drivers
-	_ "github.com/lib/pq"
 )
 
 // Repository represents a stored Git repository.
@@ -78,6 +77,7 @@ func (s *postgresStore) CreateRepository(ctx context.Context, repo *Repository) 
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement for creating repository: %w", err)
 	}
+	defer stmt.Close()
 	return stmt.QueryRowContext(ctx, repo).Scan(&repo.ID, &repo.CreatedAt, &repo.UpdatedAt)
 }
 
@@ -88,7 +88,7 @@ func (s *postgresStore) GetRepositoryByFullName(ctx context.Context, fullName st
 	err := s.db.GetContext(ctx, &repo, query, fullName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil // Return nil, nil if no rows found
+			return nil, fmt.Errorf("repository with full name %s not found", fullName)
 		}
 		return nil, fmt.Errorf("failed to get repository by full name %s: %w", fullName, err)
 	}
