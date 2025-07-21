@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/config"
@@ -15,10 +14,7 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
-	"github.com/sevigo/code-warden/internal/util"
 )
-
-var collectionNameRegexp = regexp.MustCompile("[^a-z0-9_-]+")
 
 // ReviewJob performs AI-assisted code reviews.
 type ReviewJob struct {
@@ -84,7 +80,15 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
-	collectionName := util.GenerateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
+	// Retrieve the repository record to get the correct collection name from the database.
+	repoRecord, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve repository record after sync: %w", err)
+	}
+	if repoRecord == nil {
+		return fmt.Errorf("repository record is unexpectedly nil after sync for %s", event.RepoFullName)
+	}
+	collectionName := repoRecord.QdrantCollectionName
 
 	// Update the vector store based on the results from the manager.
 	if updateResult.IsInitialClone {
@@ -105,7 +109,6 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 
 	// After a successful vector store update, persist the new SHA in our database.
 	if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
-		// This is a critical error, as it could lead to incorrect diffs in the future.
 		return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database: %w", err)
 	}
 

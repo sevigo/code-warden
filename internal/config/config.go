@@ -30,16 +30,8 @@ type Config struct {
 	RepoPath             string
 }
 
-// DBConfig holds all database connection settings.
 type DBConfig struct {
-	Driver          string
 	DSN             string
-	Host            string
-	Port            int
-	Database        string
-	Username        string
-	Password        string
-	SSLMode         string
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxLifetime time.Duration
@@ -77,7 +69,7 @@ func LoadConfig() (*Config, error) {
 		GitHubPrivateKeyPath: v.GetString("GITHUB_PRIVATE_KEY_PATH"),
 		OllamaHost:           v.GetString("OLLAMA_HOST"),
 		QdrantHost:           v.GetString("QDRANT_HOST"),
-		GeneratorModelName:   getGeneratorModelName(v),
+		GeneratorModelName:   v.GetString("GENERATOR_MODEL_NAME"),
 		EmbedderModelName:    v.GetString("EMBEDDER_MODEL_NAME"),
 		MaxWorkers:           v.GetInt("MAX_WORKERS"),
 		Database:             dbConfig,
@@ -90,14 +82,20 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("LOG_LEVEL", "info")
 	v.SetDefault("LOG_FORMAT", "text")
 	v.SetDefault("LOG_OUTPUT", "stdout")
+	v.SetDefault("MAX_WORKERS", 5)
+	v.SetDefault("REPO_PATH", "./data/repos")
+
+	// LLM & Vector Store Defaults
+	v.SetDefault("LLM_PROVIDER", "ollama")
 	v.SetDefault("OLLAMA_HOST", "http://localhost:11434")
 	v.SetDefault("QDRANT_HOST", "localhost:6334")
 	v.SetDefault("GENERATOR_MODEL_NAME", "gemma3:latest")
 	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text")
-	v.SetDefault("MAX_WORKERS", 5)
+
+	// GitHub App Defaults
 	v.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
-	v.SetDefault("LLM_PROVIDER", "ollama")
-	v.SetDefault("DB_DRIVER", "postgres")
+
+	// Database Defaults
 	v.SetDefault("DB_HOST", "localhost")
 	v.SetDefault("DB_PORT", 5432)
 	v.SetDefault("DB_NAME", "codewarden")
@@ -108,7 +106,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("DB_MAX_IDLE_CONNS", 5)
 	v.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
 	v.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
-	v.SetDefault("REPO_PATH", "./data/repos")
 }
 
 func loadEnvFile(v *viper.Viper) error {
@@ -141,17 +138,7 @@ func configureLogger(v *viper.Viper) logger.Config {
 	}
 }
 
-func getGeneratorModelName(v *viper.Viper) string {
-	if v.GetString("LLM_PROVIDER") == "gemini" {
-		geminiModel := v.GetString("GEMINI_GENERATOR_MODEL_NAME")
-		if geminiModel != "" {
-			return geminiModel
-		}
-		return "gemini-2.5-flash"
-	}
-	return v.GetString("GENERATOR_MODEL_NAME")
-}
-
+// configureDB now builds the DSN string internally and returns a leaner DBConfig struct.
 func configureDB(v *viper.Viper) (*DBConfig, error) {
 	connMaxLifetime, err := time.ParseDuration(v.GetString("DB_CONN_MAX_LIFETIME"))
 	if err != nil {
@@ -162,24 +149,7 @@ func configureDB(v *viper.Viper) (*DBConfig, error) {
 		return nil, fmt.Errorf("invalid DB_CONN_MAX_IDLE_TIME format: %w", err)
 	}
 
-	return &DBConfig{
-		Driver:          v.GetString("DB_DRIVER"),
-		DSN:             getDSN(v),
-		Host:            v.GetString("DB_HOST"),
-		Port:            v.GetInt("DB_PORT"),
-		Database:        v.GetString("DB_NAME"),
-		Username:        v.GetString("DB_USERNAME"),
-		Password:        v.GetString("DB_PASSWORD"),
-		SSLMode:         v.GetString("DB_SSL_MODE"),
-		MaxOpenConns:    v.GetInt("DB_MAX_OPEN_CONNS"),
-		MaxIdleConns:    v.GetInt("DB_MAX_IDLE_CONNS"),
-		ConnMaxLifetime: connMaxLifetime,
-		ConnMaxIdleTime: connMaxIdleTime,
-	}, nil
-}
-
-func getDSN(v *viper.Viper) string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		v.GetString("DB_HOST"),
 		v.GetInt("DB_PORT"),
 		v.GetString("DB_USERNAME"),
@@ -187,4 +157,12 @@ func getDSN(v *viper.Viper) string {
 		v.GetString("DB_NAME"),
 		v.GetString("DB_SSL_MODE"),
 	)
+
+	return &DBConfig{
+		DSN:             dsn,
+		MaxOpenConns:    v.GetInt("DB_MAX_OPEN_CONNS"),
+		MaxIdleConns:    v.GetInt("DB_MAX_IDLE_CONNS"),
+		ConnMaxLifetime: connMaxLifetime,
+		ConnMaxIdleTime: connMaxIdleTime,
+	}, nil
 }
