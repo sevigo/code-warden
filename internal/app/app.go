@@ -22,6 +22,7 @@ import (
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -63,37 +64,40 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		"llm_provider", cfg.LLMProvider,
 		"generator_model", cfg.GeneratorModelName,
 		"embedder_model", cfg.EmbedderModelName,
-		"max_workers", cfg.MaxWorkers)
+		"max_workers", cfg.MaxWorkers,
+		"repo_path", cfg.RepoPath,
+	)
 
 	dbConn, err := initDatabase(cfg.Database)
 	if err != nil {
 		return nil, err
 	}
 
+	store := storage.NewStore(dbConn.DB)
+
+	repoManager := repomanager.New(cfg, store, logger)
+
 	generatorLLM, err := createGeneratorLLM(ctx, cfg, logger)
 	if err != nil {
 		return nil, err
 	}
-
 	embedder, err := createEmbedder(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
-
 	parserRegistry, err := parsers.RegisterLanguagePlugins(logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register language parsers: %w", err)
 	}
-
 	promptMgr, err := llm.NewPromptManager()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
 	}
-
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
-	reviewDB := storage.NewStore(dbConn.DB)
-	reviewJob := jobs.NewReviewJob(cfg, ragService, reviewDB, logger, cfg.RepoPath)
+
+	reviewJob := jobs.NewReviewJob(cfg, ragService, store, repoManager, logger)
+
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
 

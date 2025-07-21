@@ -1,21 +1,20 @@
+// File: ./internal/jobs/review.go
 // Package jobs defines background tasks such as code reviews.
 package jobs
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
-	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -23,20 +22,28 @@ var collectionNameRegexp = regexp.MustCompile("[^a-z0-9_-]+")
 
 // ReviewJob performs AI-assisted code reviews.
 type ReviewJob struct {
-	cfg         *config.Config
-	ragService  llm.RAGService
-	reviewStore storage.Store
-	repoStore   storage.Store
-	logger      *slog.Logger
-	repoPath    string
+	cfg        *config.Config
+	ragService llm.RAGService
+	store      storage.Store
+	repoMgr    repomanager.RepoManager
+	logger     *slog.Logger
 }
 
-// NewReviewJob creates a new ReviewJob with all its dependencies.
-func NewReviewJob(cfg *config.Config, rag llm.RAGService, reviewStore storage.Store, repoStore storage.Store, logger *slog.Logger, repoPath string) core.Job {
-	if cfg == nil || rag == nil || reviewStore == nil || repoStore == nil || logger == nil || repoPath == "" {
-		panic("NewReviewJob received a nil or empty dependency")
+// NewReviewJob creates a new ReviewJob with cleaner, more abstract dependencies.
+func NewReviewJob(
+	cfg *config.Config,
+	rag llm.RAGService,
+	store storage.Store,
+	repoMgr repomanager.RepoManager,
+	logger *slog.Logger,
+) core.Job {
+	return &ReviewJob{
+		cfg:        cfg,
+		ragService: rag,
+		store:      store,
+		repoMgr:    repoMgr,
+		logger:     logger,
 	}
-	return &ReviewJob{cfg: cfg, ragService: rag, reviewStore: reviewStore, repoStore: repoStore, logger: logger, repoPath: repoPath}
 }
 
 // Run acts as a router, directing the event to the correct review flow.
@@ -56,7 +63,7 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 	}
 }
 
-// runFullReview handles the initial `/review` command.
+// runFullReview handles the initial `/review` command with the new, simplified logic.
 func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) (err error) {
 	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
@@ -64,74 +71,45 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	if err != nil {
 		return err
 	}
-
-	// Defer a handler to update GitHub status on any subsequent error.
 	defer func() {
 		if err != nil && statusUpdater != nil {
 			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
 		}
 	}()
 
-	// Get or create repository entry
-	repo, err := j.repoStore.GetRepositoryByFullName(ctx, event.RepoFullName)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("failed to get repository from DB: %w", err)
+	// 1. Sync the repository using the manager. This single call handles both
+	// the initial clone and subsequent incremental updates.
+	updateResult, err := j.repoMgr.SyncRepo(ctx, event, ghToken)
+	if err != nil {
+		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
-	var clonePath string
 	collectionName := j.generateCollectionName(event.RepoFullName, j.cfg.EmbedderModelName)
-	cloner := gitutil.NewCloner(j.logger)
 
-	if repo == nil {
-		// First time seeing this repo, clone it
-		cloneCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		var cleanup func()
-		clonePath, cleanup, err = cloner.Clone(cloneCtx, event.RepoCloneURL, event.HeadSHA, ghToken)
+	// 2. Update the vector store based on the results from the manager.
+	if updateResult.IsInitialClone {
+		// If it's the first time, perform a full indexing.
+		err = j.ragService.SetupRepoContext(ctx, collectionName, updateResult.RepoPath)
 		if err != nil {
-			return fmt.Errorf("failed to clone repository: %w", err)
+			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}
-		defer cleanup()
-
-		repo = &storage.Repository{
-			FullName:             event.RepoFullName,
-			ClonePath:            clonePath,
-			QdrantCollectionName: collectionName,
-			LastIndexedSHA:       event.HeadSHA,
-		}
-		if err := j.repoStore.CreateRepository(ctx, repo); err != nil {
-			return fmt.Errorf("failed to create repository entry in DB: %w", err)
+	} else if len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0 {
+		// Otherwise, perform an incremental update.
+		err = j.ragService.UpdateRepoContext(ctx, collectionName, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
+		if err != nil {
+			return fmt.Errorf("failed to update repository context in vector store: %w", err)
 		}
 	} else {
-		// Repo already exists, update it
-		clonePath = repo.ClonePath
-
-		// Pull latest changes and calculate diff
-		currentSHA := repo.LastIndexedSHA
-		if err := cloner.Pull(ctx, clonePath, event.HeadSHA, ghToken); err != nil {
-			return fmt.Errorf("failed to pull repository: %w", err)
-		}
-
-		// Calculate diff and update Qdrant
-		added, modified, deleted, err := cloner.Diff(ctx, clonePath, currentSHA, event.HeadSHA)
-		if err != nil {
-			return fmt.Errorf("failed to calculate diff: %w", err)
-		}
-
-		if err := j.ragService.UpdateRepoContext(ctx, collectionName, clonePath, added, modified, deleted); err != nil {
-			return fmt.Errorf("failed to update repository context: %w", err)
-		}
-
-		repo.LastIndexedSHA = event.HeadSHA
-		if err := j.repoStore.UpdateRepository(ctx, repo); err != nil {
-			return fmt.Errorf("failed to update repository entry in DB: %w", err)
-		}
+		j.logger.Info("no file changes detected between SHAs, skipping vector store update", "repo", event.RepoFullName)
 	}
 
-	if err = j.ragService.SetupRepoContext(ctx, collectionName, clonePath); err != nil {
-		return fmt.Errorf("failed to setup repository context: %w", err)
+	// 3. After a successful vector store update, persist the new SHA in our database.
+	if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
+		// This is a critical error, as it could lead to incorrect diffs in the future.
+		return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database: %w", err)
 	}
 
+	// 4. Generate the review using the now-up-to-date context.
 	review, err := j.ragService.GenerateReview(ctx, collectionName, event, ghClient)
 	if err != nil {
 		return fmt.Errorf("failed to generate review: %w", err)
@@ -140,19 +118,18 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		return errors.New("generated review is empty")
 	}
 
+	// 5. Post comment, save review record, and complete the check run.
 	if err = statusUpdater.PostReviewComment(ctx, event, review); err != nil {
 		return fmt.Errorf("failed to post review comment: %w", err)
 	}
-
 	dbReview := &core.Review{
 		RepoFullName:  event.RepoFullName,
 		PRNumber:      event.PRNumber,
 		HeadSHA:       event.HeadSHA,
 		ReviewContent: review,
 	}
-	if err = j.reviewStore.SaveReview(ctx, dbReview); err != nil {
+	if err = j.store.SaveReview(ctx, dbReview); err != nil {
 		j.logger.Error("failed to save review to database", "error", err)
-		// We log this but don't fail the job, as the user has received the review.
 	}
 
 	if err = statusUpdater.Completed(ctx, event, checkRunID, "success", "Review Complete", "AI analysis finished."); err != nil {
@@ -163,7 +140,7 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	return nil
 }
 
-// runReReview handles the follow-up `/rereview` command.
+// runReReview remains unchanged as its logic is correct.
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (err error) {
 	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
@@ -178,7 +155,7 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (e
 		}
 	}()
 
-	originalReview, err := j.reviewStore.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+	originalReview, err := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
 	if err != nil {
 		return fmt.Errorf("could not find a previous review to check against: %w", err)
 	}

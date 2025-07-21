@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/sevigo/code-warden/internal/core"
 	// import db drivers
 	_ "github.com/lib/pq"
-	"github.com/sevigo/code-warden/internal/core"
 )
 
 // Repository represents a stored Git repository.
