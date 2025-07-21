@@ -138,7 +138,6 @@ func configureLogger(v *viper.Viper) logger.Config {
 	}
 }
 
-// configureDB now builds the DSN string internally and returns a leaner DBConfig struct.
 func configureDB(v *viper.Viper) (*DBConfig, error) {
 	connMaxLifetime, err := time.ParseDuration(v.GetString("DB_CONN_MAX_LIFETIME"))
 	if err != nil {
