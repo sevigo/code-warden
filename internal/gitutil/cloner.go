@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 )
 
 // Cloner handles cloning Git repositories and checking out specific commits.
@@ -114,7 +114,7 @@ func (c *Cloner) Pull(ctx context.Context, repoPath, sha, token string) error {
 	// Fetch the latest changes from the remote
 	err = worktree.PullContext(ctx, &git.PullOptions{
 		RemoteName: "origin",
-		Auth: &http.BasicAuth{
+		Auth: &githttp.BasicAuth{
 			Username: "x-access-token",
 			Password: token,
 		},
