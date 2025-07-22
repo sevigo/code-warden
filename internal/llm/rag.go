@@ -268,30 +268,53 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 		return ""
 	}
 
-	// prepare a batch of queries, one for each changed file.
+	// Prepare a batch of queries and corresponding original files.
+	// This new slice will maintain the correct mapping between queries/results and the original files.
 	queries := make([]string, 0, len(changedFiles))
+	originalFilesForQueries := make([]internalgithub.ChangedFile, 0, len(changedFiles))
+
 	for _, file := range changedFiles {
+		if file.Patch == "" {
+			continue // Skip files without a patch, as no query can be formed.
+		}
 		query := fmt.Sprintf(
 			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
 			file.Filename,
 			file.Patch,
 		)
 		queries = append(queries, query)
+		originalFilesForQueries = append(originalFilesForQueries, file) // Store the file for this specific query
 	}
 
-	// execute the batch search in a single network call.
+	// If no queries were generated (e.g., all files had empty patches), return early.
+	if len(queries) == 0 {
+		return ""
+	}
+
+	// Execute the batch search in a single network call.
 	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 3)
 	if err != nil {
 		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
 		return ""
 	}
 
-	// process the results, mapping them back to the original files.
+	// Process the results, mapping them back to the original files.
 	var contextBuilder strings.Builder
 	seenDocs := make(map[string]struct{})
 
+	// Sanity check: Ensure the number of results matches the number of queries.
+	// This should hold true if the vector store contract is respected.
+	if len(batchResults) != len(originalFilesForQueries) {
+		r.logger.Error("mismatch between batch results and original files list; context attribution may be incorrect",
+			"batch_results_count", len(batchResults),
+			"expected_files_count", len(originalFilesForQueries))
+		// Decide on a more robust fallback here if this state is possible and needs different handling.
+		return ""
+	}
+
 	for i, relevantDocs := range batchResults {
-		originalFile := changedFiles[i]
+		// Use the correctly mapped original file for this batch result.
+		originalFile := originalFilesForQueries[i]
 
 		for _, doc := range relevantDocs {
 			source, ok := doc.Metadata["source"].(string)
@@ -312,7 +335,6 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 			}
 		}
 	}
-
 	return contextBuilder.String()
 }
 
