@@ -271,9 +271,6 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 	// prepare a batch of queries, one for each changed file.
 	queries := make([]string, 0, len(changedFiles))
 	for _, file := range changedFiles {
-		if file.Patch == "" {
-			continue
-		}
 		query := fmt.Sprintf(
 			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
 			file.Filename,
