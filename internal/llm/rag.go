@@ -66,21 +66,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	appDefaultExcludeDirs := []string{".git", ".github", "vendor", "node_modules", "target", "build"}
-
-	// Using a map handles duplicates automatically.
-	allExcludeDirs := make(map[string]struct{})
-	for _, dir := range appDefaultExcludeDirs {
-		allExcludeDirs[dir] = struct{}{}
-	}
-	for _, dir := range repoConfig.ExcludeDirs {
-		allExcludeDirs[dir] = struct{}{}
-	}
-
-	finalExcludeDirs := make([]string, 0, len(allExcludeDirs))
-	for dir := range allExcludeDirs {
-		finalExcludeDirs = append(finalExcludeDirs, dir)
-	}
+	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
 
 	r.logger.Info("final loader configuration", "exclude_dirs", finalExcludeDirs, "exclude_exts", repoConfig.ExcludeExts)
 
@@ -112,11 +98,22 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	// Filter incoming file lists to ensure consistency with the repo config.
+	// Get the same exclude directories configuration as SetupRepoContext
+	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
+
+	// Apply directory filtering first, then extension filtering
+	filesToProcess = r.filterFilesByDirectories(filesToProcess, finalExcludeDirs, repoPath)
+	filesToDelete = r.filterFilesByDirectories(filesToDelete, finalExcludeDirs, repoPath)
+
 	filesToProcess = filterFilesByExtensions(filesToProcess, repoConfig.ExcludeExts)
 	filesToDelete = filterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
 
-	r.logger.Info("updating repository context after filtering", "collection", collectionName, "process", len(filesToProcess), "delete", len(filesToDelete))
+	r.logger.Info("updating repository context after filtering",
+		"collection", collectionName,
+		"process", len(filesToProcess),
+		"delete", len(filesToDelete),
+		"exclude_dirs", finalExcludeDirs,
+		"exclude_exts", repoConfig.ExcludeExts)
 
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
@@ -315,6 +312,65 @@ func filterFilesByExtensions(files []string, excludeExts []string) []string {
 	for _, file := range files {
 		fileExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file), "."))
 		if _, isExcluded := excludeMap[fileExt]; !isExcluded {
+			filtered = append(filtered, file)
+		}
+	}
+
+	return filtered
+}
+
+// buildExcludeDirs creates the final list of directories to exclude, combining
+// application defaults with user-configured exclusions.
+func (r *ragService) buildExcludeDirs(repoConfig *core.RepoConfig) []string {
+	appDefaultExcludeDirs := []string{".git", ".github", "vendor", "node_modules", "target", "build"}
+
+	// Using a map handles duplicates automatically.
+	allExcludeDirs := make(map[string]struct{})
+	for _, dir := range appDefaultExcludeDirs {
+		allExcludeDirs[dir] = struct{}{}
+	}
+	for _, dir := range repoConfig.ExcludeDirs {
+		allExcludeDirs[dir] = struct{}{}
+	}
+
+	finalExcludeDirs := make([]string, 0, len(allExcludeDirs))
+	for dir := range allExcludeDirs {
+		finalExcludeDirs = append(finalExcludeDirs, dir)
+	}
+
+	return finalExcludeDirs
+}
+
+// filterFilesByDirectories removes files from a slice if they are located within
+// any of the excluded directories.
+func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []string, repoPath string) []string {
+	if len(excludeDirs) == 0 {
+		return files
+	}
+
+	filtered := make([]string, 0, len(files))
+	for _, file := range files {
+		// Normalize the file path - remove any leading separators and clean it
+		cleanFile := filepath.Clean(strings.TrimPrefix(file, string(filepath.Separator)))
+
+		isExcluded := false
+		for _, excludeDir := range excludeDirs {
+			cleanExcludeDir := filepath.Clean(excludeDir)
+
+			// Check if the file path is exactly the excluded directory
+			if cleanFile == cleanExcludeDir {
+				isExcluded = true
+				break
+			}
+
+			// Check if the file path starts with the excluded directory followed by a separator
+			if strings.HasPrefix(cleanFile, cleanExcludeDir+string(filepath.Separator)) {
+				isExcluded = true
+				break
+			}
+		}
+
+		if !isExcluded {
 			filtered = append(filtered, file)
 		}
 	}
