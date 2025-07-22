@@ -52,7 +52,7 @@ Post comments directly on the lines of code being changed, just like a human rev
     3.  **Post Line Comments:** If you implemented structured JSON output (from TODO #2), you can now loop through the `suggestions` array. For each suggestion that has a `file_path` and `line_number`, make an API call to post that specific comment on that exact line in the PR.
 *   **Benefit:** Massively improves the user experience. The AI's feedback appears exactly where it's relevant, making it feel much more like a real team member's review.
 
-### 4. **Add a Configuration File to the User's Repository**
+### 4. **Add a Configuration File to the User's Repository** (DONE)
 
 Allow users to customize the behavior of `Code-Warden` for their specific repository.
 
