@@ -88,7 +88,7 @@ func (q *qdrantVectorStore) AddDocuments(ctx context.Context, collectionName str
 		return fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
 	}
 
-	_, err = store.AddDocuments(ctx, docs)
+	_, err = store.AddDocuments(ctx, docs, vectorstores.WithCollectionName(collectionName))
 	if err != nil {
 		return fmt.Errorf("failed to add documents to collection %s: %w", collectionName, err)
 	}
