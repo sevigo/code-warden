@@ -102,8 +102,8 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
 
 	// Apply directory filtering first, then extension filtering
-	filesToProcess = r.filterFilesByDirectories(filesToProcess, finalExcludeDirs, repoPath)
-	filesToDelete = r.filterFilesByDirectories(filesToDelete, finalExcludeDirs, repoPath)
+	filesToProcess = r.filterFilesByDirectories(filesToProcess, finalExcludeDirs)
+	filesToDelete = r.filterFilesByDirectories(filesToDelete, finalExcludeDirs)
 
 	filesToProcess = filterFilesByExtensions(filesToProcess, repoConfig.ExcludeExts)
 	filesToDelete = filterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
@@ -343,7 +343,7 @@ func (r *ragService) buildExcludeDirs(repoConfig *core.RepoConfig) []string {
 
 // filterFilesByDirectories removes files from a slice if they are located within
 // any of the excluded directories.
-func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []string, repoPath string) []string {
+func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []string) []string {
 	if len(excludeDirs) == 0 {
 		return files
 	}
