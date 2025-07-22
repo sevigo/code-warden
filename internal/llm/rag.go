@@ -264,30 +264,48 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
 func (r *ragService) buildRelevantContext(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) string {
-	var contextBuilder strings.Builder
-	seenDocs := make(map[string]struct{})
+	if len(changedFiles) == 0 {
+		return ""
+	}
 
+	// prepare a batch of queries, one for each changed file.
+	queries := make([]string, 0, len(changedFiles))
 	for _, file := range changedFiles {
-		r.logger.Debug("searching for relevant context", "file", file.Filename)
-
 		query := fmt.Sprintf(
 			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
 			file.Filename,
 			file.Patch,
 		)
-		relevantDocs, err := r.vectorStore.SimilaritySearch(ctx, collectionName, query, 3)
-		if err != nil {
-			r.logger.Warn("context search failed", "file", file.Filename, "error", err)
-			continue
-		}
+		queries = append(queries, query)
+	}
+
+	r.logger.Debug("searching for relevant context in batch", "query_count", len(queries))
+
+	// execute the batch search in a single network call.
+	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 3)
+	if err != nil {
+		r.logger.Warn("context batch search failed", "error", err)
+		return ""
+	}
+
+	// process the results, mapping them back to the original files.
+	var contextBuilder strings.Builder
+	seenDocs := make(map[string]struct{})
+
+	for i, relevantDocs := range batchResults {
+		// Get the original file this result corresponds to.
+		originalFile := changedFiles[i]
 
 		for _, doc := range relevantDocs {
-			if source, ok := doc.Metadata["source"].(string); ok {
-				if _, exists := seenDocs[source]; !exists {
-					contextBuilder.WriteString(fmt.Sprintf("**%s** (relevant to %s):\n```\n%s\n```\n\n",
-						source, file.Filename, doc.PageContent))
-					seenDocs[source] = struct{}{}
-				}
+			source, ok := doc.Metadata["source"].(string)
+			if !ok {
+				continue
+			}
+
+			if _, exists := seenDocs[source]; !exists {
+				contextBuilder.WriteString(fmt.Sprintf("**%s** (relevant to %s):\n```\n%s\n```\n\n",
+					source, originalFile.Filename, doc.PageContent))
+				seenDocs[source] = struct{}{}
 			}
 		}
 	}

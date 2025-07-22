@@ -17,6 +17,7 @@ import (
 type VectorStore interface {
 	AddDocuments(ctx context.Context, collectionName string, docs []schema.Document) error
 	SimilaritySearch(ctx context.Context, collectionName, query string, numDocs int) ([]schema.Document, error)
+	SimilaritySearchBatch(ctx context.Context, collectionName string, queries []string, numDocs int) ([][]schema.Document, error)
 	DeleteCollection(ctx context.Context, collectionName string) error
 	DeleteDocuments(ctx context.Context, collectionName string, documentIDs []string) error
 	DeleteDocumentsByFilter(ctx context.Context, collectionName string, filters map[string]any) error
@@ -110,6 +111,26 @@ func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName
 	results, err := store.SimilaritySearch(ctx, query, numDocs)
 	if err != nil {
 		return nil, fmt.Errorf("similarity search failed in collection %s: %w", collectionName, err)
+	}
+	return results, nil
+}
+
+func (q *qdrantVectorStore) SimilaritySearchBatch(ctx context.Context, collectionName string, queries []string, numDocs int) ([][]schema.Document, error) {
+	if len(queries) == 0 {
+		return nil, nil
+	}
+	if numDocs <= 0 {
+		return nil, fmt.Errorf("numDocs must be positive, got %d", numDocs)
+	}
+
+	store, err := q.getStoreForCollection(collectionName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
+	}
+
+	results, err := store.SimilaritySearchBatch(ctx, queries, numDocs)
+	if err != nil {
+		return nil, fmt.Errorf("batch similarity search failed in collection %s: %w", collectionName, err)
 	}
 	return results, nil
 }
