@@ -130,6 +130,10 @@ func validateRequired(v *viper.Viper) error {
 	if v.GetString("GITHUB_WEBHOOK_SECRET") == "" {
 		return errors.New("GITHUB_WEBHOOK_SECRET must be set")
 	}
+	privateKeyPath := v.GetString("GITHUB_PRIVATE_KEY_PATH")
+	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
+		return fmt.Errorf("github private key not found at path: %s", privateKeyPath)
+	}
 	return nil
 }
 
