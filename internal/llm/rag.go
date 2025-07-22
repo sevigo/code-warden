@@ -193,8 +193,6 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		r.logger.Warn("could not retrieve changed files list", "error", err)
 	}
 
-	r.buildRelevantContext(ctx, collectionName, changedFiles)
-
 	contextString, err := r.buildRelevantContext(ctx, collectionName, changedFiles)
 	if err != nil {
 		return "", err
