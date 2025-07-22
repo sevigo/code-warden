@@ -4,20 +4,14 @@ This document outlines planned improvements and future work for Code-Warden.
 
 ### 1. **Implement Intelligent RAG Context Caching and Invalidation** (DONE)
 
-This is the most critical next step to make the tool practical and efficient.
+This was the most critical step to make the tool practical and efficient.
 
-*   **Problem:** The current system re-clones and re-embeds the entire repository on every `/review` command (if the SHA has changed). For large repos, this is slow and wasteful.
-*   **TODO:**
-    1.  **Track Repository State:** Use the PostgreSQL database to store not just the `last_indexed_sha` for a repository, but also the `qdrant_collection_name`.
-    2.  **Diff-Based Indexing:** When a new review is requested, instead of re-indexing everything, perform a `git diff` between the *new* `HEAD` SHA and the `last_indexed_sha` stored in your database.
-    3.  **Update the Vector Store:**
-        *   For **added/modified** files in the diff, parse and embed only those new files, then add/upsert their vectors into the existing Qdrant collection.
-        *   For **deleted** files, you'll need a way to remove their corresponding vectors from the Qdrant collection. This might involve storing a file-path-to-vector-ID mapping in your PostgreSQL database.
+*   **Resolution:** The system now tracks repository state in the PostgreSQL database, storing `last_indexed_sha` and `qdrant_collection_name`. For new reviews, `git diff` is performed between the current `HEAD` SHA and `last_indexed_sha`. The vector store is updated incrementally: added/modified files are upserted, and deleted files' vectors are removed from the Qdrant collection.
 *   **Benefit:** Reduces the time for subsequent reviews on the same repository from minutes to seconds, making the tool feel instantaneous after the initial indexing.
 
-### 2. **Refine the Review Prompt and Add Structured Output**
+### 2. **Refine the Review Prompt and Add Structured Output** (Partially Done)
 
-Improve the quality and consistency of the AI's feedback (partly done).
+Improve the quality and consistency of the AI's feedback.
 
 *   **Problem:** The current prompt is good, but the LLM's output is free-form Markdown. It can be inconsistent and hard to parse for metrics or UI enhancements.
 *   **TODO:**
@@ -56,14 +50,7 @@ Post comments directly on the lines of code being changed, just like a human rev
 
 Allow users to customize the behavior of `Code-Warden` for their specific repository.
 
-*   **Problem:** The review prompt and rules are hard-coded in your application. Different teams have different coding standards and priorities.
-*   **TODO:**
-    1.  **Define a Config Schema:** Create a schema for a configuration file, e.g., `.code-warden.yml`, that users can add to their repository root.
-    2.  **Allow Customization:** Let users define things like:
-        *   `disabled_checkers`: `["performance", "style"]`
-        *   `custom_instructions`: "Please pay extra attention to our internal error handling library, `ourerrors`."
-        *   `exclude_patterns`: `["**/*.md", "**/generated_*.go"]`
-    3.  **Load and Use the Config:** In the `review.go` job, after cloning the repository, check for the existence of `.code-warden.yml`. If it exists, parse it and use its values to dynamically modify the LLM prompt and the file parsing logic.
+*   **Resolution:** Users can now define a `.code-warden.yml` file in their repository root. This file allows for `custom_instructions`, `exclude_dirs`, and `exclude_exts`. The `review.go` job loads and applies this configuration to dynamically modify the LLM prompt and file parsing/indexing logic.
 *   **Benefit:** Makes the tool far more powerful and adaptable, allowing teams to tailor it to their specific needs.
 
 ### 5. **Create a Simple Web UI for Onboarding and Status**
