@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -136,7 +137,12 @@ func (s *postgresStore) GetAllReviewsForPR(ctx context.Context, repoFullName str
 	var reviews []*core.Review
 	err := s.db.SelectContext(ctx, &reviews, query, repoFullName, prNumber)
 	if err != nil {
-		return nil, err
+		slog.ErrorContext(ctx, "failed to retrieve all reviews for PR",
+			"repo_full_name", repoFullName,
+			"pr_number", prNumber,
+			"error", err,
+		)
+		return nil, fmt.Errorf("failed to retrieve all reviews for %q PR %d: %w", repoFullName, prNumber, err)
 	}
 
 	return reviews, nil
