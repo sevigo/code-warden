@@ -264,34 +264,77 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
 func (r *ragService) buildRelevantContext(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) string {
-	var contextBuilder strings.Builder
-	seenDocs := make(map[string]struct{})
+	if len(changedFiles) == 0 {
+		return ""
+	}
+
+	// Prepare a batch of queries and corresponding original files.
+	// This new slice will maintain the correct mapping between queries/results and the original files.
+	queries := make([]string, 0, len(changedFiles))
+	originalFilesForQueries := make([]internalgithub.ChangedFile, 0, len(changedFiles))
 
 	for _, file := range changedFiles {
-		r.logger.Debug("searching for relevant context", "file", file.Filename)
-
+		if file.Patch == "" {
+			continue // Skip files without a patch, as no query can be formed.
+		}
 		query := fmt.Sprintf(
 			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
 			file.Filename,
 			file.Patch,
 		)
-		relevantDocs, err := r.vectorStore.SimilaritySearch(ctx, collectionName, query, 3)
-		if err != nil {
-			r.logger.Warn("context search failed", "file", file.Filename, "error", err)
-			continue
-		}
+		queries = append(queries, query)
+		originalFilesForQueries = append(originalFilesForQueries, file) // Store the file for this specific query
+	}
+
+	// If no queries were generated (e.g., all files had empty patches), return early.
+	if len(queries) == 0 {
+		return ""
+	}
+
+	// Execute the batch search in a single network call.
+	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 3)
+	if err != nil {
+		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
+		return ""
+	}
+
+	// Process the results, mapping them back to the original files.
+	var contextBuilder strings.Builder
+	seenDocs := make(map[string]struct{})
+
+	// Sanity check: Ensure the number of results matches the number of queries.
+	// This should hold true if the vector store contract is respected.
+	if len(batchResults) != len(originalFilesForQueries) {
+		r.logger.Error("mismatch between batch results and original files list; context attribution may be incorrect",
+			"batch_results_count", len(batchResults),
+			"expected_files_count", len(originalFilesForQueries))
+		// Decide on a more robust fallback here if this state is possible and needs different handling.
+		return ""
+	}
+
+	for i, relevantDocs := range batchResults {
+		// Use the correctly mapped original file for this batch result.
+		originalFile := originalFilesForQueries[i]
 
 		for _, doc := range relevantDocs {
-			if source, ok := doc.Metadata["source"].(string); ok {
-				if _, exists := seenDocs[source]; !exists {
-					contextBuilder.WriteString(fmt.Sprintf("**%s** (relevant to %s):\n```\n%s\n```\n\n",
-						source, file.Filename, doc.PageContent))
-					seenDocs[source] = struct{}{}
+			source, ok := doc.Metadata["source"].(string)
+			if !ok {
+				contentPreview := doc.PageContent
+				if len(contentPreview) > 50 {
+					contentPreview = contentPreview[:50] + "..."
 				}
+				r.logger.Debug("document missing 'source' metadata or it's not a string, skipping",
+					"document_content_preview", contentPreview)
+				continue
+			}
+
+			if _, exists := seenDocs[source]; !exists {
+				contextBuilder.WriteString(fmt.Sprintf("**%s** (relevant to %s):\n```\n%s\n```\n\n",
+					source, originalFile.Filename, doc.PageContent))
+				seenDocs[source] = struct{}{}
 			}
 		}
 	}
-
 	return contextBuilder.String()
 }
 

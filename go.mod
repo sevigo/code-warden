@@ -10,7 +10,7 @@ require (
 	github.com/google/go-github/v73 v73.0.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.10.9
-	github.com/sevigo/goframe v0.6.0
+	github.com/sevigo/goframe v0.7.0
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
 	golang.org/x/oauth2 v0.30.0
