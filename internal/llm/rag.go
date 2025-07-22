@@ -193,13 +193,18 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		r.logger.Warn("could not retrieve changed files list", "error", err)
 	}
 
+	contextString, err := r.buildRelevantContext(ctx, collectionName, changedFiles)
+	if err != nil {
+		return "", err
+	}
+
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
 		"Description":        event.PRBody,
 		"Language":           event.Language,
 		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 		"ChangedFiles":       r.formatChangedFiles(changedFiles),
-		"Context":            r.buildRelevantContext(ctx, collectionName, changedFiles),
+		"Context":            contextString,
 		"Diff":               diff,
 	}
 
@@ -263,9 +268,9 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
-func (r *ragService) buildRelevantContext(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) string {
+func (r *ragService) buildRelevantContext(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) (string, error) {
 	if len(changedFiles) == 0 {
-		return ""
+		return "", nil
 	}
 
 	// Prepare a batch of queries and corresponding original files.
@@ -288,14 +293,14 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 
 	// If no queries were generated (e.g., all files had empty patches), return early.
 	if len(queries) == 0 {
-		return ""
+		return "", nil
 	}
 
 	// Execute the batch search in a single network call.
 	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 3)
 	if err != nil {
 		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
-		return ""
+		return "", fmt.Errorf("failed to retrieve RAG context: %w", err)
 	}
 
 	// Process the results, mapping them back to the original files.
@@ -309,7 +314,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 			"batch_results_count", len(batchResults),
 			"expected_files_count", len(originalFilesForQueries))
 		// Decide on a more robust fallback here if this state is possible and needs different handling.
-		return ""
+		return "", fmt.Errorf("mismatch between batch results and original files list")
 	}
 
 	for i, relevantDocs := range batchResults {
@@ -335,7 +340,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 			}
 		}
 	}
-	return contextBuilder.String()
+	return contextBuilder.String(), nil
 }
 
 // filterFilesByExtensions removes files from a slice if their extension matches
