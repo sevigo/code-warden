@@ -1,4 +1,3 @@
-// Package jobs defines background tasks such as code reviews.
 package jobs
 
 import (
@@ -6,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -80,6 +83,12 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		return fmt.Errorf("failed to sync repository: %w", err)
 	}
 
+	repoConfig, err := j.loadRepoConfig(updateResult.RepoPath)
+	if err != nil {
+		j.logger.Warn("could not load or parse .code-warden.yml, using defaults", "error", err)
+		repoConfig = core.DefaultRepoConfig()
+	}
+
 	// Retrieve the repository record to get the correct collection name from the database.
 	repoRecord, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
 	if err != nil {
@@ -94,13 +103,13 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	switch {
 	case updateResult.IsInitialClone:
 		// If it's the first time, perform a full indexing.
-		err = j.ragService.SetupRepoContext(ctx, collectionName, updateResult.RepoPath)
+		err = j.ragService.SetupRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath)
 		if err != nil {
 			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}
 	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
 		// Otherwise, perform an incremental update.
-		err = j.ragService.UpdateRepoContext(ctx, collectionName, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
+		err = j.ragService.UpdateRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
 		if err != nil {
 			return fmt.Errorf("failed to update repository context in vector store: %w", err)
 		}
@@ -115,7 +124,7 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	}
 
 	// Generate the review using the now-up-to-date context.
-	review, err := j.ragService.GenerateReview(ctx, collectionName, event, ghClient)
+	review, err := j.ragService.GenerateReview(ctx, repoConfig, collectionName, event, ghClient)
 	if err != nil {
 		return fmt.Errorf("failed to generate review: %w", err)
 	}
@@ -240,4 +249,27 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 		return fmt.Errorf("installation ID must be positive, got: %d", event.InstallationID)
 	}
 	return nil
+}
+
+func (j *ReviewJob) loadRepoConfig(repoPath string) (*core.RepoConfig, error) {
+	config := core.DefaultRepoConfig()
+	configPath := filepath.Join(repoPath, ".code-warden.yml")
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist, which is fine. Return the default config.
+			j.logger.Info("no .code-warden.yml found, using defaults", "repo_path", repoPath)
+			return config, nil
+		}
+		// Some other error reading the file.
+		return nil, fmt.Errorf("failed to read .code-warden.yml: %w", err)
+	}
+
+	if err := yaml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse .code-warden.yml: %w", err)
+	}
+
+	j.logger.Info(".code-warden.yml loaded successfully")
+	return config, nil
 }

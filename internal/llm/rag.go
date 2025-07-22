@@ -23,9 +23,9 @@ import (
 
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
-	SetupRepoContext(ctx context.Context, collectionName, repoPath string) error
-	UpdateRepoContext(ctx context.Context, collectionName, repoPath string, filesToProcess, filesToDelete []string) error
-	GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error)
+	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string) error
+	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string, filesToProcess, filesToDelete []string) error
+	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 }
 
@@ -59,14 +59,37 @@ func NewRAGService(
 }
 
 // SetupRepoContext processes a repository for the first time, storing all its embeddings.
-func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoPath string) error {
+func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string) error {
 	r.logger.Info("performing initial full indexing of repository", "path", repoPath, "collection", collectionName)
+
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	appDefaultExcludeDirs := []string{".git", ".github", "vendor", "node_modules", "target", "build"}
+
+	// Using a map handles duplicates automatically.
+	allExcludeDirs := make(map[string]struct{})
+	for _, dir := range appDefaultExcludeDirs {
+		allExcludeDirs[dir] = struct{}{}
+	}
+	for _, dir := range repoConfig.ExcludeDirs {
+		allExcludeDirs[dir] = struct{}{}
+	}
+
+	finalExcludeDirs := make([]string, 0, len(allExcludeDirs))
+	for dir := range allExcludeDirs {
+		finalExcludeDirs = append(finalExcludeDirs, dir)
+	}
+
+	r.logger.Info("final loader configuration", "exclude_dirs", finalExcludeDirs, "exclude_exts", repoConfig.ExcludeExts)
 
 	gitLoader := documentloaders.NewGit(
 		repoPath,
 		r.parserRegistry,
 		documentloaders.WithLogger(r.logger),
-		documentloaders.WithExcludeDirs([]string{".git", ".github", "vendor", "node_modules", "target", "build"}),
+		documentloaders.WithExcludeDirs(finalExcludeDirs),
+		documentloaders.WithExcludeExts(repoConfig.ExcludeExts),
 	)
 
 	docs, err := gitLoader.Load(ctx)
@@ -75,7 +98,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoP
 	}
 
 	if len(docs) == 0 {
-		r.logger.Warn("no indexable documents found", "path", repoPath)
+		r.logger.Warn("no indexable documents found after loader filtering", "path", repoPath)
 		return nil
 	}
 
@@ -84,14 +107,21 @@ func (r *ragService) SetupRepoContext(ctx context.Context, collectionName, repoP
 }
 
 // UpdateRepoContext incrementally updates the vector store based on file changes.
-func (r *ragService) UpdateRepoContext(ctx context.Context, collectionName, repoPath string, filesToProcess, filesToDelete []string) error {
-	r.logger.Info("updating repository context", "collection", collectionName, "process", len(filesToProcess), "delete", len(filesToDelete))
+func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string, filesToProcess, filesToDelete []string) error {
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	// Filter incoming file lists to ensure consistency with the repo config.
+	filesToProcess = filterFilesByExtensions(filesToProcess, repoConfig.ExcludeExts)
+	filesToDelete = filterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
+
+	r.logger.Info("updating repository context after filtering", "collection", collectionName, "process", len(filesToProcess), "delete", len(filesToDelete))
 
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
 		r.logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
 		if err := r.vectorStore.DeleteDocuments(ctx, collectionName, filesToDelete); err != nil {
-			// Log the error but continue; we might still be able to process other changes.
 			r.logger.Error("failed to delete some embeddings", "error", err)
 		}
 	}
@@ -116,17 +146,15 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, collectionName, repo
 			continue
 		}
 
-		// Use the parser to create semantic chunks from the file's content
 		chunks, err := parser.Chunk(string(contentBytes), file, nil)
 		if err != nil {
 			r.logger.Error("failed to chunk file", "file", file, "error", err)
 			continue
 		}
 
-		// Convert chunks to documents for the vector store
 		for _, chunk := range chunks {
 			doc := schema.NewDocument(chunk.Content, map[string]any{
-				"source":     file, // Use the relative path as the source for filtering
+				"source":     file,
 				"identifier": chunk.Identifier,
 				"chunk_type": chunk.Type,
 				"line_start": chunk.LineStart,
@@ -146,8 +174,12 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, collectionName, repo
 	return nil
 }
 
-// REFACTORED: GenerateReview now focuses on data preparation and delegates to the helper.
-func (r *ragService) GenerateReview(ctx context.Context, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error) {
+// GenerateReview now focuses on data preparation and delegates to the helper.
+func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error) {
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
 	r.logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
@@ -165,18 +197,19 @@ func (r *ragService) GenerateReview(ctx context.Context, collectionName string, 
 	}
 
 	promptData := map[string]string{
-		"Title":        event.PRTitle,
-		"Description":  event.PRBody,
-		"Language":     event.Language,
-		"ChangedFiles": r.formatChangedFiles(changedFiles),
-		"Context":      r.buildRelevantContext(ctx, collectionName, changedFiles),
-		"Diff":         diff,
+		"Title":              event.PRTitle,
+		"Description":        event.PRBody,
+		"Language":           event.Language,
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+		"ChangedFiles":       r.formatChangedFiles(changedFiles),
+		"Context":            r.buildRelevantContext(ctx, collectionName, changedFiles),
+		"Diff":               diff,
 	}
 
 	return r.generateResponseWithPrompt(ctx, event, CodeReviewPrompt, promptData)
 }
 
-// REFACTORED: GenerateReReview now focuses on data preparation and delegates to the helper.
+// GenerateReReview now focuses on data preparation and delegates to the helper.
 func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error) {
 	r.logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
@@ -263,4 +296,28 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 	}
 
 	return contextBuilder.String()
+}
+
+// filterFilesByExtensions removes files from a slice if their extension matches
+// one of the provided excluded extensions.
+func filterFilesByExtensions(files []string, excludeExts []string) []string {
+	if len(excludeExts) == 0 {
+		return files
+	}
+
+	excludeMap := make(map[string]struct{}, len(excludeExts))
+	for _, ext := range excludeExts {
+		normalizedExt := strings.ToLower(strings.TrimPrefix(ext, "."))
+		excludeMap[normalizedExt] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(files))
+	for _, file := range files {
+		fileExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file), "."))
+		if _, isExcluded := excludeMap[fileExt]; !isExcluded {
+			filtered = append(filtered, file)
+		}
+	}
+
+	return filtered
 }
