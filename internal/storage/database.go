@@ -136,7 +136,7 @@ func (s *postgresStore) GetAllReviewsForPR(ctx context.Context, repoFullName str
 	var reviews []*core.Review
 	err := s.db.SelectContext(ctx, &reviews, query, repoFullName, prNumber)
 	if err != nil {
-		return reviews, err
+		return nil, err
 	}
 
 	return reviews, nil
