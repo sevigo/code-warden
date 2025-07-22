@@ -108,7 +108,7 @@ func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName
 		return nil, fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
 	}
 
-	results, err := store.SimilaritySearch(ctx, query, numDocs)
+	results, err := store.SimilaritySearch(ctx, query, numDocs, vectorstores.WithNameSpace(collectionName))
 	if err != nil {
 		return nil, fmt.Errorf("similarity search failed in collection %s: %w", collectionName, err)
 	}
@@ -128,7 +128,7 @@ func (q *qdrantVectorStore) SimilaritySearchBatch(ctx context.Context, collectio
 		return nil, fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
 	}
 
-	results, err := store.SimilaritySearchBatch(ctx, queries, numDocs)
+	results, err := store.SimilaritySearchBatch(ctx, queries, numDocs, vectorstores.WithNameSpace(collectionName))
 	if err != nil {
 		return nil, fmt.Errorf("batch similarity search failed in collection %s: %w", collectionName, err)
 	}
