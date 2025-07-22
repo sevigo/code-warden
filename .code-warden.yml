@@ -1,0 +1,17 @@
+# Custom instructions to guide the AI's review process.
+custom_instructions:
+  - "Pay close attention to Go best practices, especially regarding error handling and context propagation."
+  - "The project uses the 'slog' library for structured logging. Ensure all new logging statements follow this standard."
+  - "Verify that user-facing configuration options are handled gracefully, with clear defaults."
+
+# Directories to completely exclude from indexing. This is for performance.
+# These are added to the application's built-in defaults like '.git' and 'node_modules'.
+exclude_dirs:
+  - ".vscode"
+
+# File extensions to exclude from indexing.
+exclude_exts:
+  - ".sum"     # The go.sum file is not useful for code context.
+  - ".yml"     # Exclude Docker Compose and other YAML files.
+  - ".sql"     # Exclude raw SQL migration files.
+  - ".prompt"  # Exclude the LLM prompt template files.
