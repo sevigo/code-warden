@@ -78,27 +78,27 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 	cloneCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Prepare directory and clean up any previous failed attempts
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0750); err != nil {
 		return nil, fmt.Errorf("failed to create repo parent directory: %w", err)
 	}
-	_ = os.RemoveAll(clonePath)
+	m.cleanupRepoDir(clonePath)
 
 	// Use the git client to clone
 	gitRepo, err := m.gitClient.Clone(cloneCtx, event.RepoCloneURL, clonePath, token)
 	if err != nil {
+		m.cleanupRepoDir(clonePath)
 		return nil, err
 	}
 
 	// After cloning, checkout the specific commit for this event
 	if err := m.gitClient.Checkout(gitRepo, event.HeadSHA); err != nil {
-		_ = os.RemoveAll(clonePath)
+		m.cleanupRepoDir(clonePath)
 		return nil, err
 	}
 
 	allFiles, err := m.listRepoFiles(clonePath)
 	if err != nil {
-		_ = os.RemoveAll(clonePath)
+		m.cleanupRepoDir(clonePath)
 		return nil, fmt.Errorf("failed to list files after initial clone: %w", err)
 	}
 
@@ -110,7 +110,7 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 		LastIndexedSHA:       event.HeadSHA,
 	}
 	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
-		_ = os.RemoveAll(clonePath)
+		m.cleanupRepoDir(clonePath)
 		return nil, fmt.Errorf("failed to create repository record in DB: %w", err)
 	}
 
@@ -119,6 +119,13 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 		RepoPath:           clonePath,
 		IsInitialClone:     true,
 	}, nil
+}
+
+// This helper function is perfect as is.
+func (m *manager) cleanupRepoDir(path string) {
+	if err := os.RemoveAll(path); err != nil {
+		m.logger.Warn("failed to clean up repository directory", "path", path, "error", err)
+	}
 }
 
 // handleIncrementalUpdate manages fetching, diffing, and checking out updates.
