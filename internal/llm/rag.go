@@ -271,6 +271,9 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 	// prepare a batch of queries, one for each changed file.
 	queries := make([]string, 0, len(changedFiles))
 	for _, file := range changedFiles {
+		if file.Patch == "" {
+			continue
+		}
 		query := fmt.Sprintf(
 			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
 			file.Filename,
@@ -279,12 +282,10 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 		queries = append(queries, query)
 	}
 
-	r.logger.Debug("searching for relevant context in batch", "query_count", len(queries))
-
 	// execute the batch search in a single network call.
 	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 3)
 	if err != nil {
-		r.logger.Warn("context batch search failed", "error", err)
+		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
 		return ""
 	}
 
@@ -293,12 +294,17 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 	seenDocs := make(map[string]struct{})
 
 	for i, relevantDocs := range batchResults {
-		// Get the original file this result corresponds to.
 		originalFile := changedFiles[i]
 
 		for _, doc := range relevantDocs {
 			source, ok := doc.Metadata["source"].(string)
 			if !ok {
+				contentPreview := doc.PageContent
+				if len(contentPreview) > 50 {
+					contentPreview = contentPreview[:50] + "..."
+				}
+				r.logger.Debug("document missing 'source' metadata or it's not a string, skipping",
+					"document_content_preview", contentPreview)
 				continue
 			}
 
