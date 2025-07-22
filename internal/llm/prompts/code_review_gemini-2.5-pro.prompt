@@ -14,6 +14,11 @@ You are Code-Warden, a Principal-level {{.Language}} engineer acting as a though
 **Title:** {{.Title}}
 **Description:** {{.Description}}
 
+{{if .CustomInstructions}}
+Please adhere to the following special instructions for this repository:
+{{.CustomInstructions}}
+{{end}}
+
 ### Files Changed
 {{.ChangedFiles}}
 

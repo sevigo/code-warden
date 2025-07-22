@@ -18,6 +18,11 @@ Analyze the provided pull request information and generate a comprehensive code 
 **Title:** {{.Title}}
 **Description:** {{.Description}}
 
+{{if .CustomInstructions}}
+Please adhere to the following special instructions for this repository:
+{{.CustomInstructions}}
+{{end}}
+
 ### Files Changed
 {{.ChangedFiles}}
 
