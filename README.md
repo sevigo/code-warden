@@ -27,13 +27,15 @@ Code-Warden is a GitHub App that uses a local Large Language Model (LLM) to perf
 10. The review is posted back to the pull request as a comment, and the GitHub check status is updated.
 
 ### Requested review
-<img width="948" height="509" alt="image" src="https://github.com/user-attachments/assets/07a19148-fc56-475f-87d9-2861d8af4e42" />
-<img width="869" height="156" alt="image" src="https://github.com/user-attachments/assets/1820f886-b9c7-431b-b347-01ba882bb897" />
 
+<img width="613" height="794" alt="image" src="https://github.com/user-attachments/assets/9cc0a478-f942-4b7e-b2f6-0d913d1d83f9" />
+
+---
 ### Requested re-review
-<img width="890" height="676" alt="image" src="https://github.com/user-attachments/assets/1694b621-4fcd-4771-9ddd-5930e00aebe2" />
 
+<img width="620" height="394" alt="image" src="https://github.com/user-attachments/assets/d3094a33-84e1-4ffa-bc05-e912dbc01bc0" />
 
+---
 ## Setup & Running
 
 ### 1. Prerequisites
