@@ -8,9 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sevigo/code-warden/internal/app"
-	"github.com/sevigo/code-warden/internal/config"
-	"github.com/sevigo/code-warden/internal/logger"
+	"github.com/sevigo/code-warden/internal/wire"
 )
 
 func main() {
@@ -24,23 +22,16 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
-	}
-
-	logger := logger.NewLogger(cfg.LoggerConfig, nil)
-	slog.SetDefault(logger)
-
-	slog.Info("starting Code-Warden application")
-
-	application, err := app.NewApp(ctx, cfg, logger)
+	app, cleanup, err := wire.InitializeApp(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to initialize application: %w", err)
 	}
+	defer cleanup()
+
+	slog.Info("starting Code-Warden application")
 
 	go func() {
-		if err := application.Start(); err != nil {
+		if err := app.Start(); err != nil {
 			slog.Error("server error", "error", err)
 			cancel()
 		}
@@ -56,7 +47,7 @@ func run() error {
 		slog.Info("context cancelled, shutting down")
 	}
 
-	if err := application.Stop(); err != nil {
+	if err := app.Stop(); err != nil {
 		slog.Error("failed to stop application", "error", err)
 		return fmt.Errorf("failed to stop application: %w", err)
 	}
