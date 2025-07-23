@@ -1,5 +1,12 @@
-BINARY_NAME=code-warden
-CMD_PATH=./cmd/server
+# Binary and Command Path Configuration
+SERVER_BINARY_NAME=code-warden
+SERVER_CMD_PATH=./cmd/server
+
+CLI_BINARY_NAME=warden-cli
+CLI_CMD_PATH=./cmd/cli
+
+# Output directory for all binaries and tools
+BIN_DIR=$(CURDIR)/bin
 
 GOLINT_BIN_DIR=$(CURDIR)/bin
 GOLINT_CMD=$(GOLINT_BIN_DIR)/golangci-lint
@@ -10,9 +17,18 @@ GOLINT_VERSION=v2.1.6
 
 all: build
 
-build:
-	@echo "Building $(BINARY_NAME)..."
-	@go build -v -o $(BINARY_NAME) $(CMD_PATH)
+build: build-server build-cli
+	@echo "All binaries built successfully in $(BIN_DIR)/"
+
+build-server:
+	@echo "Building server ($(SERVER_BINARY_NAME))..."
+	@mkdir -p $(BIN_DIR)
+	@go build -v -o $(BIN_DIR)/$(SERVER_BINARY_NAME) $(SERVER_CMD_PATH)
+
+build-cli:
+	@echo "Building CLI ($(CLI_BINARY_NAME))..."
+	@mkdir -p $(BIN_DIR)
+	@go build -v -o $(BIN_DIR)/$(CLI_BINARY_NAME) $(CLI_CMD_PATH)
 
 run:
 	@echo "Starting $(BINARY_NAME)..."

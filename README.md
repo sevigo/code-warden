@@ -93,3 +93,22 @@ go run ./cmd/server/main.go
 ```
 
 The server will start on the port specified in your `.env` file (default is `8080`).
+
+### 6. Building from Source
+
+Instead of running the application directly with `go run`, you can build the binaries for the server and the CLI using the provided `Makefile`.
+
+```sh
+# Build both the 'code-warden' server and 'warden-cli' tool
+make build
+# Run the server from the built binary
+./bin/code-warden
+# Run the CLI tool
+./bin/warden-cli --help
+```
+
+* Run the preload for large repo:
+```sh
+export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
+./bin/warden-cli preload --repo-url https://github.com/owner/repo.git
+```
