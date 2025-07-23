@@ -17,13 +17,11 @@ func main() {
 }
 
 func run() error {
-	app, cleanup, err := wire.InitializeApp(context.Background())
+	_, cleanup, err := wire.InitializeApp(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to initialize app: %w", err)
 	}
 	defer cleanup()
-
-	slog.Info("app", "app", app)
 
 	return nil
 }

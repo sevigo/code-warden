@@ -28,6 +28,8 @@ func run() error {
 	}
 	defer cleanup()
 
+	slog.Info("starting Code-Warden application")
+
 	go func() {
 		if err := app.Start(); err != nil {
 			slog.Error("server error", "error", err)
