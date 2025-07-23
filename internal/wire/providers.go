@@ -30,7 +30,6 @@ import (
 var AppSet = wire.NewSet(
 	app.NewApp,
 	server.NewServer,
-	logger.NewLogger,
 	config.LoadConfig,
 	db.NewDatabase,
 	storage.NewStore,
@@ -46,6 +45,7 @@ var AppSet = wire.NewSet(
 	provideLoggerConfig,
 	provideLogWriter,
 	provideDBConfig,
+	provideDefaultSlogLogger,
 )
 
 func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
@@ -115,4 +115,10 @@ func provideLogWriter() io.Writer {
 
 func provideDBConfig(cfg *config.Config) *config.DBConfig {
 	return cfg.Database
+}
+
+func provideDefaultSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logger {
+	l := logger.NewLogger(loggerConfig, writer)
+	slog.SetDefault(l)
+	return l
 }

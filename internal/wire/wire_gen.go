@@ -10,7 +10,6 @@ import (
 	"context"
 	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/config"
-	"github.com/sevigo/code-warden/internal/logger"
 )
 
 // Injectors from wire.go:
@@ -22,8 +21,8 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	}
 	loggerConfig := provideLoggerConfig(configConfig)
 	writer := provideLogWriter()
-	slogLogger := logger.NewLogger(loggerConfig, writer)
-	appApp, cleanup, err := app.NewApp(ctx, configConfig, slogLogger)
+	logger := provideDefaultSlogLogger(loggerConfig, writer)
+	appApp, cleanup, err := app.NewApp(ctx, configConfig, logger)
 	if err != nil {
 		return nil, nil, err
 	}
