@@ -1,13 +1,13 @@
 package main
 
 import (
-	"fmt"
+	"log/slog"
 	"os"
 )
 
 func main() {
 	if err := Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		slog.Error("cli failed to run", "error", err)
 		os.Exit(1)
 	}
 }

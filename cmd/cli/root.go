@@ -10,7 +10,6 @@ import (
 )
 
 var (
-	cfgFile     string
 	githubToken string
 )
 
@@ -27,7 +26,6 @@ func Execute() error {
 func init() { //nolint:gochecknoinits // Cobra's init function for command registration
 	cobra.OnInitialize(initConfig)
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.code-warden.yaml)")
 	rootCmd.PersistentFlags().StringVarP(&githubToken, "github-token", "t", "", "GitHub Token")
 
 	if err := viper.BindPFlag("GITHUB_TOKEN", rootCmd.PersistentFlags().Lookup("github-token")); err != nil {

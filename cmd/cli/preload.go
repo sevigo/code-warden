@@ -16,10 +16,8 @@ import (
 )
 
 var (
-	repoURL    string
-	branch     string
-	commitHash string
-	force      bool
+	repoURL string
+	branch  string
 )
 
 var preloadCmd = &cobra.Command{
@@ -45,7 +43,7 @@ avoiding cold-start delays on large repositories.`,
 		fmt.Printf("Preloading repository %s/%s\n", repoURL, branch)
 
 		// Get remote head SHA
-		fmt.Printf("Fetching remote SHA for branch %q\n")
+		fmt.Printf("Fetching remote SHA for branch %q\n", branch)
 		headSHA, err := app.GitClient.GetRemoteHeadSHA(repoURL, branch, token)
 		if err != nil {
 			return fmt.Errorf("failed to get remote head SHA: %w", err)
@@ -92,8 +90,6 @@ avoiding cold-start delays on large repositories.`,
 func init() { //nolint:gochecknoinits // Cobra's init function for command registration
 	preloadCmd.Flags().StringVarP(&repoURL, "repo-url", "u", "", "URL of the repository to preload")
 	preloadCmd.Flags().StringVarP(&branch, "branch", "b", "main", "Branch to preload")
-	preloadCmd.Flags().StringVarP(&commitHash, "commit-hash", "c", "", "Commit hash to preload (optional)")
-	preloadCmd.Flags().BoolVarP(&force, "force", "f", false, "Force preload even if already exists")
 	if err := preloadCmd.MarkFlagRequired("repo-url"); err != nil {
 		slog.Error("Error marking flag as required", "error", err)
 		os.Exit(1)
