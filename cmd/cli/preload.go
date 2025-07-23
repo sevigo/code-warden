@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/sevigo/code-warden/internal/core"
@@ -39,11 +41,16 @@ var preloadCmd = &cobra.Command{
 		}
 		slog.Info("Remote head SHA fetched", "sha", sha)
 
+		repoOwner, repoName, err := parseGitHubURL(repoURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse repository URL: %w", err)
+		}
+
 		// Construct mock core.GitHubEvent
 		event := &core.GitHubEvent{
-			RepoOwner:    "", // Not directly available from CLI flags, can be derived or left empty
-			RepoName:     repoURL, // Using URL as name for simplicity
-			RepoFullName: repoURL, // Using URL as full name for simplicity
+			RepoOwner:    repoOwner,
+			RepoName:     repoName,
+			RepoFullName: fmt.Sprintf("%s/%s", repoOwner, repoName),
 			RepoCloneURL: repoURL,
 			HeadSHA:      sha,
 			Type:         core.FullReview, // Assuming preload is always a full review
@@ -88,4 +95,22 @@ func init() {
 	preloadCmd.Flags().StringVarP(&githubToken, "github-token", "t", os.Getenv("GITHUB_TOKEN"), "GitHub Personal Access Token (or set GITHUB_TOKEN env var)")
 
 	preloadCmd.MarkFlagRequired("repo-url")
+}
+
+// parseGitHubURL extracts the owner and repository name from a GitHub URL.
+func parseGitHubURL(rawURL string) (owner, name string, err error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Expecting path like /owner/repo or /owner/repo.git
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("could not parse owner/repo from URL path: %s", u.Path)
+	}
+	
+	// Handle potential .git suffix
+	repoName := strings.TrimSuffix(parts[1], ".git")
+	return parts[0], repoName, nil
 }
