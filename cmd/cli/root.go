@@ -36,7 +36,7 @@ func init() { //nolint:gochecknoinits // Cobra's init function for command regis
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	viper.SetEnvPrefix("CW") // To avoid conflicts, e.g., CW_GITHUB_TOKEN
+	viper.SetEnvPrefix("CW")
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
-	viper.AutomaticEnv() // read in environment variables that match
+	viper.AutomaticEnv()
 }
