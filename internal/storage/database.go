@@ -17,13 +17,15 @@ import (
 
 // Repository represents a stored Git repository.
 type Repository struct {
-	ID                   int64     `db:"id"`
-	FullName             string    `db:"full_name"`
-	ClonePath            string    `db:"clone_path"`
-	QdrantCollectionName string    `db:"qdrant_collection_name"`
-	LastIndexedSHA       string    `db:"last_indexed_sha"`
-	CreatedAt            time.Time `db:"created_at"`
-	UpdatedAt            time.Time `db:"updated_at"`
+	ID                   int64     `json:"id" db:"id"`
+	RepoID               int64     `json:"repo_id" db:"repo_id"`
+	FullName             string    `json:"full_name" db:"full_name"`
+	ClonePath            string    `json:"clone_path" db:"clone_path"`
+	QdrantCollectionName string    `json:"qdrant_collection_name" db:"qdrant_collection_name"`
+	LastIndexedSHA       string    `json:"last_indexed_sha" db:"last_indexed_sha"`
+	LastReviewDate       time.Time `json:"last_review_date" db:"last_review_date"`
+	CreatedAt            time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // Store defines the interface for all database operations.
@@ -34,6 +36,7 @@ type Store interface {
 	CreateRepository(ctx context.Context, repo *Repository) error
 	GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error)
 	UpdateRepository(ctx context.Context, repo *Repository) error
+	GetAllRepositories(ctx context.Context) ([]*Repository, error)
 }
 
 type postgresStore struct {
@@ -146,4 +149,19 @@ func (s *postgresStore) GetAllReviewsForPR(ctx context.Context, repoFullName str
 	}
 
 	return reviews, nil
+}
+
+// GetAllRepositories retrieves all non-deleted repositories from the database.
+func (s *postgresStore) GetAllRepositories(ctx context.Context) ([]*Repository, error) {
+	query := `
+		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, created_at, updated_at
+		FROM repositories
+		ORDER BY full_name ASC`
+
+	var repos []*Repository
+	err := s.db.SelectContext(ctx, &repos, query)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("failed to retrieve all repositories: %w", err)
+	}
+	return repos, nil
 }

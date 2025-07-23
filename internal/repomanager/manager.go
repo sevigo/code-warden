@@ -37,12 +37,12 @@ type RepoManager interface {
 }
 
 // New creates a new RepoManager.
-func New(cfg *config.Config, store storage.Store, logger *slog.Logger) RepoManager {
+func New(cfg *config.Config, store storage.Store, gitClient *gitutil.Client, logger *slog.Logger) RepoManager {
 	return &manager{
 		cfg:       cfg,
 		store:     store,
 		logger:    logger,
-		gitClient: gitutil.NewClient(logger.With("component", "gitutil")),
+		gitClient: gitClient,
 	}
 }
 
