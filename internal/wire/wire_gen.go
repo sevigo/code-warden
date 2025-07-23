@@ -23,10 +23,11 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	loggerConfig := provideLoggerConfig(configConfig)
 	writer := provideLogWriter()
 	slogLogger := logger.NewLogger(loggerConfig, writer)
-	appApp, err := app.NewApp(ctx, configConfig, slogLogger)
+	appApp, cleanup, err := app.NewApp(ctx, configConfig, slogLogger)
 	if err != nil {
 		return nil, nil, err
 	}
 	return appApp, func() {
+		cleanup()
 	}, nil
 }

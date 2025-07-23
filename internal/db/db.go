@@ -28,14 +28,14 @@ type DB struct {
 
 // NewDatabase establishes a connection to the PostgreSQL database using the
 // provided configuration and verifies the connection with a ping.
-func NewDatabase(cfg *config.DBConfig) (*DB, error) {
+func NewDatabase(cfg *config.DBConfig) (*DB, func(), error) {
 	if cfg == nil {
-		return nil, errors.New("database config is required")
+		return nil, func() {}, errors.New("database config is required")
 	}
 
 	conn, err := sqlx.Connect("postgres", cfg.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, func() {}, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	conn.SetMaxOpenConns(cfg.MaxOpenConns)
@@ -47,14 +47,16 @@ func NewDatabase(cfg *config.DBConfig) (*DB, error) {
 	defer cancel()
 	if err := conn.PingContext(ctx); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+		return nil, func() {}, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	db := &DB{
 		DB: conn,
 	}
 
-	return db, nil
+	return db, func() {
+		conn.Close()
+	}, nil
 }
 
 // RunMigrations executes pending database migrations embedded in the binary.

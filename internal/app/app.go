@@ -59,7 +59,7 @@ func newOllamaHTTPClient() *http.Client {
 }
 
 // NewApp sets up the application with all its dependencies.
-func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
+func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, func(), error) {
 	logger.Info("initializing Code Warden application",
 		"llm_provider", cfg.LLMProvider,
 		"generator_model", cfg.GeneratorModelName,
@@ -68,9 +68,9 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		"repo_path", cfg.RepoPath,
 	)
 
-	dbConn, err := initDatabase(cfg.Database)
+	dbConn, dbCleanup, err := initDatabase(cfg.Database)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	store := storage.NewStore(dbConn.DB)
@@ -79,19 +79,23 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	generatorLLM, err := createGeneratorLLM(ctx, cfg, logger)
 	if err != nil {
-		return nil, err
+		dbCleanup()
+		return nil, nil, err
 	}
 	embedder, err := createEmbedder(cfg, logger)
 	if err != nil {
-		return nil, err
+		dbCleanup()
+		return nil, nil, err
 	}
 	parserRegistry, err := parsers.RegisterLanguagePlugins(logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to register language parsers: %w", err)
+		dbCleanup()
+		return nil, nil, fmt.Errorf("failed to register language parsers: %w", err)
 	}
 	promptMgr, err := llm.NewPromptManager()
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
+		dbCleanup()
+		return nil, nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
 	}
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
@@ -114,6 +118,8 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		logger:     logger,
 		dispatcher: dispatcher,
 		dbConn:     dbConn,
+	}, func() {
+		dbCleanup()
 	}, nil
 }
 
@@ -194,16 +200,16 @@ func (a *App) Stop() error {
 }
 
 // initDatabase connects to the DB and runs migrations
-func initDatabase(cfg *config.DBConfig) (*db.DB, error) {
-	dbConn, err := db.NewDatabase(cfg)
+func initDatabase(cfg *config.DBConfig) (*db.DB, func(), error) {
+	dbConn, cleanup, err := db.NewDatabase(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, func() {}, fmt.Errorf("failed to connect to database: %w", err)
 	}
 	if err := dbConn.RunMigrations(); err != nil {
-		_ = dbConn.Close()
-		return nil, fmt.Errorf("failed to run database migrations: %w", err)
+		cleanup()
+		return nil, func() {}, fmt.Errorf("failed to run database migrations: %w", err)
 	}
-	return dbConn, nil
+	return dbConn, cleanup, nil
 }
 
 // createLLM creates the appropriate LLM client based on the configured provider.
