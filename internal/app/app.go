@@ -20,6 +20,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
+	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/repomanager"
@@ -29,12 +30,15 @@ import (
 
 // App holds the main application components.
 type App struct {
-	ctx        context.Context
-	cfg        *config.Config
-	server     *server.Server
+	Store      storage.Store
+	RepoMgr    repomanager.RepoManager
+	RAGService llm.RAGService
+	GitClient  *gitutil.Client
+
 	logger     *slog.Logger
+	server     *server.Server
 	dispatcher core.JobDispatcher
-	dbConn     *db.DB
+	cfg        *config.Config
 }
 
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
@@ -74,8 +78,9 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	}
 
 	store := storage.NewStore(dbConn.DB)
+	gitClient := gitutil.NewClient(logger.With("component", "gitutil"))
 
-	repoManager := repomanager.New(cfg, store, logger)
+	repoManager := repomanager.New(cfg, store, gitClient, logger)
 
 	generatorLLM, err := createGeneratorLLM(ctx, cfg, logger)
 	if err != nil {
@@ -112,12 +117,14 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	logger.Info("Code Warden application initialized successfully")
 	return &App{
-			ctx:        ctx,
-			cfg:        cfg,
-			server:     httpServer,
+			Store:      store,
+			RepoMgr:    repoManager,
+			RAGService: ragService,
+			GitClient:  gitClient,
 			logger:     logger,
+			server:     httpServer,
 			dispatcher: dispatcher,
-			dbConn:     dbConn,
+			cfg:        cfg,
 		}, func() {
 			dbCleanup()
 		}, nil
@@ -174,21 +181,16 @@ func (a *App) Stop() error {
 	var shutdownErr error
 	a.logger.Info("shutting down Code Warden services")
 
-	// Stop the HTTP server first to prevent new incoming requests.
-	serverErr := a.server.Stop()
-	if serverErr != nil {
-		a.logger.Error("error during HTTP server shutdown", "error", serverErr)
-		shutdownErr = errors.Join(shutdownErr, serverErr)
-	}
-
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
 	a.dispatcher.Stop()
 
-	a.logger.Info("closing database connection")
-	dbCloseErr := a.dbConn.Close()
-	if dbCloseErr != nil {
-		a.logger.Error("error closing database", "error", dbCloseErr)
-		shutdownErr = errors.Join(shutdownErr, dbCloseErr)
+	// Stop the HTTP server to prevent new incoming requests.
+	if a.server != nil {
+		serverErr := a.server.Stop()
+		if serverErr != nil {
+			a.logger.Error("error during HTTP server shutdown", "error", serverErr)
+			shutdownErr = errors.Join(shutdownErr, serverErr)
+		}
 	}
 
 	if shutdownErr != nil {

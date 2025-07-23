@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
@@ -87,6 +88,28 @@ func (c *Client) Checkout(repo *git.Repository, sha string) error {
 		return fmt.Errorf("failed to checkout commit '%s': %w", sha, err)
 	}
 	return nil
+}
+
+// GetRemoteHeadSHA fetches the HEAD commit SHA of a specific remote branch without cloning.
+func (c *Client) GetRemoteHeadSHA(repoURL, branch, token string) (string, error) {
+	authURL, err := c.getAuthenticatedURL(repoURL, token)
+	if err != nil {
+		return "", err
+	}
+
+	// Use `git ls-remote` to get the ref for the specific branch.
+	// `refs/heads/main` for example.
+	ref := fmt.Sprintf("refs/heads/%s", branch)
+	out, err := exec.Command("git", "ls-remote", authURL, ref).Output()
+	if err != nil {
+		return "", fmt.Errorf("git ls-remote failed: %w. Ensure branch '%s' exists", err, branch)
+	}
+
+	output := strings.TrimSpace(string(out))
+	if output == "" {
+		return "", fmt.Errorf("branch '%s' not found or repository is empty", branch)
+	}
+	return strings.Fields(output)[0], nil
 }
 
 // Diff calculates the difference between two SHAs in an open repository.
