@@ -35,6 +35,8 @@ type App struct {
 	logger     *slog.Logger
 	dispatcher core.JobDispatcher
 	dbConn     *db.DB
+	repoManager repomanager.RepoManager
+	ragService llm.RAGService
 }
 
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
@@ -118,9 +120,21 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 			logger:     logger,
 			dispatcher: dispatcher,
 			dbConn:     dbConn,
+			repoManager: repoManager,
+			ragService: ragService,
 		}, func() {
 			dbCleanup()
 		}, nil
+}
+
+// RepoManager returns the repository manager instance.
+func (a *App) RepoManager() repomanager.RepoManager {
+	return a.repoManager
+}
+
+// RAGService returns the RAG service instance.
+func (a *App) RAGService() llm.RAGService {
+	return a.ragService
 }
 
 func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {

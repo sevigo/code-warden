@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
@@ -190,4 +191,46 @@ func (c *Client) getBasicAuth(token string) *githttp.BasicAuth {
 		Username: "x-access-token",
 		Password: token,
 	}
+}
+
+// GetRemoteHeadSHA fetches the latest commit SHA for a given branch from a remote repository.
+// It uses `git ls-remote` to avoid a full clone.
+func (c *Client) GetRemoteHeadSHA(repoURL, branch, token string) (string, error) {
+	cmd := exec.Command("git", "ls-remote", repoURL, branch)
+
+	// Set up authentication for private repositories
+	if token != "" {
+		// For HTTPS, git uses a credential helper or expects auth in URL
+		// For simplicity, we'll embed the token in the URL for ls-remote if it's HTTPS
+		if strings.HasPrefix(repoURL, "https://") {
+			parsedURL, err := url.Parse(repoURL)
+			if err != nil {
+				return "", fmt.Errorf("failed to parse repo URL: %w", err)
+			}
+			parsedURL.User = url.UserPassword("x-access-token", token)
+			cmd = exec.Command("git", "ls-remote", parsedURL.String(), branch)
+		} else {
+			// For SSH, git typically uses SSH keys, not tokens in this manner.
+			// This case might need more complex handling or be out of scope.
+			c.Logger.Warn("git ls-remote with token for non-HTTPS URL might not work as expected", "url", repoURL)
+		}
+	}
+
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", fmt.Errorf("git ls-remote failed with exit code %d: %s", exitErr.ExitCode(), string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("failed to run git ls-remote: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 || lines[0] == "" {
+		return "", fmt.Errorf("git ls-remote returned no output for %s branch %s", repoURL, branch)
+	}
+
+	// The first part of the line is the SHA, followed by a tab and the ref name
+	sha := strings.Fields(lines[0])[0]
+	return sha, nil
 }
