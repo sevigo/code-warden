@@ -112,15 +112,15 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	logger.Info("Code Warden application initialized successfully")
 	return &App{
-		ctx:        ctx,
-		cfg:        cfg,
-		server:     httpServer,
-		logger:     logger,
-		dispatcher: dispatcher,
-		dbConn:     dbConn,
-	}, func() {
-		dbCleanup()
-	}, nil
+			ctx:        ctx,
+			cfg:        cfg,
+			server:     httpServer,
+			logger:     logger,
+			dispatcher: dispatcher,
+			dbConn:     dbConn,
+		}, func() {
+			dbCleanup()
+		}, nil
 }
 
 func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {

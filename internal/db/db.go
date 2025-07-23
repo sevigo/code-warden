@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -55,7 +56,9 @@ func NewDatabase(cfg *config.DBConfig) (*DB, func(), error) {
 	}
 
 	return db, func() {
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			slog.Error("failed to close database connection", "error", err)
+		}
 	}, nil
 }
 
