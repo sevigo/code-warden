@@ -16,6 +16,7 @@ import (
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
+	"github.com/sevigo/goframe/vectorstores/qdrant"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -102,7 +103,15 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		dbCleanup()
 		return nil, nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
 	}
-	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, logger)
+
+	tunedConfig := &qdrant.BatchConfig{
+		BatchSize:               256,
+		MaxConcurrency:          8,
+		EmbeddingBatchSize:      64,
+		EmbeddingMaxConcurrency: 1,
+	}
+	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, tunedConfig, logger)
+
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
 
 	reviewJob := jobs.NewReviewJob(cfg, ragService, store, repoManager, logger)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/llms"
@@ -88,8 +89,17 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		return nil
 	}
 
-	r.logger.Info("storing initial documents in vector database", "collection", collectionName, "doc_count", len(docs))
-	return r.vectorStore.AddDocuments(ctx, collectionName, docs)
+	// Use the new batch method with a progress logger.
+	progressLogger := func(processed, total int, duration time.Duration) {
+		r.logger.Info("indexing progress",
+			"collection", collectionName,
+			"processed", processed,
+			"total", total,
+			"percent", fmt.Sprintf("%.2f%%", float64(processed)*100/float64(total)),
+			"duration", duration.Round(time.Second),
+		)
+	}
+	return r.vectorStore.AddDocumentsBatch(ctx, collectionName, docs, progressLogger)
 }
 
 // UpdateRepoContext incrementally updates the vector store based on file changes.
@@ -163,7 +173,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 
 	if len(allDocs) > 0 {
 		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
-		if err := r.vectorStore.AddDocuments(ctx, collectionName, allDocs); err != nil {
+		if err := r.vectorStore.AddDocumentsBatch(ctx, collectionName, allDocs, nil); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sevigo/goframe/embeddings"
 	"github.com/sevigo/goframe/schema"
@@ -15,9 +16,14 @@ import (
 
 // VectorStore defines a generic interface for vector database operations.
 type VectorStore interface {
+	SetBatchConfig(config qdrant.BatchConfig) error
+
 	AddDocuments(ctx context.Context, collectionName string, docs []schema.Document) error
+	AddDocumentsBatch(ctx context.Context, collectionName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error
+
 	SimilaritySearch(ctx context.Context, collectionName, query string, numDocs int) ([]schema.Document, error)
 	SimilaritySearchBatch(ctx context.Context, collectionName string, queries []string, numDocs int) ([][]schema.Document, error)
+
 	DeleteCollection(ctx context.Context, collectionName string) error
 	DeleteDocuments(ctx context.Context, collectionName string, documentIDs []string) error
 	DeleteDocumentsByFilter(ctx context.Context, collectionName string, filters map[string]any) error
@@ -25,21 +31,22 @@ type VectorStore interface {
 
 // qdrantVectorStore implements VectorStore using Qdrant with client caching.
 type qdrantVectorStore struct {
-	qdrantHost string
-	embedder   embeddings.Embedder
-	logger     *slog.Logger
-
-	mu      sync.Mutex
-	clients map[string]vectorstores.VectorStore
+	qdrantHost  string
+	embedder    embeddings.Embedder
+	logger      *slog.Logger
+	mu          sync.Mutex
+	clients     map[string]vectorstores.VectorStore
+	batchConfig *qdrant.BatchConfig
 }
 
 // NewQdrantVectorStore creates a new Qdrant-backed vector store.
-func NewQdrantVectorStore(qdrantHost string, embedder embeddings.Embedder, logger *slog.Logger) VectorStore {
+func NewQdrantVectorStore(qdrantHost string, embedder embeddings.Embedder, batchConfig *qdrant.BatchConfig, logger *slog.Logger) VectorStore {
 	return &qdrantVectorStore{
-		qdrantHost: qdrantHost,
-		embedder:   embedder,
-		logger:     logger,
-		clients:    make(map[string]vectorstores.VectorStore),
+		qdrantHost:  qdrantHost,
+		embedder:    embedder,
+		logger:      logger,
+		clients:     make(map[string]vectorstores.VectorStore),
+		batchConfig: batchConfig,
 	}
 }
 
@@ -74,11 +81,42 @@ func (q *qdrantVectorStore) getStoreForCollection(collectionName string) (vector
 		return nil, fmt.Errorf("failed to create qdrant client for collection %s: %w", collectionName, err)
 	}
 
+	if q.batchConfig != nil {
+		if store, ok := newClient.(*qdrant.Store); ok {
+			store.SetBatchConfig(*q.batchConfig)
+			q.logger.Info("Applied custom batch configuration to new qdrant client",
+				"collection", collectionName,
+				"embedding_concurrency", q.batchConfig.EmbeddingMaxConcurrency,
+				"embedding_batch_size", q.batchConfig.EmbeddingBatchSize,
+			)
+		}
+	} else {
+		q.logger.Info("No custom batch configuration found, using defaults.", "collection", collectionName)
+	}
+
 	q.clients[collectionName] = newClient
 	return newClient, nil
 }
 
 func (q *qdrantVectorStore) AddDocuments(ctx context.Context, collectionName string, docs []schema.Document) error {
+	return q.AddDocumentsBatch(ctx, collectionName, docs, nil)
+}
+
+func (q *qdrantVectorStore) SetBatchConfig(config qdrant.BatchConfig) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.batchConfig = &config
+
+	for _, client := range q.clients {
+		if store, ok := client.(*qdrant.Store); ok {
+			store.SetBatchConfig(config)
+		}
+	}
+
+	return nil
+}
+func (q *qdrantVectorStore) AddDocumentsBatch(ctx context.Context, collectionName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -88,7 +126,12 @@ func (q *qdrantVectorStore) AddDocuments(ctx context.Context, collectionName str
 		return fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
 	}
 
-	_, err = store.AddDocuments(ctx, docs, vectorstores.WithCollectionName(collectionName))
+	qdrantStore, ok := store.(*qdrant.Store)
+	if !ok {
+		return fmt.Errorf("failed to cast store to *qdrant.Store; cannot use batching feature")
+	}
+
+	_, err = qdrantStore.AddDocumentsBatch(ctx, docs, progressFn, vectorstores.WithCollectionName(collectionName))
 	if err != nil {
 		return fmt.Errorf("failed to add documents to collection %s: %w", collectionName, err)
 	}
