@@ -35,11 +35,11 @@ type App struct {
 	RepoMgr    repomanager.RepoManager
 	RAGService llm.RAGService
 	GitClient  *gitutil.Client
+	Cfg        *config.Config
 
 	logger     *slog.Logger
 	server     *server.Server
 	dispatcher core.JobDispatcher
-	cfg        *config.Config
 }
 
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
@@ -59,7 +59,7 @@ func newOllamaHTTPClient() *http.Client {
 
 	return &http.Client{
 		Transport: transport,
-		Timeout:   5 * time.Minute,
+		Timeout:   15 * time.Minute,
 	}
 }
 
@@ -67,6 +67,7 @@ func newOllamaHTTPClient() *http.Client {
 func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, func(), error) {
 	logger.Info("initializing Code Warden application",
 		"llm_provider", cfg.LLMProvider,
+		"embedder_provider", cfg.EmbedderProvider,
 		"generator_model", cfg.GeneratorModelName,
 		"embedder_model", cfg.EmbedderModelName,
 		"max_workers", cfg.MaxWorkers,
@@ -88,7 +89,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		dbCleanup()
 		return nil, nil, err
 	}
-	embedder, err := createEmbedder(cfg, logger)
+	embedder, err := createEmbedder(ctx, cfg, logger)
 	if err != nil {
 		dbCleanup()
 		return nil, nil, err
@@ -104,13 +105,33 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		return nil, nil, fmt.Errorf("failed to initialize prompt manager: %w", err)
 	}
 
-	tunedConfig := &qdrant.BatchConfig{
-		BatchSize:               256,
-		MaxConcurrency:          8,
-		EmbeddingBatchSize:      64,
-		EmbeddingMaxConcurrency: 1,
+	// Select the batch config based on the embedder provider to handle rate limits.
+	var batchConfig *qdrant.BatchConfig
+	if cfg.EmbedderProvider == "gemini" {
+		logger.Info("using conservative batch config for Gemini provider")
+		// Slower, sequential processing to respect API rate limits.
+		// Gemini API has a limit of 100 docs per embedding request.
+		batchConfig = &qdrant.BatchConfig{
+			BatchSize:               256, // Qdrant upsert batch size
+			MaxConcurrency:          4,   // Qdrant upsert concurrency
+			EmbeddingBatchSize:      90,  // Gemini embedding batch size (under 100)
+			EmbeddingMaxConcurrency: 1,   // Process embedding batches sequentially
+			RetryAttempts:           qdrant.DefaultRetryAttempts,
+			RetryDelay:              qdrant.DefaultRetryDelay,
+			RetryJitter:             qdrant.DefaultRetryJitter,
+			MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
+		}
+	} else {
+		logger.Info("using aggressive batch config for local provider")
+		// Faster, parallel processing for local models like Ollama.
+		batchConfig = &qdrant.BatchConfig{
+			BatchSize:               256,
+			MaxConcurrency:          8,
+			EmbeddingBatchSize:      64,
+			EmbeddingMaxConcurrency: 4,
+		}
 	}
-	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, tunedConfig, logger)
+	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, batchConfig, logger)
 
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
 
@@ -133,7 +154,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 			logger:     logger,
 			server:     httpServer,
 			dispatcher: dispatcher,
-			cfg:        cfg,
+			Cfg:        cfg,
 		}, func() {
 			dbCleanup()
 		}, nil
@@ -149,14 +170,34 @@ func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Lo
 	return llm, nil
 }
 
-func createEmbedder(cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
-	logger.Info("connecting to embedder LLM", "model", cfg.EmbedderModelName, "host", cfg.OllamaHost)
-	embedderLLM, err := ollama.New(
-		ollama.WithServerURL(cfg.OllamaHost),
-		ollama.WithModel(cfg.EmbedderModelName),
-		ollama.WithHTTPClient(newOllamaHTTPClient()),
-		ollama.WithLogger(logger),
-	)
+func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
+	logger.Info("connecting to embedder", "provider", cfg.EmbedderProvider, "model", cfg.EmbedderModelName)
+	var embedderLLM embeddings.Embedder
+	var err error
+
+	switch cfg.EmbedderProvider {
+	case "gemini":
+		embedderLLM, err = gemini.New(ctx,
+			gemini.WithEmbeddingModel(cfg.EmbedderModelName),
+			gemini.WithAPIKey(cfg.GeminiAPIKey),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create gemini embedder: %w", err)
+		}
+	case "ollama":
+		embedderLLM, err = ollama.New(
+			ollama.WithServerURL(cfg.OllamaHost),
+			ollama.WithModel(cfg.EmbedderModelName),
+			ollama.WithHTTPClient(newOllamaHTTPClient()),
+			ollama.WithLogger(logger),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ollama embedder: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.EmbedderProvider)
+	}
+
 	if err != nil {
 		logger.Error("failed to connect to embedder LLM", "error", err)
 		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
@@ -173,8 +214,8 @@ func createEmbedder(cfg *config.Config, logger *slog.Logger) (embeddings.Embedde
 // Start runs the HTTP server.
 func (a *App) Start() error {
 	a.logger.Info("starting Code Warden",
-		"server_port", a.cfg.ServerPort,
-		"max_workers", a.cfg.MaxWorkers)
+		"server_port", a.Cfg.ServerPort,
+		"max_workers", a.Cfg.MaxWorkers)
 
 	err := a.server.Start()
 	if err != nil {

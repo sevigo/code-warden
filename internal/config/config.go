@@ -16,6 +16,7 @@ import (
 type Config struct {
 	ServerPort           string
 	LLMProvider          string
+	EmbedderProvider     string
 	GeminiAPIKey         string
 	LoggerConfig         logger.Config
 	GitHubAppID          int64
@@ -28,6 +29,7 @@ type Config struct {
 	MaxWorkers           int
 	Database             *DBConfig
 	RepoPath             string
+	GitHubToken          string
 }
 
 // DBConfig holds all database connection settings.
@@ -70,6 +72,7 @@ func LoadConfig() (*Config, error) {
 	return &Config{
 		ServerPort:           v.GetString("SERVER_PORT"),
 		LLMProvider:          v.GetString("LLM_PROVIDER"),
+		EmbedderProvider:     v.GetString("EMBEDDER_PROVIDER"),
 		GeminiAPIKey:         v.GetString("GEMINI_API_KEY"),
 		LoggerConfig:         configureLogger(v),
 		GitHubAppID:          v.GetInt64("GITHUB_APP_ID"),
@@ -78,10 +81,11 @@ func LoadConfig() (*Config, error) {
 		OllamaHost:           v.GetString("OLLAMA_HOST"),
 		QdrantHost:           v.GetString("QDRANT_HOST"),
 		GeneratorModelName:   getGeneratorModelName(v),
-		EmbedderModelName:    v.GetString("EMBEDDER_MODEL_NAME"),
+		EmbedderModelName:    getEmbedderModelName(v),
 		MaxWorkers:           v.GetInt("MAX_WORKERS"),
 		Database:             dbConfig,
 		RepoPath:             v.GetString("REPO_PATH"),
+		GitHubToken:          v.GetString("GITHUB_TOKEN"),
 	}, nil
 }
 
@@ -93,10 +97,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("OLLAMA_HOST", "http://localhost:11434")
 	v.SetDefault("QDRANT_HOST", "localhost:6334")
 	v.SetDefault("GENERATOR_MODEL_NAME", "gemma3:latest")
-	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text")
+	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text") // Ollama default
 	v.SetDefault("MAX_WORKERS", 5)
 	v.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
 	v.SetDefault("LLM_PROVIDER", "ollama")
+	v.SetDefault("EMBEDDER_PROVIDER", "ollama") // New default
 	v.SetDefault("DB_DRIVER", "postgres")
 	v.SetDefault("DB_HOST", "localhost")
 	v.SetDefault("DB_PORT", 5432)
@@ -134,6 +139,12 @@ func validateRequired(v *viper.Viper) error {
 	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
 		return fmt.Errorf("github private key not found at path: %s", privateKeyPath)
 	}
+	// New: Validate Gemini API key if it's used for either generator or embedder
+	if v.GetString("LLM_PROVIDER") == "gemini" || v.GetString("EMBEDDER_PROVIDER") == "gemini" {
+		if v.GetString("GEMINI_API_KEY") == "" {
+			return errors.New("GEMINI_API_KEY must be set when using the gemini provider for generator or embedder")
+		}
+	}
 	return nil
 }
 
@@ -154,6 +165,18 @@ func getGeneratorModelName(v *viper.Viper) string {
 		return "gemini-2.5-flash"
 	}
 	return v.GetString("GENERATOR_MODEL_NAME")
+}
+
+// New: Dynamically get the embedder model name
+func getEmbedderModelName(v *viper.Viper) string {
+	if v.GetString("EMBEDDER_PROVIDER") == "gemini" {
+		geminiModel := v.GetString("GEMINI_EMBEDDER_MODEL_NAME")
+		if geminiModel != "" {
+			return geminiModel
+		}
+		return "gemini-embedding-001"
+	}
+	return v.GetString("EMBEDDER_MODEL_NAME")
 }
 
 func configureDB(v *viper.Viper) (*DBConfig, error) {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sevigo/goframe/documentloaders"
@@ -61,14 +62,13 @@ func NewRAGService(
 
 // SetupRepoContext processes a repository for the first time, storing all its embeddings.
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string) error {
-	r.logger.Info("performing initial full indexing of repository", "path", repoPath, "collection", collectionName)
+	r.logger.Info("performing initial full indexing of repository via streaming", "path", repoPath, "collection", collectionName)
 
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
 	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
-
 	r.logger.Info("final loader configuration", "exclude_dirs", finalExcludeDirs, "exclude_exts", repoConfig.ExcludeExts)
 
 	gitLoader := documentloaders.NewGit(
@@ -79,27 +79,54 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		documentloaders.WithExcludeExts(repoConfig.ExcludeExts),
 	)
 
-	docs, err := gitLoader.Load(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load repository documents: %w", err)
-	}
+	var totalProcessed atomic.Int64
+	var totalDocsFound atomic.Int64
+	startTime := time.Now()
 
-	if len(docs) == 0 {
-		r.logger.Warn("no indexable documents found after loader filtering", "path", repoPath)
+	// This is the new streaming pipeline.
+	// The loader walks the filesystem and calls this function with batches of documents.
+	// This function then immediately sends the batch to the vector store.
+	processFunc := func(ctx context.Context, docs []schema.Document) error {
+		if len(docs) == 0 {
+			return nil
+		}
+		totalDocsFound.Add(int64(len(docs)))
+
+		err := r.vectorStore.AddDocumentsBatch(ctx, collectionName, docs, func(processed, total int, duration time.Duration) {
+			r.logger.Info("batch indexing progress",
+				"collection", collectionName,
+				"batch_processed", processed,
+				"batch_total", total,
+				"total_docs_processed", totalProcessed.Load()+int64(processed),
+				"duration", duration.Round(time.Millisecond),
+			)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to add document batch to vector store: %w", err)
+		}
+
+		processedInBatch := int64(len(docs))
+		totalProcessed.Add(processedInBatch)
+
+		r.logger.Info("processed document stream batch",
+			"collection", collectionName,
+			"docs_in_batch", processedInBatch,
+			"total_docs_processed", totalProcessed.Load(),
+			"elapsed_time", time.Since(startTime).Round(time.Second),
+		)
 		return nil
 	}
 
-	// Use the new batch method with a progress logger.
-	progressLogger := func(processed, total int, duration time.Duration) {
-		r.logger.Info("indexing progress",
-			"collection", collectionName,
-			"processed", processed,
-			"total", total,
-			"percent", fmt.Sprintf("%.2f%%", float64(processed)*100/float64(total)),
-			"duration", duration.Round(time.Second),
-		)
+	// Start the streaming process.
+	if err := gitLoader.LoadAndProcessStream(ctx, processFunc); err != nil {
+		return fmt.Errorf("failed during streamed repository processing: %w", err)
 	}
-	return r.vectorStore.AddDocumentsBatch(ctx, collectionName, docs, progressLogger)
+
+	if totalDocsFound.Load() == 0 {
+		r.logger.Warn("no indexable documents found after loader filtering", "path", repoPath)
+	}
+
+	return nil
 }
 
 // UpdateRepoContext incrementally updates the vector store based on file changes.

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/wire"
@@ -35,9 +34,9 @@ avoiding cold-start delays on large repositories.`,
 		}
 		defer cleanup()
 
-		token := viper.GetString("GITHUB_TOKEN")
+		token := app.Cfg.GitHubToken
 		if token == "" {
-			return fmt.Errorf("a GitHub token is required; please provide it via the --github-token flag or the GITHUB_TOKEN environment variable")
+			return fmt.Errorf("a GitHub token is required; please provide it in your .env file as GITHUB_TOKEN or as an environment variable")
 		}
 
 		fmt.Printf("Preloading repository %s/%s\n", repoURL, branch)

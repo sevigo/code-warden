@@ -69,13 +69,28 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 	}
 }
 
-func provideEmbedder(cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
-	embedderLLM, err := ollama.New(
-		ollama.WithServerURL(cfg.OllamaHost),
-		ollama.WithModel(cfg.EmbedderModelName),
-		ollama.WithHTTPClient(newOllamaHTTPClient()),
-		ollama.WithLogger(logger),
-	)
+func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
+	logger.Info("connecting to embedder", "provider", cfg.EmbedderProvider, "model", cfg.EmbedderModelName)
+	var embedderLLM embeddings.Embedder
+	var err error
+
+	switch cfg.EmbedderProvider {
+	case "gemini":
+		embedderLLM, err = gemini.New(ctx,
+			gemini.WithEmbeddingModel(cfg.EmbedderModelName),
+			gemini.WithAPIKey(cfg.GeminiAPIKey),
+		)
+	case "ollama":
+		embedderLLM, err = ollama.New(
+			ollama.WithServerURL(cfg.OllamaHost),
+			ollama.WithModel(cfg.EmbedderModelName),
+			ollama.WithHTTPClient(newOllamaHTTPClient()),
+			ollama.WithLogger(logger),
+		)
+	default:
+		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.EmbedderProvider)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
 	}
@@ -101,7 +116,7 @@ func newOllamaHTTPClient() *http.Client {
 
 	return &http.Client{
 		Transport: transport,
-		Timeout:   5 * time.Minute,
+		Timeout:   15 * time.Minute,
 	}
 }
 
