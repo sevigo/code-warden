@@ -137,8 +137,8 @@ def validate_texts(texts: List[str]) -> None:
 
 # --- Pydantic Models ---
 class EmbedRequest(BaseModel):
-    texts: List[str] = Field(..., min_items=1, max_items=MAX_TEXTS_PER_REQUEST)
-    task: str = Field(default='search_document', regex='^[a-zA-Z_]+$')
+    texts: List[str] = Field(..., min_length=1, max_length=MAX_TEXTS_PER_REQUEST)
+    task: str = Field(default='search_document', pattern='^[a-zA-Z_]+$')
 
 class EmbedResponse(BaseModel):
     embeddings: List[List[float]]
