@@ -174,11 +174,13 @@ func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger
 
 	// Handle providers that directly implement the Embedder interface and are not wrapped.
 	if cfg.EmbedderProvider == "fastapi" {
+		sharedSecret := cfg.FastAPISharedSecret
 		return fastapi.New(
 			cfg.FastAPIServerURL,
 			fastapi.WithHTTPClient(newOllamaHTTPClient()),
 			fastapi.WithLogger(logger),
 			fastapi.WithTask(cfg.EmbedderTaskDescription),
+			fastapi.WithAPIKey(sharedSecret),
 		)
 	}
 

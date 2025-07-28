@@ -32,6 +32,7 @@ type Config struct {
 	GitHubToken             string
 	FastAPIServerURL        string `mapstructure:"FASTAPI_SERVER_URL"`
 	EmbedderTaskDescription string `mapstructure:"EMBEDDER_TASK_DESCRIPTION"`
+	FastAPISharedSecret     string `mapstructure:"EMBEDDING_API_SECRET"`
 }
 
 // DBConfig holds all database connection settings.
@@ -90,6 +91,7 @@ func LoadConfig() (*Config, error) {
 		GitHubToken:             v.GetString("GITHUB_TOKEN"),
 		FastAPIServerURL:        v.GetString("FASTAPI_SERVER_URL"),
 		EmbedderTaskDescription: v.GetString("EMBEDDER_TASK_DESCRIPTION"),
+		FastAPISharedSecret:     v.GetString("EMBEDDING_API_SECRET"),
 	}, nil
 }
 
@@ -101,11 +103,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("OLLAMA_HOST", "http://localhost:11434")
 	v.SetDefault("QDRANT_HOST", "localhost:6334")
 	v.SetDefault("GENERATOR_MODEL_NAME", "gemma3:latest")
-	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text") // Ollama default
+	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text")
 	v.SetDefault("MAX_WORKERS", 5)
 	v.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
 	v.SetDefault("LLM_PROVIDER", "ollama")
-	v.SetDefault("EMBEDDER_PROVIDER", "ollama") // New default
+	v.SetDefault("EMBEDDER_PROVIDER", "ollama")
 	v.SetDefault("DB_DRIVER", "postgres")
 	v.SetDefault("DB_HOST", "localhost")
 	v.SetDefault("DB_PORT", 5432)
