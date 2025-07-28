@@ -1,5 +1,5 @@
 # -- Cuda 12.1 for PyTorch --
---index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://download.pytorch.org/whl/cu121
 
 # -- Main Libraries --
 fastapi

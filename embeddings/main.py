@@ -1,14 +1,15 @@
 import torch
 import torch.nn.functional as F
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModel
 from torch import Tensor
 from typing import List
+import traceback
+import math
 
 # --- Core App and Model Configuration ---
 app = FastAPI()
-# Using the latest version of the Nomic code embedder as requested.
 model_name = "nomic-ai/nomic-embed-code-v1.5"
 
 # --- Device Selection (CUDA for NVIDIA GPU on Runpod) ---
@@ -22,15 +23,7 @@ else:
 print("------------------------------------")
 
 # --- Nomic Model Helper Function (Mean Pooling) ---
-# Nomic models require mean pooling, not last token pooling.
 def mean_pooling(model_output: Tensor, attention_mask: Tensor) -> Tensor:
-    """
-    Performs mean pooling on the token embeddings.
-
-    This function takes the last hidden states from the model and an attention mask.
-    It calculates the average of all token embeddings that are not padding tokens.
-    This is the recommended pooling strategy for Nomic embedding models.
-    """
     token_embeddings = model_output
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
     return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
@@ -38,29 +31,23 @@ def mean_pooling(model_output: Tensor, attention_mask: Tensor) -> Tensor:
 # --- Model Loading ---
 print(f"\nLoading embedding model '{model_name}'...")
 try:
-    # Load tokenizer and model, trusting remote code for custom architectures
-    # Using float16 for better performance on modern NVIDIA GPUs like the A4500
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModel.from_pretrained(
         model_name,
         trust_remote_code=True,
-        torch_dtype=torch.float16 # Use half-precision for speed
+        torch_dtype=torch.float16
     ).to(device)
-
-    model.eval() # Set the model to evaluation mode
-
+    model.eval()
     print(f"Embedding model loaded successfully onto ==> {model.device}")
     print("\n--- API is ready. ---")
 except Exception as e:
     print(f"\nFATAL ERROR: Failed to load the embedding model.")
-    print(f"Please check your internet connection, model name, and PyTorch/CUDA installation.")
     print(f"Error details: {e}")
     exit()
 
 # --- Pydantic Request Models ---
 class EmbedRequest(BaseModel):
     texts: List[str]
-    # The default task is now more code-oriented.
     task: str = 'search_document'
 
 # --- API Endpoints ---
@@ -68,31 +55,51 @@ class EmbedRequest(BaseModel):
 async def embed(req: EmbedRequest):
     """
     Generates embeddings for a list of code snippets or text queries.
-    This endpoint uses the nomic-embed-code-v1.5 model.
+    This version includes a batching loop to prevent out-of-memory errors.
     """
-    # Nomic models for text often use a task prefix. While not explicitly documented
-    # for the code model, we will use it for consistency. Common tasks are
-    # 'search_query', 'search_document', 'classification', 'clustering'.
-    prefixed_texts = [f"{req.task}: {text}" for text in req.texts]
+    try:
+        # Define a safe batch size. You can tune this number.
+        # For a 24GB card like the A4500, 32 or 64 is a safe starting point.
+        batch_size = 32
+        all_embeddings = []
+        
+        print(f"Received request to embed {len(req.texts)} texts. Processing in batches of {batch_size}...")
 
-    # Tokenize the input texts
-    encoded_input = tokenizer(
-        prefixed_texts,
-        padding=True,
-        truncation=True,
-        max_length=8192, # Nomic was trained on an 8192 context length
-        return_tensors='pt'
-    ).to(device)
+        # Process the texts in mini-batches
+        for i in range(0, len(req.texts), batch_size):
+            batch_texts = req.texts[i:i + batch_size]
+            
+            print(f"Processing batch { (i // batch_size) + 1 } / { math.ceil(len(req.texts) / batch_size) }...")
 
-    with torch.no_grad():
-        # Get model outputs
-        model_output = model(**encoded_input).last_hidden_state
+            prefixed_texts = [f"{req.task}: {text}" for text in batch_texts]
 
-        # Perform mean pooling
-        embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
+            encoded_input = tokenizer(
+                prefixed_texts,
+                padding=True,
+                truncation=True,
+                max_length=8192,
+                return_tensors='pt'
+            ).to(device)
 
-        # Normalize the embeddings, which is critical for Nomic models
-        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+            with torch.no_grad():
+                model_output = model(**encoded_input).last_hidden_state
+                embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
+                normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+                
+                # Append the results of this batch to our master list
+                all_embeddings.append(normalized_embeddings.cpu())
 
-    # Move the final tensor to the CPU and convert to a list for the JSON response
-    return {"embeddings": normalized_embeddings.cpu().tolist()}
+        # Concatenate all the batch results into a single tensor
+        final_embeddings = torch.cat(all_embeddings, dim=0)
+
+        print("Successfully processed all batches.")
+        return {"embeddings": final_embeddings.tolist()}
+
+    except Exception as e:
+        print("\n--- AN ERROR OCCURRED IN THE /embed ENDPOINT ---")
+        print(f"Error Type: {type(e).__name__}")
+        print(f"Error Details: {e}")
+        print("Full Traceback:")
+        traceback.print_exc()
+        print("--------------------------------------------------\n")
+        raise HTTPException(status_code=500, detail="Internal Server Error during embedding generation.")
