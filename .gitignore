@@ -21,7 +21,6 @@ data/
 bin/
 keys/
 *.sh
-*.txt
 
 # Go workspace file
 go.work
