@@ -10,7 +10,7 @@ import math
 
 # --- Core App and Model Configuration ---
 app = FastAPI()
-model_name = "nomic-ai/nomic-embed-code-v1.5"
+model_name = "nomic-ai/nomic-embed-code"
 
 # --- Device Selection (CUDA for NVIDIA GPU on Runpod) ---
 print("--- Checking for available devices ---")
