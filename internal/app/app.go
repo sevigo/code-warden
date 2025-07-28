@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sevigo/goframe/embeddings"
+	"github.com/sevigo/goframe/embeddings/fastapi"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -21,6 +22,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
+
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
@@ -107,14 +109,14 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 
 	// Select the batch config based on the embedder provider to handle rate limits.
 	var batchConfig *qdrant.BatchConfig
-	if cfg.EmbedderProvider == "gemini" {
-		logger.Info("using conservative batch config for Gemini provider")
-		// Slower, sequential processing to respect API rate limits.
-		// Gemini API has a limit of 100 docs per embedding request.
+	// External APIs (Gemini, FastAPI) use a more conservative batching strategy.
+	if cfg.EmbedderProvider == "gemini" || cfg.EmbedderProvider == "fastapi" {
+		logger.Info("using conservative batch config for external provider", "provider", cfg.EmbedderProvider)
+		// Slower, sequential processing to respect potential API rate limits.
 		batchConfig = &qdrant.BatchConfig{
 			BatchSize:               256, // Qdrant upsert batch size
 			MaxConcurrency:          4,   // Qdrant upsert concurrency
-			EmbeddingBatchSize:      90,  // Gemini embedding batch size (under 100)
+			EmbeddingBatchSize:      90,  // Gemini/FastAPI embedding batch size
 			EmbeddingMaxConcurrency: 1,   // Process embedding batches sequentially
 			RetryAttempts:           qdrant.DefaultRetryAttempts,
 			RetryDelay:              qdrant.DefaultRetryDelay,
@@ -122,7 +124,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 			MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
 		}
 	} else {
-		logger.Info("using aggressive batch config for local provider")
+		logger.Info("using aggressive batch config for local provider", "provider", cfg.EmbedderProvider)
 		// Faster, parallel processing for local models like Ollama.
 		batchConfig = &qdrant.BatchConfig{
 			BatchSize:               256,
@@ -136,11 +138,6 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
 
 	reviewJob := jobs.NewReviewJob(cfg, ragService, store, repoManager, logger)
-
-	// TODO(follow-up): Initialize and start the repository cleanup service (janitor).
-	// This service will periodically scan for and delete old/unused repositories
-	// and their associated Qdrant collections to manage long-term resource usage.
-	// The implementation plan is documented in `TODO.md`.
 
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
 	httpServer := server.NewServer(ctx, cfg, dispatcher, logger)
@@ -170,14 +167,27 @@ func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Lo
 	return llm, nil
 }
 
+// --- REPLACE THE ENTIRE createEmbedder FUNCTION WITH THIS ---
 func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
 	logger.Info("connecting to embedder", "provider", cfg.EmbedderProvider, "model", cfg.EmbedderModelName)
-	var embedderLLM embeddings.Embedder
 	var err error
 
+	// Handle providers that directly implement the Embedder interface and are not wrapped.
+	if cfg.EmbedderProvider == "fastapi" {
+		return fastapi.New(
+			cfg.FastAPIServerURL,
+			fastapi.WithHTTPClient(newOllamaHTTPClient()),
+			fastapi.WithLogger(logger),
+			fastapi.WithTask(cfg.EmbedderTaskDescription),
+		)
+	}
+
+	// Handle providers that expose a base LLM interface and need to be wrapped
+	// by the generic Embedder that adds "query:" and "passage:" prefixes.
+	var baseEmbedder embeddings.Embedder
 	switch cfg.EmbedderProvider {
 	case "gemini":
-		embedderLLM, err = gemini.New(ctx,
+		baseEmbedder, err = gemini.New(ctx,
 			gemini.WithEmbeddingModel(cfg.EmbedderModelName),
 			gemini.WithAPIKey(cfg.GeminiAPIKey),
 		)
@@ -185,7 +195,7 @@ func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger
 			return nil, fmt.Errorf("failed to create gemini embedder: %w", err)
 		}
 	case "ollama":
-		embedderLLM, err = ollama.New(
+		baseEmbedder, err = ollama.New(
 			ollama.WithServerURL(cfg.OllamaHost),
 			ollama.WithModel(cfg.EmbedderModelName),
 			ollama.WithHTTPClient(newOllamaHTTPClient()),
@@ -198,17 +208,12 @@ func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger
 		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.EmbedderProvider)
 	}
 
+	// Wrap the base embedder (gemini, ollama) with the generic one.
+	wrappedEmbedder, err := embeddings.NewEmbedder(baseEmbedder)
 	if err != nil {
-		logger.Error("failed to connect to embedder LLM", "error", err)
-		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
+		return nil, fmt.Errorf("failed to create a wrapped embedder: %w", err)
 	}
-
-	embedder, err := embeddings.NewEmbedder(embedderLLM)
-	if err != nil {
-		logger.Error("failed to create embedder service", "error", err)
-		return nil, fmt.Errorf("failed to create embedder: %w", err)
-	}
-	return embedder, nil
+	return wrappedEmbedder, nil
 }
 
 // Start runs the HTTP server.

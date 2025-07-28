@@ -14,22 +14,24 @@ import (
 
 // Config holds the application's configuration values.
 type Config struct {
-	ServerPort           string
-	LLMProvider          string
-	EmbedderProvider     string
-	GeminiAPIKey         string
-	LoggerConfig         logger.Config
-	GitHubAppID          int64
-	GitHubWebhookSecret  string
-	GitHubPrivateKeyPath string
-	OllamaHost           string
-	QdrantHost           string
-	GeneratorModelName   string
-	EmbedderModelName    string
-	MaxWorkers           int
-	Database             *DBConfig
-	RepoPath             string
-	GitHubToken          string
+	ServerPort              string
+	LLMProvider             string
+	EmbedderProvider        string
+	GeminiAPIKey            string
+	LoggerConfig            logger.Config
+	GitHubAppID             int64
+	GitHubWebhookSecret     string
+	GitHubPrivateKeyPath    string
+	OllamaHost              string
+	QdrantHost              string
+	GeneratorModelName      string
+	EmbedderModelName       string
+	MaxWorkers              int
+	Database                *DBConfig
+	RepoPath                string
+	GitHubToken             string
+	FastAPIServerURL        string `mapstructure:"FASTAPI_SERVER_URL"`
+	EmbedderTaskDescription string `mapstructure:"EMBEDDER_TASK_DESCRIPTION"`
 }
 
 // DBConfig holds all database connection settings.
@@ -70,22 +72,24 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return &Config{
-		ServerPort:           v.GetString("SERVER_PORT"),
-		LLMProvider:          v.GetString("LLM_PROVIDER"),
-		EmbedderProvider:     v.GetString("EMBEDDER_PROVIDER"),
-		GeminiAPIKey:         v.GetString("GEMINI_API_KEY"),
-		LoggerConfig:         configureLogger(v),
-		GitHubAppID:          v.GetInt64("GITHUB_APP_ID"),
-		GitHubWebhookSecret:  v.GetString("GITHUB_WEBHOOK_SECRET"),
-		GitHubPrivateKeyPath: v.GetString("GITHUB_PRIVATE_KEY_PATH"),
-		OllamaHost:           v.GetString("OLLAMA_HOST"),
-		QdrantHost:           v.GetString("QDRANT_HOST"),
-		GeneratorModelName:   getGeneratorModelName(v),
-		EmbedderModelName:    getEmbedderModelName(v),
-		MaxWorkers:           v.GetInt("MAX_WORKERS"),
-		Database:             dbConfig,
-		RepoPath:             v.GetString("REPO_PATH"),
-		GitHubToken:          v.GetString("GITHUB_TOKEN"),
+		ServerPort:              v.GetString("SERVER_PORT"),
+		LLMProvider:             v.GetString("LLM_PROVIDER"),
+		EmbedderProvider:        v.GetString("EMBEDDER_PROVIDER"),
+		GeminiAPIKey:            v.GetString("GEMINI_API_KEY"),
+		LoggerConfig:            configureLogger(v),
+		GitHubAppID:             v.GetInt64("GITHUB_APP_ID"),
+		GitHubWebhookSecret:     v.GetString("GITHUB_WEBHOOK_SECRET"),
+		GitHubPrivateKeyPath:    v.GetString("GITHUB_PRIVATE_KEY_PATH"),
+		OllamaHost:              v.GetString("OLLAMA_HOST"),
+		QdrantHost:              v.GetString("QDRANT_HOST"),
+		GeneratorModelName:      getGeneratorModelName(v),
+		EmbedderModelName:       getEmbedderModelName(v),
+		MaxWorkers:              v.GetInt("MAX_WORKERS"),
+		Database:                dbConfig,
+		RepoPath:                v.GetString("REPO_PATH"),
+		GitHubToken:             v.GetString("GITHUB_TOKEN"),
+		FastAPIServerURL:        v.GetString("FASTAPI_SERVER_URL"),
+		EmbedderTaskDescription: v.GetString("EMBEDDER_TASK_DESCRIPTION"),
 	}, nil
 }
 
@@ -114,6 +118,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
 	v.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
 	v.SetDefault("REPO_PATH", "./data/repos")
+	v.SetDefault("FASTAPI_SERVER_URL", "http://127.0.0.1:8000")
+	v.SetDefault("EMBEDDER_TASK_DESCRIPTION", "Given a web search query, retrieve relevant passages that answer the query")
 }
 
 func loadEnvFile(v *viper.Viper) error {
