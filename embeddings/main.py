@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.getenv("MODEL_NAME", "nomic-ai/nomic-embed-code")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "4"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "8"))
 MAX_LENGTH = int(os.getenv("MAX_LENGTH", "2048"))
 MAX_TEXTS_PER_REQUEST = int(os.getenv("MAX_TEXTS_PER_REQUEST", "1000"))
 SHARED_SECRET = os.getenv("EMBEDDING_API_SECRET")
