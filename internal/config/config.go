@@ -121,7 +121,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
 	v.SetDefault("REPO_PATH", "./data/repos")
 	v.SetDefault("FASTAPI_SERVER_URL", "http://127.0.0.1:8000")
-	v.SetDefault("EMBEDDER_TASK_DESCRIPTION", "Given a web search query, retrieve relevant passages that answer the query")
+	v.SetDefault("EMBEDDER_TASK_DESCRIPTION", "search_document")
 }
 
 func loadEnvFile(v *viper.Viper) error {

@@ -167,7 +167,6 @@ func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Lo
 	return llm, nil
 }
 
-// --- REPLACE THE ENTIRE createEmbedder FUNCTION WITH THIS ---
 func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
 	logger.Info("connecting to embedder", "provider", cfg.EmbedderProvider, "model", cfg.EmbedderModelName)
 	var err error
@@ -175,8 +174,7 @@ func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger
 	// Handle providers that directly implement the Embedder interface and are not wrapped.
 	if cfg.EmbedderProvider == "fastapi" {
 		sharedSecret := cfg.FastAPISharedSecret
-		return fastapi.New(
-			cfg.FastAPIServerURL,
+		return fastapi.New(cfg.FastAPIServerURL,
 			fastapi.WithHTTPClient(newOllamaHTTPClient()),
 			fastapi.WithLogger(logger),
 			fastapi.WithTask(cfg.EmbedderTaskDescription),

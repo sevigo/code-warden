@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException, Depends, Header
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModel
 from torch import Tensor
 from typing import List, Optional
@@ -9,33 +9,27 @@ import traceback
 import math
 import os
 import logging
-import asyncio
 from contextlib import asynccontextmanager
 
-# --- Logging Configuration ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# --- Logging and Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Configuration ---
 MODEL_NAME = os.getenv("MODEL_NAME", "nomic-ai/nomic-embed-code")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "32"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "4"))
 MAX_LENGTH = int(os.getenv("MAX_LENGTH", "2048"))
 MAX_TEXTS_PER_REQUEST = int(os.getenv("MAX_TEXTS_PER_REQUEST", "1000"))
 SHARED_SECRET = os.getenv("EMBEDDING_API_SECRET")
 
-# --- Global Model Variables ---
+# --- Global State ---
 tokenizer = None
 model = None
 device = None
 
-# --- Model Loading Functions ---
-async def load_model():
-    """Asynchronously load the embedding model."""
+# --- FastAPI Lifespan (Model Loading) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global tokenizer, model, device
-    
     logger.info("--- Checking for available devices ---")
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -46,54 +40,38 @@ async def load_model():
     
     logger.info(f"Loading embedding model '{MODEL_NAME}'...")
     try:
-        # Run model loading in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        tokenizer, model = await loop.run_in_executor(
-            None, _load_model_sync
-        )
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+        model = AutoModel.from_pretrained(
+            MODEL_NAME,
+            trust_remote_code=True,
+            torch_dtype=torch.float16
+        ).to(device)
+        model.eval()
         logger.info(f"Embedding model loaded successfully onto ==> {model.device}")
-        logger.info("--- API is ready ---")
     except Exception as e:
-        logger.error(f"FATAL ERROR: Failed to load the embedding model: {e}")
+        logger.error(f"FATAL ERROR during model loading: {e}", exc_info=True)
         raise
-
-def _load_model_sync():
-    """Synchronous model loading function."""
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        MODEL_NAME,
-        trust_remote_code=True,
-        torch_dtype=torch.float16
-    ).to(device)
-    model.eval()
-    return tokenizer, model
-
-# --- Lifespan Context Manager ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    await load_model()
+    
+    logger.info("--- API is ready ---")
     yield
     # Shutdown
-    logger.info("Shutting down...")
+    logger.info("Shutting down and clearing cache...")
     if device and device.type == 'cuda':
         torch.cuda.empty_cache()
 
-# --- Core App Configuration ---
 app = FastAPI(
-    title="Code Embedding API",
-    description="High-performance code embedding service with batching support",
-    version="1.0.0",
+    title="Code Embedding API", 
+    description="High-performance code embedding service with memory management",
+    version="1.0.0", 
     lifespan=lifespan
 )
 
-# --- Authentication Dependency ---
+# --- Authentication ---
 async def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    """Dependency function to verify the incoming API key."""
     if not SHARED_SECRET:
         logger.warning("EMBEDDING_API_SECRET is not set. Endpoint is open.")
         return
-
+    
     if x_api_key is None:
         logger.error("Request missing X-Api-Key header")
         raise HTTPException(status_code=401, detail="X-Api-Key header is required")
@@ -122,7 +100,6 @@ def validate_texts(texts: List[str]) -> None:
             detail=f"Too many texts. Maximum allowed: {MAX_TEXTS_PER_REQUEST}"
         )
     
-    # Check for excessively long texts
     for i, text in enumerate(texts):
         if not isinstance(text, str):
             raise HTTPException(
@@ -137,8 +114,8 @@ def validate_texts(texts: List[str]) -> None:
 
 # --- Pydantic Models ---
 class EmbedRequest(BaseModel):
-    texts: List[str] = Field(..., min_length=1, max_length=MAX_TEXTS_PER_REQUEST)
-    task: str = Field(default='search_document', pattern='^[a-zA-Z_]+$')
+    texts: List[str]
+    task: str = 'search_document'
 
 class EmbedResponse(BaseModel):
     embeddings: List[List[float]]
@@ -166,10 +143,10 @@ async def health_check():
 async def embed(req: EmbedRequest):
     """
     Generates embeddings for a list of code snippets or text queries.
-    Includes batching, memory management, and comprehensive error handling.
+    Includes memory management and OOM recovery.
     """
     if model is None or tokenizer is None:
-        raise HTTPException(status_code=503, detail="Model not loaded yet")
+        raise HTTPException(status_code=503, detail="Model is not loaded or is warming up")
     
     try:
         # Validate inputs
@@ -177,47 +154,89 @@ async def embed(req: EmbedRequest):
         
         all_embeddings = []
         total_batches = math.ceil(len(req.texts) / BATCH_SIZE)
+        logger.info(f"Processing {len(req.texts)} texts in {total_batches} batches of size {BATCH_SIZE}")
         
-        logger.info(f"Processing {len(req.texts)} texts in {total_batches} batches")
-
-        # Process texts in batches
         for i in range(0, len(req.texts), BATCH_SIZE):
             batch_texts = req.texts[i:i + BATCH_SIZE]
             batch_num = (i // BATCH_SIZE) + 1
-            
             logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch_texts)} texts)")
 
-            # Add task prefix
             prefixed_texts = [f"{req.task}: {text}" for text in batch_texts]
 
-            # Tokenize
-            encoded_input = tokenizer(
-                prefixed_texts,
-                padding=True,
-                truncation=True,
-                max_length=MAX_LENGTH,
-                return_tensors='pt'
-            ).to(device)
+            try:
+                # Normal batch processing
+                encoded_input = tokenizer(
+                    prefixed_texts, 
+                    padding=True, 
+                    truncation=True, 
+                    max_length=MAX_LENGTH, 
+                    return_tensors='pt'
+                ).to(device)
 
-            # Generate embeddings
-            with torch.no_grad():
-                model_output = model(**encoded_input).last_hidden_state
-                embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
-                normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+                with torch.no_grad():
+                    model_output_obj = model(**encoded_input)
+                    last_hidden_state = model_output_obj.last_hidden_state
+                    embeddings = mean_pooling(last_hidden_state, encoded_input['attention_mask'])
+                    normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+                    all_embeddings.append(normalized_embeddings.cpu())
+
+                    # Clean up batch tensors immediately
+                    del model_output_obj, last_hidden_state, embeddings, normalized_embeddings, encoded_input
+
+            except torch.cuda.OutOfMemoryError as oom_error:
+                logger.warning(f"CUDA OOM in batch {batch_num}: {oom_error}")
+                logger.info(f"Falling back to individual processing for batch {batch_num}")
                 
-                # Move to CPU and store
-                all_embeddings.append(normalized_embeddings.cpu())
-                
-                # Clear GPU memory after each batch
-                del model_output, embeddings, normalized_embeddings, encoded_input
+                # Clear GPU memory
                 if device.type == 'cuda':
                     torch.cuda.empty_cache()
+                
+                # Process one text at a time as fallback
+                batch_embeddings = []
+                for j, single_text in enumerate(batch_texts):
+                    try:
+                        prefixed_text = f"{req.task}: {single_text}"
+                        encoded_single = tokenizer(
+                            [prefixed_text], 
+                            padding=True, 
+                            truncation=True, 
+                            max_length=MAX_LENGTH, 
+                            return_tensors='pt'
+                        ).to(device)
+                        
+                        with torch.no_grad():
+                            single_output = model(**encoded_single)
+                            single_embedding = mean_pooling(
+                                single_output.last_hidden_state, 
+                                encoded_single['attention_mask']
+                            )
+                            single_normalized = F.normalize(single_embedding, p=2, dim=1)
+                            batch_embeddings.append(single_normalized.cpu())
+                        
+                        # Clean up individual tensors
+                        del single_output, single_embedding, single_normalized, encoded_single
+                        
+                        if device.type == 'cuda':
+                            torch.cuda.empty_cache()
+                            
+                    except Exception as single_error:
+                        logger.error(f"Failed to process individual text {j} in batch {batch_num}: {single_error}")
+                        raise HTTPException(
+                            status_code=500, 
+                            detail=f"Failed to process text at position {i + j}"
+                        )
+                
+                # Combine individual embeddings for this batch
+                if batch_embeddings:
+                    combined_batch = torch.cat(batch_embeddings, dim=0)
+                    all_embeddings.append(combined_batch)
+                    del batch_embeddings, combined_batch
 
         # Concatenate all embeddings
         final_embeddings = torch.cat(all_embeddings, dim=0)
         embeddings_list = final_embeddings.tolist()
         
-        # Clean up
+        # Clean up final variables
         del all_embeddings, final_embeddings
         
         logger.info(f"Successfully generated {len(embeddings_list)} embeddings")
@@ -232,12 +251,17 @@ async def embed(req: EmbedRequest):
         # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        logger.error(f"Error in /embed endpoint: {type(e).__name__}: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Error in /embed endpoint: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, 
             detail="Internal server error during embedding generation"
         )
+    
+    finally:
+        # Always clear CUDA cache after request
+        if device and device.type == 'cuda':
+            torch.cuda.empty_cache()
+            logger.debug("CUDA cache cleared after request")
 
 @app.get("/")
 async def root():
@@ -245,6 +269,7 @@ async def root():
     return {
         "message": "Code Embedding API",
         "model": MODEL_NAME,
+        "batch_size": BATCH_SIZE,
         "endpoints": {
             "health": "/health",
             "embed": "/embed",
@@ -252,12 +277,14 @@ async def root():
         }
     }
 
-# --- Error Handlers ---
+# --- Global Exception Handler ---
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    logger.error(f"Unhandled exception: {type(exc).__name__}: {exc}")
-    logger.error(traceback.format_exc())
-    return HTTPException(status_code=500, detail="Internal server error")
+    logger.error(f"Unhandled exception: {type(exc).__name__}: {exc}", exc_info=True)
+    # Clear cache on any unhandled exception
+    if device and device.type == 'cuda':
+        torch.cuda.empty_cache()
+    raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
     import uvicorn
