@@ -123,7 +123,9 @@ cd code-warden/embeddings
 python3 -m venv venv
 source venv/bin/activate
 export HF_HOME="/workspace/huggingface"
+export EMBEDDING_API_SECRET="YOUR_SECRET_KEY_HERE"
 echo 'export HF_HOME="/workspace/huggingface"' >> ~/.bashrc
+echo 'export EMBEDDING_API_SECRET="YOUR_SECRET_KEY_HERE"' > ~/.bashrc
 pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 18000
 ```

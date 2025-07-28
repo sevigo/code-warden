@@ -1,16 +1,37 @@
 import torch
 import torch.nn.functional as F
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModel
 from torch import Tensor
-from typing import List
+from typing import List, Optional
 import traceback
 import math
+import os
 
 # --- Core App and Model Configuration ---
 app = FastAPI()
 model_name = "nomic-ai/nomic-embed-code"
+
+# --- Security Configuration ---
+# Read the shared secret from an environment variable for security.
+SHARED_SECRET = os.getenv("EMBEDDING_API_SECRET")
+
+# --- Authentication Dependency ---
+async def verify_api_key(x_api_key: Optional[str] = Header(None)):
+    """Dependency function to verify the incoming API key."""
+    # If the secret is not configured on the server, disable authentication.
+    if not SHARED_SECRET:
+        print("WARNING: EMBEDDING_API_SECRET is not set. Endpoint is open.")
+        return
+
+    # If the secret IS configured, we require the header to match.
+    if x_api_key is None:
+        print("ERROR: Request missing X-Api-Key header.")
+        raise HTTPException(status_code=401, detail="X-Api-Key header is required.")
+    if x_api_key != SHARED_SECRET:
+        print("ERROR: Invalid API Key received.")
+        raise HTTPException(status_code=403, detail="Invalid API Key.")
 
 # --- Device Selection (CUDA for NVIDIA GPU on Runpod) ---
 print("--- Checking for available devices ---")
@@ -51,15 +72,14 @@ class EmbedRequest(BaseModel):
     task: str = 'search_document'
 
 # --- API Endpoints ---
-@app.post("/embed")
+# The endpoint is now protected by our verify_api_key dependency.
+@app.post("/embed", dependencies=[Depends(verify_api_key)])
 async def embed(req: EmbedRequest):
     """
     Generates embeddings for a list of code snippets or text queries.
     This version includes a batching loop to prevent out-of-memory errors.
     """
     try:
-        # Define a safe batch size. You can tune this number.
-        # For a 24GB card like the A4500, 32 or 64 is a safe starting point.
         batch_size = 32
         all_embeddings = []
         
@@ -77,7 +97,7 @@ async def embed(req: EmbedRequest):
                 prefixed_texts,
                 padding=True,
                 truncation=True,
-                max_length=8192,
+                max_length=2048,
                 return_tensors='pt'
             ).to(device)
 
@@ -86,10 +106,8 @@ async def embed(req: EmbedRequest):
                 embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
                 normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
                 
-                # Append the results of this batch to our master list
                 all_embeddings.append(normalized_embeddings.cpu())
 
-        # Concatenate all the batch results into a single tensor
         final_embeddings = torch.cat(all_embeddings, dim=0)
 
         print("Successfully processed all batches.")
@@ -99,7 +117,6 @@ async def embed(req: EmbedRequest):
         print("\n--- AN ERROR OCCURRED IN THE /embed ENDPOINT ---")
         print(f"Error Type: {type(e).__name__}")
         print(f"Error Details: {e}")
-        print("Full Traceback:")
         traceback.print_exc()
         print("--------------------------------------------------\n")
         raise HTTPException(status_code=500, detail="Internal Server Error during embedding generation.")
