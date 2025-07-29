@@ -1,0 +1,11 @@
+# -- Cuda 12.1 for PyTorch --
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# -- Main Libraries --
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
+transformers>=4.35.0
+pydantic>=2.

@@ -21,8 +21,6 @@ data/
 bin/
 keys/
 *.sh
-*.txt
-*.py
 
 # Go workspace file
 go.work

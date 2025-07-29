@@ -65,21 +65,21 @@ services:
       - warden-net
     restart: unless-stopped
 
-  ollama:
-    image: ollama/ollama:0.9.6
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - warden-net
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--timeout=1", "-O", "-", "http://localhost:11434/"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+  # ollama:
+  #   image: ollama/ollama:0.9.6
+  #   container_name: ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     - warden-net
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--timeout=1", "-O", "-", "http://localhost:11434/"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   restart: unless-stopped
 
 networks:
   warden-net:
@@ -87,5 +87,5 @@ networks:
 
 volumes:
   postgres_data:
-  ollama_data:
+  # ollama_data:
   qdrant_data:
