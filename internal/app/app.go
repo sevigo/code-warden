@@ -110,14 +110,14 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	// Select the batch config based on the embedder provider to handle rate limits.
 	var batchConfig *qdrant.BatchConfig
 	// External APIs (Gemini, FastAPI) use a more conservative batching strategy.
-	if cfg.EmbedderProvider == "gemini" || cfg.EmbedderProvider == "fastapi" {
+	if cfg.EmbedderProvider == "gemini" {
 		logger.Info("using conservative batch config for external provider", "provider", cfg.EmbedderProvider)
 		// Slower, sequential processing to respect potential API rate limits.
 		batchConfig = &qdrant.BatchConfig{
-			BatchSize:               256, // Qdrant upsert batch size
-			MaxConcurrency:          4,   // Qdrant upsert concurrency
-			EmbeddingBatchSize:      90,  // Gemini/FastAPI embedding batch size
-			EmbeddingMaxConcurrency: 1,   // Process embedding batches sequentially
+			BatchSize:               256,
+			MaxConcurrency:          4,
+			EmbeddingBatchSize:      90,
+			EmbeddingMaxConcurrency: 1,
 			RetryAttempts:           qdrant.DefaultRetryAttempts,
 			RetryDelay:              qdrant.DefaultRetryDelay,
 			RetryJitter:             qdrant.DefaultRetryJitter,
@@ -125,12 +125,13 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		}
 	} else {
 		logger.Info("using aggressive batch config for local provider", "provider", cfg.EmbedderProvider)
-		// Faster, parallel processing for local models like Ollama.
 		batchConfig = &qdrant.BatchConfig{
-			BatchSize:               256,
+			BatchSize:               512,
 			MaxConcurrency:          8,
-			EmbeddingBatchSize:      64,
+			EmbeddingBatchSize:      128,
 			EmbeddingMaxConcurrency: 4,
+			RetryAttempts:           2,
+			RetryDelay:              1 * time.Second,
 		}
 	}
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, batchConfig, logger)
