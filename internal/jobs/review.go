@@ -58,6 +58,7 @@ func NewReviewJob(
 // getRepoMutex returns a mutex for the given repository to prevent concurrent operations
 func (j *ReviewJob) getRepoMutex(repoFullName string) *sync.Mutex {
 	mutex, _ := j.repoMutexes.LoadOrStore(repoFullName, &sync.Mutex{})
+	//nolint:errcheck // LoadOrStore always returns a valid value for our use case
 	return mutex.(*sync.Mutex)
 }
 
@@ -101,107 +102,159 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 		return fmt.Errorf("context cancelled before starting: %w", err)
 	}
 
-	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Code Review", "AI analysis in progress...")
+	// Setup the review environment
+	reviewEnv, err := j.setupReviewEnvironment(ctx, event)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err != nil && statusUpdater != nil {
-			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
+		if err != nil {
+			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
+		}
+		if reviewEnv.updateResult != nil && reviewEnv.updateResult.RepoPath != "" {
+			j.cleanupRepoResources(reviewEnv.updateResult.RepoPath)
 		}
 	}()
 
-	// Check context after setup
-	if err := j.checkContext(ctx); err != nil {
-		return fmt.Errorf("context cancelled after setup: %w", err)
+	// Process the repository and generate review
+	review, err := j.processRepository(ctx, event, reviewEnv)
+	if err != nil {
+		return err
 	}
 
-	// Sync the repository using the manager. This single call handles both
-	// the initial clone and subsequent incremental updates.
+	// Post the review and complete
+	return j.completeReview(ctx, event, reviewEnv, review)
+}
+
+// reviewEnvironment holds all the resources needed for a review
+type reviewEnvironment struct {
+	ghClient       github.Client
+	statusUpdater  github.StatusUpdater
+	checkRunID     int64
+	updateResult   *core.UpdateResult
+	repoConfig     *core.RepoConfig
+	collectionName string
+}
+
+// setupReviewEnvironment initializes all resources needed for a review
+func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent) (*reviewEnvironment, error) {
+	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Code Review", "AI analysis in progress...")
+	if err != nil {
+		return nil, err
+	}
+
+	if err := j.checkContext(ctx); err != nil {
+		return nil, fmt.Errorf("context cancelled after setup: %w", err)
+	}
+
+	// Sync the repository
 	updateResult, err := j.repoMgr.SyncRepo(ctx, event, ghToken)
 	if err != nil {
-		return fmt.Errorf("failed to sync repository: %w", err)
+		return nil, fmt.Errorf("failed to sync repository: %w", err)
 	}
 
-	// Ensure cleanup of any temporary resources
-	defer func() {
-		if updateResult != nil && updateResult.RepoPath != "" {
-			j.cleanupRepoResources(updateResult.RepoPath)
-		}
-	}()
-
-	// Check context after repo sync
 	if err := j.checkContext(ctx); err != nil {
-		return fmt.Errorf("context cancelled after repo sync: %w", err)
+		return nil, fmt.Errorf("context cancelled after repo sync: %w", err)
 	}
 
-	repoConfig, configErr := j.loadRepoConfig(updateResult.RepoPath)
+	// Load repository configuration
+	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
+
+	// Get collection name
+	collectionName, err := j.getCollectionName(ctx, event.RepoFullName)
+	if err != nil {
+		return nil, err
+	}
+
+	return &reviewEnvironment{
+		ghClient:       ghClient,
+		statusUpdater:  statusUpdater,
+		checkRunID:     checkRunID,
+		updateResult:   updateResult,
+		repoConfig:     repoConfig,
+		collectionName: collectionName,
+	}, nil
+}
+
+// loadAndProcessRepoConfig loads the repository configuration with proper error handling
+func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *core.RepoConfig {
+	repoConfig, configErr := j.loadRepoConfig(repoPath)
 	if configErr != nil {
 		if errors.Is(configErr, ErrConfigNotFound) {
-			j.logger.Info("no .code-warden.yml found, using defaults", "repo", event.RepoFullName)
-			repoConfig = core.DefaultRepoConfig()
-		} else {
-			j.logger.Warn("failed to parse .code-warden.yml, using defaults", "error", configErr, "repo", event.RepoFullName)
-			repoConfig = core.DefaultRepoConfig()
+			j.logger.Info("no .code-warden.yml found, using defaults", "repo", repoFullName)
+			return core.DefaultRepoConfig()
 		}
+		j.logger.Warn("failed to parse .code-warden.yml, using defaults", "error", configErr, "repo", repoFullName)
+		return core.DefaultRepoConfig()
 	}
+	return repoConfig
+}
 
-	// Retrieve the repository record to get the correct collection name from the database.
-	repoRecord, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+// getCollectionName retrieves the collection name for the repository
+func (j *ReviewJob) getCollectionName(ctx context.Context, repoFullName string) (string, error) {
+	repoRecord, err := j.repoMgr.GetRepoRecord(ctx, repoFullName)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve repository record after sync: %w", err)
+		return "", fmt.Errorf("failed to retrieve repository record after sync: %w", err)
 	}
 	if repoRecord == nil {
-		return fmt.Errorf("repository record is unexpectedly nil after sync for %s", event.RepoFullName)
+		return "", fmt.Errorf("repository record is unexpectedly nil after sync for %s", repoFullName)
 	}
-	collectionName := repoRecord.QdrantCollectionName
+	return repoRecord.QdrantCollectionName, nil
+}
 
-	// Check context before vector store operations
+// processRepository handles the vector store updates and review generation
+func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (string, error) {
 	if err := j.checkContext(ctx); err != nil {
-		return fmt.Errorf("context cancelled before vector store update: %w", err)
+		return "", fmt.Errorf("context cancelled before vector store update: %w", err)
 	}
 
 	// Update the vector store and database SHA atomically
-	if err := j.updateVectorStoreAndSHA(ctx, event, repoConfig, collectionName, updateResult); err != nil {
-		return err
+	if err := j.updateVectorStoreAndSHA(ctx, event, env.repoConfig, env.collectionName, env.updateResult); err != nil {
+		return "", err
 	}
 
-	// Check context before generating review
 	if err := j.checkContext(ctx); err != nil {
-		return fmt.Errorf("context cancelled before review generation: %w", err)
+		return "", fmt.Errorf("context cancelled before review generation: %w", err)
 	}
 
-	// Generate the review using the now-up-to-date context.
-	review, err := j.ragService.GenerateReview(ctx, repoConfig, collectionName, event, ghClient)
+	// Generate the review
+	review, err := j.ragService.GenerateReview(ctx, env.repoConfig, env.collectionName, event, env.ghClient)
 	if err != nil {
-		return fmt.Errorf("failed to generate review: %w", err)
+		return "", fmt.Errorf("failed to generate review: %w", err)
 	}
 	if strings.TrimSpace(review) == "" {
-		return errors.New("generated review is empty")
+		return "", errors.New("generated review is empty")
 	}
 
-	// Validate review size before posting
+	// Validate review size
 	if err := j.validateReviewSize(review); err != nil {
-		return err
+		return "", err
 	}
 
-	// Post comment, save review record, and complete the check run.
-	if err = statusUpdater.PostReviewComment(ctx, event, review); err != nil {
+	return review, nil
+}
+
+// completeReview posts the review and updates the status
+func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, review string) error {
+	// Post comment
+	if err := env.statusUpdater.PostReviewComment(ctx, event, review); err != nil {
 		return fmt.Errorf("failed to post review comment: %w", err)
 	}
 
+	// Save review record
 	dbReview := &core.Review{
 		RepoFullName:  event.RepoFullName,
 		PRNumber:      event.PRNumber,
 		HeadSHA:       event.HeadSHA,
 		ReviewContent: review,
 	}
-	if err = j.store.SaveReview(ctx, dbReview); err != nil {
+	if err := j.store.SaveReview(ctx, dbReview); err != nil {
 		j.logger.Error("failed to save review to database", "error", err)
 		// Don't return error here as the review was already posted
 	}
 
-	if err = statusUpdater.Completed(ctx, event, checkRunID, "success", "Review Complete", "AI analysis finished."); err != nil {
+	// Complete the check run
+	if err := env.statusUpdater.Completed(ctx, event, env.checkRunID, "success", "Review Complete", "AI analysis finished."); err != nil {
 		return fmt.Errorf("failed to update completion status: %w", err)
 	}
 
@@ -210,7 +263,7 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 }
 
 // updateVectorStoreAndSHA performs atomic-like update of vector store and SHA
-func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.GitHubEvent, repoConfig *core.RepoConfig, collectionName string, updateResult *repomanager.UpdateResult) error {
+func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.GitHubEvent, repoConfig *core.RepoConfig, collectionName string, updateResult *core.UpdateResult) error {
 	var vectorStoreUpdated bool
 
 	// Update the vector store based on the results from the manager.
@@ -255,7 +308,6 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.Git
 // validateReviewSize checks if the review content is within acceptable limits
 func (j *ReviewJob) validateReviewSize(review string) error {
 	if len(review) > maxReviewSize {
-		truncatedReview := review[:maxReviewSize-100] + "\n\n[Review truncated due to size limits]"
 		j.logger.Warn("Review content too large, truncating",
 			"original_size", len(review),
 			"max_size", maxReviewSize,
@@ -410,10 +462,9 @@ func (j *ReviewJob) loadRepoConfig(repoPath string) (*core.RepoConfig, error) {
 
 	config := core.DefaultRepoConfig()
 	if err := yaml.Unmarshal(data, config); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrConfigParsing, err)
+		return nil, fmt.Errorf("%w: %w", ErrConfigParsing, err)
 	}
 
 	j.logger.Info(".code-warden.yml loaded successfully", "repo_path", repoPath)
 	return config, nil
 }
-g
