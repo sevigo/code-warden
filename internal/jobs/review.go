@@ -249,8 +249,14 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 		ReviewContent: review,
 	}
 	if err := j.store.SaveReview(ctx, dbReview); err != nil {
-		j.logger.Error("failed to save review to database", "error", err)
-		// Don't return error here as the review was already posted
+		j.logger.Error("failed to save review to database, this may affect follow-up reviews",
+			"error", err,
+			"repo", event.RepoFullName,
+			"pr", event.PRNumber,
+			"head_sha", event.HeadSHA,
+		)
+		// Propagate the error to reflect internal data inconsistency in GitHub status.
+		return fmt.Errorf("failed to save review record: %w", err)
 	}
 
 	// Complete the check run
