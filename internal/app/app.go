@@ -31,6 +31,10 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+const (
+	llmProviderGemini = "gemini"
+)
+
 // App holds the main application components.
 type App struct {
 	Store      storage.Store
@@ -110,7 +114,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	// Select the batch config based on the embedder provider to handle rate limits.
 	var batchConfig *qdrant.BatchConfig
 	// External APIs (Gemini, FastAPI) use a more conservative batching strategy.
-	if cfg.EmbedderProvider == "gemini" {
+	if cfg.EmbedderProvider == llmProviderGemini {
 		logger.Info("using conservative batch config for external provider", "provider", cfg.EmbedderProvider)
 		// Slower, sequential processing to respect potential API rate limits.
 		batchConfig = &qdrant.BatchConfig{
@@ -187,7 +191,7 @@ func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger
 	// by the generic Embedder that adds "query:" and "passage:" prefixes.
 	var baseEmbedder embeddings.Embedder
 	switch cfg.EmbedderProvider {
-	case "gemini":
+	case llmProviderGemini:
 		baseEmbedder, err = gemini.New(ctx,
 			gemini.WithEmbeddingModel(cfg.EmbedderModelName),
 			gemini.WithAPIKey(cfg.GeminiAPIKey),
@@ -273,7 +277,7 @@ func initDatabase(cfg *config.DBConfig) (*db.DB, func(), error) {
 // createLLM creates the appropriate LLM client based on the configured provider.
 func createLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
 	switch cfg.LLMProvider {
-	case "gemini":
+	case llmProviderGemini:
 		logger.Info("Using Gemini LLM provider", "model", cfg.GeneratorModelName)
 		if cfg.GeminiAPIKey == "" {
 			return nil, fmt.Errorf("GEMINI_API_KEY is not set in environment for gemini provider")

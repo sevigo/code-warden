@@ -12,6 +12,10 @@ import (
 	"github.com/sevigo/code-warden/internal/logger"
 )
 
+const (
+	llmProviderGemini = "gemini"
+)
+
 // Config holds the application's configuration values.
 type Config struct {
 	ServerPort              string
@@ -148,7 +152,7 @@ func validateRequired(v *viper.Viper) error {
 		return fmt.Errorf("github private key not found at path: %s", privateKeyPath)
 	}
 	// New: Validate Gemini API key if it's used for either generator or embedder
-	if v.GetString("LLM_PROVIDER") == "gemini" || v.GetString("EMBEDDER_PROVIDER") == "gemini" {
+	if v.GetString("LLM_PROVIDER") == llmProviderGemini || v.GetString("EMBEDDER_PROVIDER") == llmProviderGemini {
 		if v.GetString("GEMINI_API_KEY") == "" {
 			return errors.New("GEMINI_API_KEY must be set when using the gemini provider for generator or embedder")
 		}
