@@ -202,6 +202,27 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 	return files, err
 }
 
+func (m *manager) getRepoFullName(repo *git.Repository, repoPath string) string {
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return filepath.Base(repoPath)
+	}
+
+	repoURL := remote.Config().URLs[0]
+	u, err := url.Parse(repoURL)
+	if err == nil && u.Scheme == "https" {
+		repoFullName := strings.TrimPrefix(u.Path, "/")
+		return strings.TrimSuffix(repoFullName, ".git")
+	}
+
+	// fallback to ssh url parsing
+	parts := strings.Split(repoURL, ":")
+	if len(parts) > 1 {
+		return strings.TrimSuffix(parts[1], ".git")
+	}
+	return filepath.Base(repoPath)
+}
+
 // ScanLocalRepo scans a local git repository.
 func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error {
 	m.logger.Info("scanning local repository", "path", repoPath)
@@ -221,22 +242,7 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 
 	// If the repoFullName is not provided, try to get it from the remote URL.
 	if repoFullName == "" {
-		remote, err := gitRepo.Remote("origin")
-		if err == nil {
-			repoURL := remote.Config().URLs[0]
-			// try to parse https url first
-			u, err := url.Parse(repoURL)
-			if err == nil && u.Scheme == "https" {
-				repoFullName = strings.TrimPrefix(u.Path, "/")
-				repoFullName = strings.TrimSuffix(repoFullName, ".git")
-			} else {
-				// fallback to ssh url parsing
-				repoFullName = strings.TrimSuffix(strings.Split(repoURL, ":")[1], ".git")
-			}
-		} else {
-			// If there is no remote, use the directory name as the repo full name.
-			repoFullName = filepath.Base(repoPath)
-		}
+		repoFullName = m.getRepoFullName(gitRepo, repoPath)
 	}
 
 	// Create and save the new repository record.
