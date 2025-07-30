@@ -113,6 +113,12 @@ export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
 ./bin/warden-cli preload --repo-url https://github.com/owner/repo.git
 ```
 
+* Run a scan for a local repository:
+```sh
+./bin/warden-cli scan /path/to/your/local/repo
+```
+
+
 ## RunPod
 
 ```bash
