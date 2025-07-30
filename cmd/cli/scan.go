@@ -96,7 +96,6 @@ var scanCmd = &cobra.Command{
 		}
 
 		// 5. Update the last indexed SHA in the database to the new HEAD SHA.
-		// This is the *only* place this should happen to ensure data consistency.
 		slog.Info("Updating last indexed SHA in database", "sha", updateResult.HeadSHA)
 		if err := app.RepoMgr.UpdateRepoSHA(ctx, updateResult.RepoFullName, updateResult.HeadSHA); err != nil {
 			return fmt.Errorf("CRITICAL: vector store updated but failed to update SHA in database: %w", err)
