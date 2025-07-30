@@ -15,4 +15,6 @@ func Execute() error {
 }
 
 func init() { //nolint:gochecknoinits // Cobra's init function for command registration
+	rootCmd.AddCommand(scanCmd)
+	scanCmd.Flags().StringVar(&repoFullName, "repo-full-name", "", "The full name of the repository (e.g. owner/repo)")
 }

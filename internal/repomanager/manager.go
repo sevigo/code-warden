@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,7 @@ type RepoManager interface {
 	SyncRepo(ctx context.Context, event *core.GitHubEvent, token string) (*core.UpdateResult, error)
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
 	UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error
+	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error
 }
 
 // New creates a new RepoManager.
@@ -198,4 +200,62 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+func (m *manager) getRepoFullName(repo *git.Repository, repoPath string) string {
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return filepath.Base(repoPath)
+	}
+
+	repoURL := remote.Config().URLs[0]
+	u, err := url.Parse(repoURL)
+	if err == nil && u.Scheme == "https" {
+		repoFullName := strings.TrimPrefix(u.Path, "/")
+		return strings.TrimSuffix(repoFullName, ".git")
+	}
+
+	// fallback to ssh url parsing
+	parts := strings.Split(repoURL, ":")
+	if len(parts) > 1 {
+		return strings.TrimSuffix(parts[1], ".git")
+	}
+	return filepath.Base(repoPath)
+}
+
+// ScanLocalRepo scans a local git repository.
+func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error {
+	m.logger.Info("scanning local repository", "path", repoPath)
+
+	// Open the local git repository.
+	gitRepo, err := m.gitClient.Open(repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to open local git repository: %w", err)
+	}
+
+	// Get the HEAD commit.
+	head, err := gitRepo.Head()
+	if err != nil {
+		return fmt.Errorf("failed to get HEAD commit: %w", err)
+	}
+	headSHA := head.Hash().String()
+
+	// If the repoFullName is not provided, try to get it from the remote URL.
+	if repoFullName == "" {
+		repoFullName = m.getRepoFullName(gitRepo, repoPath)
+	}
+
+	// Create and save the new repository record.
+	newRepo := &storage.Repository{
+		FullName:             repoFullName,
+		ClonePath:            repoPath,
+		QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
+		LastIndexedSHA:       headSHA,
+	}
+	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
+		return fmt.Errorf("failed to create repository record in DB: %w", err)
+	}
+
+	m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
+	return nil
 }
