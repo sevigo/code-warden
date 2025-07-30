@@ -45,7 +45,7 @@ type App struct {
 
 	logger     *slog.Logger
 	server     *server.Server
-	Dispatcher core.JobDispatcher
+	dispatcher core.JobDispatcher
 }
 
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
@@ -155,7 +155,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 			GitClient:  gitClient,
 			logger:     logger,
 			server:     httpServer,
-			Dispatcher: dispatcher,
+			dispatcher: dispatcher,
 			Cfg:        cfg,
 		}, func() {
 			dbCleanup()
@@ -242,7 +242,7 @@ func (a *App) Stop() error {
 	a.logger.Info("shutting down Code Warden services")
 
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
-	a.Dispatcher.Stop()
+	a.dispatcher.Stop()
 
 	// Stop the HTTP server to prevent new incoming requests.
 	if a.server != nil {

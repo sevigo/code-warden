@@ -127,13 +127,12 @@ cd /workspace
 git clone https://github.com/sevigo/code-warden.git
 cd code-warden/embeddings
 python3 -m venv venv
+source venv/bin/activate
 
 export HF_HOME="/workspace/huggingface"
 export EMBEDDING_API_SECRET="YOUR_SECRET_KEY_HERE"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 pip install -r requirements.txt
-
-source venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 18000
 ```
