@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,7 +224,15 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 		remote, err := gitRepo.Remote("origin")
 		if err == nil {
 			repoURL := remote.Config().URLs[0]
-			repoFullName = strings.TrimSuffix(strings.Split(repoURL, ":")[1], ".git")
+			// try to parse https url first
+			u, err := url.Parse(repoURL)
+			if err == nil && u.Scheme == "https" {
+				repoFullName = strings.TrimPrefix(u.Path, "/")
+				repoFullName = strings.TrimSuffix(repoFullName, ".git")
+			} else {
+				// fallback to ssh url parsing
+				repoFullName = strings.TrimSuffix(strings.Split(repoURL, ":")[1], ".git")
+			}
 		} else {
 			// If there is no remote, use the directory name as the repo full name.
 			repoFullName = filepath.Base(repoPath)
