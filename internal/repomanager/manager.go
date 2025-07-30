@@ -265,6 +265,11 @@ func (m *manager) handleLocalIncrementalScan(ctx context.Context, gitRepo *git.R
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute diff for local repository: %w", err)
 	}
+	m.logger.Info("Local scan diff result",
+		"added", len(added),
+		"modified", len(modified),
+		"deleted", len(deleted),
+	)
 
 	return &core.UpdateResult{
 		FilesToAddOrUpdate: append(added, modified...),
