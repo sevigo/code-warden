@@ -251,18 +251,31 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 		return nil, fmt.Errorf("failed to list files in local repository: %w", err)
 	}
 
-	// Create and save the new repository record.
-	newRepo := &storage.Repository{
-		FullName:             repoFullName,
-		ClonePath:            repoPath,
-		QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
-		LastIndexedSHA:       headSHA,
-	}
-	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
-		return nil, fmt.Errorf("failed to create repository record in DB: %w", err)
+	// Create or update the repository record.
+	repo, err := m.store.GetRepositoryByFullName(ctx, repoFullName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query repository state: %w", err)
 	}
 
-	m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
+	if repo == nil {
+		newRepo := &storage.Repository{
+			FullName:             repoFullName,
+			ClonePath:            repoPath,
+			QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
+			LastIndexedSHA:       headSHA,
+		}
+		if err := m.store.CreateRepository(ctx, newRepo); err != nil {
+			return nil, fmt.Errorf("failed to create repository record in DB: %w", err)
+		}
+		m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
+	} else {
+		repo.ClonePath = repoPath
+		repo.LastIndexedSHA = headSHA
+		if err := m.store.UpdateRepository(ctx, repo); err != nil {
+			return nil, fmt.Errorf("failed to update repository record in DB: %w", err)
+		}
+		m.logger.Info("successfully updated repository record for local scan", "repo", repoFullName)
+	}
 
 	return &core.UpdateResult{
 		FilesToAddOrUpdate: allFiles,
