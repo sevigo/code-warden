@@ -30,9 +30,13 @@ build-cli:
 	@mkdir -p $(BIN_DIR)
 	@go build -v -o $(BIN_DIR)/$(CLI_BINARY_NAME) $(CLI_CMD_PATH)
 
-run:
-	@echo "Starting $(BINARY_NAME)..."
-	@go run $(CMD_PATH)
+run: build-server
+	@echo "Starting server ($(SERVER_BINARY_NAME))..."
+	@$(BIN_DIR)/$(SERVER_BINARY_NAME)
+
+run-cli:
+	@echo "Starting CLI ($(CLI_BINARY_NAME))..."
+	@go run $(CLI_CMD_PATH)
 
 test:
 	@echo "Running tests..."
