@@ -132,8 +132,8 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		batchConfig = &qdrant.BatchConfig{
 			BatchSize:               512,
 			MaxConcurrency:          8,
-			EmbeddingBatchSize:      128,
-			EmbeddingMaxConcurrency: 4,
+			EmbeddingBatchSize:      64,
+			EmbeddingMaxConcurrency: 8,
 			RetryAttempts:           2,
 			RetryDelay:              1 * time.Second,
 		}
