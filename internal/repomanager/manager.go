@@ -261,6 +261,10 @@ func (m *manager) handleLocalIncrementalScan(ctx context.Context, gitRepo *git.R
 	}
 
 	// Compute diff
+	m.logger.Info("Comparing SHAs for diff",
+		"last_indexed_sha", repoRecord.LastIndexedSHA,
+		"current_head_sha", headSHA,
+	)
 	added, modified, deleted, err := m.gitClient.Diff(gitRepo, repoRecord.LastIndexedSHA, headSHA)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute diff for local repository: %w", err)
