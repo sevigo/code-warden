@@ -279,6 +279,7 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.Git
 	// Update the vector store based on the results from the manager.
 	switch {
 	case updateResult.IsInitialClone:
+		j.logger.Info("Performing initial indexing for local scan", "repo", event.RepoFullName, "path", updateResult.RepoPath)
 		// If it's the first time, perform a full indexing.
 		err := j.ragService.SetupRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath)
 		if err != nil {
@@ -287,6 +288,12 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.Git
 		vectorStoreUpdated = true
 
 	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
+		j.logger.Info("Performing incremental indexing for local scan",
+			"repo", event.RepoFullName,
+			"path", updateResult.RepoPath,
+			"files_to_add_or_update", len(updateResult.FilesToAddOrUpdate),
+			"files_to_delete", len(updateResult.FilesToDelete),
+		)
 		// Otherwise, perform an incremental update.
 		err := j.ragService.UpdateRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
 		if err != nil {
