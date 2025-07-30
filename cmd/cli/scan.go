@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/wire"
 	"github.com/spf13/cobra"
 )
@@ -29,10 +30,25 @@ var scanCmd = &cobra.Command{
 		}
 		defer cleanup()
 
-		if err := app.RepoMgr.ScanLocalRepo(ctx, repoPath, repoFullName); err != nil {
+		updateResult, err := app.RepoMgr.ScanLocalRepo(ctx, repoPath, repoFullName)
+		if err != nil {
 			slog.Error("failed to scan local repository", "error", err)
 			return
 		}
-		slog.Info("Successfully scanned local repository")
+
+		// Dispatch a review job to process the files.
+		job := &core.GitHubEvent{
+			RepoFullName: updateResult.RepoFullName,
+			RepoCloneURL: updateResult.RepoPath, // For local scans, RepoCloneURL is the local path
+			HeadSHA:      updateResult.HeadSHA,
+			IsLocalScan:  true,
+			// Other fields can be left at their default values or populated if needed for local scans
+		}
+		if err := app.Dispatcher.Dispatch(ctx, job); err != nil {
+			slog.Error("failed to dispatch review job", "error", err)
+			return
+		}
+
+		slog.Info("Successfully scanned local repository and dispatched review job")
 	},
 }

@@ -35,6 +35,7 @@ type GitHubEvent struct {
 
 	Commenter      string
 	InstallationID int64
+	IsLocalScan    bool
 }
 
 // EventFromIssueComment transforms a raw GitHub IssueCommentEvent into the application's

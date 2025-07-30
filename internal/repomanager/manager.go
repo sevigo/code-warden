@@ -35,7 +35,7 @@ type RepoManager interface {
 	SyncRepo(ctx context.Context, event *core.GitHubEvent, token string) (*core.UpdateResult, error)
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
 	UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error
-	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error
+	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) (*core.UpdateResult, error)
 }
 
 // New creates a new RepoManager.
@@ -224,25 +224,31 @@ func (m *manager) getRepoFullName(repo *git.Repository, repoPath string) string 
 }
 
 // ScanLocalRepo scans a local git repository.
-func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error {
+func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) (*core.UpdateResult, error) {
 	m.logger.Info("scanning local repository", "path", repoPath)
 
 	// Open the local git repository.
 	gitRepo, err := m.gitClient.Open(repoPath)
 	if err != nil {
-		return fmt.Errorf("failed to open local git repository: %w", err)
+		return nil, fmt.Errorf("failed to open local git repository: %w", err)
 	}
 
 	// Get the HEAD commit.
 	head, err := gitRepo.Head()
 	if err != nil {
-		return fmt.Errorf("failed to get HEAD commit: %w", err)
+		return nil, fmt.Errorf("failed to get HEAD commit: %w", err)
 	}
 	headSHA := head.Hash().String()
 
 	// If the repoFullName is not provided, try to get it from the remote URL.
 	if repoFullName == "" {
 		repoFullName = m.getRepoFullName(gitRepo, repoPath)
+	}
+
+	// List all files in the repository.
+	allFiles, err := m.listRepoFiles(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files in local repository: %w", err)
 	}
 
 	// Create and save the new repository record.
@@ -253,9 +259,16 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 		LastIndexedSHA:       headSHA,
 	}
 	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
-		return fmt.Errorf("failed to create repository record in DB: %w", err)
+		return nil, fmt.Errorf("failed to create repository record in DB: %w", err)
 	}
 
 	m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
-	return nil
+
+	return &core.UpdateResult{
+		FilesToAddOrUpdate: allFiles,
+		RepoPath:           repoPath,
+		RepoFullName:       repoFullName,
+		HeadSHA:            headSHA,
+		IsInitialClone:     true,
+	}, nil
 }

@@ -64,6 +64,10 @@ func (j *ReviewJob) getRepoMutex(repoFullName string) *sync.Mutex {
 
 // Run acts as a router, directing the event to the correct review flow.
 func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
+	if event.IsLocalScan {
+		return j.runLocalScan(ctx, event)
+	}
+
 	if err := j.validateInputs(event); err != nil {
 		j.logger.Error("Input validation failed", "error", err)
 		return err
@@ -430,6 +434,18 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 		return errors.New("event cannot be nil")
 	}
 
+	if event.IsLocalScan {
+		switch {
+		case event.RepoFullName == "":
+			return errors.New("repository full name cannot be empty for local scan")
+		case event.RepoCloneURL == "":
+			return errors.New("repository clone URL (local path) cannot be empty for local scan")
+		case event.HeadSHA == "":
+			return errors.New("head SHA cannot be empty for local scan")
+		}
+		return nil
+	}
+
 	switch {
 	case event.RepoOwner == "":
 		return errors.New("repository owner cannot be empty")
@@ -444,6 +460,39 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 	case event.InstallationID <= 0:
 		return fmt.Errorf("installation ID must be positive, got: %d", event.InstallationID)
 	}
+	return nil
+}
+
+// runLocalScan handles the local repository scanning and indexing.
+func (j *ReviewJob) runLocalScan(ctx context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("Starting local scan job", "repo", event.RepoFullName, "path", event.RepoCloneURL)
+
+	// Acquire repository-specific mutex to prevent concurrent operations
+	mutex := j.getRepoMutex(event.RepoFullName)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// Load repository configuration
+	repoConfig := j.loadAndProcessRepoConfig(event.RepoCloneURL, event.RepoFullName)
+
+	// Get collection name
+	collectionName, err := j.getCollectionName(ctx, event.RepoFullName)
+	if err != nil {
+		return err
+	}
+
+	// Perform initial indexing
+	err = j.ragService.SetupRepoContext(ctx, repoConfig, collectionName, event.RepoCloneURL)
+	if err != nil {
+		return fmt.Errorf("failed to perform initial repository indexing for local scan: %w", err)
+	}
+
+	// Update the SHA in the database
+	if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
+		return fmt.Errorf("failed to update SHA in database for local scan: %w", err)
+	}
+
+	j.logger.Info("Local scan job completed successfully", "repo", event.RepoFullName)
 	return nil
 }
 
