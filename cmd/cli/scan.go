@@ -14,7 +14,7 @@ var scanCmd = &cobra.Command{
 	Short: "Scan a local git repository.",
 	Long:  `Scans a local git repository at the given path.`,
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, args []string) {
 		repoPath := args[0]
 		fmt.Printf("Scanning local repository at: %s\n", repoPath)
 
@@ -28,15 +28,10 @@ var scanCmd = &cobra.Command{
 		}
 		defer cleanup()
 
-		if err := app.RepoMgr.ScanLocalRepo(ctx, repoPath);
-		 err != nil {
+		if err := app.RepoMgr.ScanLocalRepo(ctx, repoPath); err != nil {
 			slog.Error("failed to scan local repository", "error", err)
 			return
 		}
 		slog.Info("Successfully scanned local repository")
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(scanCmd)
 }

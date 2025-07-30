@@ -15,4 +15,5 @@ func Execute() error {
 }
 
 func init() { //nolint:gochecknoinits // Cobra's init function for command registration
+	rootCmd.AddCommand(scanCmd)
 }
