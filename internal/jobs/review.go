@@ -64,10 +64,6 @@ func (j *ReviewJob) getRepoMutex(repoFullName string) *sync.Mutex {
 
 // Run acts as a router, directing the event to the correct review flow.
 func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
-	if event.IsLocalScan {
-		return j.runLocalScan(ctx, event)
-	}
-
 	if err := j.validateInputs(event); err != nil {
 		j.logger.Error("Input validation failed", "error", err)
 		return err
@@ -273,22 +269,25 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 }
 
 // updateVectorStoreAndSHA performs atomic-like update of vector store and SHA
-func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.GitHubEvent, repoConfig *core.RepoConfig, collectionName string, updateResult *core.UpdateResult) error {
-	var vectorStoreUpdated bool
-
+func (j *ReviewJob) updateVectorStoreAndSHA(
+	ctx context.Context,
+	event *core.GitHubEvent,
+	repoConfig *core.RepoConfig,
+	collectionName string,
+	updateResult *core.UpdateResult,
+) error {
 	// Update the vector store based on the results from the manager.
 	switch {
 	case updateResult.IsInitialClone:
-		j.logger.Info("Performing initial indexing for local scan", "repo", event.RepoFullName, "path", updateResult.RepoPath)
+		j.logger.Info("Performing initial indexing for repository", "repo", event.RepoFullName, "path", updateResult.RepoPath)
 		// If it's the first time, perform a full indexing.
 		err := j.ragService.SetupRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath)
 		if err != nil {
 			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}
-		vectorStoreUpdated = true
 
 	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
-		j.logger.Info("Performing incremental indexing for local scan",
+		j.logger.Info("Performing incremental indexing",
 			"repo", event.RepoFullName,
 			"path", updateResult.RepoPath,
 			"files_to_add_or_update", len(updateResult.FilesToAddOrUpdate),
@@ -299,24 +298,21 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.Git
 		if err != nil {
 			return fmt.Errorf("failed to update repository context in vector store: %w", err)
 		}
-		vectorStoreUpdated = true
 
 	default:
 		j.logger.Info("no file changes detected between SHAs, skipping vector store update", "repo", event.RepoFullName)
 	}
 
-	// Only update the SHA if we successfully updated the vector store
-	if vectorStoreUpdated {
-		if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
-			// This is critical - we need to log extensively and potentially rollback
-			j.logger.Error("CRITICAL: vector store updated but failed to update SHA in database - data inconsistency detected",
-				"error", err,
-				"repo", event.RepoFullName,
-				"head_sha", event.HeadSHA,
-			)
-			// TODO: Consider implementing rollback mechanism for vector store
-			return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database after vector store update: %w", err)
-		}
+	// Update the SHA in the database
+	if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
+		// This is critical - we need to log extensively and potentially rollback
+		j.logger.Error("CRITICAL: vector store updated but failed to update SHA in database - data inconsistency detected",
+			"error", err,
+			"repo", event.RepoFullName,
+			"head_sha", event.HeadSHA,
+		)
+		// TODO: Consider implementing rollback mechanism for vector store
+		return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database after vector store update: %w", err)
 	}
 
 	return nil
@@ -441,18 +437,6 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 		return errors.New("event cannot be nil")
 	}
 
-	if event.IsLocalScan {
-		switch {
-		case event.RepoFullName == "":
-			return errors.New("repository full name cannot be empty for local scan")
-		case event.RepoCloneURL == "":
-			return errors.New("repository clone URL (local path) cannot be empty for local scan")
-		case event.HeadSHA == "":
-			return errors.New("head SHA cannot be empty for local scan")
-		}
-		return nil
-	}
-
 	switch {
 	case event.RepoOwner == "":
 		return errors.New("repository owner cannot be empty")
@@ -467,33 +451,6 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 	case event.InstallationID <= 0:
 		return fmt.Errorf("installation ID must be positive, got: %d", event.InstallationID)
 	}
-	return nil
-}
-
-// runLocalScan handles the local repository scanning and indexing.
-func (j *ReviewJob) runLocalScan(ctx context.Context, event *core.GitHubEvent) error {
-	j.logger.Info("Starting local scan job", "repo", event.RepoFullName, "path", event.RepoCloneURL)
-
-	// Acquire repository-specific mutex to prevent concurrent operations
-	mutex := j.getRepoMutex(event.RepoFullName)
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// Load repository configuration
-	repoConfig := j.loadAndProcessRepoConfig(event.RepoCloneURL, event.RepoFullName)
-
-	// Get collection name
-	collectionName, err := j.getCollectionName(ctx, event.RepoFullName)
-	if err != nil {
-		return err
-	}
-
-	// Update the vector store and database SHA atomically
-	if err := j.updateVectorStoreAndSHA(ctx, event, repoConfig, collectionName, event.UpdateResult); err != nil {
-		return err
-	}
-
-	j.logger.Info("Local scan job completed successfully", "repo", event.RepoFullName)
 	return nil
 }
 
