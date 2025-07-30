@@ -34,6 +34,7 @@ type RepoManager interface {
 	SyncRepo(ctx context.Context, event *core.GitHubEvent, token string) (*core.UpdateResult, error)
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
 	UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error
+	ScanLocalRepo(ctx context.Context, repoPath string) error
 }
 
 // New creates a new RepoManager.
@@ -198,4 +199,50 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+// ScanLocalRepo scans a local git repository.
+func (m *manager) ScanLocalRepo(ctx context.Context, repoPath string) error {
+	m.logger.Info("scanning local repository", "path", repoPath)
+
+	// Open the local git repository.
+	gitRepo, err := m.gitClient.Open(repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to open local git repository: %w", err)
+	}
+
+	// Get the HEAD commit.
+	head, err := gitRepo.Head()
+	if err != nil {
+		return fmt.Errorf("failed to get HEAD commit: %w", err)
+	}
+	headSHA := head.Hash().String()
+
+	// Get the repository's full name from the remote URL.
+	remote, err := gitRepo.Remote("origin")
+	if err != nil {
+		return fmt.Errorf("failed to get remote 'origin': %w", err)
+	}
+	repoURL := remote.Config().URLs[0]
+	repoFullName := strings.TrimSuffix(strings.Split(repoURL, ":")[1], ".git")
+
+	// List all files in the repository.
+	_, err = m.listRepoFiles(repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to list files in local repository: %w", err)
+	}
+
+	// Create and save the new repository record.
+	newRepo := &storage.Repository{
+		FullName:             repoFullName,
+		ClonePath:            repoPath,
+		QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
+		LastIndexedSHA:       headSHA,
+	}
+	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
+		return fmt.Errorf("failed to create repository record in DB: %w", err)
+	}
+
+	m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
+	return nil
 }
