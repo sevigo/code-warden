@@ -42,6 +42,7 @@ var scanCmd = &cobra.Command{
 			RepoCloneURL: updateResult.RepoPath, // For local scans, RepoCloneURL is the local path
 			HeadSHA:      updateResult.HeadSHA,
 			IsLocalScan:  true,
+			UpdateResult: updateResult,
 			// Other fields can be left at their default values or populated if needed for local scans
 		}
 		if err := app.Dispatcher.Dispatch(ctx, job); err != nil {

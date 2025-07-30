@@ -223,6 +223,59 @@ func (m *manager) getRepoFullName(repo *git.Repository, repoPath string) string 
 	return filepath.Base(repoPath)
 }
 
+func (m *manager) handleLocalInitialScan(ctx context.Context, repoPath, repoFullName, headSHA string) (*core.UpdateResult, error) {
+	newRepo := &storage.Repository{
+		FullName:             repoFullName,
+		ClonePath:            repoPath,
+		QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
+		LastIndexedSHA:       headSHA,
+	}
+	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
+		return nil, fmt.Errorf("failed to create repository record in DB: %w", err)
+	}
+	m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
+
+	// List all files for initial indexing
+	filesToAddOrUpdate, err := m.listRepoFiles(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files in local repository: %w", err)
+	}
+
+	return &core.UpdateResult{
+		FilesToAddOrUpdate: filesToAddOrUpdate,
+		RepoPath:           repoPath,
+		RepoFullName:       repoFullName,
+		HeadSHA:            headSHA,
+		IsInitialClone:     true,
+	}, nil
+}
+
+func (m *manager) handleLocalIncrementalScan(ctx context.Context, gitRepo *git.Repository, repoRecord *storage.Repository, repoPath, repoFullName, headSHA string) (*core.UpdateResult, error) {
+	m.logger.Info("existing repository found, performing incremental update", "repo", repoFullName)
+
+	// Update clone path and SHA in DB
+	repoRecord.ClonePath = repoPath
+	repoRecord.LastIndexedSHA = headSHA
+	if err := m.store.UpdateRepository(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("failed to update repository record in DB: %w", err)
+	}
+
+	// Compute diff
+	added, modified, deleted, err := m.gitClient.Diff(gitRepo, repoRecord.LastIndexedSHA, headSHA)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute diff for local repository: %w", err)
+	}
+
+	return &core.UpdateResult{
+		FilesToAddOrUpdate: append(added, modified...),
+		FilesToDelete:      deleted,
+		RepoPath:           repoPath,
+		RepoFullName:       repoFullName,
+		HeadSHA:            headSHA,
+		IsInitialClone:     false,
+	}, nil
+}
+
 // ScanLocalRepo scans a local git repository.
 func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) (*core.UpdateResult, error) {
 	m.logger.Info("scanning local repository", "path", repoPath)
@@ -245,43 +298,23 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 		repoFullName = m.getRepoFullName(gitRepo, repoPath)
 	}
 
-	// List all files in the repository.
-	allFiles, err := m.listRepoFiles(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list files in local repository: %w", err)
-	}
-
 	// Create or update the repository record.
-	repo, err := m.store.GetRepositoryByFullName(ctx, repoFullName)
+	repoRecord, err := m.store.GetRepositoryByFullName(ctx, repoFullName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query repository state: %w", err)
 	}
 
-	if repo == nil {
-		newRepo := &storage.Repository{
-			FullName:             repoFullName,
-			ClonePath:            repoPath,
-			QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
-			LastIndexedSHA:       headSHA,
-		}
-		if err := m.store.CreateRepository(ctx, newRepo); err != nil {
-			return nil, fmt.Errorf("failed to create repository record in DB: %w", err)
-		}
-		m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
+	var updateResult *core.UpdateResult
+
+	if repoRecord == nil {
+		updateResult, err = m.handleLocalInitialScan(ctx, repoPath, repoFullName, headSHA)
 	} else {
-		repo.ClonePath = repoPath
-		repo.LastIndexedSHA = headSHA
-		if err := m.store.UpdateRepository(ctx, repo); err != nil {
-			return nil, fmt.Errorf("failed to update repository record in DB: %w", err)
-		}
-		m.logger.Info("successfully updated repository record for local scan", "repo", repoFullName)
+		updateResult, err = m.handleLocalIncrementalScan(ctx, gitRepo, repoRecord, repoPath, repoFullName, headSHA)
 	}
 
-	return &core.UpdateResult{
-		FilesToAddOrUpdate: allFiles,
-		RepoPath:           repoPath,
-		RepoFullName:       repoFullName,
-		HeadSHA:            headSHA,
-		IsInitialClone:     true,
-	}, nil
+	if err != nil {
+		return nil, err
+	}
+
+	return updateResult, nil
 }

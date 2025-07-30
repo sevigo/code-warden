@@ -481,15 +481,9 @@ func (j *ReviewJob) runLocalScan(ctx context.Context, event *core.GitHubEvent) e
 		return err
 	}
 
-	// Perform initial indexing
-	err = j.ragService.SetupRepoContext(ctx, repoConfig, collectionName, event.RepoCloneURL)
-	if err != nil {
-		return fmt.Errorf("failed to perform initial repository indexing for local scan: %w", err)
-	}
-
-	// Update the SHA in the database
-	if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
-		return fmt.Errorf("failed to update SHA in database for local scan: %w", err)
+	// Update the vector store and database SHA atomically
+	if err := j.updateVectorStoreAndSHA(ctx, event, repoConfig, collectionName, event.UpdateResult); err != nil {
+		return err
 	}
 
 	j.logger.Info("Local scan job completed successfully", "repo", event.RepoFullName)
