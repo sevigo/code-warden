@@ -34,7 +34,7 @@ type RepoManager interface {
 	SyncRepo(ctx context.Context, event *core.GitHubEvent, token string) (*core.UpdateResult, error)
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
 	UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error
-	ScanLocalRepo(ctx context.Context, repoPath string) error
+	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error
 }
 
 // New creates a new RepoManager.
@@ -202,7 +202,7 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 }
 
 // ScanLocalRepo scans a local git repository.
-func (m *manager) ScanLocalRepo(ctx context.Context, repoPath string) error {
+func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error {
 	m.logger.Info("scanning local repository", "path", repoPath)
 
 	// Open the local git repository.
@@ -218,18 +218,16 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath string) error {
 	}
 	headSHA := head.Hash().String()
 
-	// Get the repository's full name from the remote URL.
-	remote, err := gitRepo.Remote("origin")
-	if err != nil {
-		return fmt.Errorf("failed to get remote 'origin': %w", err)
-	}
-	repoURL := remote.Config().URLs[0]
-	repoFullName := strings.TrimSuffix(strings.Split(repoURL, ":")[1], ".git")
-
-	// List all files in the repository.
-	_, err = m.listRepoFiles(repoPath)
-	if err != nil {
-		return fmt.Errorf("failed to list files in local repository: %w", err)
+	// If the repoFullName is not provided, try to get it from the remote URL.
+	if repoFullName == "" {
+		remote, err := gitRepo.Remote("origin")
+		if err == nil {
+			repoURL := remote.Config().URLs[0]
+			repoFullName = strings.TrimSuffix(strings.Split(repoURL, ":")[1], ".git")
+		} else {
+			// If there is no remote, use the directory name as the repo full name.
+			repoFullName = filepath.Base(repoPath)
+		}
 	}
 
 	// Create and save the new repository record.
