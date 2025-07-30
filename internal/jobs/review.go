@@ -269,43 +269,50 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 }
 
 // updateVectorStoreAndSHA performs atomic-like update of vector store and SHA
-func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, event *core.GitHubEvent, repoConfig *core.RepoConfig, collectionName string, updateResult *core.UpdateResult) error {
-	var vectorStoreUpdated bool
-
+func (j *ReviewJob) updateVectorStoreAndSHA(
+	ctx context.Context,
+	event *core.GitHubEvent,
+	repoConfig *core.RepoConfig,
+	collectionName string,
+	updateResult *core.UpdateResult,
+) error {
 	// Update the vector store based on the results from the manager.
 	switch {
 	case updateResult.IsInitialClone:
+		j.logger.Info("Performing initial indexing for repository", "repo", event.RepoFullName, "path", updateResult.RepoPath)
 		// If it's the first time, perform a full indexing.
 		err := j.ragService.SetupRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath)
 		if err != nil {
 			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}
-		vectorStoreUpdated = true
 
 	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
+		j.logger.Info("Performing incremental indexing",
+			"repo", event.RepoFullName,
+			"path", updateResult.RepoPath,
+			"files_to_add_or_update", len(updateResult.FilesToAddOrUpdate),
+			"files_to_delete", len(updateResult.FilesToDelete),
+		)
 		// Otherwise, perform an incremental update.
 		err := j.ragService.UpdateRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
 		if err != nil {
 			return fmt.Errorf("failed to update repository context in vector store: %w", err)
 		}
-		vectorStoreUpdated = true
 
 	default:
 		j.logger.Info("no file changes detected between SHAs, skipping vector store update", "repo", event.RepoFullName)
 	}
 
-	// Only update the SHA if we successfully updated the vector store
-	if vectorStoreUpdated {
-		if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
-			// This is critical - we need to log extensively and potentially rollback
-			j.logger.Error("CRITICAL: vector store updated but failed to update SHA in database - data inconsistency detected",
-				"error", err,
-				"repo", event.RepoFullName,
-				"head_sha", event.HeadSHA,
-			)
-			// TODO: Consider implementing rollback mechanism for vector store
-			return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database after vector store update: %w", err)
-		}
+	// Update the SHA in the database
+	if err := j.repoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
+		// This is critical - we need to log extensively and potentially rollback
+		j.logger.Error("CRITICAL: vector store updated but failed to update SHA in database - data inconsistency detected",
+			"error", err,
+			"repo", event.RepoFullName,
+			"head_sha", event.HeadSHA,
+		)
+		// TODO: Consider implementing rollback mechanism for vector store
+		return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database after vector store update: %w", err)
 	}
 
 	return nil

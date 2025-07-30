@@ -35,7 +35,7 @@ type RepoManager interface {
 	SyncRepo(ctx context.Context, event *core.GitHubEvent, token string) (*core.UpdateResult, error)
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
 	UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error
-	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error
+	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string, force bool) (*core.UpdateResult, error)
 }
 
 // New creates a new RepoManager.
@@ -109,7 +109,7 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 		FullName:             event.RepoFullName,
 		ClonePath:            clonePath,
 		QdrantCollectionName: util.GenerateCollectionName(event.RepoFullName, m.cfg.EmbedderModelName),
-		LastIndexedSHA:       event.HeadSHA,
+		LastIndexedSHA:       "", // Intentionally blank, will be set by caller after indexing
 	}
 	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
 		m.cleanupRepoDir(clonePath)
@@ -223,39 +223,110 @@ func (m *manager) getRepoFullName(repo *git.Repository, repoPath string) string 
 	return filepath.Base(repoPath)
 }
 
-// ScanLocalRepo scans a local git repository.
-func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string) error {
-	m.logger.Info("scanning local repository", "path", repoPath)
-
-	// Open the local git repository.
-	gitRepo, err := m.gitClient.Open(repoPath)
+func (m *manager) handleLocalFullScan(ctx context.Context, repoPath, repoFullName, headSHA string) (*core.UpdateResult, error) {
+	repo, err := m.store.GetRepositoryByFullName(ctx, repoFullName)
 	if err != nil {
-		return fmt.Errorf("failed to open local git repository: %w", err)
+		return nil, fmt.Errorf("failed to check for existing repository record: %w", err)
 	}
 
-	// Get the HEAD commit.
+	if repo == nil {
+		m.logger.Info("no existing record found, creating new repository record for local scan", "repo", repoFullName)
+		newRepo := &storage.Repository{
+			FullName:             repoFullName,
+			ClonePath:            repoPath,
+			QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
+			LastIndexedSHA:       "",
+		}
+		if err := m.store.CreateRepository(ctx, newRepo); err != nil {
+			return nil, fmt.Errorf("failed to create repository record in DB: %w", err)
+		}
+	} else {
+		m.logger.Info("existing record found, proceeding with forced full re-scan", "repo", repoFullName)
+		repo.ClonePath = repoPath // Ensure the clone path is up-to-date
+		if err := m.store.UpdateRepository(ctx, repo); err != nil {
+			return nil, fmt.Errorf("failed to update repository clone path: %w", err)
+		}
+	}
+
+	filesToAddOrUpdate, err := m.listRepoFiles(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files in local repository: %w", err)
+	}
+
+	return &core.UpdateResult{
+		FilesToAddOrUpdate: filesToAddOrUpdate,
+		RepoPath:           repoPath,
+		RepoFullName:       repoFullName,
+		HeadSHA:            headSHA,
+		IsInitialClone:     true,
+	}, nil
+}
+
+func (m *manager) handleLocalIncrementalScan(ctx context.Context, gitRepo *git.Repository, repoRecord *storage.Repository, repoPath, headSHA string) (*core.UpdateResult, error) {
+	m.logger.Info("existing repository found, performing incremental update", "repo", repoRecord.FullName)
+
+	lastIndexedSHA := repoRecord.LastIndexedSHA
+	if lastIndexedSHA == headSHA {
+		m.logger.Info("SHAs are identical, no changes to diff.")
+		return &core.UpdateResult{
+			FilesToAddOrUpdate: []string{},
+			FilesToDelete:      []string{},
+			RepoPath:           repoPath,
+			RepoFullName:       repoRecord.FullName,
+			HeadSHA:            headSHA,
+			IsInitialClone:     false,
+		}, nil
+	}
+
+	m.logger.Info("Comparing SHAs for diff", "last_indexed_sha", lastIndexedSHA, "current_head_sha", headSHA)
+	added, modified, deleted, err := m.gitClient.Diff(gitRepo, lastIndexedSHA, headSHA)
+	if err != nil {
+		m.logger.Warn("failed to compute diff, falling back to full scan", "error", err)
+		return m.handleLocalFullScan(ctx, repoPath, repoRecord.FullName, headSHA)
+	}
+
+	m.logger.Info("Local scan diff result", "added", len(added), "modified", len(modified), "deleted", len(deleted))
+	return &core.UpdateResult{
+		FilesToAddOrUpdate: append(added, modified...),
+		FilesToDelete:      deleted,
+		RepoPath:           repoPath,
+		RepoFullName:       repoRecord.FullName,
+		HeadSHA:            headSHA,
+		IsInitialClone:     false,
+	}, nil
+}
+
+// ScanLocalRepo scans a local git repository, either fully or incrementally.
+func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string, force bool) (*core.UpdateResult, error) {
+	m.logger.Info("scanning local repository", "path", repoPath)
+
+	gitRepo, err := m.gitClient.Open(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open local git repository at '%s': %w", repoPath, err)
+	}
+
 	head, err := gitRepo.Head()
 	if err != nil {
-		return fmt.Errorf("failed to get HEAD commit: %w", err)
+		return nil, fmt.Errorf("failed to get HEAD commit: %w", err)
 	}
 	headSHA := head.Hash().String()
 
-	// If the repoFullName is not provided, try to get it from the remote URL.
 	if repoFullName == "" {
 		repoFullName = m.getRepoFullName(gitRepo, repoPath)
 	}
 
-	// Create and save the new repository record.
-	newRepo := &storage.Repository{
-		FullName:             repoFullName,
-		ClonePath:            repoPath,
-		QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
-		LastIndexedSHA:       headSHA,
-	}
-	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
-		return fmt.Errorf("failed to create repository record in DB: %w", err)
+	if force {
+		return m.handleLocalFullScan(ctx, repoPath, repoFullName, headSHA)
 	}
 
-	m.logger.Info("successfully created repository record for local scan", "repo", repoFullName)
-	return nil
+	repoRecord, err := m.store.GetRepositoryByFullName(ctx, repoFullName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query repository state: %w", err)
+	}
+
+	if repoRecord == nil {
+		return m.handleLocalFullScan(ctx, repoPath, repoFullName, headSHA)
+	}
+
+	return m.handleLocalIncrementalScan(ctx, gitRepo, repoRecord, repoPath, headSHA)
 }

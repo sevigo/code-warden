@@ -5,5 +5,7 @@ type UpdateResult struct {
 	FilesToAddOrUpdate []string
 	FilesToDelete      []string
 	RepoPath           string
+	RepoFullName       string
+	HeadSHA            string
 	IsInitialClone     bool
 }
