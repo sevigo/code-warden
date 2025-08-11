@@ -4,6 +4,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -27,7 +28,7 @@ import (
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string, filesToProcess, filesToDelete []string) error
-	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error)
+	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 }
 
@@ -209,7 +210,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 }
 
 // GenerateReview now focuses on data preparation and delegates to the helper.
-func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (string, error) {
+func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -218,21 +219,26 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		return "", fmt.Errorf("failed to get PR diff: %w", err)
+		return nil, "", fmt.Errorf("failed to get PR diff: %w", err)
 	}
 	if diff == "" {
 		r.logger.Info("no code changes in pull request", "pr", event.PRNumber)
-		return "This pull request contains no code changes. LGTM!", nil
+		noChangesReview := &core.StructuredReview{
+			Summary:     "This pull request contains no code changes. Looks good to me!",
+			Suggestions: []core.Suggestion{},
+		}
+		rawJSON, _ := json.Marshal(noChangesReview)
+		return noChangesReview, string(rawJSON), nil
 	}
 
 	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		r.logger.Warn("could not retrieve changed files list", "error", err)
+		return nil, "", fmt.Errorf("failed to get changed files: %w", err)
 	}
 
 	contextString, err := r.buildRelevantContext(ctx, collectionName, changedFiles)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
 	promptData := map[string]string{
@@ -245,7 +251,30 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		"Diff":               diff,
 	}
 
-	return r.generateResponseWithPrompt(ctx, event, CodeReviewPrompt, promptData)
+	rawReview, err := r.generateResponseWithPrompt(ctx, event, CodeReviewPrompt, promptData)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Parse the JSON string into the structured format
+	var structuredReview core.StructuredReview
+	// Find the JSON block within the ```json ... ``` code fence
+	jsonBlockStart := strings.Index(rawReview, "```json")
+	if jsonBlockStart == -1 {
+		r.logger.Error("LLM response did not contain a valid JSON object", "raw_response", rawReview)
+		return nil, "", fmt.Errorf("LLM response did not contain a '```json' code fence")
+	}
+	jsonString := rawReview[jsonBlockStart+len("```json"):] // Get the content after the fence
+	jsonBlockEnd := strings.Index(jsonString, "```")
+	if jsonBlockEnd == -1 {
+		return nil, "", fmt.Errorf("LLM response was missing the closing '```' for the json block")
+	}
+	jsonString = jsonString[:jsonBlockEnd]
+	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
+		return nil, "", fmt.Errorf("failed to parse LLM's JSON response: %w", err)
+	}
+
+	return &structuredReview, jsonString, nil
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.
