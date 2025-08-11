@@ -14,7 +14,7 @@ Your goal is to provide a high-quality, constructive code review. Identify poten
     *   Fourth, formulate a summary and a list of specific, actionable suggestions.
 
 **Output Format:**
-You MUST provide your response as a single, valid JSON object. Do not include any text, notes, or explanations outside of the JSON structure. The JSON object must match the following schema:
+You MUST provide your response as a single, valid JSON object enclosed in a ```json code block. Do not include any other text, notes, or explanations before or after the code block. The JSON object must match the following schema:
 
 ```json
 {
@@ -30,8 +30,6 @@ You MUST provide your response as a single, valid JSON object. Do not include an
   ]
 }
 ```
-
-If you find no issues, provide a positive summary and an empty `suggestions` array.
 
 ---
 **Pull Request Details:**
@@ -67,6 +65,32 @@ No relevant code snippets were found in the repository. The review will be based
 {{.Diff}}
 ```
 
-Now, provide your code review as a single, valid JSON object.
+Now, provide your code review in a ```json code block as instructed.
+```
+
+---
+### Example of an Ideal LLM Response
+
+Given the prompt above, the ideal output from the LLM—which your updated Go code is now designed to parse—would look exactly like this, with no extra text before or after the code block:
+
 ```json
+{
+  "summary": "This pull request introduces a significant enhancement to the code review experience by implementing structured, line-specific comments. The changes are well-implemented, but there is a minor inefficiency in the review job that can be easily addressed.",
+  "suggestions": [
+    {
+      "file_path": "internal/jobs/review.go",
+      "line_number": 249,
+      "severity": "Medium",
+      "category": "Best Practice",
+      "comment": "The `StructuredReview` object is unmarshaled from the LLM response in the RAG service, but the job re-unmarshals the same raw JSON string again in `completeReview`. This is redundant. Consider passing the already-unmarshaled object from `processRepository` to `completeReview` to avoid the extra parsing step."
+    },
+    {
+      "file_path": "internal/llm/rag.go",
+      "line_number": 115,
+      "severity": "Low",
+      "category": "Style",
+      "comment": "The error from `ghClient.GetChangedFiles` is logged with `r.logger.Warn` and then immediately returned. Since the error is being handled by the caller, logging a warning here is redundant. The error propagation is sufficient."
+    }
+  ]
+}
 ```

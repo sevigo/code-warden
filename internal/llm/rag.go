@@ -258,16 +258,19 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 
 	// Parse the JSON string into the structured format
 	var structuredReview core.StructuredReview
-	jsonStart := strings.Index(rawReview, "{")
-	jsonEnd := strings.LastIndex(rawReview, "}")
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd < jsonStart {
+	// Find the JSON block within the ```json ... ``` code fence
+	jsonBlockStart := strings.Index(rawReview, "```json")
+	if jsonBlockStart == -1 {
 		r.logger.Error("LLM response did not contain a valid JSON object", "raw_response", rawReview)
-		return nil, "", fmt.Errorf("LLM response did not contain a valid JSON object")
+		return nil, "", fmt.Errorf("LLM response did not contain a '```json' code fence")
 	}
-	jsonString := rawReview[jsonStart : jsonEnd+1]
-
+	jsonString := rawReview[jsonBlockStart+len("```json"):] // Get the content after the fence
+	jsonBlockEnd := strings.Index(jsonString, "```")
+	if jsonBlockEnd == -1 {
+		return nil, "", fmt.Errorf("LLM response was missing the closing '```' for the json block")
+	}
+	jsonString = jsonString[:jsonBlockEnd]
 	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
-		r.logger.Error("failed to unmarshal LLM response to JSON", "error", err, "raw_response", rawReview)
 		return nil, "", fmt.Errorf("failed to parse LLM's JSON response: %w", err)
 	}
 
