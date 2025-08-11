@@ -5,31 +5,13 @@ Your goal is to provide a high-quality, constructive code review. Identify poten
 **Review Guidelines:**
 1.  **Be Specific:** Refer to specific files and line numbers.
 2.  **Be Constructive:** Explain *why* a change is recommended.
-3.  **Prioritize:** Focus on the most important issues. Don't nitpick on trivial style matters unless they violate a clear standard.
+3.  **Prioritize:** Focus on the most important issues.
 4.  **Use Context:** Leverage the provided "Relevant Code Snippets" to understand how the changes might affect other parts of the application.
 5.  **Think Step-by-Step:**
     *   First, understand the purpose of the pull request from the title and description.
     *   Second, analyze the diff to identify the exact changes made.
     *   Third, use the provided context to assess the impact of these changes.
     *   Fourth, formulate a summary and a list of specific, actionable suggestions.
-
-**Output Format:**
-You MUST provide your response as a single, valid JSON object enclosed in a ```json code block. Do not include any other text, notes, or explanations before or after the code block. The JSON object must match the following schema:
-
-```json
-{
-  "summary": "A brief, high-level summary of the code review. This will be the main body of the pull request comment.",
-  "suggestions": [
-    {
-      "file_path": "The full path to the file, e.g., 'internal/jobs/review.go'",
-      "line_number": "The line number in the file that the comment pertains to.",
-      "severity": "The severity of the issue (e.g., 'Low', 'Medium', 'High', 'Critical').",
-      "category": "The category of the issue (e.g., 'Best Practice', 'Bug', 'Style', 'Security', 'Performance').",
-      "comment": "The detailed review comment for this specific line."
-    }
-  ]
-}
-```
 
 ---
 **Pull Request Details:**
@@ -65,32 +47,26 @@ No relevant code snippets were found in the repository. The review will be based
 {{.Diff}}
 ```
 
-Now, provide your code review in a ```json code block as instructed.
-```
-
 ---
-### Example of an Ideal LLM Response
+**Final Instruction:**
+Your entire response MUST be a single, valid JSON object enclosed in a ```json code block. Do not include any other text, notes, or explanations before or after the code block.
 
-Given the prompt above, the ideal output from the LLM—which your updated Go code is now designed to parse—would look exactly like this, with no extra text before or after the code block:
-
+Here is an example of the required format:
 ```json
 {
-  "summary": "This pull request introduces a significant enhancement to the code review experience by implementing structured, line-specific comments. The changes are well-implemented, but there is a minor inefficiency in the review job that can be easily addressed.",
+  "summary": "This is a high-level summary of the review.",
   "suggestions": [
     {
-      "file_path": "internal/jobs/review.go",
-      "line_number": 249,
+      "file_path": "path/to/file.go",
+      "line_number": 42,
       "severity": "Medium",
       "category": "Best Practice",
-      "comment": "The `StructuredReview` object is unmarshaled from the LLM response in the RAG service, but the job re-unmarshals the same raw JSON string again in `completeReview`. This is redundant. Consider passing the already-unmarshaled object from `processRepository` to `completeReview` to avoid the extra parsing step."
-    },
-    {
-      "file_path": "internal/llm/rag.go",
-      "line_number": 115,
-      "severity": "Low",
-      "category": "Style",
-      "comment": "The error from `ghClient.GetChangedFiles` is logged with `r.logger.Warn` and then immediately returned. Since the error is being handled by the caller, logging a warning here is redundant. The error propagation is sufficient."
+      "comment": "This is a specific comment about a line of code."
     }
   ]
-}
+}```
+
+Now, provide your analysis of the above pull request in the required JSON format.
+```json
+
 ```

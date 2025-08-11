@@ -43,22 +43,26 @@ Please adhere to the following special instructions for this repository:
 
 ---
 
-## Your Review (Follow this output format exactly)
+## Final Instruction: Your Review Output
+Your entire response MUST be a single, valid JSON object enclosed in a ```json code block. Do not include any other text, notes, or explanations before or after the code block.
 
-### High-Level Summary
-A brief, one-paragraph overview of the changes and your overall assessment of the pull request's quality and objective.
+The JSON schema you must adhere to is:
+```json
+{
+  "summary": "A brief, one-paragraph overview of the changes, your overall assessment, and your final recommendation (e.g., 'Approve', 'Approve with Suggestions', 'Request Changes').",
+  "suggestions": [
+    {
+      "file_path": "The full path to the file, relative to the repository root.",
+      "line_number": "The specific line number in the diff that the comment pertains to.",
+      "severity": "The assessed severity: 'Critical', 'High', 'Medium', or 'Low'.",
+      "category": "The category of the issue: 'Bug', 'Security', 'Performance', 'Style', or 'Best Practice'.",
+      "comment": "A clear and concise description of the issue and your actionable recommendation. If a code example helps clarify the issue, include it within this string using markdown for code blocks."
+    }
+  ]
+}
+```
 
-### Detailed Feedback
-*If you find any issues*, list them here using the following format. If there are no issues, write "No significant issues found. The implementation is clean and effective."
+Now, provide your analysis of the above pull request in the required JSON format.
+```
 
-*   **File:** `path/to/filename.go`
-    **Severity:** [Critical | High | Medium | Low]
-    **Issue:** A clear and concise description of the problem.
-    **Suggestion:** An actionable recommendation. *If providing a code example helps clarify the issue, include it in a ` ```{{.Language}} ` code block below.*
-
-### Final Recommendation
-**You must choose ONE of the following three recommendations.**
-
--   **✅ Approve:** LGTM! This is a solid implementation with no blocking issues.
--   **⚠️ Approve with Suggestions:** The PR is functionally sound and can be merged, but I've provided some suggestions for improvement that should be considered, either in this PR or in a follow-up.
--   **❌ Request Changes:** There are critical issues that must be addressed before this PR can be merged.
+```
