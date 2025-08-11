@@ -20,11 +20,6 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-const (
-	// Maximum size for review comments (GitHub's limit is ~65KB, we use 60KB to be safe)
-	maxReviewSize = 60 * 1024
-)
-
 // ReviewJob performs AI-assisted code reviews.
 type ReviewJob struct {
 	cfg        *config.Config
@@ -340,20 +335,6 @@ func (j *ReviewJob) updateVectorStoreAndSHA(
 		return fmt.Errorf("CRITICAL: failed to update last indexed SHA in database after vector store update: %w", err)
 	}
 
-	return nil
-}
-
-// validateReviewSize checks if the review content is within acceptable limits
-func (j *ReviewJob) validateReviewSize(review string) error {
-	if len(review) > maxReviewSize {
-		j.logger.Warn("Review content too large, truncating",
-			"original_size", len(review),
-			"max_size", maxReviewSize,
-		)
-		// In a real implementation, you might want to modify the review content
-		// For now, we'll return an error to indicate the issue
-		return fmt.Errorf("review content too large (%d bytes), maximum allowed is %d bytes", len(review), maxReviewSize)
-	}
 	return nil
 }
 

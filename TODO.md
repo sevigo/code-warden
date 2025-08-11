@@ -1,84 +1,78 @@
+Of course. Given the significant progress made, here is a refreshed `TODO.md` that reflects the completed work and sets a clear path for the next set of enhancements.
+
+---
+
 # TODO
 
-This document outlines planned improvements and future work for Code-Warden.
+This document outlines the development roadmap for Code-Warden. It tracks completed features, immediate priorities, and future ideas.
 
-### 1. **Implement Intelligent RAG Context Caching and Invalidation** (DONE)
+## ✅ Recently Completed
 
-This was the most critical step to make the tool practical and efficient.
+-   **1. Structured, Line-Specific Reviews:** The review process has been fundamentally upgraded.
+    -   **Resolution:** The system now prompts the LLM for a structured JSON output. This JSON is parsed into `Suggestions` which are then posted as line-specific comments on the pull request using the GitHub Review API. This provides a vastly superior and more intuitive user experience.
+    -   **Benefit:** Feedback is now contextual, actionable, and appears exactly where it's relevant in the "Files Changed" tab.
 
-*   **Resolution:** The system now tracks repository state in the PostgreSQL database, storing `last_indexed_sha` and `qdrant_collection_name`. For new reviews, `git diff` is performed between the current `HEAD` SHA and `last_indexed_sha`. The vector store is updated incrementally: added/modified files are upserted, and deleted files' vectors are removed from the Qdrant collection.
-*   **Benefit:** Reduces the time for subsequent reviews on the same repository from minutes to seconds, making the tool feel instantaneous after the initial indexing.
+-   **2. Intelligent RAG Context Caching:** This was the most critical step to make the tool practical and efficient.
+    -   **Resolution:** The system now tracks repository state in the PostgreSQL database, storing `last_indexed_sha`. Subsequent reviews perform a `git diff` to incrementally update the vector store, avoiding costly full re-indexing.
+    -   **Benefit:** Reduces the time for subsequent reviews on the same repository from minutes to seconds.
 
-### 2. **Refine the Review Prompt and Add Structured Output** (Partially Done)
+-   **3. Repository Configuration (`.code-warden.yml`):** Users can now customize behavior.
+    -   **Resolution:** A `.code-warden.yml` file in the repository root allows for `custom_instructions`, `exclude_dirs`, and `exclude_exts`. This configuration is loaded dynamically for each job.
+    -   **Benefit:** Makes the tool far more powerful and adaptable, allowing teams to tailor it to their specific needs.
 
-Improve the quality and consistency of the AI's feedback.
+## 🚀 Next Up: Immediate Priorities
 
-*   **Problem:** The current prompt is good, but the LLM's output is free-form Markdown. It can be inconsistent and hard to parse for metrics or UI enhancements.
-*   **TODO:**
-    1.  **Chain-of-Thought Prompting:** Modify the prompt to ask the LLM to "think step-by-step" before writing the final review. Ask it to first identify potential issues, categorize them (e.g., "Bug," "Style," "Performance"), and then formulate its response.
-    2.  **Structured JSON Output:** Change the prompt to request the final output as a **JSON object** that your application can parse. This JSON could have a structure like:
+### 1. **Re-implement the `/rereview` Command**
+
+This is the highest priority task, as the feature was temporarily disabled to support the new structured review flow.
+
+-   **Problem:** The `/rereview` command is needed to check if a developer has addressed the AI's initial feedback without performing a full, new review. The old implementation is incompatible with the new JSON-based review content.
+-   **TODO:**
+    1.  **Create a New Prompt:** Design a new `rereview_default.prompt`. It should accept the `NewDiff` and the `OriginalReview` (which is now a JSON string of `core.StructuredReview`). The prompt will instruct the LLM to evaluate the new diff against the original suggestions and determine which have been addressed.
+    2.  **Define Structured Output:** The LLM's output for a re-review should also be structured JSON. For example:
         ```json
         {
-          "summary": "Overall, the changes look good but I have a few suggestions regarding error handling.",
-          "suggestions": [
-            {
-              "file_path": "internal/jobs/review.go",
-              "line_number": 85,
-              "severity": "Medium", // "Low", "Medium", "High"
-              "category": "Best Practice", // "Bug", "Style", "Performance"
-              "comment": "The error from `statusUpdater.Completed` is not handled. While the job is ending, it's good practice to log this failure.",
-              "code_suggestion": "if err != nil { j.logger.Error(\"failed to update final status\", \"error\", err) }"
-            }
-          ]
+          "summary": "Looks like you've addressed most of the feedback. One suggestion regarding error handling still seems to be open.",
+          "resolved_suggestions": [ /* list of original suggestions that are now fixed */ ],
+          "unresolved_suggestions": [ /* list of original suggestions that are still pending */ ]
         }
         ```
-    3.  **Render the JSON:** Your `review.go` job would then parse this JSON and format it into a beautiful Markdown comment with tables, code blocks, and clear sections.
-*   **Benefit:** Produces higher-quality, more consistent, and more actionable reviews. Opens the door for future features like reporting metrics on review categories.
+    3.  **Update Services:**
+        -   Modify `RAGService.GenerateReReview` to use the new prompt and parse the resulting JSON.
+        -   Update the `ReviewJob` to call the service and post the `summary` back to the PR. For an enhanced experience, it could quote the `unresolved_suggestions` in the comment.
+-   **Benefit:** Restores a core feature of the application and completes the transition to a fully structured review lifecycle.
 
-### 3. **Enhance GitHub Integration: Line-Specific Comments**
+### 2. **Create a Simple Web UI for Status & Onboarding**
 
-Post comments directly on the lines of code being changed, just like a human reviewer.
+Provide a user-friendly way to see what the app is doing and what repositories are managed.
 
-*   **Problem:** The current implementation posts a single, large comment on the PR's general discussion thread. This can be hard to map back to the specific lines of code in the "Files Changed" tab.
-*   **TODO:**
-    1.  **Parse the Diff:** In your `review.go` job, you already have the `.diff` file content. You need to parse this diff to map the file paths and line numbers of the changes.
-    2.  **Use the GitHub "Review Comments" API:** Instead of the Issues/Comments API, use the [Pull Request Review Comments API](https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request).
-    3.  **Post Line Comments:** If you implemented structured JSON output (from TODO #2), you can now loop through the `suggestions` array. For each suggestion that has a `file_path` and `line_number`, make an API call to post that specific comment on that exact line in the PR.
-*   **Benefit:** Massively improves the user experience. The AI's feedback appears exactly where it's relevant, making it feel much more like a real team member's review.
-
-### 4. **Add a Configuration File to the User's Repository** (DONE)
-
-Allow users to customize the behavior of `Code-Warden` for their specific repository.
-
-*   **Resolution:** Users can now define a `.code-warden.yml` file in their repository root. This file allows for `custom_instructions`, `exclude_dirs`, and `exclude_exts`. The `review.go` job loads and applies this configuration to dynamically modify the LLM prompt and file parsing/indexing logic.
-*   **Benefit:** Makes the tool far more powerful and adaptable, allowing teams to tailor it to their specific needs.
-
-### 5. **Create a Simple Web UI for Onboarding and Status**
-
-Provide a user-friendly way to see what the app is doing.
-
-*   **Problem:** Currently, the only way to interact with the app is through GitHub comments. There's no way to see which repositories are enabled or the status of past jobs.
-*   **TODO:**
+-   **Problem:** Currently, the only way to interact with the app is through GitHub comments. There's no central place to view the status of managed repositories or past jobs.
+-   **TODO:**
     1.  **Add Frontend Routes:** In `internal/server/router.go`, add routes to serve a simple static HTML/JS frontend.
-    2.  **Build a Status Page:** Create a simple page that lists the repositories the app is installed on (requires a DB query).
-    3.  **Show Job History:** Create a page that lists recent review jobs from your database, showing their status (success/failure) and linking to the PR.
-    4.  **Real-time Updates:** Use Server-Sent Events (SSE) or WebSockets to update the UI in real-time when a new job starts or finishes.
-*   **Benefit:** Improves transparency and makes the tool feel more like a complete product rather than just a backend service.
+    2.  **Build a Status Page:** Create a page that lists all repositories from the database (`GetAllRepositories`), showing their name, last indexed SHA, and last update time.
+    3.  **Show Job History:** Create a page that lists recent review jobs, showing their status (success/failure) and linking to the relevant PR.
+-   **Benefit:** Improves transparency and makes the tool feel more like a complete product rather than just a backend service.
 
-### 6. **Implement Resource Lifecycle Management (Garbage Collection)**
+## 💡 Future Enhancements & Ideas
 
-To ensure long-term stability and manage resource consumption, a garbage collection mechanism is needed to clean up old, unused, or abandoned resources.
+### 3. **Implement GitHub "Suggested Changes"**
 
-*   **Problem:** The application currently persists Git repository clones and Qdrant vector collections indefinitely. This will lead to unbounded disk and memory usage over time, especially if repositories are abandoned or the app is uninstalled.
-*   **TODO:**
-    1.  **Create a "Janitor" Service:** A new background service responsible for cleanup tasks. This service will run periodically (e.g., every 24 hours), controlled by a configuration setting.
-    2.  **Implement TTL-based Cleanup:**
-        *   The janitor will query the `repositories` table for entries where the `updated_at` timestamp is older than a configurable Time-To-Live (TTL), e.g., `90 days`.
-        *   For each expired repository, the janitor will perform a three-step cleanup:
-            1.  Delete the corresponding Qdrant collection using the `qdrant_collection_name`.
-            2.  Delete the local Git repository clone from the disk using the `clone_path`.
-            3.  Delete the record from the `repositories` table in the database.
-    3.  **Handle External Deletion Events:**
-        *   Implement a new webhook handler for the `installation_repositories` event with `action: "removed"` and the `installation` event with `action: "deleted"`.
-        *   When a repository is removed from the app installation or the app is uninstalled, trigger an immediate, explicit deletion of all associated resources (DB record, Qdrant collection, disk files) for the affected repositories.
-*   **Benefit:** Prevents resource leaks, controls operational costs, and ensures the application remains performant and stable over its lifetime.
+Take the AI's role one step further by allowing it to suggest concrete code changes that a developer can accept with a single click.
+
+-   **Problem:** The AI currently only comments on what should be changed. Developers must still manually implement the fix.
+-   **TODO:**
+    1.  **Enhance the Prompt & Struct:** Add a `code_suggestion` field to the `core.Suggestion` struct and update the main review prompt to ask the LLM to populate it.
+    2.  **Use the "Suggested Changes" API:** The GitHub Review API supports creating suggestions. The `github.Client` would need to be updated to format comments within the special ````suggestion` code fence.
+    3.  **Update the Review Job:** The job would pass the `code_suggestion` content to the `StatusUpdater` to be posted.
+-   **Benefit:** Drastically reduces the friction for developers to accept the AI's feedback, speeding up the development cycle.
+
+### 4. **Implement Resource Lifecycle Management (Garbage Collection)**
+
+Ensure long-term stability and manage resource consumption.
+
+-   **Problem:** Git clones and Qdrant collections persist indefinitely, leading to unbounded disk and memory usage over time.
+-   **TODO:**
+    1.  **Create a "Janitor" Service:** A background service that runs periodically (e.g., every 24 hours).
+    2.  **TTL-based Cleanup:** The janitor will find repositories with an `updated_at` timestamp older than a configured TTL (e.g., 90 days) and delete their associated Qdrant collection, disk files, and database record.
+    3.  **Handle Uninstallation Events:** Implement a webhook handler for the `installation` event with `action: "deleted"`. When the app is uninstalled, trigger an immediate cleanup of all resources for that installation.
+-   **Benefit:** Prevents resource leaks, controls operational costs, and ensures the application remains performant and stable.

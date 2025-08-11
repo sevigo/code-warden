@@ -58,7 +58,7 @@ func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, num
 
 	reviewRequest := &github.PullRequestReviewRequest{
 		Body:     &body,
-		Event:    github.String("COMMENT"),
+		Event:    github.Ptr("COMMENT"),
 		Comments: ghComments,
 	}
 
