@@ -366,11 +366,7 @@ func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, ti
 	event.HeadSHA = pr.GetHead().GetSHA()
 
 	statusUpdater = github.NewStatusUpdater(ghClient)
-	checkRunID, err = statusUpdater.InProgress(ctx, event, title, summary)
-	if err != nil {
-		err = fmt.Errorf("failed to set in-progress status: %w", err)
-		return
-	}
+	checkRunID, _ = statusUpdater.InProgress(ctx, event, title, summary)
 
 	return
 }
