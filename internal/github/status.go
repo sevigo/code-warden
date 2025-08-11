@@ -16,7 +16,8 @@ import (
 type StatusUpdater interface {
 	InProgress(ctx context.Context, event *core.GitHubEvent, title, summary string) (int64, error)
 	Completed(ctx context.Context, event *core.GitHubEvent, checkRunID int64, conclusion, title, summary string) error
-	PostReviewComment(ctx context.Context, event *core.GitHubEvent, body string) error
+	PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error
+	PostSimpleComment(ctx context.Context, event *core.GitHubEvent, body string) error
 }
 
 type statusUpdater struct {
@@ -26,6 +27,11 @@ type statusUpdater struct {
 // NewStatusUpdater creates and returns a new instance of a statusUpdater.
 func NewStatusUpdater(client Client) StatusUpdater {
 	return &statusUpdater{client: client}
+}
+
+// PostSimpleComment posts a single, general comment on the pull request.
+func (s *statusUpdater) PostSimpleComment(ctx context.Context, event *core.GitHubEvent, body string) error {
+	return s.client.CreateComment(ctx, event.RepoOwner, event.RepoName, event.PRNumber, body)
 }
 
 // InProgress creates a new GitHub Check Run with an "in_progress" status.
@@ -62,7 +68,17 @@ func (s *statusUpdater) Completed(ctx context.Context, event *core.GitHubEvent, 
 	return err
 }
 
-// PostReviewComment posts a new comment on the pull request or issue.
-func (s *statusUpdater) PostReviewComment(ctx context.Context, event *core.GitHubEvent, body string) error {
-	return s.client.CreateComment(ctx, event.RepoOwner, event.RepoName, event.PRNumber, body)
+// PostStructuredReview posts a new pull request review with line-specific comments.
+func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
+	var comments []DraftReviewComment
+	for _, sug := range review.Suggestions {
+		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
+			comments = append(comments, DraftReviewComment{
+				Path: sug.FilePath,
+				Line: sug.LineNumber,
+				Body: sug.Comment,
+			})
+		}
+	}
+	return s.client.CreateReview(ctx, event.RepoOwner, event.RepoName, event.PRNumber, review.Summary, comments)
 }

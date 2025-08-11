@@ -15,6 +15,13 @@ type ChangedFile struct {
 	Patch    string
 }
 
+// DraftReviewComment represents a single comment to be posted as part of a review.
+type DraftReviewComment struct {
+	Path string
+	Line int
+	Body string
+}
+
 // Client defines a set of operations for interacting with the GitHub API,
 // focusing on pull requests, comments, and check runs.
 type Client interface {
@@ -22,6 +29,7 @@ type Client interface {
 	GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error)
 	GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]ChangedFile, error)
 	CreateComment(ctx context.Context, owner, repo string, number int, body string) error
+	CreateReview(ctx context.Context, owner, repo string, number int, body string, comments []DraftReviewComment) error
 	CreateCheckRun(ctx context.Context, owner, repo string, opts github.CreateCheckRunOptions) (*github.CheckRun, error)
 	UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, opts github.UpdateCheckRunOptions) (*github.CheckRun, error)
 }
@@ -35,6 +43,30 @@ type gitHubClient struct {
 // testable interface for application-specific GitHub operations.
 func NewGitHubClient(client *github.Client, logger *slog.Logger) Client {
 	return &gitHubClient{client: client, logger: logger}
+}
+
+// CreateReview creates a new pull request review with a summary and line-specific comments.
+func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, number int, body string, comments []DraftReviewComment) error {
+	var ghComments []*github.DraftReviewComment
+	for _, c := range comments {
+		ghComments = append(ghComments, &github.DraftReviewComment{
+			Path: &c.Path,
+			Line: &c.Line,
+			Body: &c.Body,
+		})
+	}
+
+	reviewRequest := &github.PullRequestReviewRequest{
+		Body:     &body,
+		Event:    github.String("COMMENT"),
+		Comments: ghComments,
+	}
+
+	_, _, err := g.client.PullRequests.CreateReview(ctx, owner, repo, number, reviewRequest)
+	if err != nil {
+		g.logger.Error("failed to create pull request review", "owner", owner, "repo", repo, "pr", number, "error", err)
+	}
+	return err
 }
 
 // GetPullRequest retrieves a single pull request by its number.

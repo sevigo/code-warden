@@ -2,12 +2,12 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -78,7 +78,7 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 	case core.FullReview:
 		return j.runFullReview(ctx, event)
 	case core.ReReview:
-		return j.runReReview(ctx, event)
+		return j.handleUnsupportedReReview(ctx, event)
 	default:
 		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
@@ -92,6 +92,32 @@ func (j *ReviewJob) checkContext(ctx context.Context) error {
 	default:
 		return nil
 	}
+}
+
+// handleUnsupportedReReview informs the user that the /rereview command is temporarily disabled.
+func (j *ReviewJob) handleUnsupportedReReview(ctx context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("Handling temporarily disabled /rereview command", "repo", event.RepoFullName, "pr", event.PRNumber)
+
+	_, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Preparing for follow-up...")
+	if err != nil {
+		return err
+	}
+
+	comment := "The `/rereview` command is being upgraded to support line-specific comments and is temporarily unavailable. Please use the `/review` command for a full new review."
+	if postErr := statusUpdater.PostSimpleComment(ctx, event, comment); postErr != nil {
+		// Log the error but don't fail the whole job, the main goal is to update the check run.
+		j.logger.Error("failed to post comment for disabled feature", "error", postErr)
+	}
+
+	// Use "neutral" conclusion to indicate it wasn't a success or failure.
+	title := "Feature Unavailable"
+	summary := "The `/rereview` command is temporarily disabled while it's being upgraded."
+	if completeErr := statusUpdater.Completed(ctx, event, checkRunID, "neutral", title, summary); completeErr != nil {
+		return fmt.Errorf("failed to update completion status: %w", completeErr)
+	}
+
+	j.logger.Info("Successfully handled disabled /rereview command.")
+	return nil
 }
 
 // runFullReview handles the initial `/review` command with the new, simplified logic.
@@ -117,13 +143,13 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	}()
 
 	// Process the repository and generate review
-	review, err := j.processRepository(ctx, event, reviewEnv)
+	rawReviewJSON, err := j.processRepository(ctx, event, reviewEnv)
 	if err != nil {
 		return err
 	}
 
 	// Post the review and complete
-	return j.completeReview(ctx, event, reviewEnv, review)
+	return j.completeReview(ctx, event, reviewEnv, rawReviewJSON)
 }
 
 // reviewEnvironment holds all the resources needed for a review
@@ -218,26 +244,25 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 	}
 
 	// Generate the review
-	review, err := j.ragService.GenerateReview(ctx, env.repoConfig, env.collectionName, event, env.ghClient)
+	structuredReview, rawReviewJSON, err := j.ragService.GenerateReview(ctx, env.repoConfig, env.collectionName, event, env.ghClient)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate review: %w", err)
 	}
-	if strings.TrimSpace(review) == "" {
-		return "", errors.New("generated review is empty")
+	if structuredReview == nil || (structuredReview.Summary == "" && len(structuredReview.Suggestions) == 0) {
+		return "", errors.New("generated review is empty or invalid")
 	}
 
-	// Validate review size
-	if err := j.validateReviewSize(review); err != nil {
-		return "", err
-	}
-
-	return review, nil
+	// Return the raw JSON to be stored in the database.
+	return rawReviewJSON, nil
 }
 
-// completeReview posts the review and updates the status
-func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, review string) error {
-	// Post comment
-	if err := env.statusUpdater.PostReviewComment(ctx, event, review); err != nil {
+func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, rawReviewJSON string) error {
+	// Unmarshal the raw JSON into the structured format to post it
+	var structuredReview core.StructuredReview
+	if err := json.Unmarshal([]byte(rawReviewJSON), &structuredReview); err != nil {
+		return fmt.Errorf("internal error: failed to re-parse generated review JSON: %w", err)
+	}
+	if err := env.statusUpdater.PostStructuredReview(ctx, event, &structuredReview); err != nil {
 		return fmt.Errorf("failed to post review comment: %w", err)
 	}
 
@@ -246,7 +271,7 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 		RepoFullName:  event.RepoFullName,
 		PRNumber:      event.PRNumber,
 		HeadSHA:       event.HeadSHA,
-		ReviewContent: review,
+		ReviewContent: rawReviewJSON,
 	}
 	if err := j.store.SaveReview(ctx, dbReview); err != nil {
 		j.logger.Error("failed to save review to database, this may affect follow-up reviews",
@@ -338,60 +363,6 @@ func (j *ReviewJob) cleanupRepoResources(repoPath string) {
 	// The actual implementation would depend on what resources need cleanup
 	j.logger.Debug("Cleaning up repository resources", "repo_path", repoPath)
 	// Example: remove temporary files, close file handles, etc.
-}
-
-// runReReview remains largely unchanged but with added context checks and validation
-func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (err error) {
-	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
-
-	if err := j.checkContext(ctx); err != nil {
-		return fmt.Errorf("context cancelled before starting: %w", err)
-	}
-
-	ghClient, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Checking for fixes...")
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		if err != nil && statusUpdater != nil {
-			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
-		}
-	}()
-
-	if err := j.checkContext(ctx); err != nil {
-		return fmt.Errorf("context cancelled after setup: %w", err)
-	}
-
-	originalReview, err := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
-	if err != nil {
-		return fmt.Errorf("could not find a previous review to check against: %w", err)
-	}
-
-	if err := j.checkContext(ctx); err != nil {
-		return fmt.Errorf("context cancelled before generating follow-up: %w", err)
-	}
-
-	followUp, err := j.ragService.GenerateReReview(ctx, event, originalReview, ghClient)
-	if err != nil {
-		return fmt.Errorf("failed to generate follow-up review: %w", err)
-	}
-
-	// Validate follow-up size
-	if err := j.validateReviewSize(followUp); err != nil {
-		return err
-	}
-
-	if err = statusUpdater.PostReviewComment(ctx, event, followUp); err != nil {
-		return fmt.Errorf("failed to post follow-up comment: %w", err)
-	}
-
-	if err = statusUpdater.Completed(ctx, event, checkRunID, "success", "Follow-up Complete", "Analysis finished."); err != nil {
-		return fmt.Errorf("failed to update completion status: %w", err)
-	}
-
-	j.logger.Info("Re-review job completed successfully")
-	return nil
 }
 
 // setupReview initializes the GitHub client, gets PR details, and sets the initial status.
