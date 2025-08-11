@@ -1,7 +1,3 @@
-Of course. Given the significant progress made, here is a refreshed `TODO.md` that reflects the completed work and sets a clear path for the next set of enhancements.
-
----
-
 # TODO
 
 This document outlines the development roadmap for Code-Warden. It tracks completed features, immediate priorities, and future ideas.
