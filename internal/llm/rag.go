@@ -30,6 +30,7 @@ type RAGService interface {
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string, filesToProcess, filesToDelete []string) error
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
+	AnswerQuestion(ctx context.Context, collectionName, question string) (string, error)
 }
 
 type ragService struct {
@@ -72,13 +73,16 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
 	r.logger.Info("final loader configuration", "exclude_dirs", finalExcludeDirs, "exclude_exts", repoConfig.ExcludeExts)
 
-	gitLoader := documentloaders.NewGit(
+	gitLoader, err := documentloaders.NewGit(
 		repoPath,
 		r.parserRegistry,
 		documentloaders.WithLogger(r.logger),
 		documentloaders.WithExcludeDirs(finalExcludeDirs),
 		documentloaders.WithExcludeExts(repoConfig.ExcludeExts),
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create Git document loader: %w", err)
+	}
 
 	var totalProcessed atomic.Int64
 	var totalDocsFound atomic.Int64
@@ -299,6 +303,42 @@ func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEve
 	return r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)
 }
 
+// Add this implementation to the ragService struct:
+func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, question string) (string, error) {
+	r.logger.Info("answering question with RAG context", "collection", collectionName)
+
+	relevantDocs, err := r.vectorStore.SimilaritySearch(ctx, collectionName, question, 5)
+	if err != nil {
+		return "", fmt.Errorf("failed to perform similarity search: %w", err)
+	}
+
+	r.logger.Debug("retrieved relevant documents for question", "count", len(relevantDocs))
+
+	var contextBuilder strings.Builder
+	for _, doc := range relevantDocs {
+		r.logger.Debug("retrieved document metadata", "metadata", doc.Metadata)
+		source, _ := doc.Metadata["source"].(string)
+		contextBuilder.WriteString(fmt.Sprintf("---\nFile: %s\n\n%s\n---\n", source, doc.PageContent))
+	}
+
+	promptData := map[string]string{
+		"Question": question,
+		"Context":  contextBuilder.String(),
+	}
+	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
+	prompt, err := r.promptMgr.Render("question", modelForPrompt, promptData)
+	if err != nil {
+		return "", fmt.Errorf("could not render question prompt: %w", err)
+	}
+
+	answer, err := r.generatorLLM.Call(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("LLM call failed for question: %w", err)
+	}
+
+	return answer, nil
+}
+
 func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey PromptKey, promptData any) (string, error) {
 	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
 	prompt, err := r.promptMgr.Render(promptKey, modelForPrompt, promptData)
@@ -340,13 +380,12 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 	}
 
 	// Prepare a batch of queries and corresponding original files.
-	// This new slice will maintain the correct mapping between queries/results and the original files.
 	queries := make([]string, 0, len(changedFiles))
 	originalFilesForQueries := make([]internalgithub.ChangedFile, 0, len(changedFiles))
 
 	for _, file := range changedFiles {
 		if file.Patch == "" {
-			continue // Skip files without a patch, as no query can be formed.
+			continue
 		}
 		query := fmt.Sprintf(
 			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
@@ -357,13 +396,11 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 		originalFilesForQueries = append(originalFilesForQueries, file) // Store the file for this specific query
 	}
 
-	// If no queries were generated (e.g., all files had empty patches), return early.
 	if len(queries) == 0 {
 		return "", nil
 	}
 
-	// Execute the batch search in a single network call.
-	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 3)
+	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 7)
 	if err != nil {
 		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
 		return "", fmt.Errorf("failed to retrieve RAG context: %w", err)
@@ -373,18 +410,14 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 	var contextBuilder strings.Builder
 	seenDocs := make(map[string]struct{})
 
-	// Sanity check: Ensure the number of results matches the number of queries.
-	// This should hold true if the vector store contract is respected.
 	if len(batchResults) != len(originalFilesForQueries) {
 		r.logger.Error("mismatch between batch results and original files list; context attribution may be incorrect",
 			"batch_results_count", len(batchResults),
 			"expected_files_count", len(originalFilesForQueries))
-		// Decide on a more robust fallback here if this state is possible and needs different handling.
 		return "", fmt.Errorf("mismatch between batch results and original files list")
 	}
 
 	for i, relevantDocs := range batchResults {
-		// Use the correctly mapped original file for this batch result.
 		originalFile := originalFilesForQueries[i]
 
 		for _, doc := range relevantDocs {

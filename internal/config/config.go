@@ -3,13 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"time"
 
-	"github.com/spf13/viper"
-
 	"github.com/sevigo/code-warden/internal/logger"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -37,6 +35,7 @@ type Config struct {
 	FastAPIServerURL        string `mapstructure:"FASTAPI_SERVER_URL"`
 	EmbedderTaskDescription string `mapstructure:"EMBEDDER_TASK_DESCRIPTION"`
 	FastAPISharedSecret     string `mapstructure:"EMBEDDING_API_SECRET"`
+	TerminalTheme           string
 }
 
 // DBConfig holds all database connection settings.
@@ -61,15 +60,9 @@ func LoadConfig() (*Config, error) {
 
 	setDefaults(v)
 
-	if err := loadEnvFile(v); err != nil {
-		return nil, err
-	}
+	_ = loadEnvFile(v)
 
 	v.AutomaticEnv()
-
-	if err := validateRequired(v); err != nil {
-		return nil, err
-	}
 
 	dbConfig, err := configureDB(v)
 	if err != nil {
@@ -96,6 +89,7 @@ func LoadConfig() (*Config, error) {
 		FastAPIServerURL:        v.GetString("FASTAPI_SERVER_URL"),
 		EmbedderTaskDescription: v.GetString("EMBEDDER_TASK_DESCRIPTION"),
 		FastAPISharedSecret:     v.GetString("EMBEDDING_API_SECRET"),
+		TerminalTheme:           v.GetString("CODE_WARDEN_THEME"),
 	}, nil
 }
 
@@ -135,27 +129,35 @@ func loadEnvFile(v *viper.Viper) error {
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("failed to read config file: %w", err)
 		}
-		slog.Warn("config file .env not found, relying on environment variables and defaults")
 	}
 	return nil
 }
 
-func validateRequired(v *viper.Viper) error {
-	if v.GetInt64("GITHUB_APP_ID") == 0 {
-		return errors.New("GITHUB_APP_ID must be set")
+func (c *Config) ValidateForServer() error {
+	if c.GitHubAppID == 0 {
+		return errors.New("GITHUB_APP_ID must be set for server mode")
 	}
-	if v.GetString("GITHUB_WEBHOOK_SECRET") == "" {
-		return errors.New("GITHUB_WEBHOOK_SECRET must be set")
+	if c.GitHubWebhookSecret == "" {
+		return errors.New("GITHUB_WEBHOOK_SECRET must be set for server mode")
 	}
-	privateKeyPath := v.GetString("GITHUB_PRIVATE_KEY_PATH")
-	if _, err := os.Stat(privateKeyPath); os.IsNotExist(err) {
-		return fmt.Errorf("github private key not found at path: %s", privateKeyPath)
+	if _, err := os.Stat(c.GitHubPrivateKeyPath); os.IsNotExist(err) {
+		return fmt.Errorf("github private key not found at path: %s (required for server mode)", c.GitHubPrivateKeyPath)
 	}
-	// New: Validate Gemini API key if it's used for either generator or embedder
-	if v.GetString("LLM_PROVIDER") == llmProviderGemini || v.GetString("EMBEDDER_PROVIDER") == llmProviderGemini {
-		if v.GetString("GEMINI_API_KEY") == "" {
-			return errors.New("GEMINI_API_KEY must be set when using the gemini provider for generator or embedder")
-		}
+	if (c.LLMProvider == llmProviderGemini || c.EmbedderProvider == llmProviderGemini) && c.GeminiAPIKey == "" {
+		return errors.New("GEMINI_API_KEY must be set when using the gemini provider")
+	}
+	return nil
+}
+
+func (c *Config) ValidateForCLI() error {
+	// The CLI might need a PAT for some operations.
+	// We can leave this flexible for now or add checks as needed.
+	// For example, the `preload` command requires it.
+	// if c.GitHubToken == "" {
+	// 	return errors.New("GITHUB_TOKEN (a Personal Access Token) must be set for some CLI operations")
+	// }
+	if (c.LLMProvider == "gemini" || c.EmbedderProvider == "gemini") && c.GeminiAPIKey == "" {
+		return errors.New("GEMINI_API_KEY must be set when using the gemini provider")
 	}
 	return nil
 }
@@ -169,7 +171,7 @@ func configureLogger(v *viper.Viper) logger.Config {
 }
 
 func getGeneratorModelName(v *viper.Viper) string {
-	if v.GetString("LLM_PROVIDER") == "gemini" {
+	if v.GetString("LLM_PROVIDER") == llmProviderGemini {
 		geminiModel := v.GetString("GEMINI_GENERATOR_MODEL_NAME")
 		if geminiModel != "" {
 			return geminiModel
@@ -179,9 +181,8 @@ func getGeneratorModelName(v *viper.Viper) string {
 	return v.GetString("GENERATOR_MODEL_NAME")
 }
 
-// New: Dynamically get the embedder model name
 func getEmbedderModelName(v *viper.Viper) string {
-	if v.GetString("EMBEDDER_PROVIDER") == "gemini" {
+	if v.GetString("EMBEDDER_PROVIDER") == llmProviderGemini {
 		geminiModel := v.GetString("GEMINI_EMBEDDER_MODEL_NAME")
 		if geminiModel != "" {
 			return geminiModel

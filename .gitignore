@@ -6,6 +6,7 @@
 *.dylib
 __debug*
 .DS_Store
+code-warden.log
 
 # Test binary, built with `go test -c`
 *.test
@@ -28,3 +29,4 @@ go.work.sum
 
 # env file
 .env
+warden-terminal.log

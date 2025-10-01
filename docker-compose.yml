@@ -1,7 +1,9 @@
 # docker-compose.yml (Unified Version with Profiles)
 #
-# To run one-time setup:  docker-compose up --profile setup -d
+# To run one-time setup: docker-compose up --profile setup -d
 # To run normal services: docker-compose up -d
+
+version: '3.9'
 
 services:
   setup:
@@ -31,6 +33,34 @@ services:
         echo '✅ Model setup complete. This container will now exit.' &&
         echo '---'
       "
+      
+  db-setup:
+    image: postgres:16-alpine
+    container_name: postgres-db-setup
+    profiles: ["setup"]
+    networks:
+      - warden-net
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DB_NAME=${DB_NAME:-codewarden}
+      - DB_USERNAME=${DB_USERNAME:-warden}
+      - DB_PASSWORD=${DB_PASSWORD:-secret}
+    command: >
+      sh -c "
+        echo 'Waiting for PostgreSQL to be ready...' &&
+        until PGPASSWORD=postgres psql -h db -U postgres -c '\q'; do
+          echo 'Still waiting for PostgreSQL...'; sleep 1;
+        done;
+        echo 'PostgreSQL is ready. Setting up database role and permissions...' &&
+        PGPASSWORD=postgres psql -h db -U postgres -c \"CREATE ROLE $$DB_USERNAME$$ WITH LOGIN PASSWORD '$$DB_PASSWORD$$' CREATEDB;\" || echo 'Role may already exist' &&
+        PGPASSWORD=postgres psql -h db -U postgres -c \"CREATE DATABASE $$DB_NAME$$ OWNER $$DB_USERNAME$$;\" || echo 'Database may already exist' &&
+        PGPASSWORD=$$DB_PASSWORD$$ psql -h db -U $$DB_USERNAME$$ -d $$DB_NAME$$ -c 'SELECT current_user, current_database();' &&
+        echo '---' &&
+        echo '✅ Database setup complete. This container will now exit.' &&
+        echo '---'
+      "
 
   db:
     image: postgres:16-alpine
@@ -47,7 +77,7 @@ services:
     networks:
       - warden-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -87,5 +117,5 @@ networks:
 
 volumes:
   postgres_data:
-  # ollama_data:
+  ollama_data:
   qdrant_data:

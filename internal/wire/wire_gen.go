@@ -20,8 +20,8 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		return nil, nil, err
 	}
 	loggerConfig := provideLoggerConfig(configConfig)
-	writer := provideLogWriter()
-	logger := provideDefaultSlogLogger(loggerConfig, writer)
+	writer := provideLogWriter(configConfig)
+	logger := provideSlogLogger(loggerConfig, writer)
 	appApp, cleanup, err := app.NewApp(ctx, configConfig, logger)
 	if err != nil {
 		return nil, nil, err

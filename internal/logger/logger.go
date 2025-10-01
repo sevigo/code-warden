@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -23,14 +24,22 @@ func NewLogger(cfg Config, output io.Writer) *slog.Logger {
 			output = os.Stdout
 		case "stderr":
 			output = os.Stderr
+		case "file":
+			file, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			if err != nil {
+				fmt.Printf("Failed to open log file: %v\n", err)
+				output = os.Stdout
+			} else {
+				output = file
+			}
 		default:
-			output = os.Stdout // Default to stdout
+			output = os.Stdout
 		}
 	}
 
 	level := new(slog.Level)
 	if err := level.UnmarshalText([]byte(cfg.Level)); err != nil {
-		level = new(slog.Level) // Default to Info if parsing fails
+		level = new(slog.Level)
 	}
 
 	switch cfg.Format {

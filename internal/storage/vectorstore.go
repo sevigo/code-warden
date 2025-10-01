@@ -139,6 +139,12 @@ func (q *qdrantVectorStore) AddDocumentsBatch(ctx context.Context, collectionNam
 }
 
 func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName, query string, numDocs int) ([]schema.Document, error) {
+	q.logger.DebugContext(ctx, "Starting similarity search",
+		"collection", collectionName,
+		"num_docs", numDocs,
+		"query_length", len(query),
+	)
+
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("query cannot be empty")
 	}
@@ -148,13 +154,39 @@ func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName
 
 	store, err := q.getStoreForCollection(collectionName)
 	if err != nil {
+		q.logger.ErrorContext(ctx, "Failed to get vector store for collection",
+			"collection", collectionName,
+			"error", err,
+		)
 		return nil, fmt.Errorf("failed to get store for collection %s: %w", collectionName, err)
 	}
 
+	q.logger.InfoContext(ctx, "Executing similarity search against Qdrant", "collection", collectionName)
+	startTime := time.Now()
+
 	results, err := store.SimilaritySearch(ctx, query, numDocs, vectorstores.WithNameSpace(collectionName))
 	if err != nil {
+		q.logger.ErrorContext(ctx, "Similarity search execution failed",
+			"collection", collectionName,
+			"error", err,
+			"duration", time.Since(startTime),
+		)
 		return nil, fmt.Errorf("similarity search failed in collection %s: %w", collectionName, err)
 	}
+
+	var sources []string
+	for _, doc := range results {
+		if source, ok := doc.Metadata["source"].(string); ok {
+			sources = append(sources, source)
+		}
+	}
+	q.logger.InfoContext(ctx, "Similarity search completed successfully",
+		"collection", collectionName,
+		"results_found", len(results),
+		"duration", time.Since(startTime),
+		"retrieved_sources", sources,
+	)
+
 	return results, nil
 }
 

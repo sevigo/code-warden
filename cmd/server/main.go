@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,7 +12,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("application failed to run", "error", err)
+		fmt.Println("application failed to run", err)
 		os.Exit(1)
 	}
 }
@@ -28,11 +27,15 @@ func run() error {
 	}
 	defer cleanup()
 
-	slog.Info("starting Code-Warden application")
+	if err := app.Cfg.ValidateForServer(); err != nil {
+		return fmt.Errorf("server configuration validation failed: %w", err)
+	}
+
+	app.Logger.Info("starting Code-Warden application")
 
 	go func() {
 		if err := app.Start(); err != nil {
-			slog.Error("server error", "error", err)
+			app.Logger.Error("server error", "error", err)
 			cancel()
 		}
 	}()
@@ -42,13 +45,13 @@ func run() error {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case <-quit:
-		slog.Info("received shutdown signal")
+		app.Logger.Info("received shutdown signal")
 	case <-ctx.Done():
-		slog.Info("context cancelled, shutting down")
+		app.Logger.Info("context cancelled, shutting down")
 	}
 
 	if err := app.Stop(); err != nil {
-		slog.Error("failed to stop application", "error", err)
+		app.Logger.Error("failed to stop application", "error", err)
 		return fmt.Errorf("failed to stop application: %w", err)
 	}
 	return nil

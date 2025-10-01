@@ -23,6 +23,7 @@ type Repository struct {
 	ClonePath            string    `json:"clone_path" db:"clone_path"`
 	QdrantCollectionName string    `json:"qdrant_collection_name" db:"qdrant_collection_name"`
 	LastIndexedSHA       string    `json:"last_indexed_sha" db:"last_indexed_sha"`
+	EmbedderModelName    string    `json:"embedder_model_name" db:"embedder_model_name"`
 	LastReviewDate       time.Time `json:"last_review_date" db:"last_review_date"`
 	CreatedAt            time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at" db:"updated_at"`
@@ -35,6 +36,7 @@ type Store interface {
 	GetAllReviewsForPR(ctx context.Context, repoFullName string, prNumber int) ([]*core.Review, error)
 	CreateRepository(ctx context.Context, repo *Repository) error
 	GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error)
+	GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error)
 	UpdateRepository(ctx context.Context, repo *Repository) error
 	GetAllRepositories(ctx context.Context) ([]*Repository, error)
 }
@@ -164,4 +166,21 @@ func (s *postgresStore) GetAllRepositories(ctx context.Context) ([]*Repository, 
 		return nil, fmt.Errorf("failed to retrieve all repositories: %w", err)
 	}
 	return repos, nil
+}
+
+// GetRepositoryByClonePath retrieves a repository by its local clone path.
+func (s *postgresStore) GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error) {
+	query := `
+SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, embedder_model_name, created_at, updated_at
+FROM repositories
+WHERE clone_path = $1`
+	var repo Repository
+	err := s.db.GetContext(ctx, &repo, query, clonePath)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get repository by clone path %s: %w", clonePath, err)
+	}
+	return &repo, nil
 }
