@@ -10,7 +10,7 @@ BIN_DIR=$(CURDIR)/bin
 
 GOLINT_BIN_DIR=$(CURDIR)/bin
 GOLINT_CMD=$(GOLINT_BIN_DIR)/golangci-lint
-GOLINT_VERSION=v2.1.6
+GOLINT_VERSION=v2.5.0
 
 .DEFAULT_GOAL := all
 .PHONY: all build run clean test lint
