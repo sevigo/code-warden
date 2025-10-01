@@ -70,8 +70,14 @@ func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core
 		"repo", event.RepoFullName,
 	)
 
-	err := d.reviewJob.Run(ctx, event)
-	if err != nil {
+	defer func() {
+		if r := recover(); r != nil {
+			d.logger.Error("panic recovered in review job", "panic", r, "repo", event.RepoFullName)
+			// TODO: update the GitHub check run to "failed" here.
+		}
+	}()
+
+	if err := d.reviewJob.Run(ctx, event); err != nil {
 		d.logger.Error("code review job failed",
 			"repo", event.RepoFullName,
 			"pr", event.PRNumber,

@@ -1,4 +1,3 @@
-// Package repomanager handles the persistent cloning and updating of Git repositories.
 package repomanager
 
 import (
@@ -9,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +19,6 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/storage"
-	"github.com/sevigo/code-warden/internal/util"
 )
 
 // manager implements the core.RepoManager interface.
@@ -108,7 +107,7 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 	newRepo := &storage.Repository{
 		FullName:             event.RepoFullName,
 		ClonePath:            clonePath,
-		QdrantCollectionName: util.GenerateCollectionName(event.RepoFullName, m.cfg.EmbedderModelName),
+		QdrantCollectionName: GenerateCollectionName(event.RepoFullName, m.cfg.EmbedderModelName),
 		LastIndexedSHA:       "", // Intentionally blank, will be set by caller after indexing
 	}
 	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
@@ -234,7 +233,7 @@ func (m *manager) handleLocalFullScan(ctx context.Context, repoPath, repoFullNam
 		newRepo := &storage.Repository{
 			FullName:             repoFullName,
 			ClonePath:            repoPath,
-			QdrantCollectionName: util.GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
+			QdrantCollectionName: GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
 			LastIndexedSHA:       "",
 		}
 		if err := m.store.CreateRepository(ctx, newRepo); err != nil {
@@ -329,4 +328,23 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 	}
 
 	return m.handleLocalIncrementalScan(ctx, gitRepo, repoRecord, repoPath, headSHA)
+}
+
+var collectionNameRegexp = regexp.MustCompile("[^a-z0-9_-]+")
+
+// GenerateCollectionName builds a valid vector DB collection name from repo and model info.
+func GenerateCollectionName(repoFullName, embedderName string) string {
+	safeRepoName := strings.ToLower(strings.ReplaceAll(repoFullName, "/", "-"))
+	safeEmbedderName := strings.ToLower(strings.Split(embedderName, ":")[0])
+
+	safeRepoName = collectionNameRegexp.ReplaceAllString(safeRepoName, "")
+	safeEmbedderName = collectionNameRegexp.ReplaceAllString(safeEmbedderName, "")
+
+	collectionName := fmt.Sprintf("repo-%s-%s", safeRepoName, safeEmbedderName)
+
+	const maxCollectionNameLength = 255
+	if len(collectionName) > maxCollectionNameLength {
+		collectionName = collectionName[:maxCollectionNameLength]
+	}
+	return collectionName
 }
