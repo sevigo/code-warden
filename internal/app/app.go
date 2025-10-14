@@ -1,5 +1,3 @@
-// Package app initializes and orchestrates the main components of the Code Warden application.
-// It wires together the configuration, server, and other services.
 package app
 
 import (
@@ -7,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
@@ -42,8 +39,7 @@ type App struct {
 	RAGService llm.RAGService
 	GitClient  *gitutil.Client
 	Cfg        *config.Config
-
-	logger     *slog.Logger
+	Logger     *slog.Logger
 	server     *server.Server
 	dispatcher core.JobDispatcher
 }
@@ -51,21 +47,8 @@ type App struct {
 // newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
 // Ollama can take a while to process requests, so we need more generous timeouts.
 func newOllamaHTTPClient() *http.Client {
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:        100,
-		MaxConnsPerHost:     10,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-		DisableKeepAlives:   false,
-	}
-
 	return &http.Client{
-		Transport: transport,
-		Timeout:   15 * time.Minute,
+		Timeout: 15 * time.Minute,
 	}
 }
 
@@ -88,13 +71,12 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	store := storage.NewStore(dbConn.DB)
 	gitClient := gitutil.NewClient(logger.With("component", "gitutil"))
 
-	repoManager := repomanager.New(cfg, store, gitClient, logger)
-
 	generatorLLM, err := createGeneratorLLM(ctx, cfg, logger)
 	if err != nil {
 		dbCleanup()
 		return nil, nil, err
 	}
+
 	embedder, err := createEmbedder(ctx, cfg, logger)
 	if err != nil {
 		dbCleanup()
@@ -138,7 +120,9 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 			RetryDelay:              1 * time.Second,
 		}
 	}
+
 	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, batchConfig, logger)
+	repoManager := repomanager.New(cfg, store, vectorStore, gitClient, logger.With("component", "repomanager"))
 
 	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
 
@@ -153,7 +137,7 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 			RepoMgr:    repoManager,
 			RAGService: ragService,
 			GitClient:  gitClient,
-			logger:     logger,
+			Logger:     logger,
 			server:     httpServer,
 			dispatcher: dispatcher,
 			Cfg:        cfg,
@@ -223,13 +207,13 @@ func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger
 
 // Start runs the HTTP server.
 func (a *App) Start() error {
-	a.logger.Info("starting Code Warden",
+	a.Logger.Info("starting Code Warden",
 		"server_port", a.Cfg.ServerPort,
 		"max_workers", a.Cfg.MaxWorkers)
 
 	err := a.server.Start()
 	if err != nil {
-		a.logger.Error("failed to start HTTP server", "error", err)
+		a.Logger.Error("failed to start HTTP server", "error", err)
 		return err
 	}
 
@@ -239,7 +223,7 @@ func (a *App) Start() error {
 // Stop shuts down the application cleanly.
 func (a *App) Stop() error {
 	var shutdownErr error
-	a.logger.Info("shutting down Code Warden services")
+	a.Logger.Info("shutting down Code Warden services")
 
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
 	a.dispatcher.Stop()
@@ -248,15 +232,15 @@ func (a *App) Stop() error {
 	if a.server != nil {
 		serverErr := a.server.Stop()
 		if serverErr != nil {
-			a.logger.Error("error during HTTP server shutdown", "error", serverErr)
+			a.Logger.Error("error during HTTP server shutdown", "error", serverErr)
 			shutdownErr = errors.Join(shutdownErr, serverErr)
 		}
 	}
 
 	if shutdownErr != nil {
-		a.logger.Error("Code Warden stopped with errors", "error", shutdownErr)
+		a.Logger.Error("Code Warden stopped with errors", "error", shutdownErr)
 	} else {
-		a.logger.Info("Code Warden stopped successfully")
+		a.Logger.Info("Code Warden stopped successfully")
 	}
 	return shutdownErr
 }

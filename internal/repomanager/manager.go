@@ -23,11 +23,12 @@ import (
 
 // manager implements the core.RepoManager interface.
 type manager struct {
-	cfg       *config.Config
-	store     storage.Store
-	logger    *slog.Logger
-	gitClient *gitutil.Client
-	repoMux   sync.Map
+	cfg         *config.Config
+	store       storage.Store
+	logger      *slog.Logger
+	vectorStore storage.VectorStore
+	gitClient   *gitutil.Client
+	repoMux     sync.Map
 }
 
 type RepoManager interface {
@@ -38,12 +39,14 @@ type RepoManager interface {
 }
 
 // New creates a new RepoManager.
-func New(cfg *config.Config, store storage.Store, gitClient *gitutil.Client, logger *slog.Logger) RepoManager {
+// NOTE: You will need to update the wire/providers.go or app.go to pass the vectorStore here.
+func New(cfg *config.Config, store storage.Store, vectorStore storage.VectorStore, gitClient *gitutil.Client, logger *slog.Logger) RepoManager {
 	return &manager{
-		cfg:       cfg,
-		store:     store,
-		logger:    logger,
-		gitClient: gitClient,
+		cfg:         cfg,
+		store:       store,
+		logger:      logger,
+		vectorStore: vectorStore,
+		gitClient:   gitClient,
 	}
 }
 
@@ -64,11 +67,18 @@ func (m *manager) SyncRepo(ctx context.Context, event *core.GitHubEvent, token s
 
 	clonePath := filepath.Join(m.cfg.RepoPath, event.RepoFullName)
 
+	if repo != nil && repo.EmbedderModelName != m.cfg.EmbedderModelName {
+		m.logger.Warn("Embedder model changed, forcing full re-index", "repo", event.RepoFullName, "old_model", repo.EmbedderModelName, "new_model", m.cfg.EmbedderModelName)
+		if err := m.vectorStore.DeleteCollection(ctx, repo.QdrantCollectionName); err != nil {
+			m.logger.Error("failed to delete old qdrant collection during re-index", "collection", repo.QdrantCollectionName, "error", err)
+		}
+		repo = nil // Treat it as a new clone
+	}
+
 	if repo == nil {
 		return m.handleInitialClone(ctx, event, token, clonePath)
 	}
 
-	// Use the path from the database for existing repos
 	return m.handleIncrementalUpdate(ctx, event, token, repo)
 }
 
@@ -84,14 +94,12 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 	}
 	m.cleanupRepoDir(clonePath)
 
-	// Use the git client to clone
 	gitRepo, err := m.gitClient.Clone(cloneCtx, event.RepoCloneURL, clonePath, token)
 	if err != nil {
 		m.cleanupRepoDir(clonePath)
 		return nil, err
 	}
 
-	// After cloning, checkout the specific commit for this event
 	if err := m.gitClient.Checkout(gitRepo, event.HeadSHA); err != nil {
 		m.cleanupRepoDir(clonePath)
 		return nil, err
@@ -103,12 +111,12 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 		return nil, fmt.Errorf("failed to list files after initial clone: %w", err)
 	}
 
-	// Create and save the new repository record
 	newRepo := &storage.Repository{
 		FullName:             event.RepoFullName,
 		ClonePath:            clonePath,
 		QdrantCollectionName: GenerateCollectionName(event.RepoFullName, m.cfg.EmbedderModelName),
-		LastIndexedSHA:       "", // Intentionally blank, will be set by caller after indexing
+		EmbedderModelName:    m.cfg.EmbedderModelName,
+		LastIndexedSHA:       "",
 	}
 	if err := m.store.CreateRepository(ctx, newRepo); err != nil {
 		m.cleanupRepoDir(clonePath)
@@ -122,14 +130,12 @@ func (m *manager) handleInitialClone(ctx context.Context, event *core.GitHubEven
 	}, nil
 }
 
-// This helper function is perfect as is.
 func (m *manager) cleanupRepoDir(path string) {
 	if err := os.RemoveAll(path); err != nil {
 		m.logger.Warn("failed to clean up repository directory", "path", path, "error", err)
 	}
 }
 
-// handleIncrementalUpdate manages fetching, diffing, and checking out updates.
 func (m *manager) handleIncrementalUpdate(ctx context.Context, event *core.GitHubEvent, token string, repo *storage.Repository) (*core.UpdateResult, error) {
 	m.logger.Info("existing repository found, performing incremental update", "repo", event.RepoFullName)
 
@@ -142,7 +148,6 @@ func (m *manager) handleIncrementalUpdate(ctx context.Context, event *core.GitHu
 		return nil, err
 	}
 
-	// Use the git client for all operations
 	if err := m.gitClient.Fetch(ctx, gitRepo, token); err != nil {
 		return nil, fmt.Errorf("failed to fetch repository updates: %w", err)
 	}
@@ -164,12 +169,10 @@ func (m *manager) handleIncrementalUpdate(ctx context.Context, event *core.GitHu
 	}, nil
 }
 
-// GetRepoRecord retrieves a repository's state from the database.
 func (m *manager) GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error) {
 	return m.store.GetRepositoryByFullName(ctx, repoFullName)
 }
 
-// UpdateRepoSHA updates the last indexed SHA for a repository after a successful sync.
 func (m *manager) UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error {
 	repo, err := m.store.GetRepositoryByFullName(ctx, repoFullName)
 	if err != nil {
@@ -201,25 +204,34 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 	return files, err
 }
 
-func (m *manager) getRepoFullName(repo *git.Repository, repoPath string) string {
-	remote, err := repo.Remote("origin")
+// getRepoFullName is a robust function to determine the 'owner/repo' name.
+func (m *manager) getRepoFullName(repo *git.Repository) (string, error) {
+	remotes, err := repo.Remotes()
 	if err != nil {
-		return filepath.Base(repoPath)
+		return "", fmt.Errorf("failed to get remotes: %w", err)
 	}
 
-	repoURL := remote.Config().URLs[0]
-	u, err := url.Parse(repoURL)
-	if err == nil && u.Scheme == "https" {
-		repoFullName := strings.TrimPrefix(u.Path, "/")
-		return strings.TrimSuffix(repoFullName, ".git")
+	// Iterate through all remotes to find a suitable URL (origin is preferred)
+	for _, remote := range remotes {
+		if len(remote.Config().URLs) == 0 {
+			continue
+		}
+		repoURL := remote.Config().URLs[0]
+
+		// Try parsing HTTPS URL
+		if u, err := url.Parse(repoURL); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
+			return strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git"), nil
+		}
+
+		// Try parsing SSH URL (e.g., git@github.com:owner/repo.git)
+		if strings.Contains(repoURL, "@") && strings.Contains(repoURL, ":") {
+			if parts := strings.Split(repoURL, ":"); len(parts) > 1 {
+				return strings.TrimSuffix(parts[1], ".git"), nil
+			}
+		}
 	}
 
-	// fallback to ssh url parsing
-	parts := strings.Split(repoURL, ":")
-	if len(parts) > 1 {
-		return strings.TrimSuffix(parts[1], ".git")
-	}
-	return filepath.Base(repoPath)
+	return "", errors.New("could not determine repository name from any git remote")
 }
 
 func (m *manager) handleLocalFullScan(ctx context.Context, repoPath, repoFullName, headSHA string) (*core.UpdateResult, error) {
@@ -234,6 +246,7 @@ func (m *manager) handleLocalFullScan(ctx context.Context, repoPath, repoFullNam
 			FullName:             repoFullName,
 			ClonePath:            repoPath,
 			QdrantCollectionName: GenerateCollectionName(repoFullName, m.cfg.EmbedderModelName),
+			EmbedderModelName:    m.cfg.EmbedderModelName,
 			LastIndexedSHA:       "",
 		}
 		if err := m.store.CreateRepository(ctx, newRepo); err != nil {
@@ -311,7 +324,23 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 	headSHA := head.Hash().String()
 
 	if repoFullName == "" {
-		repoFullName = m.getRepoFullName(gitRepo, repoPath)
+		repoRecordByPath, err := m.store.GetRepositoryByClonePath(ctx, repoPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query for existing repository by path: %w", err)
+		}
+
+		if repoRecordByPath != nil {
+			// We found a manually registered repo! Use its name.
+			m.logger.Info("Found registered repository matching path", "path", repoPath, "repo_name", repoRecordByPath.FullName)
+			repoFullName = repoRecordByPath.FullName
+		} else {
+			// Only if no registered path is found, fall back to guessing the name.
+			var nameErr error
+			repoFullName, nameErr = m.getRepoFullName(gitRepo)
+			if nameErr != nil {
+				return nil, fmt.Errorf("failed to automatically determine repo name: %w. Please use the --repo-full-name flag (e.g., --repo-full-name 'owner/repo')", nameErr)
+			}
+		}
 	}
 
 	if force {
@@ -321,6 +350,16 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 	repoRecord, err := m.store.GetRepositoryByFullName(ctx, repoFullName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query repository state: %w", err)
+	}
+
+	// This is the check for embedder model change for local scans.
+	if repoRecord != nil && repoRecord.EmbedderModelName != m.cfg.EmbedderModelName {
+		m.logger.Warn("Embedder model changed for local repo, forcing full re-scan", "repo", repoFullName, "old_model", repoRecord.EmbedderModelName, "new_model", m.cfg.EmbedderModelName)
+		if err := m.vectorStore.DeleteCollection(ctx, repoRecord.QdrantCollectionName); err != nil {
+			m.logger.Error("failed to delete old qdrant collection during re-scan", "collection", repoRecord.QdrantCollectionName, "error", err)
+		}
+		// By forcing a full scan, a new record will be created.
+		return m.handleLocalFullScan(ctx, repoPath, repoFullName, headSHA)
 	}
 
 	if repoRecord == nil {

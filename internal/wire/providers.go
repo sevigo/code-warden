@@ -45,7 +45,7 @@ var AppSet = wire.NewSet(
 	provideLoggerConfig,
 	provideLogWriter,
 	provideDBConfig,
-	provideDefaultSlogLogger,
+	provideSlogLogger,
 )
 
 func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
@@ -124,16 +124,32 @@ func provideLoggerConfig(cfg *config.Config) logger.Config {
 	return cfg.LoggerConfig
 }
 
-func provideLogWriter() io.Writer {
-	return os.Stdout
-}
-
 func provideDBConfig(cfg *config.Config) *config.DBConfig {
 	return cfg.Database
 }
 
-func provideDefaultSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logger {
-	l := logger.NewLogger(loggerConfig, writer)
-	slog.SetDefault(l)
-	return l
+// provideLogWriter creates the log output destination based on the server's configuration.
+// This will be the default for the server app.
+func provideLogWriter(cfg *config.Config) io.Writer {
+	switch cfg.LoggerConfig.Output {
+	case "stdout":
+		return os.Stdout
+	case "stderr":
+		return os.Stderr
+	case "file":
+		logFile, err := os.OpenFile("code-warden.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+		if err != nil {
+			fmt.Printf("Failed to open log file, logging to stderr: %v\n", err)
+			return os.Stderr
+		}
+
+		return logFile
+	default:
+		// Default to stdout if the config is invalid.
+		return os.Stdout
+	}
+}
+
+func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logger {
+	return logger.NewLogger(loggerConfig, writer)
 }
