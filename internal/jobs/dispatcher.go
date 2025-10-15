@@ -73,7 +73,6 @@ func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core
 	defer func() {
 		if r := recover(); r != nil {
 			d.logger.Error("panic recovered in review job", "panic", r, "repo", event.RepoFullName)
-			// TODO: update the GitHub check run to "failed" here.
 		}
 	}()
 

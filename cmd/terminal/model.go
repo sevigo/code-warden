@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sevigo/code-warden/internal/app"
@@ -32,50 +32,49 @@ const asciiLogo = `
 `
 
 type model struct {
-	styles styles
-	app    *app.App
-
-	// UI Components
-	viewport  viewport.Model
-	textarea  textarea.Model
-	spinner   spinner.Model
-	progress  progress.Model
+	styles    styles
+	app       *app.App
 	isLoading bool
 
-	// Session State
-	repoPath       string
-	repoFullName   string // Store the full name for status display
-	collectionName string
-	isScanned      bool
-	history        []string
-	showLogo       bool
+	// UI Components
+	viewport viewport.Model
+	textarea textarea.Model
+	spinner  spinner.Model
+	renderer *glamour.TermRenderer
 
-	availableRepos []*storage.Repository
+	// --- REFACTORED STATE MANAGEMENT ---
+	availableRepos      []*storage.Repository
+	selectedRepo        *storage.Repository
+	history             []string // For display
+	conversationHistory []string // For LLM context
 }
 
 func initialModel(theme ThemeName) *model {
 	styles := GetTheme(theme)
 	ta := textarea.New()
-	ta.Placeholder = "Enter command or ask about code..."
+	ta.Placeholder = "Enter a command or ask a question..."
 	ta.Focus()
 	ta.Prompt = styles.prompt.Render("► ")
-	ta.CharLimit = 500
-	ta.SetWidth(50)
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
 
-	sp := spinner.New()
-	sp.Spinner = spinner.Points
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("51"))
-	pr := progress.New(progress.WithDefaultGradient())
+	sp := spinner.New(spinner.WithSpinner(spinner.Points), spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("51"))))
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(100),
+	)
+	if err != nil {
+		fmt.Println("Error creating markdown renderer:", err)
+		os.Exit(1)
+	}
 
 	return &model{
 		styles:    styles,
 		textarea:  ta,
 		spinner:   sp,
-		progress:  pr,
 		isLoading: true,
-		showLogo:  true,
+		renderer:  renderer,
 		history:   []string{styles.ascii.Render(asciiLogo), "", "⚙ INITIALIZING CODE-WARDEN NEURAL NETWORK..."},
 	}
 }
@@ -85,15 +84,17 @@ func (m *model) Init() tea.Cmd {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var (
-		tiCmd tea.Cmd
-		vpCmd tea.Cmd
-		spCmd tea.Cmd
-	)
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
 
-	m.textarea, tiCmd = m.textarea.Update(msg)
-	m.viewport, vpCmd = m.viewport.Update(msg)
-	m.spinner, spCmd = m.spinner.Update(msg)
+	m.textarea, cmd = m.textarea.Update(msg)
+	cmds = append(cmds, cmd)
+
+	m.viewport, cmd = m.viewport.Update(msg)
+	cmds = append(cmds, cmd)
+
+	m.spinner, cmd = m.spinner.Update(msg)
+	cmds = append(cmds, cmd)
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -102,115 +103,79 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyEnter:
 			input := strings.TrimSpace(m.textarea.Value())
-			if input == "" {
-				return m, nil
+			if input != "" {
+				m.textarea.Reset()
+				return m, m.processCommand(input)
 			}
-
-			m.textarea.Reset()
-			return m, m.processCommand(input)
 		}
 
 	case appInitializedMsg:
 		m.isLoading = false
 		if msg.err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR initializing app: %v\n", msg.err)
-			m.history = append(m.history, "", m.styles.error.Render(msg.err.Error()))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return m, nil
+			m.history = append(m.history, m.styles.error.Render(msg.err.Error()))
+		} else {
+			m.app = msg.app
+			return m, loadReposCmd(m.app)
 		}
-		m.app = msg.app
-		// After app is initialized, immediately load the repositories.
-		return m, loadReposCmd(m.app)
 
 	case reposLoadedMsg:
+		m.availableRepos = msg.repos
 		if msg.err != nil {
-			m.history = append(m.history, "", m.styles.error.Render("Could not load repositories: "+msg.err.Error()))
+			m.history = append(m.history, m.styles.error.Render("Could not load repositories: "+msg.err.Error()))
 		} else {
-			m.availableRepos = msg.repos
-			m.history = append(m.history, "", m.styles.success.Render("✓ SYSTEM ONLINE"))
-
-			if len(m.availableRepos) == 1 {
-				// Automatically select the only available repository.
-				autoSelectCmd := fmt.Sprintf("/select %s", m.availableRepos[0].FullName)
-				m.history = append(m.history, "", m.styles.command.Render(fmt.Sprintf("→ Automatically selecting the only available repository: %s", m.availableRepos[0].FullName)))
-				m.viewport.SetContent(strings.Join(m.history, "\n"))
-				m.viewport.GotoBottom()
-				return m, m.processCommand(autoSelectCmd)
-			} else if len(m.availableRepos) > 1 {
-				m.history = append(m.history, "", m.styles.inactive.Render(fmt.Sprintf("%d repositories found. Use '/list' to see them or '/select [name]' to select one.", len(m.availableRepos))))
+			if !m.isLoading {
+				m.history = append(m.history, m.styles.success.Render("✓ SYSTEM ONLINE"))
+			}
+			if len(m.availableRepos) == 1 && m.selectedRepo == nil {
+				return m, m.processCommand(fmt.Sprintf("/select %s", m.availableRepos[0].FullName))
 			}
 		}
-		m.history = append(m.history, "", "Type /help for commands or ask a question about your code.")
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		return m, nil
+		m.history = append(m.history, m.styles.inactive.Render("Type /help for commands."))
 
 	case repoAddedMsg:
-		m.isLoading = false
+		m.isLoading = true // Start loading for the scan
 		if msg.err != nil {
-			// Check for "already registered" error specifically
-			if strings.Contains(msg.err.Error(), "is already registered") {
-				m.history = append(m.history, "", m.styles.inactive.Render("INFO: "+msg.err.Error()))
-			} else {
-				m.history = append(m.history, "", m.styles.error.Render("ERROR: "+msg.err.Error()))
-			}
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return m, loadReposCmd(m.app) // Reload repos but do not scan
+			m.isLoading = false
+			m.history = append(m.history, m.styles.inactive.Render("INFO: "+msg.err.Error()))
+			return m, loadReposCmd(m.app)
 		}
-
-		// On successful add, immediately trigger a scan.
-		successMsg := fmt.Sprintf("✅ REPO REGISTERED: %s", msg.repoFullName)
-		m.history = append(m.history, "", m.styles.success.Render(successMsg), m.styles.command.Render("→ Starting initial scan... (this may take a while)"))
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		m.isLoading = true
-		// Call scanRepoCmd with force=true for initial scan
+		m.history = append(m.history, m.styles.success.Render(fmt.Sprintf("✅ REPO REGISTERED: %s", msg.repoFullName)), m.styles.command.Render("→ Starting initial scan..."))
 		return m, tea.Batch(m.spinner.Tick, scanRepoCmd(m.app, msg.repoPath, msg.repoFullName, true))
 
 	case scanCompleteMsg:
 		m.isLoading = false
 		if msg.err != nil {
-			fmt.Fprintf(os.Stderr, "SCAN FAILED: %v\n", msg.err)
-			m.history = append(m.history, "", m.styles.error.Render("SCAN FAILED: "+msg.err.Error()))
+			m.history = append(m.history, m.styles.error.Render("SCAN FAILED: "+msg.err.Error()))
 		} else {
-			m.isScanned = true
-			m.repoPath = msg.repoPath
-			m.repoFullName = msg.repoFullName
-			m.collectionName = msg.collectionName
-			m.history = append(m.history, "", m.styles.success.Render(fmt.Sprintf("✓ REPO INDEXED: %s", msg.repoFullName)))
-			// Automatically select the newly scanned repo
-			m.history = append(m.history, m.styles.command.Render(fmt.Sprintf("→ Context automatically set to %s. Ready for questions.", msg.repoFullName)))
+			m.history = append(m.history, m.styles.success.Render(fmt.Sprintf("✓ REPO INDEXED: %s", msg.repoFullName)))
+			return m, tea.Batch(loadReposCmd(m.app), func() tea.Msg {
+				return tea.KeyMsg{Type: tea.KeyEnter, Runes: []rune(fmt.Sprintf("/select %s", msg.repoFullName))}
+			})
 		}
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		// After a scan, reload the repo list to reflect new state.
-		return m, loadReposCmd(m.app)
 
-	case answerChunkMsg:
+	case answerCompleteMsg:
 		m.isLoading = false
-		m.history[len(m.history)-1] += string(msg)
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
+		formattedAnswer, err := m.renderer.Render(msg.content)
+		if err != nil {
+			formattedAnswer = msg.content
+		}
+
+		m.history[len(m.history)-1] = formattedAnswer
+		m.conversationHistory = append(m.conversationHistory, fmt.Sprintf("AI: %s", msg.content))
 
 	case errorMsg:
 		m.isLoading = false
-		fmt.Fprintf(os.Stderr, "ERROR: %v\n", msg.err)
-		m.history = append(m.history, "", m.styles.error.Render("⚠ "+msg.err.Error()))
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		return m, nil
+		m.history = append(m.history, m.styles.error.Render("⚠ "+msg.err.Error()))
 
 	case tea.WindowSizeMsg:
-		m.styles.header.Width(msg.Width - 4)
-		m.viewport.Width = msg.Width - 4
-		m.viewport.Height = msg.Height - 10
-		m.textarea.SetWidth(msg.Width - 10)
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
+		m.viewport.Width = msg.Width - 2
+		m.viewport.Height = msg.Height - 8
+		m.textarea.SetWidth(msg.Width - 2)
 	}
 
-	return m, tea.Batch(tiCmd, vpCmd, spCmd)
+	m.viewport.SetContent(strings.Join(m.history, "\n"))
+	m.viewport.GotoBottom()
+	return m, tea.Batch(cmds...)
 }
 
 func (m *model) View() string {
@@ -219,220 +184,137 @@ func (m *model) View() string {
 	}
 
 	var statusParts []string
-	if m.repoFullName != "" {
-		statusParts = append(statusParts, fmt.Sprintf("REPO: %s", m.repoFullName))
+	if m.selectedRepo != nil {
+		statusParts = append(statusParts, fmt.Sprintf("REPO: %s", m.selectedRepo.FullName))
+		if len(m.selectedRepo.LastIndexedSHA) >= 7 {
+			statusParts = append(statusParts, fmt.Sprintf("COMMIT: %s", m.selectedRepo.LastIndexedSHA[:7]))
+		}
 	} else {
 		statusParts = append(statusParts, "REPO: None Selected")
 	}
-
-	if m.isScanned {
-		statusParts = append(statusParts, m.styles.success.Render("● INDEXED"))
-	} else {
-		statusParts = append(statusParts, m.styles.inactive.Render("○ NOT INDEXED"))
-	}
-
-	if m.app != nil && m.app.Cfg != nil {
-		llmProvider := m.app.Cfg.LLMProvider
-		embedProvider := m.app.Cfg.EmbedderProvider
-		statusParts = append(statusParts, fmt.Sprintf("🤖 %s (%s)", m.app.Cfg.GeneratorModelName, llmProvider))
-		statusParts = append(statusParts, fmt.Sprintf("⚙️ %s (%s)", m.app.Cfg.EmbedderModelName, embedProvider))
-	}
-
-	if m.isScanned && m.repoFullName != "" {
-		var currentRepo *storage.Repository
-		for _, r := range m.availableRepos {
-			if r.FullName == m.repoFullName {
-				currentRepo = r
-				break
-			}
-		}
-		if currentRepo != nil && len(currentRepo.LastIndexedSHA) >= 7 {
-			statusParts = append(statusParts, fmt.Sprintf("COMMIT: %s", currentRepo.LastIndexedSHA[:7]))
-		}
-	}
-
 	status := m.styles.inactive.Render(strings.Join(statusParts, " │ "))
 
-	var loadingIndicator string
+	loadingIndicator := ""
 	if m.isLoading {
 		loadingIndicator = " " + m.spinner.View() + " " + m.styles.success.Render("PROCESSING...")
 	}
 
 	return m.styles.app.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
-			m.styles.viewport.Render(m.viewport.View()),
+			m.viewport.View(),
 			"",
-			m.styles.footer.Render(
-				lipgloss.JoinHorizontal(lipgloss.Left,
-					m.textarea.View(),
-					loadingIndicator,
-				),
-			),
-			status,
+			m.textarea.View(),
+			lipgloss.JoinHorizontal(lipgloss.Left, status, loadingIndicator),
 		),
 	)
 }
 
 func (m *model) processCommand(input string) tea.Cmd {
 	m.history = append(m.history, m.styles.prompt.Render("► ")+input)
-	m.viewport.SetContent(strings.Join(m.history, "\n"))
-	m.viewport.GotoBottom()
 
 	parts := strings.Fields(input)
-	if len(parts) == 0 {
-		return nil
-	}
 	command := parts[0]
 	args := parts[1:]
 
 	switch command {
+	case "/add":
+		if len(args) != 2 {
+			m.history = append(m.history, m.styles.error.Render("USAGE: /add [name] [path_to_repo]"))
+			return nil
+		}
+		m.isLoading = true
+		m.history = append(m.history, m.styles.command.Render(fmt.Sprintf("→ Registering %s...", args[0])))
+		return tea.Batch(m.spinner.Tick, addRepoCmd(m.app, args[0], args[1]))
+
+	case "/list", "/ls":
+		var b strings.Builder
+		b.WriteString(m.styles.success.Render("AVAILABLE REPOSITORIES:"))
+		for _, repo := range m.availableRepos {
+			status := " "
+			if m.selectedRepo != nil && repo.FullName == m.selectedRepo.FullName {
+				status = m.styles.success.Render(" ●")
+			}
+			b.WriteString(fmt.Sprintf("\n  - %s (%s)%s", m.styles.prompt.Render(repo.FullName), repo.ClonePath, status))
+		}
+		m.history = append(m.history, b.String())
+		return nil
+
 	case "/select":
 		if len(args) != 1 {
 			m.history = append(m.history, m.styles.error.Render("USAGE: /select [name]"))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
 			return nil
 		}
-		repoName := args[0]
-		var foundRepo *storage.Repository
-		for i := range m.availableRepos {
-			if m.availableRepos[i].FullName == repoName {
-				foundRepo = m.availableRepos[i]
-				break
+		for _, repo := range m.availableRepos {
+			if repo.FullName == args[0] {
+				m.selectedRepo = repo
+				m.history = append(m.history, m.styles.success.Render(fmt.Sprintf("✓ Context set to: %s", args[0])))
+				m.conversationHistory = nil // Reset history on repo switch
+				return nil
 			}
 		}
-
-		if foundRepo == nil {
-			m.history = append(m.history, m.styles.error.Render(fmt.Sprintf("Repository '%s' not found. Use /list to see available repositories.", repoName)))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return nil
-		}
-
-		m.repoPath = foundRepo.ClonePath
-		m.repoFullName = foundRepo.FullName
-		m.collectionName = foundRepo.QdrantCollectionName
-		m.isScanned = true // Assume if it's in the DB, it has been scanned at least once
-
-		m.history = append(m.history, m.styles.success.Render(fmt.Sprintf("✓ Context set to repository: %s", repoName)))
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
+		m.history = append(m.history, m.styles.error.Render(fmt.Sprintf("Repository '%s' not found.", args[0])))
 		return nil
-
-	case "/list", "/ls":
-		if len(m.availableRepos) == 0 {
-			m.history = append(m.history, m.styles.inactive.Render("No repositories have been added yet. Use '/add [name] [path]' to get started."))
-		} else {
-			var b strings.Builder
-			b.WriteString(m.styles.success.Render("AVAILABLE REPOSITORIES:"))
-			for _, repo := range m.availableRepos {
-				status := m.styles.inactive.Render("○ Not selected")
-				if repo.FullName == m.repoFullName {
-					status = m.styles.success.Render("● Selected")
-				}
-				b.WriteString(fmt.Sprintf("\n  - %s (%s) [%s]", m.styles.prompt.Render(repo.FullName), repo.ClonePath, status))
-			}
-			b.WriteString("\n\n" + m.styles.inactive.Render("Use '/select [name]' to switch context."))
-			m.history = append(m.history, b.String())
-		}
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		return nil
-
-	case "/add":
-		if len(args) != 2 {
-			m.history = append(m.history, "", m.styles.error.Render("USAGE: /add [name] [path_to_repo]"))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return nil
-		}
-		m.isLoading = true
-		m.history = append(m.history, "", m.styles.command.Render(fmt.Sprintf("→ Registering repository %s...", args[0])))
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		return tea.Batch(m.spinner.Tick, addRepoCmd(m.app, args[0], args[1]))
 
 	case "/rescan":
-		if len(args) != 1 {
-			m.history = append(m.history, "", m.styles.error.Render("USAGE: /rescan [name]"))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
+		var repoName string
+		if len(args) == 1 {
+			repoName = args[0]
+		} else if m.selectedRepo != nil {
+			repoName = m.selectedRepo.FullName
+		} else {
+			m.history = append(m.history, m.styles.error.Render("USAGE: /rescan [name] or select a repo first"))
 			return nil
 		}
-		repoName := args[0]
-		var foundRepo *storage.Repository
+
 		for _, repo := range m.availableRepos {
 			if repo.FullName == repoName {
-				foundRepo = repo
-				break
+				m.isLoading = true
+				m.history = append(m.history, m.styles.command.Render(fmt.Sprintf("→ Re-scanning %s for updates...", repoName)))
+				return tea.Batch(m.spinner.Tick, scanRepoCmd(m.app, repo.ClonePath, repoName, false))
 			}
 		}
+		m.history = append(m.history, m.styles.error.Render(fmt.Sprintf("Repository '%s' not found.", repoName)))
+		return nil
 
-		if foundRepo == nil {
-			m.history = append(m.history, m.styles.error.Render(fmt.Sprintf("Repository '%s' not found.", repoName)))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return nil
-		}
-		m.isLoading = true
-		m.history = append(m.history, "", m.styles.command.Render(fmt.Sprintf("→ Re-scanning repository %s for updates...", repoName)))
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		// force=false for an incremental update
-		return tea.Batch(m.spinner.Tick, scanRepoCmd(m.app, foundRepo.ClonePath, repoName, false))
-
-	case "/question", "/q":
-		if !m.isScanned {
-			m.history = append(m.history, "", m.styles.error.Render("No repository is selected. Use '/list' and '/select [name]' first."))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return nil
-		}
-		if len(args) < 1 {
-			m.history = append(m.history, "", m.styles.error.Render("USAGE: /question [your question]"))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return nil
-		}
-		m.isLoading = true
-		m.history = append(m.history, "", m.styles.command.Render("→ ANALYZING... "))
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		return tea.Batch(m.spinner.Tick, answerQuestionCmd(m.app, m.collectionName, strings.Join(args, " ")))
+	case "/new", "/reset":
+		m.conversationHistory = nil
+		m.history = append(m.history, m.styles.inactive.Render("🧹 Conversation history cleared."))
+		return nil
 
 	case "/help", "/h":
-		helpText := m.styles.success.Render("AVAILABLE COMMANDS:") + `
-
-  /add [name] [path]   Register a local repository and scan it.
-  /list, /ls           List all registered repositories.
-  /select [name]       Set the active repository context for questions.
-  /rescan [name]       Re-scan an existing repository for updates.
-  /question [text]     Ask about the code (or just type your question).
+		helpText := m.styles.success.Render("COMMANDS:") + `
+  /add [name] [path]   Register & scan a local repository.
+  /list, /ls           List all available repositories.
+  /select [name]       Set the active repository for questions.
+  /rescan [name?]      Re-scan a repo for updates (defaults to selected).
+  /new                 Start a new conversation.
   /help                Show this help message.
-  /exit, /quit         Exit Code-Warden.
-
-  ` + m.styles.inactive.Render("TIP: Once a repository is selected, you can ask questions directly without /question")
-		m.history = append(m.history, "", helpText)
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
+  /exit, /quit         Exit the application.`
+		m.history = append(m.history, helpText)
 		return nil
 
 	case "/exit", "/quit":
 		return tea.Quit
 
-	default:
-		// Default action is to treat the input as a question if a repo is selected
-		if m.isScanned {
-			m.isLoading = true
-			m.history = append(m.history, "", m.styles.command.Render("→ ANALYZING... "))
-			m.viewport.SetContent(strings.Join(m.history, "\n"))
-			m.viewport.GotoBottom()
-			return tea.Batch(m.spinner.Tick, answerQuestionCmd(m.app, m.collectionName, input))
+	default: // Treat as a question
+		if m.selectedRepo == nil {
+			m.history = append(m.history, m.styles.error.Render("No repository selected. Use /select [name] first."))
+			return nil
 		}
-		// Otherwise, it's an unknown command
-		m.history = append(m.history, "", m.styles.error.Render(fmt.Sprintf("UNKNOWN COMMAND: %s", command)), m.styles.inactive.Render("Type /help for assistance. If you want to ask a question, select a repository first with /select."))
-		m.viewport.SetContent(strings.Join(m.history, "\n"))
-		m.viewport.GotoBottom()
-		return nil
+		question := input
+		m.conversationHistory = append(m.conversationHistory, fmt.Sprintf("User: %s", question))
+		m.isLoading = true
+		m.history = append(m.history, m.styles.command.Render("→ ANALYZING... "))
+
+		return tea.Batch(
+			m.spinner.Tick,
+			answerQuestionCmd(
+				m.app,
+				m.selectedRepo.QdrantCollectionName,
+				m.selectedRepo.EmbedderModelName,
+				question,
+				m.conversationHistory,
+			),
+		)
 	}
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -60,7 +61,15 @@ func LoadConfig() (*Config, error) {
 
 	setDefaults(v)
 
-	_ = loadEnvFile(v)
+	if err := loadEnvFile(v); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Info("No .env file found. Using environment variables and defaults.")
+		} else {
+			slog.Error("Failed to read .env file", "error", err)
+		}
+	} else {
+		slog.Info("Successfully loaded configuration from .env file.")
+	}
 
 	v.AutomaticEnv()
 
@@ -100,7 +109,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("LOG_OUTPUT", "stdout")
 	v.SetDefault("OLLAMA_HOST", "http://localhost:11434")
 	v.SetDefault("QDRANT_HOST", "localhost:6334")
-	v.SetDefault("GENERATOR_MODEL_NAME", "gemma3:latest")
+	v.SetDefault("GENERATOR_MODEL_NAME", "xxx")
 	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text")
 	v.SetDefault("MAX_WORKERS", 5)
 	v.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
@@ -125,12 +134,7 @@ func setDefaults(v *viper.Viper) {
 func loadEnvFile(v *viper.Viper) error {
 	v.SetConfigFile(".env")
 	v.AddConfigPath(".")
-	if err := v.MergeInConfig(); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("failed to read config file: %w", err)
-		}
-	}
-	return nil
+	return v.ReadInConfig()
 }
 
 func (c *Config) ValidateForServer() error {

@@ -78,16 +78,32 @@ var scanCmd = &cobra.Command{
 
 		// 4. Update the vector store with the changes
 		slog.Info("Updating vector store", "collection", collectionName, "is_full_scan", updateResult.IsInitialClone)
+
 		switch {
 		case updateResult.IsInitialClone:
 			slog.Info("Performing initial full indexing")
-			err = app.RAGService.SetupRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath)
+			err = app.RAGService.SetupRepoContext(
+				ctx,
+				repoConfig,
+				collectionName,
+				repoRecord.EmbedderModelName,
+				updateResult.RepoPath,
+			)
+
 		case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
 			slog.Info("Performing incremental indexing",
 				"add_or_update", len(updateResult.FilesToAddOrUpdate),
 				"delete", len(updateResult.FilesToDelete),
 			)
-			err = app.RAGService.UpdateRepoContext(ctx, repoConfig, collectionName, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
+			err = app.RAGService.UpdateRepoContext(
+				ctx,
+				repoConfig,
+				repoRecord,
+				updateResult.RepoPath,
+				updateResult.FilesToAddOrUpdate,
+				updateResult.FilesToDelete,
+			)
+
 		default:
 			slog.Info("No file changes detected, skipping vector store update.")
 		}
