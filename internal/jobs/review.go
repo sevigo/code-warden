@@ -6,11 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -20,7 +16,11 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// ReviewJob performs AI-assisted code reviews.
+var (
+	ErrConfigNotFound = errors.New("config file not found")
+	ErrConfigParsing  = errors.New("config parsing failed")
+)
+
 type ReviewJob struct {
 	cfg         *config.Config
 	ragService  llm.RAGService
@@ -79,32 +79,27 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) (err error) {
 	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
-	// Setup the review environment.
 	reviewEnv, err := j.setupReviewEnvironment(ctx, event)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		if err != nil {
-			// If any subsequent step fails, update the GitHub check run to failure.
 			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
 		}
 	}()
 
-	// Process repository changes (indexing) and generate the AI review.
 	rawReviewJSON, err := j.processRepository(ctx, event, reviewEnv)
 	if err != nil {
 		return err
 	}
 
-	// Post the review to GitHub and mark the job as complete.
 	return j.completeReview(ctx, event, reviewEnv, rawReviewJSON)
 }
 
-// reviewEnvironment holds all resources needed for a single review job.
 type reviewEnvironment struct {
 	ghClient      github.Client
-	repo          *storage.Repository // Contains collection name, embedder model, etc.
+	repo          *storage.Repository
 	statusUpdater github.StatusUpdater
 	checkRunID    int64
 	updateResult  *core.UpdateResult
@@ -150,11 +145,10 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		return "", err
 	}
 
-	// The RAGService is expected to take the full repository object.
 	structuredReview, rawReviewJSON, err := j.ragService.GenerateReview(
 		ctx,
 		env.repoConfig,
-		env.repo, // Pass the entire repo object
+		env.repo,
 		event,
 		env.ghClient,
 	)
@@ -228,8 +222,6 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *cor
 	return nil
 }
 
-// --- Utility and Other Functions ---
-
 func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, title, summary string) (github.Client, string, github.StatusUpdater, int64, error) {
 	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
 	if err != nil {
@@ -298,13 +290,8 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 	return nil
 }
 
-var (
-	ErrConfigNotFound = errors.New("config file not found")
-	ErrConfigParsing  = errors.New("config parsing failed")
-)
-
 func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *core.RepoConfig {
-	repoConfig, configErr := j.loadRepoConfig(repoPath)
+	repoConfig, configErr := config.LoadRepoConfig(repoPath)
 	if configErr != nil {
 		if errors.Is(configErr, ErrConfigNotFound) {
 			j.logger.Info("no .code-warden.yml found, using defaults", "repo", repoFullName)
@@ -314,20 +301,4 @@ func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *cor
 		return core.DefaultRepoConfig()
 	}
 	return repoConfig
-}
-
-func (j *ReviewJob) loadRepoConfig(repoPath string) (*core.RepoConfig, error) {
-	configPath := filepath.Join(repoPath, ".code-warden.yml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return core.DefaultRepoConfig(), ErrConfigNotFound
-		}
-		return nil, fmt.Errorf("failed to read .code-warden.yml: %w", err)
-	}
-	config := core.DefaultRepoConfig()
-	if err := yaml.Unmarshal(data, config); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrConfigParsing, err)
-	}
-	return config, nil
 }

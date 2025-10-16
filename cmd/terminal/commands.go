@@ -2,15 +2,13 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/stretchr/testify/assert/yaml"
 
 	"github.com/sevigo/code-warden/internal/app"
+	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -33,28 +31,6 @@ func initializeAppCmd() tea.Cmd {
 	}
 }
 
-var (
-	ErrConfigNotFound = errors.New("config file not found")
-	ErrConfigParsing  = errors.New("config parsing failed")
-)
-
-// loadRepoConfig loads and parses the .code-warden.yml file from a repository path.
-func loadRepoConfig(repoPath string) (*core.RepoConfig, error) {
-	configPath := filepath.Join(repoPath, ".code-warden.yml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return core.DefaultRepoConfig(), ErrConfigNotFound
-		}
-		return nil, fmt.Errorf("failed to read .code-warden.yml: %w", err)
-	}
-	config := core.DefaultRepoConfig()
-	if err := yaml.Unmarshal(data, config); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrConfigParsing, err)
-	}
-	return config, nil
-}
-
 func scanRepoCmd(app *app.App, path, repoFullName string, force bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
@@ -63,7 +39,7 @@ func scanRepoCmd(app *app.App, path, repoFullName string, force bool) tea.Cmd {
 			return errorMsg{err}
 		}
 
-		repoConfig, err := loadRepoConfig(updateResult.RepoPath)
+		repoConfig, err := config.LoadRepoConfig(updateResult.RepoPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				app.Logger.Info("no .code-warden.yml found, using defaults", "repo", updateResult.RepoFullName)
