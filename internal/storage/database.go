@@ -84,8 +84,8 @@ func (s *postgresStore) GetLatestReviewForPR(ctx context.Context, repoFullName s
 // CreateRepository inserts a new repository record into the database.
 func (s *postgresStore) CreateRepository(ctx context.Context, repo *Repository) error {
 	query := `
-		INSERT INTO repositories (full_name, clone_path, qdrant_collection_name, last_indexed_sha) 
-		VALUES (:full_name, :clone_path, :qdrant_collection_name, :last_indexed_sha) 
+		INSERT INTO repositories (full_name, clone_path, qdrant_collection_name, embedder_model_name, last_indexed_sha) 
+		VALUES (:full_name, :clone_path, :qdrant_collection_name, :embedder_model_name, :last_indexed_sha) 
 		RETURNING id, created_at, updated_at`
 	stmt, err := s.db.PrepareNamedContext(ctx, query)
 	if err != nil {
@@ -98,7 +98,7 @@ func (s *postgresStore) CreateRepository(ctx context.Context, repo *Repository) 
 // GetRepositoryByFullName retrieves a repository by its full name.
 func (s *postgresStore) GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error) {
 	query := `
-SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, created_at, updated_at 
+SELECT id, full_name, clone_path, qdrant_collection_name, embedder_model_name, last_indexed_sha, created_at, updated_at 
 FROM repositories 
 WHERE full_name = $1`
 	var repo Repository
@@ -156,7 +156,7 @@ func (s *postgresStore) GetAllReviewsForPR(ctx context.Context, repoFullName str
 // GetAllRepositories retrieves all non-deleted repositories from the database.
 func (s *postgresStore) GetAllRepositories(ctx context.Context) ([]*Repository, error) {
 	query := `
-		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, created_at, updated_at
+		SELECT id, full_name, clone_path, qdrant_collection_name, embedder_model_name, last_indexed_sha, created_at, updated_at
 		FROM repositories
 		ORDER BY full_name ASC`
 
@@ -171,9 +171,10 @@ func (s *postgresStore) GetAllRepositories(ctx context.Context) ([]*Repository, 
 // GetRepositoryByClonePath retrieves a repository by its local clone path.
 func (s *postgresStore) GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error) {
 	query := `
-SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, embedder_model_name, created_at, updated_at
-FROM repositories
-WHERE clone_path = $1`
+		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, embedder_model_name, created_at, updated_at
+		FROM repositories
+		WHERE clone_path = $1`
+
 	var repo Repository
 	err := s.db.GetContext(ctx, &repo, query, clonePath)
 	if err != nil {

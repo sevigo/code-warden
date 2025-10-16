@@ -22,7 +22,15 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	loggerConfig := provideLoggerConfig(configConfig)
 	writer := provideLogWriter(configConfig)
 	logger := provideSlogLogger(loggerConfig, writer)
-	appApp, cleanup, err := app.NewApp(ctx, configConfig, logger)
+	model, err := provideGeneratorLLM(ctx, configConfig, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	embedder, err := provideEmbedder(ctx, configConfig, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	appApp, cleanup, err := app.NewApp(ctx, configConfig, model, embedder, logger)
 	if err != nil {
 		return nil, nil, err
 	}

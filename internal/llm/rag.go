@@ -26,17 +26,18 @@ import (
 
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
-	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string) error
-	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string, filesToProcess, filesToDelete []string) error
-	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
+	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, embedderModelName, repoPath string) error
+	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
+	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
-	AnswerQuestion(ctx context.Context, collectionName, question string) (string, error)
+	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 }
 
 type ragService struct {
 	cfg            *config.Config
 	promptMgr      *PromptManager
 	vectorStore    storage.VectorStore
+	store          storage.Store
 	generatorLLM   llms.Model
 	parserRegistry parsers.ParserRegistry
 	logger         *slog.Logger
@@ -48,6 +49,7 @@ func NewRAGService(
 	cfg *config.Config,
 	promptMgr *PromptManager,
 	vs storage.VectorStore,
+	dbStore storage.Store,
 	gen llms.Model,
 	pr parsers.ParserRegistry,
 	logger *slog.Logger,
@@ -56,6 +58,7 @@ func NewRAGService(
 		cfg:            cfg,
 		promptMgr:      promptMgr,
 		vectorStore:    vs,
+		store:          dbStore,
 		generatorLLM:   gen,
 		parserRegistry: pr,
 		logger:         logger,
@@ -63,9 +66,12 @@ func NewRAGService(
 }
 
 // SetupRepoContext processes a repository for the first time, storing all its embeddings.
-func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string) error {
-	r.logger.Info("performing initial full indexing of repository via streaming", "path", repoPath, "collection", collectionName)
-
+func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, embedderModelName, repoPath string) error {
+	r.logger.Info("performing initial full indexing of repository",
+		"path", repoPath,
+		"collection", collectionName,
+		"embedder", embedderModelName,
+	)
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -97,15 +103,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		}
 		totalDocsFound.Add(int64(len(docs)))
 
-		err := r.vectorStore.AddDocumentsBatch(ctx, collectionName, docs, func(processed, total int, duration time.Duration) {
-			r.logger.Info("batch indexing progress",
-				"collection", collectionName,
-				"batch_processed", processed,
-				"batch_total", total,
-				"total_docs_processed", totalProcessed.Load()+int64(processed),
-				"duration", duration.Round(time.Millisecond),
-			)
-		})
+		err := r.vectorStore.AddDocumentsBatch(ctx, collectionName, embedderModelName, docs, nil)
 		if err != nil {
 			return fmt.Errorf("failed to add document batch to vector store: %w", err)
 		}
@@ -135,7 +133,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 }
 
 // UpdateRepoContext incrementally updates the vector store based on file changes.
-func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, repoPath string, filesToProcess, filesToDelete []string) error {
+func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -151,16 +149,17 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	filesToDelete = filterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
 
 	r.logger.Info("updating repository context after filtering",
-		"collection", collectionName,
+		"collection", repo.QdrantCollectionName,
 		"process", len(filesToProcess),
 		"delete", len(filesToDelete),
 		"exclude_dirs", finalExcludeDirs,
-		"exclude_exts", repoConfig.ExcludeExts)
+		"exclude_exts", repoConfig.ExcludeExts,
+	)
 
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
 		r.logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
-		if err := r.vectorStore.DeleteDocuments(ctx, collectionName, filesToDelete); err != nil {
+		if err := r.vectorStore.DeleteDocuments(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete); err != nil {
 			r.logger.Error("failed to delete some embeddings", "error", err)
 		}
 	}
@@ -205,7 +204,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 
 	if len(allDocs) > 0 {
 		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
-		if err := r.vectorStore.AddDocumentsBatch(ctx, collectionName, allDocs, nil); err != nil {
+		if err := r.vectorStore.AddDocumentsBatch(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, allDocs, nil); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
 	}
@@ -214,13 +213,12 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 }
 
 // GenerateReview now focuses on data preparation and delegates to the helper.
-func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, collectionName string, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error) {
+func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	r.logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber)
-
+	r.logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber, "embedder", repo.EmbedderModelName)
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get PR diff: %w", err)
@@ -240,7 +238,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		return nil, "", fmt.Errorf("failed to get changed files: %w", err)
 	}
 
-	contextString, err := r.buildRelevantContext(ctx, collectionName, changedFiles)
+	contextString, err := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 	if err != nil {
 		return nil, "", err
 	}
@@ -303,27 +301,30 @@ func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEve
 	return r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)
 }
 
-// Add this implementation to the ragService struct:
-func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, question string) (string, error) {
-	r.logger.Info("answering question with RAG context", "collection", collectionName)
+type QuestionPromptData struct {
+	History  string
+	Context  string
+	Question string
+}
 
-	relevantDocs, err := r.vectorStore.SimilaritySearch(ctx, collectionName, question, 5)
+func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
+	r.logger.Info("Answering question with RAG context", "collection", collectionName)
+
+	relevantDocs, err := r.vectorStore.SimilaritySearch(ctx, collectionName, embedderModelName, question, 5)
+	for _, doc := range relevantDocs {
+		r.logger.Debug("got a document after similarity search:", "document", doc)
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to perform similarity search: %w", err)
 	}
+	r.logger.Debug("Retrieved relevant documents for question", "count", len(relevantDocs))
 
-	r.logger.Debug("retrieved relevant documents for question", "count", len(relevantDocs))
+	contextString := r.buildContextForPrompt(relevantDocs)
 
-	var contextBuilder strings.Builder
-	for _, doc := range relevantDocs {
-		r.logger.Debug("retrieved document metadata", "metadata", doc.Metadata)
-		source, _ := doc.Metadata["source"].(string)
-		contextBuilder.WriteString(fmt.Sprintf("---\nFile: %s\n\n%s\n---\n", source, doc.PageContent))
-	}
-
-	promptData := map[string]string{
-		"Question": question,
-		"Context":  contextBuilder.String(),
+	promptData := QuestionPromptData{
+		Question: question,
+		Context:  contextString,
+		History:  strings.Join(history, "\n"),
 	}
 	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
 	prompt, err := r.promptMgr.Render("question", modelForPrompt, promptData)
@@ -336,7 +337,37 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, questio
 		return "", fmt.Errorf("LLM call failed for question: %w", err)
 	}
 
+	r.logger.Debug("The final LLM answer is", "answer", answer)
+
 	return answer, nil
+}
+
+func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
+	var contextBuilder strings.Builder
+	seenDocs := make(map[string]struct{})
+
+	for _, doc := range docs {
+		source, _ := doc.Metadata["source"].(string)
+		identifier, _ := doc.Metadata["identifier"].(string)
+
+		docKey := fmt.Sprintf("%s-%s", source, identifier)
+		if _, exists := seenDocs[docKey]; exists {
+			continue
+		}
+		seenDocs[docKey] = struct{}{}
+
+		contextBuilder.WriteString("---\n")
+		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", source))
+
+		if identifier != "" {
+			contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
+		}
+
+		contextBuilder.WriteString("\n")
+		contextBuilder.WriteString(doc.PageContent)
+		contextBuilder.WriteString("\n---\n\n")
+	}
+	return contextBuilder.String()
 }
 
 func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey PromptKey, promptData any) (string, error) {
@@ -374,7 +405,7 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
-func (r *ragService) buildRelevantContext(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) (string, error) {
+func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName string, changedFiles []internalgithub.ChangedFile) (string, error) {
 	if len(changedFiles) == 0 {
 		return "", nil
 	}
@@ -400,7 +431,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName st
 		return "", nil
 	}
 
-	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, queries, 7)
+	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, embedderModelName, queries, 7)
 	if err != nil {
 		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
 		return "", fmt.Errorf("failed to retrieve RAG context: %w", err)

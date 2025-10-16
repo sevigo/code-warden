@@ -5,14 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/sevigo/goframe/embeddings"
-	"github.com/sevigo/goframe/embeddings/fastapi"
 	"github.com/sevigo/goframe/llms"
-	"github.com/sevigo/goframe/llms/gemini"
-	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
 
@@ -44,16 +40,14 @@ type App struct {
 	dispatcher core.JobDispatcher
 }
 
-// newOllamaHTTPClient creates an HTTP client with longer timeouts for Ollama requests.
-// Ollama can take a while to process requests, so we need more generous timeouts.
-func newOllamaHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: 15 * time.Minute,
-	}
-}
-
 // NewApp sets up the application with all its dependencies.
-func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, func(), error) {
+func NewApp(
+	ctx context.Context,
+	cfg *config.Config,
+	generatorLLM llms.Model,
+	embedder embeddings.Embedder,
+	logger *slog.Logger,
+) (*App, func(), error) {
 	logger.Info("initializing Code Warden application",
 		"llm_provider", cfg.LLMProvider,
 		"embedder_provider", cfg.EmbedderProvider,
@@ -61,6 +55,8 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		"embedder_model", cfg.EmbedderModelName,
 		"max_workers", cfg.MaxWorkers,
 		"repo_path", cfg.RepoPath,
+		"llm_provider", cfg.LLMProvider,
+		"embedder_provider", cfg.EmbedderProvider,
 	)
 
 	dbConn, dbCleanup, err := initDatabase(cfg.Database)
@@ -71,17 +67,6 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 	store := storage.NewStore(dbConn.DB)
 	gitClient := gitutil.NewClient(logger.With("component", "gitutil"))
 
-	generatorLLM, err := createGeneratorLLM(ctx, cfg, logger)
-	if err != nil {
-		dbCleanup()
-		return nil, nil, err
-	}
-
-	embedder, err := createEmbedder(ctx, cfg, logger)
-	if err != nil {
-		dbCleanup()
-		return nil, nil, err
-	}
 	parserRegistry, err := parsers.RegisterLanguagePlugins(logger)
 	if err != nil {
 		dbCleanup()
@@ -121,11 +106,15 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		}
 	}
 
-	vectorStore := storage.NewQdrantVectorStore(cfg.QdrantHost, embedder, batchConfig, logger)
+	vectorStore := storage.NewQdrantVectorStore(
+		cfg,
+		logger,
+		storage.WithBatchConfig(batchConfig),
+		storage.WithInitialEmbedder(cfg.EmbedderModelName, embedder),
+	)
 	repoManager := repomanager.New(cfg, store, vectorStore, gitClient, logger.With("component", "repomanager"))
 
-	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, generatorLLM, parserRegistry, logger)
-
+	ragService := llm.NewRAGService(cfg, promptMgr, vectorStore, store, generatorLLM, parserRegistry, logger)
 	reviewJob := jobs.NewReviewJob(cfg, ragService, store, repoManager, logger)
 
 	dispatcher := jobs.NewDispatcher(ctx, reviewJob, cfg.MaxWorkers, logger)
@@ -144,65 +133,6 @@ func NewApp(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App,
 		}, func() {
 			dbCleanup()
 		}, nil
-}
-
-func createGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
-	logger.Info("connecting to generator LLM", "model", cfg.GeneratorModelName)
-	llm, err := createLLM(ctx, cfg, logger)
-	if err != nil {
-		logger.Error("failed to connect to generator LLM", "error", err)
-		return nil, fmt.Errorf("failed to create generator LLM: %w", err)
-	}
-	return llm, nil
-}
-
-func createEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
-	logger.Info("connecting to embedder", "provider", cfg.EmbedderProvider, "model", cfg.EmbedderModelName)
-	var err error
-
-	// Handle providers that directly implement the Embedder interface and are not wrapped.
-	if cfg.EmbedderProvider == "fastapi" {
-		sharedSecret := cfg.FastAPISharedSecret
-		return fastapi.New(cfg.FastAPIServerURL,
-			fastapi.WithHTTPClient(newOllamaHTTPClient()),
-			fastapi.WithLogger(logger),
-			fastapi.WithTask(cfg.EmbedderTaskDescription),
-			fastapi.WithAPIKey(sharedSecret),
-		)
-	}
-
-	// Handle providers that expose a base LLM interface and need to be wrapped
-	// by the generic Embedder that adds "query:" and "passage:" prefixes.
-	var baseEmbedder embeddings.Embedder
-	switch cfg.EmbedderProvider {
-	case llmProviderGemini:
-		baseEmbedder, err = gemini.New(ctx,
-			gemini.WithEmbeddingModel(cfg.EmbedderModelName),
-			gemini.WithAPIKey(cfg.GeminiAPIKey),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create gemini embedder: %w", err)
-		}
-	case "ollama":
-		baseEmbedder, err = ollama.New(
-			ollama.WithServerURL(cfg.OllamaHost),
-			ollama.WithModel(cfg.EmbedderModelName),
-			ollama.WithHTTPClient(newOllamaHTTPClient()),
-			ollama.WithLogger(logger),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ollama embedder: %w", err)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.EmbedderProvider)
-	}
-
-	// Wrap the base embedder (gemini, ollama) with the generic one.
-	wrappedEmbedder, err := embeddings.NewEmbedder(baseEmbedder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create a wrapped embedder: %w", err)
-	}
-	return wrappedEmbedder, nil
 }
 
 // Start runs the HTTP server.
@@ -256,30 +186,4 @@ func initDatabase(cfg *config.DBConfig) (*db.DB, func(), error) {
 		return nil, func() {}, fmt.Errorf("failed to run database migrations: %w", err)
 	}
 	return dbConn, cleanup, nil
-}
-
-// createLLM creates the appropriate LLM client based on the configured provider.
-func createLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
-	switch cfg.LLMProvider {
-	case llmProviderGemini:
-		logger.Info("Using Gemini LLM provider", "model", cfg.GeneratorModelName)
-		if cfg.GeminiAPIKey == "" {
-			return nil, fmt.Errorf("GEMINI_API_KEY is not set in environment for gemini provider")
-		}
-		return gemini.New(ctx,
-			gemini.WithModel(cfg.GeneratorModelName),
-			gemini.WithAPIKey(cfg.GeminiAPIKey),
-		)
-
-	case "ollama":
-		logger.Info("Using Ollama LLM provider", "model", cfg.GeneratorModelName)
-		return ollama.New(
-			ollama.WithHTTPClient(newOllamaHTTPClient()),
-			ollama.WithModel(cfg.GeneratorModelName),
-			ollama.WithLogger(logger),
-		)
-
-	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.LLMProvider)
-	}
 }

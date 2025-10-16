@@ -49,6 +49,11 @@ var AppSet = wire.NewSet(
 )
 
 func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
+	logger.Info("provideGeneratorLLM(): connecting to generator LLM",
+		"provider", cfg.EmbedderProvider,
+		"model", cfg.GeneratorModelName,
+	)
+
 	switch cfg.LLMProvider {
 	case "gemini":
 		if cfg.GeminiAPIKey == "" {
@@ -59,7 +64,11 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 			gemini.WithAPIKey(cfg.GeminiAPIKey),
 		)
 	case "ollama":
+		logger.Info("provideGeneratorLLM(): connecting to ollama host",
+			"host", cfg.OllamaHost,
+		)
 		return ollama.New(
+			ollama.WithServerURL(cfg.OllamaHost),
 			ollama.WithHTTPClient(newOllamaHTTPClient()),
 			ollama.WithModel(cfg.GeneratorModelName),
 			ollama.WithLogger(logger),
@@ -70,7 +79,11 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 }
 
 func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
-	logger.Info("connecting to embedder", "provider", cfg.EmbedderProvider, "model", cfg.EmbedderModelName)
+	logger.Info("provideEmbedder(): connecting to embedder",
+		"provider", cfg.EmbedderProvider,
+		"model", cfg.EmbedderModelName,
+	)
+
 	var embedderLLM embeddings.Embedder
 	var err error
 

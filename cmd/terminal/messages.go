@@ -25,8 +25,8 @@ type repoAddedMsg struct {
 	err          error
 }
 
-// Represents a chunk of a streaming answer from the LLM.
-type answerChunkMsg string
+// Represents a complete, non-streaming answer from the LLM.
+type answerCompleteMsg struct{ content string }
 
 // A generic error message for reporting failures from commands.
 type errorMsg struct{ err error }
