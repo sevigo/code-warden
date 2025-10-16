@@ -45,8 +45,8 @@ type model struct {
 	// --- REFACTORED STATE MANAGEMENT ---
 	availableRepos      []*storage.Repository
 	selectedRepo        *storage.Repository
-	history             []string // For display
-	conversationHistory []string // For LLM context
+	history             []string
+	conversationHistory []string
 }
 
 func initialModel(theme ThemeName) *model {
