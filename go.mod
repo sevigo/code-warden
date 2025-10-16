@@ -1,8 +1,8 @@
 module github.com/sevigo/code-warden
 
-go 1.25.1
+go 1.25.3
 
-replace github.com/sevigo/goframe => ../goframe
+// replace github.com/sevigo/goframe => ../goframe
 
 require (
 	github.com/charmbracelet/bubbles v0.21.0
