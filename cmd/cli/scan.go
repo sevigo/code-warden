@@ -5,13 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
+	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/wire"
 )
@@ -36,7 +34,6 @@ var scanCmd = &cobra.Command{
 		repoPath := args[0]
 		slog.Info("Scanning local repository", "path", repoPath, "force", forceScan)
 
-		// Use a context with a timeout for robustness in a long-running CLI command.
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
@@ -46,17 +43,13 @@ var scanCmd = &cobra.Command{
 		}
 		defer cleanup()
 
-		// 1. Scan the local repo to get the list of changed files.
-		// The `forceScan` flag will ensure this result comes back with IsInitialClone=true
-		// if a full re-index is needed.
 		updateResult, err := app.RepoMgr.ScanLocalRepo(ctx, repoPath, repoFullName, forceScan)
 		if err != nil {
 			return fmt.Errorf("failed to scan local repository: %w", err)
 		}
 		slog.Info("Local repository scan complete", "repo", updateResult.RepoFullName, "head_sha", updateResult.HeadSHA)
 
-		// 2. Load the repository's .code-warden.yml configuration
-		repoConfig, err := loadRepoConfig(updateResult.RepoPath)
+		repoConfig, err := config.LoadRepoConfig(updateResult.RepoPath)
 		if err != nil {
 			if errors.Is(err, ErrConfigNotFound) {
 				slog.Info("no .code-warden.yml found, using defaults", "repo", updateResult.RepoFullName)
@@ -66,7 +59,6 @@ var scanCmd = &cobra.Command{
 			repoConfig = core.DefaultRepoConfig()
 		}
 
-		// 3. Get repository record to find the collection name
 		repoRecord, err := app.RepoMgr.GetRepoRecord(ctx, updateResult.RepoFullName)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve repository record: %w", err)
@@ -126,24 +118,4 @@ func init() { //nolint:gochecknoinits // Cobra's init function for command regis
 	scanCmd.Flags().StringVar(&repoFullName, "repo-full-name", "", "The full name of the repository (e.g. owner/repo)")
 	scanCmd.Flags().BoolVar(&forceScan, "force", false, "Force a full re-scan and re-indexing of the repository, ignoring the last indexed state.")
 	rootCmd.AddCommand(scanCmd)
-}
-
-func loadRepoConfig(repoPath string) (*core.RepoConfig, error) {
-	configPath := filepath.Join(repoPath, ".code-warden.yml")
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return core.DefaultRepoConfig(), ErrConfigNotFound
-		}
-		return nil, fmt.Errorf("failed to read .code-warden.yml: %w", err)
-	}
-
-	config := core.DefaultRepoConfig()
-	if err := yaml.Unmarshal(data, config); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrConfigParsing, err)
-	}
-
-	slog.Info(".code-warden.yml loaded successfully", "repo_path", repoPath)
-	return config, nil
 }
