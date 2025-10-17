@@ -24,6 +24,8 @@ type DraftReviewComment struct {
 
 // Client defines a set of operations for interacting with the GitHub API,
 // focusing on pull requests, comments, and check runs.
+//
+//go:generate mockgen -destination=../../mocks/mock_github_client.go -package=mocks . Client
 type Client interface {
 	GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
 	GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error)

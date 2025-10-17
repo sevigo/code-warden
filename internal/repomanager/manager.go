@@ -25,6 +25,7 @@ type manager struct {
 	repoMux     sync.Map
 }
 
+//go:generate mockgen -destination=../../mocks/mock_repomanager.go -package=mocks github.com/sevigo/code-warden/internal/repomanager RepoManager
 type RepoManager interface {
 	SyncRepo(ctx context.Context, event *core.GitHubEvent, token string) (*core.UpdateResult, error)
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
