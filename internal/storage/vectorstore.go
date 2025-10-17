@@ -17,6 +17,8 @@ import (
 )
 
 // VectorStore interface updated for multi-model support
+//
+//go:generate mockgen -destination=../../mocks/mock_vectorstore.go -package=mocks github.com/sevigo/code-warden/internal/storage VectorStore
 type VectorStore interface {
 	SetBatchConfig(config qdrant.BatchConfig) error
 	AddDocumentsBatch(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error

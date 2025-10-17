@@ -30,6 +30,8 @@ type Repository struct {
 }
 
 // Store defines the interface for all database operations.
+//
+//go:generate mockgen -destination=../../mocks/mock_store.go -package=mocks github.com/sevigo/code-warden/internal/storage Store
 type Store interface {
 	SaveReview(ctx context.Context, review *core.Review) error
 	GetLatestReviewForPR(ctx context.Context, repoFullName string, prNumber int) (*core.Review, error)
