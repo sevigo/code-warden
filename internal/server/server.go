@@ -27,7 +27,7 @@ func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispa
 	return &Server{
 		ctx: ctx,
 		server: &http.Server{
-			Addr:         fmt.Sprintf(":%s", cfg.ServerPort),
+			Addr:         ":" + cfg.Server.Port,
 			Handler:      router,
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 10 * time.Second,

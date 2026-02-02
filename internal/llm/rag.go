@@ -15,6 +15,8 @@ import (
 
 	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/llms"
+	"github.com/sevigo/goframe/llms/gemini"
+	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
 
@@ -103,7 +105,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		}
 		totalDocsFound.Add(int64(len(docs)))
 
-		err := r.vectorStore.AddDocumentsBatch(ctx, collectionName, embedderModelName, docs, nil)
+		err := r.vectorStore.AddDocumentsToCollection(ctx, collectionName, embedderModelName, docs, nil)
 		if err != nil {
 			return fmt.Errorf("failed to add document batch to vector store: %w", err)
 		}
@@ -159,7 +161,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
 		r.logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
-		if err := r.vectorStore.DeleteDocuments(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete); err != nil {
+		if err := r.vectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete); err != nil {
 			r.logger.Error("failed to delete some embeddings", "error", err)
 		}
 	}
@@ -204,7 +206,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 
 	if len(allDocs) > 0 {
 		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
-		if err := r.vectorStore.AddDocumentsBatch(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, allDocs, nil); err != nil {
+		if err := r.vectorStore.AddDocumentsToCollection(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, allDocs, nil); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
 	}
@@ -310,7 +312,7 @@ type QuestionPromptData struct {
 func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
 	r.logger.Info("Answering question with RAG context", "collection", collectionName)
 
-	relevantDocs, err := r.vectorStore.SimilaritySearch(ctx, collectionName, embedderModelName, question, 5)
+	relevantDocs, err := r.vectorStore.SearchCollection(ctx, collectionName, embedderModelName, question, 5)
 	for _, doc := range relevantDocs {
 		r.logger.Debug("got a document after similarity search:", "document", doc)
 	}
@@ -326,7 +328,7 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 		Context:  contextString,
 		History:  strings.Join(history, "\n"),
 	}
-	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
+	modelForPrompt := ModelProvider(r.cfg.AI.GeneratorModel)
 	prompt, err := r.promptMgr.Render("question", modelForPrompt, promptData)
 	if err != nil {
 		return "", fmt.Errorf("could not render question prompt: %w", err)
@@ -370,8 +372,35 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	return contextBuilder.String()
 }
 
+func (r *ragService) getOrCreateLLM(modelName string) (llms.Model, error) {
+	// For now, just return the initialized generator if model matches or if we don't support dynamic switching yet.
+	// This is a simplification to fix the build.
+	if modelName == r.cfg.AI.GeneratorModel {
+		return r.generatorLLM, nil
+	}
+
+	// Create new instance if needed (simplified fallback)
+	r.logger.Info("creating new LLM instance on the fly", "model", modelName)
+	if r.cfg.AI.LLMProvider == "gemini" {
+		return gemini.New(context.Background(), gemini.WithModel(modelName), gemini.WithAPIKey(r.cfg.AI.GeminiAPIKey))
+	}
+	// Fallback/Default to Ollama
+	return ollama.New(
+		ollama.WithServerURL(r.cfg.AI.OllamaHost),
+		ollama.WithModel(modelName),
+	)
+}
+
 func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey PromptKey, promptData any) (string, error) {
-	modelForPrompt := ModelProvider(r.cfg.GeneratorModelName)
+	// Try using the main generator first
+	llmModel, err := r.getOrCreateLLM(r.cfg.AI.GeneratorModel)
+	if err != nil {
+		r.logger.Error("failed to get generator LLM, falling back to legacy config", "error", err)
+		// Fallback to legacy if new config fails
+		llmModel = r.generatorLLM
+	}
+
+	modelForPrompt := ModelProvider(r.cfg.AI.GeneratorModel)
 	prompt, err := r.promptMgr.Render(promptKey, modelForPrompt, promptData)
 	if err != nil {
 		return "", fmt.Errorf("could not render prompt '%s': %w", promptKey, err)
@@ -383,7 +412,7 @@ func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core
 		"prompt_key", promptKey,
 	)
 
-	response, err := r.generatorLLM.Call(ctx, prompt)
+	response, err := llmModel.Call(ctx, prompt)
 	if err != nil {
 		return "", fmt.Errorf("LLM generation failed for prompt '%s': %w", promptKey, err)
 	}
@@ -431,7 +460,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		return "", nil
 	}
 
-	batchResults, err := r.vectorStore.SimilaritySearchBatch(ctx, collectionName, embedderModelName, queries, 7)
+	batchResults, err := r.vectorStore.SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, 7)
 	if err != nil {
 		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
 		return "", fmt.Errorf("failed to retrieve RAG context: %w", err)

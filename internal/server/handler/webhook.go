@@ -31,7 +31,8 @@ func NewWebhookHandler(cfg *config.Config, dispatcher core.JobDispatcher, logger
 
 // Handle processes GitHub webhook requests.
 func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
-	payload, err := github.ValidatePayload(r, []byte(h.cfg.GitHubWebhookSecret))
+	// Validate payload signature
+	payload, err := github.ValidatePayload(r, []byte(h.cfg.GitHub.WebhookSecret))
 	if err != nil {
 		h.logger.Error("invalid webhook payload signature", "error", err)
 		http.Error(w, "Invalid signature", http.StatusUnauthorized)

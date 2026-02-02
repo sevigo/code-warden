@@ -27,20 +27,18 @@ type DB struct {
 	*sqlx.DB
 }
 
-// NewDatabase establishes a connection to the PostgreSQL database using the
-// provided configuration and verifies the connection with a ping.
+// NewDatabase creates a new database connection.
 func NewDatabase(cfg *config.DBConfig) (*DB, func(), error) {
-	if cfg == nil {
-		return nil, func() {}, errors.New("database config is required")
-	}
+	// Construct DSN from config fields
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database)
 
-	conn, err := sqlx.Connect("postgres", cfg.DSN)
+	// Open connection (sqlx.Connect opens and pings)
+	conn, err := sqlx.Connect("postgres", dsn)
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	conn.SetMaxOpenConns(cfg.MaxOpenConns)
-	conn.SetMaxIdleConns(cfg.MaxIdleConns)
 	conn.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 	conn.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 
@@ -51,6 +49,7 @@ func NewDatabase(cfg *config.DBConfig) (*DB, func(), error) {
 		return nil, func() {}, fmt.Errorf("failed to ping database: %w", err)
 	}
 
+	// Wrap in our DB struct
 	db := &DB{
 		DB: conn,
 	}

@@ -5,6 +5,7 @@ go 1.25.6
 // replace github.com/sevigo/goframe => ../goframe
 
 require (
+	github.com/bradleyfalzon/ghinstallation/v2 v2.17.0
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v0.10.0
@@ -61,11 +62,14 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/go-viper/mapstructure/v2 v2.3.0 // indirect
+	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/go-github/v75 v75.0.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
+	github.com/google/subcommands v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect

@@ -1,0 +1,100 @@
+# config.yaml.example
+#
+# Copy this file to config.yaml and customize for your environment.
+# Environment variables can override any value using underscore notation:
+#   server.port -> SERVER_PORT
+#   ai.gemini_api_key -> AI_GEMINI_API_KEY
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+server:
+  port: "8080"
+  max_workers: 5
+  # FastAPI server URL for external embedding service (optional)
+  fastapi_server_url: "http://127.0.0.1:8000"
+  # Shared secret for service-to-service auth
+  shared_secret: ""
+  # UI theme: "dark" or "light"
+  theme: "dark"
+
+# ============================================================================
+# GitHub App Configuration (required for server mode)
+# ============================================================================
+github:
+  # GitHub App ID (required for server)
+  app_id: 0
+  # Webhook secret for validating GitHub webhooks
+  webhook_secret: ""
+  # Path to the GitHub App private key file
+  private_key_path: "keys/code-warden-app.private-key.pem"
+  # Personal access token (for CLI commands like preload)
+  token: ""
+
+# ============================================================================
+# AI Configuration
+# ============================================================================
+ai:
+  # LLM provider for code generation: "ollama" or "gemini"
+  llm_provider: "ollama"
+  # Embedder provider: "ollama" or "gemini"
+  embedder_provider: "ollama"
+  
+  # Ollama settings (when using ollama provider)
+  # Point to your LOCAL Ollama instance (not Docker)
+  ollama_host: "http://localhost:11434"
+  
+  # Gemini settings (when using gemini provider)
+  # Set via environment variable AI_GEMINI_API_KEY for security
+  gemini_api_key: ""
+  
+  # Model names
+  generator_model: "gemma3:latest"
+  embedder_model: "nomic-embed-text"
+  embedder_task_description: "search_document"
+
+# ============================================================================
+# Storage Configuration
+# ============================================================================
+storage:
+  # Qdrant vector database host (gRPC port)
+  qdrant_host: "localhost:6334"
+  # Local path for cloned repositories
+  repo_path: "./data/repos"
+
+# ============================================================================
+# Database Configuration
+# ============================================================================
+database:
+  driver: "postgres"
+  host: "localhost"
+  port: 5432
+  database: "codewarden"
+  username: "warden"
+  # Set via environment variable DATABASE_PASSWORD for security
+  password: "secret"
+  ssl_mode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: "5m"
+  conn_max_idle_time: "5m"
+
+# ============================================================================
+# Logging Configuration
+# ============================================================================
+logging:
+  # Log level: "debug", "info", "warn", "error"
+  level: "info"
+  # Log format: "text" or "json"
+  format: "text"
+  # Output: "stdout", "stderr", or "file"
+  output: "stdout"
+
+# ============================================================================
+# Feature Flags
+# ============================================================================
+features:
+  # Enable binary quantization for faster vector search
+  enable_binary_quantization: true
+  # Enable graph-based code analysis
+  enable_graph_analysis: true

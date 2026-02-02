@@ -34,7 +34,7 @@ func (m *manager) scanLocalRepo(
 		}
 	}
 
-	if rec, _ := m.store.GetRepositoryByFullName(ctx, repoFullName); rec != nil && rec.EmbedderModelName != m.cfg.EmbedderModelName {
+	if rec, _ := m.store.GetRepositoryByFullName(ctx, repoFullName); rec != nil && rec.EmbedderModelName != m.cfg.AI.EmbedderModel {
 		m.logger.Warn("embedder model changed – full re‑scan", "repo", repoFullName)
 		_ = m.vectorStore.DeleteCollection(ctx, rec.QdrantCollectionName) // ignore error – we still want to continue
 		force = true
@@ -44,6 +44,11 @@ func (m *manager) scanLocalRepo(
 		return m.fullLocalScan(ctx, repoPath, repoFullName, headSHA)
 	}
 	return m.incrementalLocalScan(ctx, gitRepo, repoFullName, repoPath, headSHA)
+}
+
+func (m *manager) getExcludedPaths() []string {
+	// This could come from config
+	return []string{".git", ".idea", ".vscode", "node_modules", "vendor"}
 }
 
 func (m *manager) fullLocalScan(
@@ -117,11 +122,13 @@ func (m *manager) ensureRepoRecord(ctx context.Context, fullName, clonePath stri
 		return fmt.Errorf("lookup repo before scan: %w", err)
 	}
 	if rec == nil {
+		// Determine embedder model (could be passed as arg or default)
+		embedderModel := m.cfg.AI.EmbedderModel
 		newRec := &storage.Repository{
 			FullName:             fullName,
 			ClonePath:            clonePath,
-			QdrantCollectionName: GenerateCollectionName(fullName, m.cfg.EmbedderModelName),
-			EmbedderModelName:    m.cfg.EmbedderModelName,
+			QdrantCollectionName: GenerateCollectionName(fullName, embedderModel),
+			EmbedderModelName:    embedderModel,
 			LastIndexedSHA:       "",
 		}
 		if err := m.store.CreateRepository(ctx, newRec); err != nil {

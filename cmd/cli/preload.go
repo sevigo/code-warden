@@ -34,9 +34,10 @@ avoiding cold-start delays on large repositories.`,
 		}
 		defer cleanup()
 
-		token := app.Cfg.GitHubToken
+		token := app.Cfg.GitHub.Token
+		// Check if we have a token (either from env or config)
 		if token == "" {
-			return fmt.Errorf("a GitHub token is required; please provide it in your .env file as GITHUB_TOKEN or as an environment variable")
+			app.Logger.Warn("No GitHub token provided. Rate limits will be strict.")
 		}
 
 		fmt.Printf("Preloading repository %s/%s\n", repoURL, branch)

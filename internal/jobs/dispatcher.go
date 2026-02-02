@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 )
 
@@ -26,9 +27,13 @@ type dispatcher struct {
 	mainCtx    context.Context
 }
 
+const (
+	llmProviderGemini = "gemini"
+)
+
 // NewDispatcher initializes a dispatcher with a worker pool.
-// If maxWorkers is 0 or negative, it defaults to 1.
-func NewDispatcher(ctx context.Context, reviewJob core.Job, maxWorkers int, logger *slog.Logger) core.JobDispatcher {
+func NewDispatcher(ctx context.Context, reviewJob core.Job, cfg *config.Config, logger *slog.Logger) core.JobDispatcher {
+	maxWorkers := cfg.Server.MaxWorkers
 	if maxWorkers <= 0 {
 		maxWorkers = 1
 	}

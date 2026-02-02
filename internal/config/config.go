@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/sevigo/code-warden/internal/logger"
@@ -13,222 +14,184 @@ import (
 
 const (
 	llmProviderGemini = "gemini"
+	llmProviderOllama = "ollama"
 )
 
-// Config holds the application's configuration values.
+// Config represents the top-level configuration structure.
 type Config struct {
-	ServerPort              string
-	LLMProvider             string
-	EmbedderProvider        string
-	GeminiAPIKey            string
-	LoggerConfig            logger.Config
-	GitHubAppID             int64
-	GitHubWebhookSecret     string
-	GitHubPrivateKeyPath    string
-	OllamaHost              string
-	QdrantHost              string
-	GeneratorModelName      string
-	EmbedderModelName       string
-	MaxWorkers              int
-	Database                *DBConfig
-	RepoPath                string
-	GitHubToken             string
-	FastAPIServerURL        string `mapstructure:"FASTAPI_SERVER_URL"`
-	EmbedderTaskDescription string `mapstructure:"EMBEDDER_TASK_DESCRIPTION"`
-	FastAPISharedSecret     string `mapstructure:"EMBEDDING_API_SECRET"`
-	TerminalTheme           string
+	Server   ServerConfig   `mapstructure:"server"`
+	GitHub   GitHubConfig   `mapstructure:"github"`
+	AI       AIConfig       `mapstructure:"ai"`
+	Database DBConfig       `mapstructure:"database"`
+	Storage  StorageConfig  `mapstructure:"storage"`
+	Logging  logger.Config  `mapstructure:"logging"`
+	Features FeaturesConfig `mapstructure:"features"`
 }
 
-// DBConfig holds all database connection settings.
+type ServerConfig struct {
+	Port             string `mapstructure:"port"`
+	MaxWorkers       int    `mapstructure:"max_workers"`
+	FastAPIServerURL string `mapstructure:"fastapi_server_url"`
+	SharedSecret     string `mapstructure:"shared_secret"`
+	Theme            string `mapstructure:"theme"`
+}
+
+type GitHubConfig struct {
+	AppID          int64  `mapstructure:"app_id"`
+	WebhookSecret  string `mapstructure:"webhook_secret"`
+	PrivateKeyPath string `mapstructure:"private_key_path"`
+	Token          string `mapstructure:"token"` // For CLI or preload
+}
+
+type AIConfig struct {
+	LLMProvider      string `mapstructure:"llm_provider"`
+	EmbedderProvider string `mapstructure:"embedder_provider"`
+	OllamaHost       string `mapstructure:"ollama_host"`
+	GeminiAPIKey     string `mapstructure:"gemini_api_key"`
+	GeneratorModel   string `mapstructure:"generator_model"`
+	EmbedderModel    string `mapstructure:"embedder_model"`
+	EmbedderTask     string `mapstructure:"embedder_task_description"`
+}
+
+type StorageConfig struct {
+	QdrantHost string `mapstructure:"qdrant_host"`
+	RepoPath   string `mapstructure:"repo_path"`
+}
+
+type FeaturesConfig struct {
+	EnableBinaryQuantization bool `mapstructure:"enable_binary_quantization"`
+	EnableGraphAnalysis      bool `mapstructure:"enable_graph_analysis"`
+}
+
 type DBConfig struct {
-	Driver          string
-	DSN             string
-	Host            string
-	Port            int
-	Database        string
-	Username        string
-	Password        string
-	SSLMode         string
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxLifetime time.Duration
-	ConnMaxIdleTime time.Duration
+	Driver          string        `mapstructure:"driver"`
+	Host            string        `mapstructure:"host"`
+	Port            int           `mapstructure:"port"`
+	Database        string        `mapstructure:"database"`
+	Username        string        `mapstructure:"username"`
+	Password        string        `mapstructure:"password"`
+	SSLMode         string        `mapstructure:"ssl_mode"`
+	MaxOpenConns    int           `mapstructure:"max_open_conns"`
+	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"`
 }
 
-// LoadConfig loads configuration from environment variables and .env file.
+// LoadConfig loads the configuration using Viper with the hierarchy:
+// Flags (handled by caller) > Env Vars > Config File > Defaults.
 func LoadConfig() (*Config, error) {
 	v := viper.New()
 
+	// 1. Set Defaults
 	setDefaults(v)
 
-	if err := loadEnvFile(v); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Info("No .env file found. Using environment variables and defaults.")
-		} else {
-			slog.Error("Failed to read .env file", "error", err)
+	// 2. Read Config File
+	v.SetConfigName("config") // name of config file (without extension)
+	v.SetConfigType("yaml")   // REQUIRED if the config file does not have the extension in the name
+	v.AddConfigPath(".")      // optionally look for config in the working directory
+	v.AddConfigPath("$HOME/.code-warden")
+
+	if err := v.ReadInConfig(); err != nil {
+		if !errors.As(err, &viper.ConfigFileNotFoundError{}) {
+			// Config file was found but another error occurred (e.g., syntax error)
+			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
+		slog.Info("No config file found, using defaults and environment variables")
 	} else {
-		slog.Info("Successfully loaded configuration from .env file.")
+		slog.Info("Loaded configuration", "file", v.ConfigFileUsed())
 	}
 
+	// 3. Environment Variables (Automatic mapping)
+	// Map env vars like SERVER_PORT to server.port
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
-	dbConfig, err := configureDB(v)
-	if err != nil {
-		return nil, err
+	// 4. Unmarshal
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal configuration: %w", err)
 	}
 
-	return &Config{
-		ServerPort:              v.GetString("SERVER_PORT"),
-		LLMProvider:             v.GetString("LLM_PROVIDER"),
-		EmbedderProvider:        v.GetString("EMBEDDER_PROVIDER"),
-		GeminiAPIKey:            v.GetString("GEMINI_API_KEY"),
-		LoggerConfig:            configureLogger(v),
-		GitHubAppID:             v.GetInt64("GITHUB_APP_ID"),
-		GitHubWebhookSecret:     v.GetString("GITHUB_WEBHOOK_SECRET"),
-		GitHubPrivateKeyPath:    v.GetString("GITHUB_PRIVATE_KEY_PATH"),
-		OllamaHost:              v.GetString("OLLAMA_HOST"),
-		QdrantHost:              v.GetString("QDRANT_HOST"),
-		GeneratorModelName:      getGeneratorModelName(v),
-		EmbedderModelName:       getEmbedderModelName(v),
-		MaxWorkers:              v.GetInt("MAX_WORKERS"),
-		Database:                dbConfig,
-		RepoPath:                v.GetString("REPO_PATH"),
-		GitHubToken:             v.GetString("GITHUB_TOKEN"),
-		FastAPIServerURL:        v.GetString("FASTAPI_SERVER_URL"),
-		EmbedderTaskDescription: v.GetString("EMBEDDER_TASK_DESCRIPTION"),
-		FastAPISharedSecret:     v.GetString("EMBEDDING_API_SECRET"),
-		TerminalTheme:           v.GetString("CODE_WARDEN_THEME"),
-	}, nil
+	// Post-process / construct derived values if needed (e.g., DSN)
+	// (Note: DSN construction logic moved to where it's used or handled here if purely config-derived)
+
+	return &cfg, nil
 }
 
 func setDefaults(v *viper.Viper) {
-	v.SetDefault("SERVER_PORT", "8080")
-	v.SetDefault("LOG_LEVEL", "info")
-	v.SetDefault("LOG_FORMAT", "text")
-	v.SetDefault("LOG_OUTPUT", "stdout")
-	v.SetDefault("OLLAMA_HOST", "http://localhost:11434")
-	v.SetDefault("QDRANT_HOST", "localhost:6334")
-	v.SetDefault("GENERATOR_MODEL_NAME", "xxx")
-	v.SetDefault("EMBEDDER_MODEL_NAME", "nomic-embed-text")
-	v.SetDefault("MAX_WORKERS", 5)
-	v.SetDefault("GITHUB_PRIVATE_KEY_PATH", "keys/code-warden-app.private-key.pem")
-	v.SetDefault("LLM_PROVIDER", "ollama")
-	v.SetDefault("EMBEDDER_PROVIDER", "ollama")
-	v.SetDefault("DB_DRIVER", "postgres")
-	v.SetDefault("DB_HOST", "localhost")
-	v.SetDefault("DB_PORT", 5432)
-	v.SetDefault("DB_NAME", "codewarden")
-	v.SetDefault("DB_USERNAME", "postgres")
-	v.SetDefault("DB_PASSWORD", "password")
-	v.SetDefault("DB_SSL_MODE", "disable")
-	v.SetDefault("DB_MAX_OPEN_CONNS", 25)
-	v.SetDefault("DB_MAX_IDLE_CONNS", 5)
-	v.SetDefault("DB_CONN_MAX_LIFETIME", "5m")
-	v.SetDefault("DB_CONN_MAX_IDLE_TIME", "5m")
-	v.SetDefault("REPO_PATH", "./data/repos")
-	v.SetDefault("FASTAPI_SERVER_URL", "http://127.0.0.1:8000")
-	v.SetDefault("EMBEDDER_TASK_DESCRIPTION", "search_document")
-}
+	// Server
+	v.SetDefault("server.port", "8080")
+	v.SetDefault("server.max_workers", 5)
+	v.SetDefault("server.fastapi_server_url", "http://127.0.0.1:8000")
 
-func loadEnvFile(v *viper.Viper) error {
-	v.SetConfigFile(".env")
-	v.AddConfigPath(".")
-	return v.ReadInConfig()
+	// GitHub
+	v.SetDefault("github.private_key_path", "keys/code-warden-app.private-key.pem")
+
+	// AI
+	v.SetDefault("ai.llm_provider", "ollama")
+	v.SetDefault("ai.embedder_provider", "ollama")
+	v.SetDefault("ai.ollama_host", "http://localhost:11434")
+	v.SetDefault("ai.embedder_model", "nomic-embed-text")
+	v.SetDefault("ai.embedder_task_description", "search_document")
+
+	// Storage
+	v.SetDefault("storage.qdrant_host", "localhost:6334")
+	v.SetDefault("storage.repo_path", "./data/repos")
+
+	// Logging
+	v.SetDefault("logging.level", "info")
+	v.SetDefault("logging.format", "text")
+	v.SetDefault("logging.output", "stdout")
+
+	// Database
+	v.SetDefault("database.driver", "postgres")
+	v.SetDefault("database.host", "localhost")
+	v.SetDefault("database.port", 5432)
+	v.SetDefault("database.database", "codewarden")
+	v.SetDefault("database.username", "postgres")
+	// Password has no default
+	v.SetDefault("database.ssl_mode", "disable")
+	v.SetDefault("database.max_open_conns", 25)
+	v.SetDefault("database.max_idle_conns", 5)
+	v.SetDefault("database.conn_max_lifetime", "5m")
+	v.SetDefault("database.conn_max_idle_time", "5m")
+
+	// Features
+	v.SetDefault("features.enable_binary_quantization", true)
+	v.SetDefault("features.enable_graph_analysis", true)
 }
 
 func (c *Config) ValidateForServer() error {
-	if c.GitHubAppID == 0 {
-		return errors.New("GITHUB_APP_ID must be set for server mode")
+	if c.GitHub.AppID == 0 {
+		return errors.New("github.app_id is required")
 	}
-	if c.GitHubWebhookSecret == "" {
-		return errors.New("GITHUB_WEBHOOK_SECRET must be set for server mode")
+	if c.GitHub.WebhookSecret == "" {
+		return errors.New("github.webhook_secret is required")
 	}
-	if _, err := os.Stat(c.GitHubPrivateKeyPath); os.IsNotExist(err) {
-		return fmt.Errorf("github private key not found at path: %s (required for server mode)", c.GitHubPrivateKeyPath)
+	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
+		return fmt.Errorf("github private key not found at path: %s", c.GitHub.PrivateKeyPath)
 	}
-	if (c.LLMProvider == llmProviderGemini || c.EmbedderProvider == llmProviderGemini) && c.GeminiAPIKey == "" {
-		return errors.New("GEMINI_API_KEY must be set when using the gemini provider")
+	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
+		return errors.New("ai.gemini_api_key is required for gemini provider")
 	}
 	return nil
 }
 
 func (c *Config) ValidateForCLI() error {
-	// The CLI might need a PAT for some operations.
-	// We can leave this flexible for now or add checks as needed.
-	// For example, the `preload` command requires it.
-	// if c.GitHubToken == "" {
-	// 	return errors.New("GITHUB_TOKEN (a Personal Access Token) must be set for some CLI operations")
-	// }
-	if (c.LLMProvider == "gemini" || c.EmbedderProvider == "gemini") && c.GeminiAPIKey == "" {
-		return errors.New("GEMINI_API_KEY must be set when using the gemini provider")
+	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
+		return errors.New("ai.gemini_api_key is required for gemini provider")
 	}
 	return nil
 }
 
-func configureLogger(v *viper.Viper) logger.Config {
-	return logger.Config{
-		Level:  v.GetString("LOG_LEVEL"),
-		Format: v.GetString("LOG_FORMAT"),
-		Output: v.GetString("LOG_OUTPUT"),
-	}
-}
-
-func getGeneratorModelName(v *viper.Viper) string {
-	if v.GetString("LLM_PROVIDER") == llmProviderGemini {
-		geminiModel := v.GetString("GEMINI_GENERATOR_MODEL_NAME")
-		if geminiModel != "" {
-			return geminiModel
-		}
-		return "gemini-2.5-flash"
-	}
-	return v.GetString("GENERATOR_MODEL_NAME")
-}
-
-func getEmbedderModelName(v *viper.Viper) string {
-	if v.GetString("EMBEDDER_PROVIDER") == llmProviderGemini {
-		geminiModel := v.GetString("GEMINI_EMBEDDER_MODEL_NAME")
-		if geminiModel != "" {
-			return geminiModel
-		}
-		return "gemini-embedding-001"
-	}
-	return v.GetString("EMBEDDER_MODEL_NAME")
-}
-
-func configureDB(v *viper.Viper) (*DBConfig, error) {
-	connMaxLifetime, err := time.ParseDuration(v.GetString("DB_CONN_MAX_LIFETIME"))
-	if err != nil {
-		return nil, fmt.Errorf("invalid DB_CONN_MAX_LIFETIME format: %w", err)
-	}
-	connMaxIdleTime, err := time.ParseDuration(v.GetString("DB_CONN_MAX_IDLE_TIME"))
-	if err != nil {
-		return nil, fmt.Errorf("invalid DB_CONN_MAX_IDLE_TIME format: %w", err)
-	}
-
-	return &DBConfig{
-		Driver:          v.GetString("DB_DRIVER"),
-		DSN:             getDSN(v),
-		Host:            v.GetString("DB_HOST"),
-		Port:            v.GetInt("DB_PORT"),
-		Database:        v.GetString("DB_NAME"),
-		Username:        v.GetString("DB_USERNAME"),
-		Password:        v.GetString("DB_PASSWORD"),
-		SSLMode:         v.GetString("DB_SSL_MODE"),
-		MaxOpenConns:    v.GetInt("DB_MAX_OPEN_CONNS"),
-		MaxIdleConns:    v.GetInt("DB_MAX_IDLE_CONNS"),
-		ConnMaxLifetime: connMaxLifetime,
-		ConnMaxIdleTime: connMaxIdleTime,
-	}, nil
-}
-
-func getDSN(v *viper.Viper) string {
+// Helper to construct DSN (Data Source Name)
+func (db *DBConfig) GetDSN() string {
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		v.GetString("DB_HOST"),
-		v.GetInt("DB_PORT"),
-		v.GetString("DB_USERNAME"),
-		v.GetString("DB_PASSWORD"),
-		v.GetString("DB_NAME"),
-		v.GetString("DB_SSL_MODE"),
+		db.Host,
+		db.Port,
+		db.Username,
+		db.Password,
+		db.Database,
+		db.SSLMode,
 	)
 }

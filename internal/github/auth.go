@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-github/v73/github"
 	"golang.org/x/oauth2"
@@ -20,18 +22,21 @@ import (
 func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64, logger *slog.Logger) (Client, string, error) {
 	logger.Info("Creating GitHub installation client", "installation_id", installationID)
 
-	privateKeyBytes, err := os.ReadFile(cfg.GitHubPrivateKeyPath)
+	// Load private key
+	privateKey, err := os.ReadFile(cfg.GitHub.PrivateKeyPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to read GitHub private key file from '%s': %w", cfg.GitHubPrivateKeyPath, err)
+		return nil, "", fmt.Errorf("failed to read private key from %s: %w", cfg.GitHub.PrivateKeyPath, err)
 	}
 
-	jwtToken, err := createJWT(cfg.GitHubAppID, privateKeyBytes)
+	// Create JWT source
+	// We use the apps transport to interact with the GitHub App API (e.g. to get installation tokens)
+	appTransport, err := ghinstallation.NewAppsTransport(http.DefaultTransport, cfg.GitHub.AppID, privateKey)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create JWT for GitHub App: %w", err)
+		return nil, "", fmt.Errorf("failed to create GitHub App transport: %w", err)
 	}
+	appClient := github.NewClient(&http.Client{Transport: appTransport})
 
-	appClient := github.NewClient(nil).WithAuthToken(jwtToken)
-
+	// Get the installation token
 	token, _, err := appClient.Apps.CreateInstallationToken(ctx, installationID, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create installation token for installation ID %d: %w", installationID, err)
