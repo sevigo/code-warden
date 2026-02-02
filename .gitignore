@@ -30,3 +30,4 @@ go.work.sum
 # env file
 .env
 warden-terminal.log
+llm_context.md
