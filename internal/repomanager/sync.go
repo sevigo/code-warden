@@ -23,11 +23,11 @@ func (m *manager) syncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 	}
 
 	// A model‑change forces a full re‑index.
-	if repoRec != nil && repoRec.EmbedderModelName != m.cfg.EmbedderModelName {
+	if repoRec != nil && repoRec.EmbedderModelName != m.cfg.AI.EmbedderModel {
 		m.logger.Warn("embedder model changed, forcing full re‑index",
 			"repo", ev.RepoFullName,
 			"old", repoRec.EmbedderModelName,
-			"new", m.cfg.EmbedderModelName,
+			"new", m.cfg.AI.EmbedderModel,
 		)
 		if err := m.vectorStore.DeleteCollection(ctx, repoRec.QdrantCollectionName); err != nil {
 			m.logger.Error("delete old qdrant collection", "err", err)
@@ -35,7 +35,7 @@ func (m *manager) syncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 		repoRec = nil // treat as new repository
 	}
 
-	clonePath := filepath.Join(m.cfg.RepoPath, ev.RepoFullName)
+	clonePath := filepath.Join(m.cfg.Storage.RepoPath, ev.RepoFullName)
 
 	if repoRec == nil {
 		return m.cloneAndIndex(ctx, ev, token, clonePath)
@@ -76,8 +76,8 @@ func (m *manager) cloneAndIndex(
 	newRec := &storage.Repository{
 		FullName:             ev.RepoFullName,
 		ClonePath:            clonePath,
-		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName, m.cfg.EmbedderModelName),
-		EmbedderModelName:    m.cfg.EmbedderModelName,
+		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel),
+		EmbedderModelName:    m.cfg.AI.EmbedderModel,
 	}
 	if err = m.store.CreateRepository(ctx, newRec); err != nil {
 		m.cleanupRepoDir(clonePath)

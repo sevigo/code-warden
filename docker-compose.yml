@@ -1,75 +1,21 @@
-# docker-compose.yml (Unified Version with Profiles)
+# docker-compose.yml
 #
-# To run one-time setup: docker-compose up --profile setup -d
-# To run normal services: docker-compose up -d
-
-version: '3.9'
+# Services for Code-Warden development environment.
+# Assumes Ollama runs locally on the host machine (not in Docker).
+#
+# Usage:
+#   Start services:      docker-compose up -d
+#   Stop services:       docker-compose down
 
 services:
-  setup:
-    image: ollama/ollama:latest
-    container_name: ollama-model-setup
-    profiles: ["setup"]
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - warden-net
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      - EMBEDDER_MODEL_NAME=${EMBEDDER_MODEL_NAME:-nomic-embed-text}
-      - GENERATOR_MODEL_NAME=${GENERATOR_MODEL_NAME:-gemma3:latest}
-    command: >
-      sh -c "
-        echo 'Waiting for Ollama service to be ready...' &&
-        while ! wget -q -T 1 -O - http://ollama:11434/ > /dev/null 2>&1; do
-          echo 'Still waiting for Ollama...'; sleep 1;
-        done;
-        echo 'Ollama is ready. Pulling models...' &&
-        ollama pull ${EMBEDDER_MODEL_NAME} &&
-        ollama pull ${GENERATOR_MODEL_NAME} &&
-        echo '---' &&
-        echo '✅ Model setup complete. This container will now exit.' &&
-        echo '---'
-      "
-      
-  db-setup:
-    image: postgres:16-alpine
-    container_name: postgres-db-setup
-    profiles: ["setup"]
-    networks:
-      - warden-net
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      - DB_NAME=${DB_NAME:-codewarden}
-      - DB_USERNAME=${DB_USERNAME:-warden}
-      - DB_PASSWORD=${DB_PASSWORD:-secret}
-    command: >
-      sh -c "
-        echo 'Waiting for PostgreSQL to be ready...' &&
-        until PGPASSWORD=postgres psql -h db -U postgres -c '\q'; do
-          echo 'Still waiting for PostgreSQL...'; sleep 1;
-        done;
-        echo 'PostgreSQL is ready. Setting up database role and permissions...' &&
-        PGPASSWORD=postgres psql -h db -U postgres -c \"CREATE ROLE $$DB_USERNAME$$ WITH LOGIN PASSWORD '$$DB_PASSWORD$$' CREATEDB;\" || echo 'Role may already exist' &&
-        PGPASSWORD=postgres psql -h db -U postgres -c \"CREATE DATABASE $$DB_NAME$$ OWNER $$DB_USERNAME$$;\" || echo 'Database may already exist' &&
-        PGPASSWORD=$$DB_PASSWORD$$ psql -h db -U $$DB_USERNAME$$ -d $$DB_NAME$$ -c 'SELECT current_user, current_database();' &&
-        echo '---' &&
-        echo '✅ Database setup complete. This container will now exit.' &&
-        echo '---'
-      "
-
+  # PostgreSQL Database
   db:
     image: postgres:16-alpine
     container_name: postgres-db
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USERNAME}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      DB_SSL_MODE: ${DB_SSL_MODE}
+      POSTGRES_DB: codewarden
+      POSTGRES_USER: warden
+      POSTGRES_PASSWORD: secret
     ports:
       - "5432:5432"
     volumes:
@@ -77,12 +23,13 @@ services:
     networks:
       - warden-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U warden -d codewarden"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
+  # Qdrant Vector Database
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -95,27 +42,10 @@ services:
       - warden-net
     restart: unless-stopped
 
-  # ollama:
-  #   image: ollama/ollama:0.9.6
-  #   container_name: ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   networks:
-  #     - warden-net
-  #   healthcheck:
-  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--timeout=1", "-O", "-", "http://localhost:11434/"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  #   restart: unless-stopped
-
 networks:
   warden-net:
     driver: bridge
 
 volumes:
   postgres_data:
-  ollama_data:
   qdrant_data:

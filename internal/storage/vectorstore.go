@@ -17,16 +17,20 @@ import (
 )
 
 // VectorStore interface updated for multi-model support
+// It embeds vectorstores.VectorStore to ensure compatibility with GoFrame tools.
 //
 //go:generate mockgen -destination=../../mocks/mock_vectorstore.go -package=mocks github.com/sevigo/code-warden/internal/storage VectorStore
 type VectorStore interface {
+	vectorstores.VectorStore
 	SetBatchConfig(config qdrant.BatchConfig) error
-	AddDocumentsBatch(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error
-	SimilaritySearch(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error)
-	SimilaritySearchBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error)
+
+	// Renamed methods to avoid collision with vectorstores.VectorStore
+	AddDocumentsToCollection(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error
+	SearchCollection(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error)
+	SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error)
 	DeleteCollection(ctx context.Context, collectionName string) error
-	DeleteDocuments(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error
-	DeleteDocumentsByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error
+	DeleteDocumentsFromCollection(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error
+	DeleteDocumentsFromCollectionByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error
 }
 
 // Ensure qdrantVectorStore implements VectorStore
@@ -75,7 +79,7 @@ func NewQdrantVectorStore(cfg *config.Config, logger *slog.Logger, opts ...Qdran
 		MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
 	}
 	s := &qdrantVectorStore{
-		qdrantHost:  cfg.QdrantHost,
+		qdrantHost:  cfg.Storage.QdrantHost,
 		logger:      logger,
 		clients:     make(map[string]vectorstores.VectorStore),
 		embedders:   make(map[string]embeddings.Embedder),
@@ -111,7 +115,7 @@ func (q *qdrantVectorStore) getOrCreateEmbedder(modelName string) (embeddings.Em
 
 	// Currently only Ollama is supported; can be extended later.
 	baseEmbedder, err := ollama.New(
-		ollama.WithServerURL(q.cfg.OllamaHost),
+		ollama.WithServerURL(q.cfg.AI.OllamaHost),
 		ollama.WithModel(modelName),
 	)
 	if err != nil {
@@ -146,12 +150,18 @@ func (q *qdrantVectorStore) getStoreForCollection(collectionName string, embedde
 		return nil, fmt.Errorf("cannot create store without a valid embedder for model %s: %w", embedderModelName, err)
 	}
 
-	newClient, err := qdrant.New(
+	opts := []qdrant.Option{
 		qdrant.WithHost(q.qdrantHost),
 		qdrant.WithEmbedder(embedder),
 		qdrant.WithCollectionName(collectionName),
 		qdrant.WithLogger(q.logger),
-	)
+	}
+
+	if q.cfg.Features.EnableBinaryQuantization {
+		opts = append(opts, qdrant.WithBinaryQuantization(true))
+	}
+
+	newClient, err := qdrant.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create qdrant client for collection %s: %w", collectionName, err)
 	}
@@ -179,7 +189,7 @@ func (q *qdrantVectorStore) SetBatchConfig(config qdrant.BatchConfig) error {
 	return nil
 }
 
-func (q *qdrantVectorStore) AddDocumentsBatch(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error {
+func (q *qdrantVectorStore) AddDocumentsToCollection(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -198,7 +208,8 @@ func (q *qdrantVectorStore) AddDocumentsBatch(ctx context.Context, collectionNam
 	return err
 }
 
-func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error) {
+// SearchCollection is the renamed SimilaritySearch
+func (q *qdrantVectorStore) SearchCollection(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error) {
 	q.logger.DebugContext(ctx, "Starting similarity search", "collection", collectionName, "embedder", embedderModelName)
 
 	if strings.TrimSpace(query) == "" {
@@ -219,6 +230,7 @@ func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName
 	}
 
 	startTime := time.Now()
+	// Use goframe's SimilaritySearch
 	results, err := store.SimilaritySearch(ctx, query, numDocs, vectorstores.WithCollectionName(collectionName))
 	if err != nil {
 		q.logger.ErrorContext(ctx, "Similarity search execution failed", "collection", collectionName, "error", err)
@@ -229,7 +241,7 @@ func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, collectionName
 	return results, nil
 }
 
-func (q *qdrantVectorStore) SimilaritySearchBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error) {
+func (q *qdrantVectorStore) SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error) {
 	if len(queries) == 0 {
 		return nil, nil
 	}
@@ -262,7 +274,7 @@ func (q *qdrantVectorStore) DeleteCollection(ctx context.Context, collectionName
 	return nil
 }
 
-func (q *qdrantVectorStore) DeleteDocuments(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error {
+func (q *qdrantVectorStore) DeleteDocumentsFromCollection(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error {
 	if len(documentIDs) == 0 {
 		return nil
 	}
@@ -276,7 +288,7 @@ func (q *qdrantVectorStore) DeleteDocuments(ctx context.Context, collectionName,
 	return store.DeleteDocumentsByFilter(ctx, filters)
 }
 
-func (q *qdrantVectorStore) DeleteDocumentsByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error {
+func (q *qdrantVectorStore) DeleteDocumentsFromCollectionByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error {
 	store, err := q.getStoreForCollection(collectionName, embedderModelName)
 	if err != nil {
 		return err
@@ -284,9 +296,110 @@ func (q *qdrantVectorStore) DeleteDocumentsByFilter(ctx context.Context, collect
 	return store.DeleteDocumentsByFilter(ctx, filters)
 }
 
+func (q *qdrantVectorStore) ListCollections(ctx context.Context) ([]string, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	cols := make([]string, 0, len(q.clients))
+	for name := range q.clients {
+		cols = append(cols, name)
+	}
+	return cols, nil
+}
+
 func (q *qdrantVectorStore) validateCollectionName(collectionName string) error {
 	if strings.TrimSpace(collectionName) == "" {
 		return fmt.Errorf("collection name cannot be empty")
 	}
 	return nil
+}
+
+// Implement vectorstores.VectorStore methods
+
+// extractCollectionName uses goframe's ParseOptions to extract collection name from options.
+func extractCollectionName(opts ...vectorstores.Option) string {
+	parsed := vectorstores.ParseOptions(opts...)
+	return parsed.CollectionName
+}
+
+func (q *qdrantVectorStore) AddDocuments(ctx context.Context, docs []schema.Document, opts ...vectorstores.Option) ([]string, error) {
+	collectionName := extractCollectionName(opts...)
+	if collectionName == "" {
+		return nil, fmt.Errorf("collection name required via WithCollectionName option for AddDocuments")
+	}
+
+	// Use default embedder from config
+	embedderModel := q.cfg.AI.EmbedderModel
+
+	q.logger.Debug("AddDocuments via generic interface", "collection", collectionName, "embedder", embedderModel, "docs", len(docs))
+
+	store, err := q.getStoreForCollection(collectionName, embedderModel)
+	if err != nil {
+		return nil, err
+	}
+
+	return store.AddDocuments(ctx, docs, opts...)
+}
+
+func (q *qdrantVectorStore) SimilaritySearch(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]schema.Document, error) {
+	collectionName := extractCollectionName(opts...)
+	if collectionName == "" {
+		return nil, fmt.Errorf("collection name required via WithCollectionName option for SimilaritySearch")
+	}
+
+	// Use default embedder from config
+	embedderModel := q.cfg.AI.EmbedderModel
+
+	q.logger.Debug("SimilaritySearch via generic interface", "collection", collectionName, "embedder", embedderModel)
+
+	store, err := q.getStoreForCollection(collectionName, embedderModel)
+	if err != nil {
+		return nil, err
+	}
+
+	return store.SimilaritySearch(ctx, query, numDocs, opts...)
+}
+
+func (q *qdrantVectorStore) SimilaritySearchWithScores(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]vectorstores.DocumentWithScore, error) {
+	collectionName := extractCollectionName(opts...)
+	if collectionName == "" {
+		return nil, fmt.Errorf("collection name required via WithCollectionName option")
+	}
+
+	embedderModel := q.cfg.AI.EmbedderModel
+	store, err := q.getStoreForCollection(collectionName, embedderModel)
+	if err != nil {
+		return nil, err
+	}
+
+	return store.SimilaritySearchWithScores(ctx, query, numDocs, opts...)
+}
+
+func (q *qdrantVectorStore) DeleteDocumentsByFilter(ctx context.Context, filters map[string]any, opts ...vectorstores.Option) error {
+	collectionName := extractCollectionName(opts...)
+	if collectionName == "" {
+		return fmt.Errorf("collection name required via WithCollectionName option")
+	}
+
+	embedderModel := q.cfg.AI.EmbedderModel
+	store, err := q.getStoreForCollection(collectionName, embedderModel)
+	if err != nil {
+		return err
+	}
+
+	return store.DeleteDocumentsByFilter(ctx, filters, opts...)
+}
+
+func (q *qdrantVectorStore) SimilaritySearchBatch(ctx context.Context, queries []string, numDocs int, opts ...vectorstores.Option) ([][]schema.Document, error) {
+	collectionName := extractCollectionName(opts...)
+	if collectionName == "" {
+		return nil, fmt.Errorf("collection name required via WithCollectionName option")
+	}
+
+	embedderModel := q.cfg.AI.EmbedderModel
+	store, err := q.getStoreForCollection(collectionName, embedderModel)
+	if err != nil {
+		return nil, err
+	}
+
+	return store.SimilaritySearchBatch(ctx, queries, numDocs, opts...)
 }

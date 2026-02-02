@@ -37,7 +37,7 @@ func main() {
 	if selectedTheme == "" {
 		selectedTheme = os.Getenv("CODE_WARDEN_THEME")
 	}
-	if selectedTheme == "" && cfg.TerminalTheme == "" {
+	if selectedTheme == "" && cfg.Server.Theme == "" {
 		selectedTheme = "cyan"
 	}
 

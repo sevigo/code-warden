@@ -51,7 +51,7 @@ func NewPromptManager() (*PromptManager, error) {
 		key := PromptKey(baseName[:lastUnderscore])
 		provider := ModelProvider(baseName[lastUnderscore+1:])
 
-		content, err := promptFiles.ReadFile(filepath.Join("prompts", fileName))
+		content, err := promptFiles.ReadFile("prompts/" + fileName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read embedded prompt file %s: %w", fileName, err)
 		}
