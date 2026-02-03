@@ -91,7 +91,7 @@ func (t *stepTimer) infof(format string, args ...any) {
 	}
 }
 
-func runReview(_ *cobra.Command, args []string) error { //nolint:funlen,gosec // CLI workflow requires sequential steps
+func runReview(_ *cobra.Command, args []string) error { //nolint:gosec // CLI output errors ignored
 	ctx := context.Background()
 	prURL := args[0]
 
