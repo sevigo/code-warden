@@ -143,6 +143,12 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		// Don't fail the whole indexing if arch summaries fail
 	}
 
+	r.logger.Info("repository setup complete",
+		"collection", collectionName,
+		"total_docs", totalProcessed.Load(),
+		"duration", time.Since(startTime).Round(time.Second),
+	)
+
 	return nil
 }
 
@@ -222,6 +228,11 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		if _, err := scopedStore.AddDocuments(ctx, allDocs); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
+	}
+
+	// Trigger arch summary re-generation for the repository
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath); err != nil {
+		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
 	}
 
 	return nil
@@ -544,6 +555,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	// 3. Get Impact Context (The "Ripple Effect")
 	impactContext := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs)
 	if impactContext != "" {
+		r.logger.Info("impact analysis identified potential ripple effects", "context_length", len(impactContext))
 		contextBuilder.WriteString("# Potential Impacted Callers & Usages\n\n")
 		contextBuilder.WriteString("The following code snippets may be affected by the changes in modified symbols:\n\n")
 		contextBuilder.WriteString(impactContext)
@@ -552,20 +564,47 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	// 4. Finalize Related Code Snippets
 	contextBuilder.WriteString("# Related Code Snippets\n\n")
+	var topFiles []string
 	for i, docs := range hydeResults {
 		originalFile := changedFiles[indices[i]]
-		for _, doc := range docs {
+		for j, doc := range docs {
 			source, _ := doc.Metadata["source"].(string)
 			if source == "" || r.isArchDocument(doc) {
 				continue
 			}
 			if _, exists := seenDocs[source]; !exists {
+				if len(topFiles) < 3 {
+					topFiles = append(topFiles, source)
+				}
 				contextBuilder.WriteString(fmt.Sprintf("**%s** (relevant to %s):\n```\n%s\n```\n\n",
 					source, originalFile.Filename, doc.PageContent))
 				seenDocs[source] = struct{}{}
 			}
+			// Fallback: even if we've seen it, if it's top result for another file, it's worth noting in debug logs
+			if j == 0 && len(topFiles) < 3 {
+				alreadyLogged := false
+				for _, f := range topFiles {
+					if f == source {
+						alreadyLogged = true
+						break
+					}
+				}
+				if !alreadyLogged {
+					topFiles = append(topFiles, source)
+				}
+			}
 		}
 	}
+
+	if len(topFiles) > 0 {
+		r.logger.Info("HyDE search results", "top_files", topFiles)
+	}
+
+	r.logger.Info("relevant context built",
+		"changed_files", len(changedFiles),
+		"hyde_snippets", len(hydeMap),
+		"seen_docs", len(seenDocs),
+	)
 
 	return contextBuilder.String()
 }
@@ -580,6 +619,9 @@ func (r *ragService) getArchContext(ctx context.Context, scopedStore storage.Sco
 		r.logger.Warn("failed to get architectural context", "error", err)
 		return ""
 	}
+	if archContext != "" {
+		r.logger.Debug("retrieved architectural context", "folders_count", len(filePaths))
+	}
 	return archContext
 }
 
@@ -590,6 +632,8 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 	}
 	hydeChan := make(chan hydeResult, len(files))
 	var wg sync.WaitGroup
+	// Semaphore to limit concurrent LLM calls (e.g., 5 at a time)
+	sem := make(chan struct{}, 5)
 
 	for i, file := range files {
 		if file.Patch == "" {
@@ -598,6 +642,10 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 		wg.Add(1)
 		go func(idx int, f internalgithub.ChangedFile) {
 			defer wg.Done()
+
+			sem <- struct{}{}        // Acquire
+			defer func() { <-sem }() // Release
+
 			if ctx.Err() != nil {
 				return
 			}
@@ -658,7 +706,11 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 		if file.Patch == "" {
 			continue
 		}
-		for _, sym := range r.extractSymbolsFromPatch(file.Patch) {
+		extracted := r.extractSymbolsFromPatch(file.Patch)
+		if len(extracted) > 0 {
+			r.logger.Debug("extracted symbols for impact analysis", "file", file.Filename, "symbols", extracted)
+		}
+		for _, sym := range extracted {
 			symbols[sym] = struct{}{}
 		}
 	}
