@@ -29,7 +29,7 @@ github:
   # Path to the GitHub App private key file
   private_key_path: "keys/code-warden-app.private-key.pem"
   # Personal access token (for CLI commands like preload)
-  token: ""
+  token: "ghp_YOUR_PERSONAL_ACCESS_TOKEN_HERE"
 
 # ============================================================================
 # AI Configuration
@@ -47,9 +47,15 @@ ai:
   # Gemini settings (when using gemini provider)
   # Set via environment variable AI_GEMINI_API_KEY for security
   gemini_api_key: ""
-  
+
+  # Reranker model (small model for fast retrieval), gemma3:1b, qwen2.5-coder:1.5b
+  reranker_model: "qwen2.5-coder:1.5b" 
+
+  # Enable 2-stage retrieval (reranker)
+  enable_reranking: true
+
   # Model names
-  generator_model: "gemma3:latest"
+  generator_model: "qwen3-coder:480b-cloud"
   embedder_model: "nomic-embed-text"
   embedder_task_description: "search_document"
 
