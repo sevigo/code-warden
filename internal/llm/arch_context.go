@@ -260,9 +260,10 @@ func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore sto
 	dirs := make(map[string]struct{})
 	for _, path := range paths {
 		dir := filepath.Dir(path)
-		if dir != "." {
-			dirs[dir] = struct{}{}
+		if dir == "." {
+			dir = "root"
 		}
+		dirs[dir] = struct{}{}
 	}
 
 	if len(dirs) == 0 {

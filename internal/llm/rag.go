@@ -559,6 +559,9 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		wg.Add(1)
 		go func(idx int, f internalgithub.ChangedFile) {
 			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
 			r.logger.Debug("generating HyDE hypothetical code", "file", f.Filename)
 			hydePrompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: f.Patch})
 			if err != nil {
