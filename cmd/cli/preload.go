@@ -81,8 +81,11 @@ avoiding cold-start delays on large repositories.`,
 		}
 
 		// Update the last indexed SHA so subsequent runs are incremental
-		if err := app.RepoMgr.UpdateRepoSHA(ctx, repoFullName, mockEvent.HeadSHA); err != nil {
-			return fmt.Errorf("failed to update repo SHA after preload: %w", err)
+		// Defensive check: only persist if we have a valid SHA
+		if mockEvent.HeadSHA != "" {
+			if err := app.RepoMgr.UpdateRepoSHA(ctx, repoFullName, mockEvent.HeadSHA); err != nil {
+				return fmt.Errorf("failed to update repo SHA after preload: %w", err)
+			}
 		}
 
 		fmt.Printf("\n✅ Successfully preloaded repository '%s'.\n", repoFullName)
