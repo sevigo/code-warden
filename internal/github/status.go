@@ -4,6 +4,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/go-github/v73/github"
@@ -69,16 +70,86 @@ func (s *statusUpdater) Completed(ctx context.Context, event *core.GitHubEvent, 
 }
 
 // PostStructuredReview posts a new pull request review with line-specific comments.
+// It formats comments with severity badges and posts a nicely formatted summary.
 func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
 	var comments []DraftReviewComment
 	for _, sug := range review.Suggestions {
 		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
+			formattedComment := formatInlineComment(sug)
 			comments = append(comments, DraftReviewComment{
 				Path: sug.FilePath,
 				Line: sug.LineNumber,
-				Body: sug.Comment,
+				Body: formattedComment,
 			})
 		}
 	}
-	return s.client.CreateReview(ctx, event.RepoOwner, event.RepoName, event.PRNumber, review.Summary, comments)
+
+	formattedSummary := formatReviewSummary(review)
+	return s.client.CreateReview(ctx, event.RepoOwner, event.RepoName, event.PRNumber, event.HeadSHA, formattedSummary, comments)
+}
+
+// formatInlineComment creates a nicely formatted comment with severity and category.
+func formatInlineComment(sug core.Suggestion) string {
+	severity := sug.Severity
+	emoji := severityEmoji(severity)
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s **[%s]**", emoji, severity))
+	if sug.Category != "" {
+		sb.WriteString(fmt.Sprintf(" | _%s_", sug.Category))
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString(sug.Comment)
+	return sb.String()
+}
+
+// formatReviewSummary creates a nicely formatted summary with statistics.
+func formatReviewSummary(review *core.StructuredReview) string {
+	// Count severities
+	counts := map[string]int{"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+	for _, sug := range review.Suggestions {
+		counts[sug.Severity]++
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## 🔍 Code Review Summary\n\n")
+	sb.WriteString(review.Summary)
+	sb.WriteString("\n\n")
+
+	if len(review.Suggestions) > 0 {
+		sb.WriteString("---\n\n")
+		sb.WriteString("### 📊 Issue Summary\n")
+		sb.WriteString("| Severity | Count |\n")
+		sb.WriteString("|----------|-------|\n")
+		if counts["Critical"] > 0 {
+			sb.WriteString(fmt.Sprintf("| 🔴 Critical | %d |\n", counts["Critical"]))
+		}
+		if counts["High"] > 0 {
+			sb.WriteString(fmt.Sprintf("| 🟠 High | %d |\n", counts["High"]))
+		}
+		if counts["Medium"] > 0 {
+			sb.WriteString(fmt.Sprintf("| 🟡 Medium | %d |\n", counts["Medium"]))
+		}
+		if counts["Low"] > 0 {
+			sb.WriteString(fmt.Sprintf("| 🟢 Low | %d |\n", counts["Low"]))
+		}
+	}
+
+	return sb.String()
+}
+
+// severityEmoji returns an emoji for the given severity level.
+func severityEmoji(severity string) string {
+	switch severity {
+	case "Critical":
+		return "🔴"
+	case "High":
+		return "🟠"
+	case "Medium":
+		return "🟡"
+	case "Low":
+		return "🟢"
+	default:
+		return "⚪"
+	}
 }

@@ -32,7 +32,7 @@ type Client interface {
 	GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error)
 	GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]ChangedFile, error)
 	CreateComment(ctx context.Context, owner, repo string, number int, body string) error
-	CreateReview(ctx context.Context, owner, repo string, number int, body string, comments []DraftReviewComment) error
+	CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error
 	CreateCheckRun(ctx context.Context, owner, repo string, opts github.CreateCheckRunOptions) (*github.CheckRun, error)
 	UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, opts github.UpdateCheckRunOptions) (*github.CheckRun, error)
 }
@@ -60,7 +60,7 @@ func NewPATClient(ctx context.Context, token string, logger *slog.Logger) Client
 }
 
 // CreateReview creates a new pull request review with a summary and line-specific comments.
-func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, number int, body string, comments []DraftReviewComment) error {
+func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error {
 	var ghComments []*github.DraftReviewComment
 	for _, c := range comments {
 		ghComments = append(ghComments, &github.DraftReviewComment{
@@ -71,6 +71,7 @@ func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, num
 	}
 
 	reviewRequest := &github.PullRequestReviewRequest{
+		CommitID: &commitSHA,
 		Body:     &body,
 		Event:    github.Ptr("COMMENT"),
 		Comments: ghComments,

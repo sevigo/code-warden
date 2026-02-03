@@ -12,6 +12,7 @@ Code-Warden is a GitHub App that uses a local Large Language Model (LLM) to perf
 -   **Repository-Specific Configuration**: Customize review behavior, excluded files/directories, and custom instructions via a `.code-warden.yml` file in your repository root.
 -   **Simple Trigger**: Just comment `/review` on any pull request to start the process, or `/rereview` for a follow-up analysis.
 -   **GitHub Integration**: Posts reviews directly as PR comments and updates the check status.
+-   **Enhanced Reporting**: Inline comments feature severity badges (🔴, 🟠, 🟡) and categories, while the review summary provides a clear statistical breakdown of issues.
 
 ## How It Works
 

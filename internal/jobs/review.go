@@ -74,17 +74,31 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 	case core.FullReview:
 		return j.runFullReview(ctx, event)
 	case core.ReReview:
-		return j.handleUnsupportedReReview(ctx, event)
+		return j.runReReview(ctx, event)
 	default:
 		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
 }
 
 // runFullReview handles the initial `/review` command.
-func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) (err error) {
+func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+	return j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
+}
 
-	reviewEnv, err := j.setupReviewEnvironment(ctx, event)
+// runReReview handles the `/rereview` command.
+// It reuses the same robust workflow as full review, ensuring repository state is consistent
+// before generating the review. Since indexing is incremental, this is efficient even if
+// run repeatedly.
+func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
+}
+
+// executeReviewWorkflow contains the core logic for running a code review.
+// It handles setup, syncing, indexing (if needed), review generation, and posting results.
+func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHubEvent, title, summary string) (err error) {
+	reviewEnv, err := j.setupReviewEnvironment(ctx, event, title, summary)
 	if err != nil {
 		return err
 	}
@@ -112,8 +126,8 @@ type reviewEnvironment struct {
 }
 
 // setupReviewEnvironment initializes clients, syncs the repo, and loads all necessary configs.
-func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent) (*reviewEnvironment, error) {
-	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Code Review", "AI analysis in progress...")
+func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent, title, summary string) (*reviewEnvironment, error) {
+	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, title, summary)
 	if err != nil {
 		return nil, err
 	}
@@ -258,25 +272,6 @@ func (j *ReviewJob) updateStatusOnError(ctx context.Context, statusUpdater githu
 			j.logger.Error("Failed to update failure status on GitHub", "original_error", jobErr, "status_update_error", err)
 		}
 	}
-}
-
-func (j *ReviewJob) handleUnsupportedReReview(ctx context.Context, event *core.GitHubEvent) error {
-	j.logger.Info("Handling temporarily disabled /rereview command", "repo", event.RepoFullName)
-	_, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Preparing for follow-up...")
-	if err != nil {
-		return err
-	}
-
-	comment := "The `/rereview` command is being upgraded and is temporarily unavailable. Please use `/review` for a full new analysis."
-	if postErr := statusUpdater.PostSimpleComment(ctx, event, comment); postErr != nil {
-		j.logger.Error("Failed to post comment for disabled feature", "error", postErr)
-	}
-
-	summary := "The `/rereview` command is temporarily disabled while it's being upgraded."
-	if completeErr := statusUpdater.Completed(ctx, event, checkRunID, "neutral", "Feature Unavailable", summary); completeErr != nil {
-		return fmt.Errorf("failed to update completion status: %w", completeErr)
-	}
-	return nil
 }
 
 func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
