@@ -20,6 +20,8 @@ const (
 	CodeReviewPrompt     PromptKey     = "code_review"
 	CodeGenerationPrompt PromptKey     = "code_generation"
 	ReReviewPrompt       PromptKey     = "rereview"
+	ArchSummaryPrompt    PromptKey     = "arch_summary"
+	QuestionPrompt       PromptKey     = "question"
 )
 
 type PromptManager struct {

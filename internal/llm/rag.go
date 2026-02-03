@@ -132,6 +132,14 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 
 	if totalDocsFound.Load() == 0 {
 		r.logger.Warn("no indexable documents found after loader filtering", "path", repoPath)
+		return nil
+	}
+
+	// Generate architectural summaries for directories (post-processing)
+	r.logger.Info("generating architectural summaries for indexed content")
+	if err := r.GenerateArchSummaries(ctx, collectionName, embedderModelName, repoPath); err != nil {
+		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
+		// Don't fail the whole indexing if arch summaries fail
 	}
 
 	return nil
@@ -438,11 +446,33 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
+// It also fetches architectural summaries for the affected directories.
 func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName string, changedFiles []internalgithub.ChangedFile) (string, error) {
 	if len(changedFiles) == 0 {
 		return "", nil
 	}
 
+	var contextBuilder strings.Builder
+	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+
+	// 1. Get Architectural Context (The "Why")
+	// Extract file paths for arch context lookup
+	filePaths := make([]string, len(changedFiles))
+	for i, f := range changedFiles {
+		filePaths[i] = f.Filename
+	}
+
+	archContext, err := r.GetArchContextForPaths(ctx, scopedStore, filePaths)
+	if err != nil {
+		r.logger.Warn("failed to get architectural context, continuing without it", "error", err)
+	} else if archContext != "" {
+		contextBuilder.WriteString("# Architectural Context\n\n")
+		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
+		contextBuilder.WriteString(archContext)
+		contextBuilder.WriteString("\n---\n\n")
+	}
+
+	// 2. Get Snippet Context (The "How")
 	// Prepare a batch of queries and corresponding original files.
 	queries := make([]string, 0, len(changedFiles))
 	originalFilesForQueries := make([]internalgithub.ChangedFile, 0, len(changedFiles))
@@ -461,26 +491,26 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	}
 
 	if len(queries) == 0 {
-		return "", nil
+		return contextBuilder.String(), nil
 	}
 
 	batchResults, err := r.vectorStore.SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, 7)
 	if err != nil {
 		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
-		return "", fmt.Errorf("failed to retrieve RAG context: %w", err)
+		return contextBuilder.String(), fmt.Errorf("failed to retrieve RAG context: %w", err)
 	}
 
 	// Process the results, mapping them back to the original files.
-	var contextBuilder strings.Builder
 	seenDocs := make(map[string]struct{})
 
 	if len(batchResults) != len(originalFilesForQueries) {
 		r.logger.Error("mismatch between batch results and original files list; context attribution may be incorrect",
 			"batch_results_count", len(batchResults),
 			"expected_files_count", len(originalFilesForQueries))
-		return "", fmt.Errorf("mismatch between batch results and original files list")
+		return contextBuilder.String(), fmt.Errorf("mismatch between batch results and original files list")
 	}
 
+	contextBuilder.WriteString("# Related Code Snippets\n\n")
 	for i, relevantDocs := range batchResults {
 		originalFile := originalFilesForQueries[i]
 
@@ -493,6 +523,11 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 				}
 				r.logger.Debug("document missing 'source' metadata or it's not a string, skipping",
 					"document_content_preview", contentPreview)
+				continue
+			}
+
+			// Skip arch documents here, they've already been included
+			if chunkType, ok := doc.Metadata["chunk_type"].(string); ok && chunkType == "arch" {
 				continue
 			}
 
