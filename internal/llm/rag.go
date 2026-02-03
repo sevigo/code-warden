@@ -536,24 +536,57 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		return ""
 	}
 
-	var contextBuilder strings.Builder
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 	seenDocs := make(map[string]struct{})
 
-	// 1. Get Architectural Context (The "Why")
-	if archContext := r.getArchContext(ctx, scopedStore, changedFiles); archContext != "" {
+	// Run context gathering in parallel for lower latency
+	var wg sync.WaitGroup
+	var archContext, impactContext string
+	var hydeMap map[int]string
+	var hydeResults [][]schema.Document
+	var indices []int
+
+	// 1. Architectural Context
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if ac := r.getArchContext(ctx, scopedStore, changedFiles); ac != "" {
+			archContext = ac
+		}
+	}()
+
+	// 2. HyDE Snippets (generation + search)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hydeMap = r.generateHyDESnippets(ctx, changedFiles)
+		hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
+	}()
+
+	// 3. Impact Context (uses local seenDocs to avoid data race)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		localSeen := make(map[string]struct{})
+		if ic := r.getImpactContext(ctx, scopedStore, changedFiles, localSeen); ic != "" {
+			impactContext = ic
+		}
+	}()
+
+	wg.Wait()
+
+	var contextBuilder strings.Builder
+
+	// Assemble Architectural Context
+	if archContext != "" {
 		contextBuilder.WriteString("# Architectural Context\n\n")
 		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
 		contextBuilder.WriteString(archContext)
 		contextBuilder.WriteString("\n---\n\n")
 	}
 
-	// 2. Get HyDE-augmented Snippets (The "How")
-	hydeMap := r.generateHyDESnippets(ctx, changedFiles)
-	hydeResults, indices := r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
-
-	// 3. Get Impact Context (The "Ripple Effect")
-	if impactContext := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs); impactContext != "" {
+	// Assemble Impact Context
+	if impactContext != "" {
 		r.logger.Info("impact analysis identified potential ripple effects", "context_length", len(impactContext))
 		contextBuilder.WriteString("# Potential Impacted Callers & Usages\n\n")
 		contextBuilder.WriteString("The following code snippets may be affected by the changes in modified symbols:\n\n")
@@ -561,7 +594,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		contextBuilder.WriteString("\n---\n\n")
 	}
 
-	// 4. Finalize Related Code Snippets
+	// Assemble Related Snippets (minor overlap with Impact is acceptable for speed)
 	relatedSnippets := r.formatRelatedSnippets(hydeResults, indices, changedFiles, seenDocs)
 	if relatedSnippets != "" {
 		contextBuilder.WriteString("# Related Code Snippets\n\n")
@@ -571,7 +604,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	r.logger.Info("relevant context built",
 		"changed_files", len(changedFiles),
 		"hyde_snippets", len(hydeMap),
-		"seen_docs", len(seenDocs),
+		"arch_len", len(archContext),
 	)
 
 	return contextBuilder.String()

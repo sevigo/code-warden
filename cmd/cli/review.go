@@ -6,9 +6,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/internal/wire"
 )
 
@@ -105,52 +107,43 @@ func runReview(_ *cobra.Command, args []string) error {
 	collectionName := repo.QdrantCollectionName
 	embedderModel := repo.EmbedderModelName
 
-	// For simplicity in CLI, we can assume we want to ensure it's updated.
-	// Real webhook logic checks repo.Status or Clone vs Update.
-	// We'll mimic the webhook handler's logic partially or just force an update context logic.
-	// Since SyncRepo returns a repo object, let's check its output logic in real handler.
-	// But CLI user likely wants latest.
-	// SyncRepo handles the git pull. Now we need to update embeddings.
-	// We'll just call SetupRepoContext if we want full or Update if we know what changed.
-	// For CLI 'review', we likely want to ensure the vector store matches HEAD.
-	// The most robust way for a "test" is to assume incremental update for the changed files in PR + ensure base is there.
-	// However, without knowing previous commit, Update is hard.
-	// SetupRepoContext does full index.
-	// Let's rely on what the webhook does: It queues a job.
-	// Here we want synchronous execution.
-
-	// Check if we have embeddings. If new repo, Setup. If existing, maybe Update?
-	// But UpdateRepoContext needs specific filesToProcess.
-	// SetupRepoContext walks the whole repo.
-	// Safest for "Review this PR" locally is:
-	// If it was just cloned (brand new), run Setup.
-	// If it existed, we might want to just run Setup (re-index) OR assume it's up to date except for PR changes?
-	// Actually, RAG needs context from the whole repo.
-	// Let's do a quick check: if collection exists?
-	// app.VectorStore.CollectionExists? (Not exposed directly maybe).
-
-	// Let's just run SetupRepoContext. It uses a loader with checks, but might be slow for huge repos.
-	// But for "Testing logic", correct state is paramount.
-	fmt.Printf("Ensuring repository context is indexed (Collection: %s, Model: %s)...\n", collectionName, embedderModel)
-	if err := app.RAGService.SetupRepoContext(ctx, nil, collectionName, embedderModel, repoPath); err != nil {
-		return fmt.Errorf("failed to setup repo context: %w", err)
+	if err := handleIndexing(ctx, app, syncResult, repo, repoPath, collectionName, embedderModel); err != nil {
+		return err
 	}
-	fmt.Println("Repository context ready.")
 
 	// 7. Generate Review
+	return generateAndPrintReview(ctx, app, repo, event, ghClient)
+}
+
+func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResult, repo *storage.Repository, repoPath, collectionName, embedderModel string) error {
+	switch {
+	case syncResult.IsInitialClone:
+		fmt.Printf("Performing initial full indexing (Collection: %s, Model: %s)...\n", collectionName, embedderModel)
+		if err := a.RAGService.SetupRepoContext(ctx, nil, collectionName, embedderModel, repoPath); err != nil {
+			return fmt.Errorf("failed to setup repo context: %w", err)
+		}
+		fmt.Println("Repository context setup complete.")
+	case len(syncResult.FilesToAddOrUpdate) > 0 || len(syncResult.FilesToDelete) > 0:
+		fmt.Printf("Updating repository context (Collection: %s, Model: %s)...\n", collectionName, embedderModel)
+		fmt.Printf("Processing %d modified/added files and %d deleted files...\n", len(syncResult.FilesToAddOrUpdate), len(syncResult.FilesToDelete))
+		if err := a.RAGService.UpdateRepoContext(ctx, nil, repo, repoPath, syncResult.FilesToAddOrUpdate, syncResult.FilesToDelete); err != nil {
+			return fmt.Errorf("failed to update repo context: %w", err)
+		}
+		fmt.Println("Repository context update complete.")
+	default:
+		fmt.Println("Repository context is up to date. Skipping indexing.")
+	}
+	return nil
+}
+
+func generateAndPrintReview(ctx context.Context, a *app.App, repo *storage.Repository, event *core.GitHubEvent, ghClient github.Client) error {
 	fmt.Println("Generating review (this may take a few seconds)...")
-	// We need a RepoConfig. Default or loaded from repo?
-	// app.RepoMgr.GetConfig(repoPath)? (Not exposed).
-	// Let's use nil (Default).
-	review, _, err := app.RAGService.GenerateReview(ctx, nil, repo, event, ghClient)
+	review, _, err := a.RAGService.GenerateReview(ctx, nil, repo, event, ghClient)
 	if err != nil {
 		return fmt.Errorf("failed to generate review: %w", err)
 	}
 	fmt.Println("Review generation complete.")
-
-	// 8. Output
 	printReview(review)
-
 	return nil
 }
 

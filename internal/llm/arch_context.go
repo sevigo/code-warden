@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +18,8 @@ import (
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 )
+
+const rootDir = "root"
 
 // ArchSummaryData holds data for the arch_summary prompt template.
 type ArchSummaryData struct {
@@ -35,33 +39,45 @@ type DirectoryInfo struct {
 }
 
 // GenerateArchSummaries generates architectural summaries for directories in the repository.
-// It groups indexed documents by directory, creates summaries via LLM, and stores them.
+// It uses filesystem walking to discover directories and checks for existing summaries in batch.
 func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string) error {
-	r.logger.Info("generating architectural summaries",
+	r.logger.Info("generating architectural summaries (Level 2 Optimization)",
 		"collection", collectionName,
 		"repoPath", repoPath,
 	)
 
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+	summaryCache := r.fetchSummaryCache(ctx, scopedStore)
 
-	// Search for existing code documents to extract directory structure
-	// We use a broad query to get many documents
-	allDocs, err := scopedStore.SimilaritySearch(ctx, "code function type struct", 500)
+	// Walk filesystem to discover directories and check cache
+	dirsToProcess, cachedCount, err := r.discoverDirectories(repoPath, summaryCache)
 	if err != nil {
-		return fmt.Errorf("failed to fetch existing documents: %w", err)
+		return fmt.Errorf("failed to walk directories: %w", err)
 	}
 
-	if len(allDocs) == 0 {
-		r.logger.Warn("no documents found to generate summaries from")
+	r.logger.Info("architectural summary cache check complete",
+		"cached", cachedCount,
+		"queued", len(dirsToProcess),
+	)
+
+	if len(dirsToProcess) == 0 {
 		return nil
 	}
 
-	// Group documents by directory
-	dirInfos := r.groupDocumentsByDirectory(allDocs)
-	r.logger.Info("found directories to summarize", "count", len(dirInfos))
+	// 3. For directories that need update, we need Symbols/Imports.
+	// Since we avoided parsing everything locally, we can now fetch details from Qdrant if available,
+	// OR we might have to rely on the file scan we just did?
+	// The `scanDirectoryOnDisk` implementation below will collect files.
+	// We still need symbols.
+	// Stragegy: For the directories we ARE generating summaries for, we can either:
+	// a) Parse locally (slow but correct)
+	// b) Query Qdrant for chunks in this directory (fast if indexed)
+	// Let's go with (b) - Query Qdrant for context validation.
+	// Actually, `scanDirectoryOnDisk` can just get filenames.
+	// We will hydrate the `Symbols` and `Imports` in the worker pool before generation.
 
 	// Generate summaries with a worker pool
-	archDocs := r.generateSummariesWithWorkerPool(ctx, dirInfos, 3) // 3 concurrent workers
+	archDocs := r.generateSummariesWithWorkerPool(ctx, dirsToProcess, 3)
 
 	if len(archDocs) == 0 {
 		r.logger.Warn("no architectural summaries generated")
@@ -81,37 +97,72 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 	return nil
 }
 
-// groupDocumentsByDirectory groups documents by their source directory.
-func (r *ragService) groupDocumentsByDirectory(docs []schema.Document) map[string]*DirectoryInfo {
-	dirInfos := make(map[string]*DirectoryInfo)
-
-	for _, doc := range docs {
-		dirPath := r.getDirectoryPath(doc)
-		if dirPath == "" {
-			continue
-		}
-
-		if _, exists := dirInfos[dirPath]; !exists {
-			dirInfos[dirPath] = &DirectoryInfo{
-				Path:    dirPath,
-				Files:   []string{},
-				Symbols: []string{},
-				Imports: []string{},
-			}
-		}
-
-		info := dirInfos[dirPath]
-		r.extractDocMetadata(doc, info)
+// fetchSummaryCache fetches existing architectural summaries from Qdrant to build a cache map.
+func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.ScopedVectorStore) map[string]string {
+	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 10000,
+		vectorstores.WithFilters(map[string]any{
+			"chunk_type": "arch",
+		}),
+	)
+	if err != nil {
+		r.logger.Warn("failed to fetch existing summaries for cache", "error", err)
+		return make(map[string]string)
 	}
 
-	// Calculate content hash for each directory
-	for _, info := range dirInfos {
-		sort.Strings(info.Files)
-		sort.Strings(info.Symbols)
-		info.ContentHash = calculateDirectoryHash(info)
+	summaryCache := make(map[string]string)
+	for _, doc := range cacheDocs {
+		source, _ := doc.Metadata["source"].(string)
+		hash, _ := doc.Metadata["content_hash"].(string)
+		if source != "" {
+			summaryCache[source] = hash
+		}
 	}
+	r.logger.Debug("built summary cache from qdrant", "count", len(summaryCache))
+	return summaryCache
+}
 
-	return dirInfos
+// discoverDirectories walks the repo filesystem and returns directories needing summary updates.
+func (r *ragService) discoverDirectories(repoPath string, summaryCache map[string]string) (map[string]*DirectoryInfo, int, error) {
+	dirsToProcess := make(map[string]*DirectoryInfo)
+	cachedCount := 0
+
+	err := filepath.WalkDir(repoPath, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
+			return filepath.SkipDir
+		}
+
+		relPath, _ := filepath.Rel(repoPath, path)
+		if relPath == "." {
+			relPath = rootDir
+		}
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+
+		info, hash, scanErr := r.scanDirectoryOnDisk(repoPath, path, relPath)
+		if scanErr != nil {
+			r.logger.Warn("failed to scan directory", "path", path, "error", scanErr)
+			return nil
+		}
+		if info == nil {
+			return nil
+		}
+
+		if cachedHash, ok := summaryCache[relPath]; ok && cachedHash == hash {
+			cachedCount++
+			return nil
+		}
+
+		info.ContentHash = hash
+		dirsToProcess[relPath] = info
+		return nil
+	})
+
+	return dirsToProcess, cachedCount, err
 }
 
 func (r *ragService) getDirectoryPath(doc schema.Document) string {
@@ -122,7 +173,7 @@ func (r *ragService) getDirectoryPath(doc schema.Document) string {
 
 	dirPath := path.Dir(strings.ReplaceAll(source, "\\", "/"))
 	if dirPath == "." {
-		return "root"
+		return rootDir
 	}
 	return dirPath
 }
@@ -266,7 +317,7 @@ func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore sto
 	for _, p := range paths {
 		dir := path.Dir(strings.ReplaceAll(p, "\\", "/"))
 		if dir == "." {
-			dir = "root"
+			dir = rootDir
 		}
 		dirs[dir] = struct{}{}
 	}
@@ -309,4 +360,64 @@ func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore sto
 	}
 
 	return archContext.String(), nil
+}
+
+// scanDirectoryOnDisk finds code files in a directory and computes a hash for cache invalidation.
+// Uses mtime+size for speed; robust enough for typical development workflows.
+func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*DirectoryInfo, string, error) {
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var files []string
+	var hashBuilder strings.Builder
+
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if !isCodeExtension(ext) {
+			continue
+		}
+
+		files = append(files, entry.Name())
+
+		// Use mtime+size for fast hashing (avoids reading file content)
+		info, err := entry.Info()
+		if err == nil {
+			hashBuilder.WriteString(entry.Name())
+			hashBuilder.WriteString(fmt.Sprintf(":%d:%d|", info.Size(), info.ModTime().UnixNano()))
+		}
+	}
+
+	if len(files) == 0 {
+		return nil, "", nil
+	}
+
+	sort.Strings(files)
+
+	hash := sha256.Sum256([]byte(hashBuilder.String()))
+	hexHash := hex.EncodeToString(hash[:8])
+
+	info := &DirectoryInfo{
+		Path:        relPath,
+		Files:       files,
+		Symbols:     []string{},
+		Imports:     []string{},
+		ContentHash: hexHash,
+	}
+
+	return info, hexHash, nil
+}
+
+func isCodeExtension(ext string) bool {
+	switch ext {
+	// Add common code extensions here
+	case ".go", ".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".rs", ".rb", ".php", ".cs", ".swift", ".kt", ".scala":
+		return true
+	default:
+		return false
+	}
 }
