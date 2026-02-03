@@ -1,0 +1,8 @@
+You are a code transformation engine. Given the following git patch, output only the hypothetical code as it would appear in the file after the change. Do not provide explanations. Output ONLY the code.
+
+Patch:
+```
+{{.Patch}}
+```
+
+Hypothetical Code:
