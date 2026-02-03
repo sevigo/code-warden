@@ -107,6 +107,13 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	// Create a scoped store for this repository
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 
+	// Ensure we start with a fresh collection since this is an initial index.
+	// This prevents vector duplication if the Postgres record was lost but Qdrant persisted.
+	if err := scopedStore.DeleteCollection(ctx, ""); err != nil {
+		// Log but continue - if it didn't exist, that's fine.
+		r.logger.Info("attempted to clear collection (expected if new)", "error", err)
+	}
+
 	// This is the new streaming pipeline.
 	// The loader walks the filesystem and calls this function with batches of documents.
 	// This function then immediately sends the batch to the vector store.

@@ -486,8 +486,12 @@ func (s *scopedVectorStore) DeleteDocumentsByFilter(ctx context.Context, filters
 	return s.parent.DeleteDocumentsFromCollectionByFilter(ctx, s.collectionName, s.embedderModel, filters)
 }
 
-// DeleteCollection deletes the scoped collection (ignores collectionName arg since already scoped).
+// DeleteCollection deletes the scoped collection safely, ensuring the client exists first.
 func (s *scopedVectorStore) DeleteCollection(ctx context.Context, _ string) error {
+	// Ensure the client is initialized/cached so parent.DeleteCollection can find it
+	if _, err := s.parent.getStoreForCollection(s.collectionName, s.embedderModel); err != nil {
+		return fmt.Errorf("failed to initialize client for deletion: %w", err)
+	}
 	return s.parent.DeleteCollection(ctx, s.collectionName)
 }
 
