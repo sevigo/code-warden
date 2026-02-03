@@ -221,12 +221,11 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 		return nil
 	}
 
-	type result struct {
-		docs []schema.Document
-	}
+	// We use a shared slice to collect documents from all workers.
+	// This removes the need for the result channel and intermediate result structs.
+	var allDocs []schema.Document
 
 	fileChan := make(chan string, len(files))
-	resultChan := make(chan result, len(files))
 
 	// Start workers
 	var wg sync.WaitGroup
@@ -236,7 +235,8 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 			defer wg.Done()
 			for file := range fileChan {
 				docs := r.processFile(repoPath, file)
-				resultChan <- result{docs: docs}
+				// Direct append for better performance
+				allDocs = append(allDocs, docs...)
 			}
 		}()
 	}
@@ -247,17 +247,7 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 	}
 	close(fileChan)
 
-	// Wait for workers and close result channel
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results
-	var allDocs []schema.Document
-	for res := range resultChan {
-		allDocs = append(allDocs, res.docs...)
-	}
+	wg.Wait()
 
 	return allDocs
 }

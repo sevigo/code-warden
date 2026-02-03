@@ -18,6 +18,13 @@ import (
 	"github.com/go-git/go-git/v5/utils/merkletrie"
 )
 
+// GetHyDEPromptTemplate returns the raw string for HyDE code generation.
+// We moved this here so that low-level Git loaders can eventually trigger
+// HyDE generation during the initial filesystem walk to save time.
+func GetHyDEPromptTemplate() string {
+	return "You are a code engine. Transform this patch into a final file state: {{.Patch}}"
+}
+
 // Client handles interacting with Git repositories.
 type Client struct {
 	Logger *slog.Logger
