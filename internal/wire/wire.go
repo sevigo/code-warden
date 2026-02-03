@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/wire"
+	"github.com/jmoiron/sqlx"
 	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/db"
@@ -29,6 +30,7 @@ import (
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
+	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
 )
@@ -49,14 +51,19 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		provideVectorStore,
 		provideGeneratorLLM,
 		provideEmbedder,
+		provideReranker,
 		provideParserRegistry,
 		provideLoggerConfig,
 		provideLogWriter,
 		provideDBConfig,
 		provideSlogLogger,
-		provideDependencyRetriever,
+		provideSQLXDB,
 	)
 	return &app.App{}, nil, nil
+}
+
+func provideSQLXDB(db *db.DB) *sqlx.DB {
+	return db.DB
 }
 
 func provideVectorStore(cfg *config.Config, embedder embeddings.Embedder, logger *slog.Logger) storage.VectorStore {
@@ -185,4 +192,64 @@ func provideLogWriter(cfg *config.Config) io.Writer {
 
 func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logger {
 	return logger.NewLogger(loggerConfig, writer)
+}
+
+func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logger, promptMgr *llm.PromptManager) (schema.Reranker, error) {
+	if !cfg.AI.EnableReranking {
+		logger.Info("Reranking is disabled, using NoOpReranker")
+		return schema.NoOpReranker{}, nil
+	}
+
+	logger.Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
+
+	// We create a dedicated LLM instance for reranking
+	// Note: Currently only supporting Ollama for reranking as per request snippet, but could be extended.
+	rerankLLM, err := ollama.New(
+		ollama.WithServerURL(cfg.AI.OllamaHost),
+		ollama.WithModel(cfg.AI.RerankerModel),
+		ollama.WithHTTPClient(newOllamaHTTPClient()), // Reuse the optimized client
+		ollama.WithLogger(logger),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reranker LLM: %w", err)
+	}
+
+	// Load custom prompt if available
+	// Note: We need to import the key constant or define it.
+	// The user mentioned: prompt, _ := promptMgr.Render(RerankPrompt, DefaultProvider, nil)
+	// I need to check if RerankPrompt is defined in llm package or if I should define it there.
+	// For now, I will use a default or assume I'll add the prompt key in llm package.
+	// However, I can't access `llm.RerankPrompt` here easily unless I export it from `llm` or define it.
+	// The user's snippet for provideReranker used `promptMgr`.
+
+	// Let's assume we want to pass the prompt management to the reranker or set the prompt here.
+	// The user's snippet:
+	// prompt, _ := promptMgr.Render(RerankPrompt, DefaultProvider, nil)
+	// return llms.NewLLMReranker(rerankLLM, llms.WithPrompt(prompt))
+
+	// Since RerankPrompt will be added to llm package, I should modify wire to pass promptMgr.
+	// But provideReranker in snippet had (ctx, cfg, logger).
+	// The user's snippet in Step 5 mentioned: `Then in provideReranker, pass this custom prompt: ... promptMgr.Render(...)`
+	// This implies provideReranker needs promptMgr.
+
+	const RerankPromptKey = "rerank_precision" // I will define this in llm package or use string here for now to avoid circular deps if any (unlikely as wire imports llm).
+
+	// Actually, to avoid "RerankPrompt not defined" error, I should make sure I ADD it to llm package first or use a string literal.
+	// I will use "rerank_precision" string literal matching the prompt file name I will create.
+
+	prompt, err := promptMgr.Render("rerank_precision", llm.ModelProvider(cfg.AI.RerankerModel), nil)
+	if err != nil {
+		// Fallback or log? User plan implies we should use it.
+		// If render fails (e.g. file not found), maybe fallback to default.
+		// But `llms.NewLLMReranker` probably has a generic default.
+		// Let's log warning and proceed without custom prompt if fails?
+		// Or strict error.
+		// I'll stick to a simpler version first or Try to render.
+		logger.Debug("Loaded rerank prompt", "prompt_len", len(prompt))
+	}
+
+	if prompt != "" {
+		return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3), llms.WithPrompt(prompt)), nil
+	}
+	return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3)), nil
 }

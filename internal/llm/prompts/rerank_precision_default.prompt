@@ -1,0 +1,13 @@
+Does this code snippet help a reviewer understand the implementation logic, detect potential side effects, or find bugs related to this query: "{{.Query}}"?
+
+Snippet from {{.Source}}:
+---
+{{.Content}}
+---
+
+Score 0-10:
+- 10: Crucial context (contains the implementation or direct caller).
+- 5: Useful context (related logic in the same package).
+- 0: Irrelevant noise (boilerplate, unrelated imports).
+
+Respond ONLY with JSON: {"score": X, "reason": "..."}

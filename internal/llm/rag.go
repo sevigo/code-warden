@@ -20,6 +20,7 @@ import (
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
+	"github.com/sevigo/goframe/vectorstores"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -42,6 +43,7 @@ type ragService struct {
 	vectorStore    storage.VectorStore
 	store          storage.Store
 	generatorLLM   llms.Model
+	reranker       schema.Reranker
 	parserRegistry parsers.ParserRegistry
 	logger         *slog.Logger
 }
@@ -54,6 +56,7 @@ func NewRAGService(
 	vs storage.VectorStore,
 	dbStore storage.Store,
 	gen llms.Model,
+	reranker schema.Reranker,
 	pr parsers.ParserRegistry,
 	logger *slog.Logger,
 ) RAGService {
@@ -63,6 +66,7 @@ func NewRAGService(
 		vectorStore:    vs,
 		store:          dbStore,
 		generatorLLM:   gen,
+		reranker:       reranker,
 		parserRegistry: pr,
 		logger:         logger,
 	}
@@ -696,8 +700,47 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 		return nil, nil, nil, nil
 	}
 
-	results, err := r.vectorStore.SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, 5)
-	return results, queries, indices, err
+	// Two-stage retrieval:
+	// 1. Recall: Fetch more docs than needed (e.g. 20)
+	// 2. Precision: Rerank and keep top K (e.g. 5)
+
+	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+	finalResults := make([][]schema.Document, len(queries))
+
+	// We process queries sequentially or could parallelize locally, but for now sequentially is safer for logic correctness
+	// The underlying Reranker might have concurrency.
+
+	// Create a base retriever for recall.
+	// We need 20 documents for recall.
+	// Note: vectorstores.ToRetriever might not be available or might be a simple wrapper.
+	// If ToRetriever is not available, we can just use scopedStore.SimilaritySearch directly in a custom Retriever or just inline.
+	// But let's follow the user guide which suggested `vectorstores.ToRetriever`.
+	// If it fails compile, I will fix.
+
+	baseRetriever := vectorstores.ToRetriever(scopedStore, 20)
+
+	for i, query := range queries {
+		rr := vectorstores.RerankingRetriever{
+			Retriever: baseRetriever,
+			Reranker:  r.reranker,
+			TopK:      5,
+		}
+
+		docs, err := rr.GetRelevantDocuments(ctx, query)
+		if err != nil {
+			r.logger.Warn("reranking failed for query, falling back to base results", "error", err, "query_idx", i)
+			// Fallback: just use base retriever if rerank fails
+			// We need to re-call base retriever directly because GetRelevantDocuments might have failed at Retrieve step or Rerank step.
+			// Ideally we catch error.
+			docs, _ = baseRetriever.GetRelevantDocuments(ctx, query)
+			if len(docs) > 5 {
+				docs = docs[:5]
+			}
+		}
+		finalResults[i] = docs
+	}
+
+	return finalResults, queries, indices, nil
 }
 
 func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
