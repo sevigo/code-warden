@@ -62,6 +62,13 @@ func (m *manager) cloneAndIndex(
 		m.cleanupRepoDir(clonePath)
 		return nil, err
 	}
+
+	// Fetch PR specific reference to ensure we have the commit (handling forks)
+	prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
+	if err := m.gitClient.Fetch(cloneCtx, gitRepo, token, prRefSpec); err != nil {
+		m.cleanupRepoDir(clonePath)
+		return nil, fmt.Errorf("git fetch pr: %w", err)
+	}
 	if err = m.gitClient.Checkout(gitRepo, ev.HeadSHA); err != nil {
 		m.cleanupRepoDir(clonePath)
 		return nil, err
@@ -106,7 +113,9 @@ func (m *manager) incrementalUpdate(
 		return nil, err
 	}
 
-	if err = m.gitClient.Fetch(ctx, gitRepo, token); err != nil {
+	// Fetch PR specific reference to ensure we have the commit (handling forks)
+	prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
+	if err = m.gitClient.Fetch(ctx, gitRepo, token, prRefSpec); err != nil {
 		return nil, fmt.Errorf("git fetch: %w", err)
 	}
 	if err = m.gitClient.Checkout(gitRepo, ev.HeadSHA); err != nil {

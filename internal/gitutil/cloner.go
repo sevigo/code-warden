@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -58,13 +59,24 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 }
 
 // Fetch fetches updates from the 'origin' remote.
-func (c *Client) Fetch(ctx context.Context, repo *git.Repository, token string) error {
+func (c *Client) Fetch(ctx context.Context, repo *git.Repository, token string, refSpecs ...string) error {
 	c.Logger.InfoContext(ctx, "fetching latest changes from origin")
-	err := repo.FetchContext(ctx, &git.FetchOptions{
+
+	fetchOptions := &git.FetchOptions{
 		RemoteName: "origin",
 		Auth:       c.getBasicAuth(token),
-		Force:      true, // Allow fetching unrelated histories
-	})
+		Force:      true,
+	}
+
+	if len(refSpecs) > 0 {
+		var specs []config.RefSpec
+		for _, spec := range refSpecs {
+			specs = append(specs, config.RefSpec(spec))
+		}
+		fetchOptions.RefSpecs = specs
+	}
+
+	err := repo.FetchContext(ctx, fetchOptions)
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return fmt.Errorf("failed to fetch from remote: %w", err)
 	}
