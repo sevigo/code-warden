@@ -96,6 +96,9 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	var totalDocsFound atomic.Int64
 	startTime := time.Now()
 
+	// Create a scoped store for this repository
+	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+
 	// This is the new streaming pipeline.
 	// The loader walks the filesystem and calls this function with batches of documents.
 	// This function then immediately sends the batch to the vector store.
@@ -105,7 +108,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		}
 		totalDocsFound.Add(int64(len(docs)))
 
-		err := r.vectorStore.AddDocumentsToCollection(ctx, collectionName, embedderModelName, docs, nil)
+		_, err := scopedStore.AddDocuments(ctx, docs)
 		if err != nil {
 			return fmt.Errorf("failed to add document batch to vector store: %w", err)
 		}
@@ -206,7 +209,8 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 
 	if len(allDocs) > 0 {
 		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
-		if err := r.vectorStore.AddDocumentsToCollection(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, allDocs, nil); err != nil {
+		scopedStore := r.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+		if _, err := scopedStore.AddDocuments(ctx, allDocs); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
 	}

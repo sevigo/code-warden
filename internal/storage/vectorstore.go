@@ -24,13 +24,26 @@ type VectorStore interface {
 	vectorstores.VectorStore
 	SetBatchConfig(config qdrant.BatchConfig) error
 
-	// Renamed methods to avoid collision with vectorstores.VectorStore
+	// ForRepo returns a scoped store for a specific repository collection and embedder model.
+	// The returned ScopedVectorStore implements vectorstores.VectorStore directly,
+	// so it can be passed to goframe tools that expect that interface.
+	ForRepo(collectionName, embedderModel string) ScopedVectorStore
+
+	// Collection-specific methods (legacy, prefer ForRepo() for new code)
 	AddDocumentsToCollection(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error
 	SearchCollection(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error)
 	SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error)
 	DeleteCollection(ctx context.Context, collectionName string) error
 	DeleteDocumentsFromCollection(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error
 	DeleteDocumentsFromCollectionByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error
+}
+
+// ScopedVectorStore is a VectorStore scoped to a specific collection and embedder model.
+// It implements vectorstores.VectorStore directly without requiring collection/embedder names.
+type ScopedVectorStore interface {
+	vectorstores.VectorStore
+	CollectionName() string
+	EmbedderModel() string
 }
 
 // Ensure qdrantVectorStore implements VectorStore
@@ -402,4 +415,83 @@ func (q *qdrantVectorStore) SimilaritySearchBatch(ctx context.Context, queries [
 	}
 
 	return store.SimilaritySearchBatch(ctx, queries, numDocs, opts...)
+}
+
+// ForRepo returns a scoped store for a specific repository collection and embedder model.
+func (q *qdrantVectorStore) ForRepo(collectionName, embedderModel string) ScopedVectorStore {
+	return &scopedVectorStore{
+		parent:         q,
+		collectionName: collectionName,
+		embedderModel:  embedderModel,
+	}
+}
+
+// scopedVectorStore wraps qdrantVectorStore with pre-configured collection and embedder.
+type scopedVectorStore struct {
+	parent         *qdrantVectorStore
+	collectionName string
+	embedderModel  string
+}
+
+// Ensure scopedVectorStore implements ScopedVectorStore
+var _ ScopedVectorStore = (*scopedVectorStore)(nil)
+
+// CollectionName returns the scoped collection name.
+func (s *scopedVectorStore) CollectionName() string {
+	return s.collectionName
+}
+
+// EmbedderModel returns the scoped embedder model name.
+func (s *scopedVectorStore) EmbedderModel() string {
+	return s.embedderModel
+}
+
+// AddDocuments delegates to the parent's AddDocumentsToCollection.
+func (s *scopedVectorStore) AddDocuments(ctx context.Context, docs []schema.Document, opts ...vectorstores.Option) ([]string, error) {
+	err := s.parent.AddDocumentsToCollection(ctx, s.collectionName, s.embedderModel, docs, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Return IDs (we don't have them from AddDocumentsToCollection, so return empty for now)
+	ids := make([]string, len(docs))
+	for i, doc := range docs {
+		if id, ok := doc.Metadata["id"].(string); ok {
+			ids[i] = id
+		}
+	}
+	return ids, nil
+}
+
+// SimilaritySearch delegates to the parent's SearchCollection.
+func (s *scopedVectorStore) SimilaritySearch(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]schema.Document, error) {
+	return s.parent.SearchCollection(ctx, s.collectionName, s.embedderModel, query, numDocs)
+}
+
+// SimilaritySearchWithScores delegates to the underlying store.
+func (s *scopedVectorStore) SimilaritySearchWithScores(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]vectorstores.DocumentWithScore, error) {
+	store, err := s.parent.getStoreForCollection(s.collectionName, s.embedderModel)
+	if err != nil {
+		return nil, err
+	}
+	return store.SimilaritySearchWithScores(ctx, query, numDocs, opts...)
+}
+
+// SimilaritySearchBatch delegates to the parent's SearchCollectionBatch.
+func (s *scopedVectorStore) SimilaritySearchBatch(ctx context.Context, queries []string, numDocs int, opts ...vectorstores.Option) ([][]schema.Document, error) {
+	return s.parent.SearchCollectionBatch(ctx, s.collectionName, s.embedderModel, queries, numDocs)
+}
+
+// DeleteDocumentsByFilter delegates to the parent's DeleteDocumentsFromCollectionByFilter.
+func (s *scopedVectorStore) DeleteDocumentsByFilter(ctx context.Context, filters map[string]any, opts ...vectorstores.Option) error {
+	return s.parent.DeleteDocumentsFromCollectionByFilter(ctx, s.collectionName, s.embedderModel, filters)
+}
+
+// DeleteCollection deletes the scoped collection (ignores collectionName arg since already scoped).
+func (s *scopedVectorStore) DeleteCollection(ctx context.Context, _ string) error {
+	return s.parent.DeleteCollection(ctx, s.collectionName)
+}
+
+// ListCollections returns just this scoped collection.
+func (s *scopedVectorStore) ListCollections(ctx context.Context) ([]string, error) {
+	return []string{s.collectionName}, nil
 }
