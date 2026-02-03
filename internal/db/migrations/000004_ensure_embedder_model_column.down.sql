@@ -1,0 +1,2 @@
+-- No-op or revert if strict
+-- ALTER TABLE repositories DROP COLUMN IF EXISTS embedder_model_name;
