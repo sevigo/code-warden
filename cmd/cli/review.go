@@ -91,7 +91,7 @@ func (t *stepTimer) infof(format string, args ...any) {
 	}
 }
 
-func runReview(_ *cobra.Command, args []string) error { //nolint:gosec // CLI output errors ignored
+func runReview(_ *cobra.Command, args []string) error {
 	ctx := context.Background()
 	prURL := args[0]
 
