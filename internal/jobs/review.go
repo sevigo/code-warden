@@ -74,7 +74,7 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 	case core.FullReview:
 		return j.runFullReview(ctx, event)
 	case core.ReReview:
-		return j.handleUnsupportedReReview(ctx, event)
+		return j.runReReview(ctx, event)
 	default:
 		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
@@ -260,22 +260,61 @@ func (j *ReviewJob) updateStatusOnError(ctx context.Context, statusUpdater githu
 	}
 }
 
-func (j *ReviewJob) handleUnsupportedReReview(ctx context.Context, event *core.GitHubEvent) error {
-	j.logger.Info("Handling temporarily disabled /rereview command", "repo", event.RepoFullName)
-	_, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Preparing for follow-up...")
+// runReReview handles the `/rereview` command.
+// It skips indexing (vectors already exist) and regenerates only the review.
+func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (err error) {
+	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+
+	ghClient, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Re-analyzing PR...")
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
+		}
+	}()
 
-	comment := "The `/rereview` command is being upgraded and is temporarily unavailable. Please use `/review` for a full new analysis."
-	if postErr := statusUpdater.PostSimpleComment(ctx, event, comment); postErr != nil {
-		j.logger.Error("Failed to post comment for disabled feature", "error", postErr)
+	// Get existing repo record (must exist from previous /review)
+	repo, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if err != nil || repo == nil {
+		return fmt.Errorf("repository not found - run /review first to index the repository: %w", err)
 	}
 
-	summary := "The `/rereview` command is temporarily disabled while it's being upgraded."
-	if completeErr := statusUpdater.Completed(ctx, event, checkRunID, "neutral", "Feature Unavailable", summary); completeErr != nil {
-		return fmt.Errorf("failed to update completion status: %w", completeErr)
+	// Load repo config
+	repoConfig := j.loadAndProcessRepoConfig(repo.ClonePath, event.RepoFullName)
+
+	// Skip indexing - just generate a fresh review
+	j.logger.Info("Generating fresh review (skipping indexing)", "repo", event.RepoFullName)
+
+	structuredReview, rawReviewJSON, err := j.ragService.GenerateReview(ctx, repoConfig, repo, event, ghClient)
+	if err != nil {
+		return fmt.Errorf("failed to generate review: %w", err)
 	}
+	if structuredReview == nil || (structuredReview.Summary == "" && len(structuredReview.Suggestions) == 0) {
+		return errors.New("generated review is empty or invalid")
+	}
+
+	// Post and save the review
+	if err := statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
+		return fmt.Errorf("failed to post review comment to GitHub: %w", err)
+	}
+
+	dbReview := &core.Review{
+		RepoFullName:  event.RepoFullName,
+		PRNumber:      event.PRNumber,
+		HeadSHA:       event.HeadSHA,
+		ReviewContent: rawReviewJSON,
+	}
+	if err := j.store.SaveReview(ctx, dbReview); err != nil {
+		j.logger.Error("failed to save review to database", "error", err)
+	}
+
+	if err := statusUpdater.Completed(ctx, event, checkRunID, "success", "Re-Review Complete", "Fresh analysis finished."); err != nil {
+		return fmt.Errorf("failed to update completion status: %w", err)
+	}
+
+	j.logger.Info("Re-review job completed successfully")
 	return nil
 }
 
