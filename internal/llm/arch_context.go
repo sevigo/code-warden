@@ -384,11 +384,12 @@ func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*Director
 
 		files = append(files, entry.Name())
 
-		// Use mtime+size for fast hashing (avoids reading file content)
+		// Use filename+size for stable hashing across git operations.
+		// NOTE: We intentionally do NOT use ModTime because git clone/checkout
+		// resets all mtimes to "now", which would falsely invalidate the cache.
 		info, err := entry.Info()
 		if err == nil {
-			hashBuilder.WriteString(entry.Name())
-			hashBuilder.WriteString(fmt.Sprintf(":%d:%d|", info.Size(), info.ModTime().UnixNano()))
+			hashBuilder.WriteString(fmt.Sprintf("%s:%d|", entry.Name(), info.Size()))
 		}
 	}
 
