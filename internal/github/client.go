@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/google/go-github/v73/github"
+	"golang.org/x/oauth2"
 )
 
 // ChangedFile holds the filename and patch data for a single file
@@ -44,6 +45,17 @@ type gitHubClient struct {
 // NewGitHubClient wraps the official go-github client to provide a focused,
 // testable interface for application-specific GitHub operations.
 func NewGitHubClient(client *github.Client, logger *slog.Logger) Client {
+	return &gitHubClient{client: client, logger: logger}
+}
+
+// NewPATClient creates a new GitHub client authenticated with a Personal Access Token (PAT).
+// This is useful for CLI tools or local development where an App installation is not available.
+func NewPATClient(ctx context.Context, token string, logger *slog.Logger) Client {
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: token},
+	)
+	tc := oauth2.NewClient(ctx, ts)
+	client := github.NewClient(tc)
 	return &gitHubClient{client: client, logger: logger}
 }
 

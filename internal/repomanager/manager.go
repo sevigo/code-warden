@@ -52,6 +52,7 @@ func New(
 
 func (m *manager) SyncRepo(ctx context.Context, ev *core.GitHubEvent, token string) (*core.UpdateResult, error) {
 	mu := m.lockFor(ev.RepoFullName)
+	mu.Lock()
 	defer mu.Unlock()
 
 	return m.syncRepo(ctx, ev, token)
@@ -59,6 +60,7 @@ func (m *manager) SyncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 
 func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string, force bool) (*core.UpdateResult, error) {
 	mu := m.lockFor(repoPath)
+	mu.Lock()
 	defer mu.Unlock()
 
 	return m.scanLocalRepo(ctx, repoPath, repoFullName, force)
