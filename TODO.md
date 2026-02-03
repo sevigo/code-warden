@@ -16,29 +16,17 @@ This document outlines the development roadmap for Code-Warden. It tracks comple
     -   **Resolution:** A `.code-warden.yml` file in the repository root allows for `custom_instructions`, `exclude_dirs`, and `exclude_exts`. This configuration is loaded dynamically for each job.
     -   **Benefit:** Makes the tool far more powerful and adaptable, allowing teams to tailor it to their specific needs.
 
+-   **4. Re-implemented the `/rereview` Command:**
+    -   **Resolution:** The `/rereview` command is now fully supported. It reuses the robust review pipeline but efficiently skips indexing if the repository content hasn't changed.
+    -   **Benefit:** Allows developers to request a fresh analysis after pushing fixes or changing prompt configurations.
+
+-   **5. Enhanced GitHub Comment Formatting:**
+    -   **Resolution:** Inline comments now feature severity badges (🔴, 🟠, 🟡, 🟢) and categories. The review summary includes a statistics table showing the breakdown of issues by severity. Comments are also tied to specific commit SHAs to ensure they persist correctly as the PR evolves.
+    -   **Benefit:** improved readability and professional look of the review.
+
 ## 🚀 Next Up: Immediate Priorities
 
-### 1. **Re-implement the `/rereview` Command**
-
-This is the highest priority task, as the feature was temporarily disabled to support the new structured review flow.
-
--   **Problem:** The `/rereview` command is needed to check if a developer has addressed the AI's initial feedback without performing a full, new review. The old implementation is incompatible with the new JSON-based review content.
--   **TODO:**
-    1.  **Create a New Prompt:** Design a new `rereview_default.prompt`. It should accept the `NewDiff` and the `OriginalReview` (which is now a JSON string of `core.StructuredReview`). The prompt will instruct the LLM to evaluate the new diff against the original suggestions and determine which have been addressed.
-    2.  **Define Structured Output:** The LLM's output for a re-review should also be structured JSON. For example:
-        ```json
-        {
-          "summary": "Looks like you've addressed most of the feedback. One suggestion regarding error handling still seems to be open.",
-          "resolved_suggestions": [ /* list of original suggestions that are now fixed */ ],
-          "unresolved_suggestions": [ /* list of original suggestions that are still pending */ ]
-        }
-        ```
-    3.  **Update Services:**
-        -   Modify `RAGService.GenerateReReview` to use the new prompt and parse the resulting JSON.
-        -   Update the `ReviewJob` to call the service and post the `summary` back to the PR. For an enhanced experience, it could quote the `unresolved_suggestions` in the comment.
--   **Benefit:** Restores a core feature of the application and completes the transition to a fully structured review lifecycle.
-
-### 2. **Create a Simple Web UI for Status & Onboarding**
+### 1. **Create a Simple Web UI for Status & Onboarding**
 
 Provide a user-friendly way to see what the app is doing and what repositories are managed.
 
