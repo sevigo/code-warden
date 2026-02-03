@@ -72,6 +72,7 @@ func runReview(_ *cobra.Command, args []string) error {
 		PRNumber:     prNumber,
 		PRTitle:      pr.GetTitle(),
 		PRBody:       pr.GetBody(),
+		RepoCloneURL: pr.GetBase().GetRepo().GetCloneURL(),
 
 		HeadSHA:  pr.GetHead().GetSHA(),
 		Language: pr.GetBase().GetRepo().GetLanguage(),
