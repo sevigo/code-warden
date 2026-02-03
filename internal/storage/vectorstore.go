@@ -309,7 +309,7 @@ func (q *qdrantVectorStore) DeleteDocumentsFromCollectionByFilter(ctx context.Co
 	return store.DeleteDocumentsByFilter(ctx, filters)
 }
 
-func (q *qdrantVectorStore) ListCollections(ctx context.Context) ([]string, error) {
+func (q *qdrantVectorStore) ListCollections(_ context.Context) ([]string, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	cols := make([]string, 0, len(q.clients))
@@ -447,7 +447,7 @@ func (s *scopedVectorStore) EmbedderModel() string {
 }
 
 // AddDocuments delegates to the parent's AddDocumentsToCollection.
-func (s *scopedVectorStore) AddDocuments(ctx context.Context, docs []schema.Document, opts ...vectorstores.Option) ([]string, error) {
+func (s *scopedVectorStore) AddDocuments(ctx context.Context, docs []schema.Document, _ ...vectorstores.Option) ([]string, error) {
 	err := s.parent.AddDocumentsToCollection(ctx, s.collectionName, s.embedderModel, docs, nil)
 	if err != nil {
 		return nil, err
@@ -463,7 +463,7 @@ func (s *scopedVectorStore) AddDocuments(ctx context.Context, docs []schema.Docu
 }
 
 // SimilaritySearch delegates to the parent's SearchCollection.
-func (s *scopedVectorStore) SimilaritySearch(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]schema.Document, error) {
+func (s *scopedVectorStore) SimilaritySearch(ctx context.Context, query string, numDocs int, _ ...vectorstores.Option) ([]schema.Document, error) {
 	return s.parent.SearchCollection(ctx, s.collectionName, s.embedderModel, query, numDocs)
 }
 
@@ -477,12 +477,12 @@ func (s *scopedVectorStore) SimilaritySearchWithScores(ctx context.Context, quer
 }
 
 // SimilaritySearchBatch delegates to the parent's SearchCollectionBatch.
-func (s *scopedVectorStore) SimilaritySearchBatch(ctx context.Context, queries []string, numDocs int, opts ...vectorstores.Option) ([][]schema.Document, error) {
+func (s *scopedVectorStore) SimilaritySearchBatch(ctx context.Context, queries []string, numDocs int, _ ...vectorstores.Option) ([][]schema.Document, error) {
 	return s.parent.SearchCollectionBatch(ctx, s.collectionName, s.embedderModel, queries, numDocs)
 }
 
 // DeleteDocumentsByFilter delegates to the parent's DeleteDocumentsFromCollectionByFilter.
-func (s *scopedVectorStore) DeleteDocumentsByFilter(ctx context.Context, filters map[string]any, opts ...vectorstores.Option) error {
+func (s *scopedVectorStore) DeleteDocumentsByFilter(ctx context.Context, filters map[string]any, _ ...vectorstores.Option) error {
 	return s.parent.DeleteDocumentsFromCollectionByFilter(ctx, s.collectionName, s.embedderModel, filters)
 }
 
@@ -492,6 +492,6 @@ func (s *scopedVectorStore) DeleteCollection(ctx context.Context, _ string) erro
 }
 
 // ListCollections returns just this scoped collection.
-func (s *scopedVectorStore) ListCollections(ctx context.Context) ([]string, error) {
+func (s *scopedVectorStore) ListCollections(_ context.Context) ([]string, error) {
 	return []string{s.collectionName}, nil
 }

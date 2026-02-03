@@ -51,7 +51,12 @@ func NewReviewJob(
 // getRepoMutex returns a mutex for the given repository to prevent concurrent operations.
 func (j *ReviewJob) getRepoMutex(repoFullName string) *sync.Mutex {
 	mutex, _ := j.repoMutexes.LoadOrStore(repoFullName, &sync.Mutex{})
-	return mutex.(*sync.Mutex)
+	m, ok := mutex.(*sync.Mutex)
+	if !ok {
+		// This should never happen as we store *sync.Mutex
+		return &sync.Mutex{}
+	}
+	return m
 }
 
 // Run acts as a router, directing the event to the correct review flow.

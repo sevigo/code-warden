@@ -61,10 +61,7 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 	r.logger.Info("found directories to summarize", "count", len(dirInfos))
 
 	// Generate summaries with a worker pool
-	archDocs, err := r.generateSummariesWithWorkerPool(ctx, dirInfos, 3) // 3 concurrent workers
-	if err != nil {
-		return fmt.Errorf("failed to generate summaries: %w", err)
-	}
+	archDocs := r.generateSummariesWithWorkerPool(ctx, dirInfos, 3) // 3 concurrent workers
 
 	if len(archDocs) == 0 {
 		r.logger.Warn("no architectural summaries generated")
@@ -89,15 +86,9 @@ func (r *ragService) groupDocumentsByDirectory(docs []schema.Document) map[strin
 	dirInfos := make(map[string]*DirectoryInfo)
 
 	for _, doc := range docs {
-		source, _ := doc.Metadata["source"].(string)
-		if source == "" {
+		dirPath := r.getDirectoryPath(doc)
+		if dirPath == "" {
 			continue
-		}
-
-		// Get directory path
-		dirPath := filepath.Dir(source)
-		if dirPath == "." {
-			dirPath = "root"
 		}
 
 		if _, exists := dirInfos[dirPath]; !exists {
@@ -110,30 +101,7 @@ func (r *ragService) groupDocumentsByDirectory(docs []schema.Document) map[strin
 		}
 
 		info := dirInfos[dirPath]
-
-		// Add file if not already present
-		fileName := filepath.Base(source)
-		if !containsString(info.Files, fileName) {
-			info.Files = append(info.Files, fileName)
-		}
-
-		// Extract symbols from metadata
-		if identifier, ok := doc.Metadata["identifier"].(string); ok && identifier != "" {
-			if !containsString(info.Symbols, identifier) {
-				info.Symbols = append(info.Symbols, identifier)
-			}
-		}
-
-		// Extract chunk type as a pseudo-symbol
-		if chunkType, ok := doc.Metadata["chunk_type"].(string); ok && chunkType != "" {
-			symbolDesc := fmt.Sprintf("%s (%s)", doc.Metadata["identifier"], chunkType)
-			if identifier, ok := doc.Metadata["identifier"].(string); ok && identifier != "" {
-				symbolDesc = fmt.Sprintf("%s: %s", chunkType, identifier)
-				if !containsString(info.Symbols, symbolDesc) {
-					info.Symbols = append(info.Symbols, symbolDesc)
-				}
-			}
-		}
+		r.extractDocMetadata(doc, info)
 	}
 
 	// Calculate content hash for each directory
@@ -146,8 +114,44 @@ func (r *ragService) groupDocumentsByDirectory(docs []schema.Document) map[strin
 	return dirInfos
 }
 
+func (r *ragService) getDirectoryPath(doc schema.Document) string {
+	source, _ := doc.Metadata["source"].(string)
+	if source == "" {
+		return ""
+	}
+
+	dirPath := filepath.Dir(source)
+	if dirPath == "." {
+		return "root"
+	}
+	return dirPath
+}
+
+func (r *ragService) extractDocMetadata(doc schema.Document, info *DirectoryInfo) {
+	source, _ := doc.Metadata["source"].(string)
+	fileName := filepath.Base(source)
+	if !containsString(info.Files, fileName) {
+		info.Files = append(info.Files, fileName)
+	}
+
+	identifier, _ := doc.Metadata["identifier"].(string)
+	if identifier != "" {
+		if !containsString(info.Symbols, identifier) {
+			info.Symbols = append(info.Symbols, identifier)
+		}
+	}
+
+	chunkType, _ := doc.Metadata["chunk_type"].(string)
+	if chunkType != "" && identifier != "" {
+		symbolDesc := fmt.Sprintf("%s: %s", chunkType, identifier)
+		if !containsString(info.Symbols, symbolDesc) {
+			info.Symbols = append(info.Symbols, symbolDesc)
+		}
+	}
+}
+
 // generateSummariesWithWorkerPool generates summaries using a limited worker pool.
-func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInfos map[string]*DirectoryInfo, workers int) ([]schema.Document, error) {
+func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInfos map[string]*DirectoryInfo, workers int) []schema.Document {
 	type result struct {
 		doc schema.Document
 		err error
@@ -159,7 +163,8 @@ func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInf
 
 	// Start workers
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
+	for i := range workers {
+		_ = i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -194,7 +199,7 @@ func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInf
 		}
 	}
 
-	return archDocs, nil
+	return archDocs
 }
 
 // generateSummaryForDirectory generates an architectural summary for a single directory.

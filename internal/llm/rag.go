@@ -453,53 +453,19 @@ func (r *ragService) extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
 	lines := strings.Split(patch, "\n")
 
-	// Simple regex patterns for Go symbols in diffs
-	// Matches: +func (r *Receiver) MethodName(...)
-	// Matches: +func FunctionName(...)
-	// Matches: +type TypeName struct/interface
 	for _, line := range lines {
 		if !strings.HasPrefix(line, "+") {
 			continue
 		}
-		line = strings.TrimPrefix(line, "+")
-		line = strings.TrimSpace(line)
-
-		// Match func
-		if strings.HasPrefix(line, "func ") {
-			parts := strings.Fields(line)
-			for i, part := range parts {
-				if part == "func" && i+1 < len(parts) {
-					name := parts[i+1]
-					// Handle receiver: (r *Type) Name
-					if strings.HasPrefix(name, "(") {
-						// Find the name after the receiver
-						for j := i + 1; j < len(parts); j++ {
-							if strings.HasSuffix(parts[j], ")") && j+1 < len(parts) {
-								name = parts[j+1]
-								break
-							}
-						}
-					}
-					// Strip params
-					if idx := strings.Index(name, "("); idx != -1 {
-						name = name[:idx]
-					}
-					name = strings.TrimSpace(name)
-					if name != "" {
-						symbols[name] = struct{}{}
-					}
-					break
-				}
-			}
+		line = strings.TrimSpace(strings.TrimPrefix(line, "+"))
+		if line == "" {
+			continue
 		}
 
-		// Match type
-		if strings.HasPrefix(line, "type ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				name := parts[1]
-				symbols[name] = struct{}{}
-			}
+		if name := r.matchFuncSymbol(line); name != "" {
+			symbols[name] = struct{}{}
+		} else if name := r.matchTypeSymbol(line); name != "" {
+			symbols[name] = struct{}{}
 		}
 	}
 
@@ -508,6 +474,45 @@ func (r *ragService) extractSymbolsFromPatch(patch string) []string {
 		result = append(result, s)
 	}
 	return result
+}
+
+func (r *ragService) matchFuncSymbol(line string) string {
+	if !strings.HasPrefix(line, "func ") {
+		return ""
+	}
+	parts := strings.Fields(line)
+	for i, part := range parts {
+		if part != "func" || i+1 >= len(parts) {
+			continue
+		}
+		name := parts[i+1]
+		// Handle receiver: (r *Type) Name
+		if strings.HasPrefix(name, "(") {
+			for j := i + 1; j < len(parts); j++ {
+				if strings.HasSuffix(parts[j], ")") && j+1 < len(parts) {
+					name = parts[j+1]
+					break
+				}
+			}
+		}
+		// Strip params
+		if idx := strings.Index(name, "("); idx != -1 {
+			name = name[:idx]
+		}
+		return strings.TrimSpace(name)
+	}
+	return ""
+}
+
+func (r *ragService) matchTypeSymbol(line string) string {
+	if !strings.HasPrefix(line, "type ") {
+		return ""
+	}
+	parts := strings.Fields(line)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return ""
 }
 
 // buildRelevantContext performs similarity searches using file diffs to find related
@@ -521,185 +526,42 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	var contextBuilder strings.Builder
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+	seenDocs := make(map[string]struct{})
 
 	// 1. Get Architectural Context (The "Why")
-	// Extract file paths for arch context lookup
-	filePaths := make([]string, len(changedFiles))
-	for i, f := range changedFiles {
-		filePaths[i] = f.Filename
-	}
-
-	archContext, err := r.GetArchContextForPaths(ctx, scopedStore, filePaths)
-	if err != nil {
-		r.logger.Warn("failed to get architectural context, continuing without it", "error", err)
-	} else if archContext != "" {
+	archContext := r.getArchContext(ctx, scopedStore, changedFiles)
+	if archContext != "" {
 		contextBuilder.WriteString("# Architectural Context\n\n")
 		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
 		contextBuilder.WriteString(archContext)
 		contextBuilder.WriteString("\n---\n\n")
 	}
 
-	// 2. Get Snippet Context (The "How")
-	// Prepare a batch of queries and corresponding original files.
-	// We use HyDE (Hypothetical Document Embeddings) to improve retrieval.
-	// We generate hypothetical code snippets in parallel to reduce latency.
-	type hydeResult struct {
-		index   int
-		snippet string
-	}
-
-	hydeChan := make(chan hydeResult, len(changedFiles))
-	var wg sync.WaitGroup
-
-	for i, file := range changedFiles {
-		if file.Patch == "" {
-			continue
-		}
-
-		wg.Add(1)
-		go func(idx int, f internalgithub.ChangedFile) {
-			defer wg.Done()
-			if ctx.Err() != nil {
-				return
-			}
-			r.logger.Debug("generating HyDE hypothetical code", "file", f.Filename)
-			hydePrompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: f.Patch})
-			if err != nil {
-				r.logger.Warn("failed to render HyDE prompt", "file", f.Filename, "error", err)
-				return
-			}
-			hydeSnippet, err := llms.GenerateFromSinglePrompt(ctx, r.generatorLLM, hydePrompt)
-			if err != nil {
-				r.logger.Warn("failed to generate HyDE snippet", "file", f.Filename, "error", err)
-				return
-			}
-			if hydeSnippet != "" {
-				hydeChan <- hydeResult{index: idx, snippet: hydeSnippet}
-			}
-		}(i, file)
-	}
-
-	// Close channel when all workers are done
-	go func() {
-		wg.Wait()
-		close(hydeChan)
-	}()
-
-	// Collect HyDE results
-	hydeMap := make(map[int]string)
-	for res := range hydeChan {
-		hydeMap[res.index] = res.snippet
-	}
-
-	// Finalize queries
-	queries := make([]string, 0, len(changedFiles)*2)
-	originalFilesIndices := make([]int, 0, len(changedFiles)*2)
-
-	for i, file := range changedFiles {
-		if file.Patch == "" {
-			continue
-		}
-
-		// Query 1: The actual diff
-		queries = append(queries, fmt.Sprintf(
-			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
-			file.Filename,
-			file.Patch,
-		))
-		originalFilesIndices = append(originalFilesIndices, i)
-
-		// Query 2: HyDE (if generated)
-		if snippet, ok := hydeMap[i]; ok {
-			queries = append(queries, snippet)
-			originalFilesIndices = append(originalFilesIndices, i)
-		}
-	}
-
-	if len(queries) == 0 {
-		return contextBuilder.String(), nil
-	}
-
-	batchResults, err := r.vectorStore.SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, 5)
+	// 2. Get HyDE-augmented Snippets (The "How")
+	hydeMap := r.generateHyDESnippets(ctx, changedFiles)
+	hydeResults, _, indices, err := r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
 	if err != nil {
-		r.logger.Error("failed to retrieve RAG context in batch operation; LLM will proceed without relevant code snippets", "error", err)
-		return contextBuilder.String(), fmt.Errorf("failed to retrieve RAG context: %w", err)
+		r.logger.Warn("failed to fetch HyDE context", "error", err)
 	}
-
-	// Process the results, mapping them back to the original files.
-	seenDocs := make(map[string]struct{})
 
 	// 3. Get Impact Context (The "Ripple Effect")
-	// Extract symbols from patches and search for their wider usage
-	var impactContextBuilder strings.Builder
-	allSymbols := make(map[string]struct{})
-	for _, file := range changedFiles {
-		if file.Patch == "" {
-			continue
-		}
-		for _, sym := range r.extractSymbolsFromPatch(file.Patch) {
-			allSymbols[sym] = struct{}{}
-		}
-	}
-
-	if len(allSymbols) > 0 {
-		var symbolsToQuery []string
-		for sym := range allSymbols {
-			symbolsToQuery = append(symbolsToQuery, sym)
-		}
-
-		// Search for usage of these symbols in the repo
-		// We use a specific query format to find callers/usages
-		impactQuery := fmt.Sprintf("Find code that calls or uses the following symbols: %s", strings.Join(symbolsToQuery, ", "))
-		impactDocs, err := scopedStore.SimilaritySearch(ctx, impactQuery, 8)
-		if err != nil {
-			r.logger.Warn("failed to fetch impact context", "error", err)
-		} else {
-			for _, doc := range impactDocs {
-				source, _ := doc.Metadata["source"].(string)
-				// Skip if we've already seen this doc or if it's an arch doc
-				if _, exists := seenDocs[source]; exists {
-					continue
-				}
-				if chunkType, ok := doc.Metadata["chunk_type"].(string); ok && chunkType == "arch" {
-					continue
-				}
-
-				impactContextBuilder.WriteString(fmt.Sprintf("**%s** (potential impact usage):\n```\n%s\n```\n\n",
-					source, doc.PageContent))
-				seenDocs[source] = struct{}{}
-			}
-		}
-	}
-
-	if impactContextBuilder.Len() > 0 {
+	impactContext := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs)
+	if impactContext != "" {
 		contextBuilder.WriteString("# Potential Impacted Callers & Usages\n\n")
 		contextBuilder.WriteString("The following code snippets may be affected by the changes in modified symbols:\n\n")
-		contextBuilder.WriteString(impactContextBuilder.String())
+		contextBuilder.WriteString(impactContext)
 		contextBuilder.WriteString("\n---\n\n")
 	}
 
+	// 4. Finalize Related Code Snippets
 	contextBuilder.WriteString("# Related Code Snippets\n\n")
-	for i, relevantDocs := range batchResults {
-		originalFileIdx := originalFilesIndices[i]
-		originalFile := changedFiles[originalFileIdx]
-
-		for _, doc := range relevantDocs {
-			source, ok := doc.Metadata["source"].(string)
-			if !ok {
-				contentPreview := doc.PageContent
-				if len(contentPreview) > 50 {
-					contentPreview = contentPreview[:50] + "..."
-				}
-				r.logger.Debug("document missing 'source' metadata or it's not a string, skipping",
-					"document_content_preview", contentPreview)
+	for i, docs := range hydeResults {
+		originalFile := changedFiles[indices[i]]
+		for _, doc := range docs {
+			source, _ := doc.Metadata["source"].(string)
+			if source == "" || r.isArchDocument(doc) {
 				continue
 			}
-
-			// Skip arch documents here, they've already been included
-			if chunkType, ok := doc.Metadata["chunk_type"].(string); ok && chunkType == "arch" {
-				continue
-			}
-
 			if _, exists := seenDocs[source]; !exists {
 				contextBuilder.WriteString(fmt.Sprintf("**%s** (relevant to %s):\n```\n%s\n```\n\n",
 					source, originalFile.Filename, doc.PageContent))
@@ -707,7 +569,135 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 			}
 		}
 	}
+
 	return contextBuilder.String(), nil
+}
+
+func (r *ragService) getArchContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+	filePaths := make([]string, len(files))
+	for i, f := range files {
+		filePaths[i] = f.Filename
+	}
+	archContext, err := r.GetArchContextForPaths(ctx, scopedStore, filePaths)
+	if err != nil {
+		r.logger.Warn("failed to get architectural context", "error", err)
+		return ""
+	}
+	return archContext
+}
+
+func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalgithub.ChangedFile) map[int]string {
+	type hydeResult struct {
+		index   int
+		snippet string
+	}
+	hydeChan := make(chan hydeResult, len(files))
+	var wg sync.WaitGroup
+
+	for i, file := range files {
+		if file.Patch == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, f internalgithub.ChangedFile) {
+			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
+			prompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: f.Patch})
+			if err != nil {
+				return
+			}
+			snippet, _ := llms.GenerateFromSinglePrompt(ctx, r.generatorLLM, prompt)
+			if snippet != "" {
+				hydeChan <- hydeResult{index: idx, snippet: snippet}
+			}
+		}(i, file)
+	}
+
+	go func() {
+		wg.Wait()
+		close(hydeChan)
+	}()
+
+	hydeMap := make(map[int]string)
+	for res := range hydeChan {
+		hydeMap[res.index] = res.snippet
+	}
+	return hydeMap
+}
+
+func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedderModelName string, files []internalgithub.ChangedFile, hydeMap map[int]string) ([][]schema.Document, []string, []int, error) {
+	queries := make([]string, 0, len(files)*2)
+	indices := make([]int, 0, len(files)*2)
+
+	for i, file := range files {
+		if file.Patch == "" {
+			continue
+		}
+		queries = append(queries, fmt.Sprintf(
+			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
+			file.Filename, file.Patch,
+		))
+		indices = append(indices, i)
+
+		if snippet, ok := hydeMap[i]; ok {
+			queries = append(queries, snippet)
+			indices = append(indices, i)
+		}
+	}
+
+	if len(queries) == 0 {
+		return nil, nil, nil, nil
+	}
+
+	results, err := r.vectorStore.SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, 5)
+	return results, queries, indices, err
+}
+
+func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
+	symbols := make(map[string]struct{})
+	for _, file := range files {
+		if file.Patch == "" {
+			continue
+		}
+		for _, sym := range r.extractSymbolsFromPatch(file.Patch) {
+			symbols[sym] = struct{}{}
+		}
+	}
+
+	if len(symbols) == 0 {
+		return ""
+	}
+
+	var symbolList []string
+	for s := range symbols {
+		symbolList = append(symbolList, s)
+	}
+
+	query := fmt.Sprintf("Find code that calls or uses the following symbols: %s", strings.Join(symbolList, ", "))
+	docs, err := scopedStore.SimilaritySearch(ctx, query, 8)
+	if err != nil {
+		r.logger.Warn("failed to fetch impact context", "error", err)
+		return ""
+	}
+
+	var builder strings.Builder
+	for _, doc := range docs {
+		source, _ := doc.Metadata["source"].(string)
+		if _, exists := seenDocs[source]; exists || r.isArchDocument(doc) {
+			continue
+		}
+		builder.WriteString(fmt.Sprintf("**%s** (potential impact usage):\n```\n%s\n```\n\n",
+			source, doc.PageContent))
+		seenDocs[source] = struct{}{}
+	}
+	return builder.String()
+}
+
+func (r *ragService) isArchDocument(doc schema.Document) bool {
+	ct, ok := doc.Metadata["chunk_type"].(string)
+	return ok && ct == "arch"
 }
 
 // filterFilesByExtensions removes files from a slice if their extension matches
