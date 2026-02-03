@@ -50,6 +50,8 @@ type AIConfig struct {
 	GeneratorModel   string `mapstructure:"generator_model"`
 	EmbedderModel    string `mapstructure:"embedder_model"`
 	EmbedderTask     string `mapstructure:"embedder_task_description"`
+	RerankerModel    string `mapstructure:"reranker_model"`
+	EnableReranking  bool   `mapstructure:"enable_reranking"`
 }
 
 type StorageConfig struct {
@@ -132,6 +134,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.ollama_host", "http://localhost:11434")
 	v.SetDefault("ai.embedder_model", "nomic-embed-text")
 	v.SetDefault("ai.embedder_task_description", "search_document")
+	v.SetDefault("ai.enable_reranking", false)     // Disabled by default for speed
+	v.SetDefault("ai.reranker_model", "gemma2:2b") // Default to a small, fast model
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")

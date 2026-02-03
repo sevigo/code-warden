@@ -14,7 +14,9 @@ import (
 	reflect "reflect"
 	time "time"
 
+	storage "github.com/sevigo/code-warden/internal/storage"
 	schema "github.com/sevigo/goframe/schema"
+	vectorstores "github.com/sevigo/goframe/vectorstores"
 	qdrant "github.com/sevigo/goframe/vectorstores/qdrant"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -43,18 +45,38 @@ func (m *MockVectorStore) EXPECT() *MockVectorStoreMockRecorder {
 	return m.recorder
 }
 
-// AddDocumentsBatch mocks base method.
-func (m *MockVectorStore) AddDocumentsBatch(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(int, int, time.Duration)) error {
+// AddDocuments mocks base method.
+func (m *MockVectorStore) AddDocuments(ctx context.Context, docs []schema.Document, options ...vectorstores.Option) ([]string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AddDocumentsBatch", ctx, collectionName, embedderModelName, docs, progressFn)
+	varargs := []any{ctx, docs}
+	for _, a := range options {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "AddDocuments", varargs...)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AddDocuments indicates an expected call of AddDocuments.
+func (mr *MockVectorStoreMockRecorder) AddDocuments(ctx, docs any, options ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, docs}, options...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddDocuments", reflect.TypeOf((*MockVectorStore)(nil).AddDocuments), varargs...)
+}
+
+// AddDocumentsToCollection mocks base method.
+func (m *MockVectorStore) AddDocumentsToCollection(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(int, int, time.Duration)) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddDocumentsToCollection", ctx, collectionName, embedderModelName, docs, progressFn)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// AddDocumentsBatch indicates an expected call of AddDocumentsBatch.
-func (mr *MockVectorStoreMockRecorder) AddDocumentsBatch(ctx, collectionName, embedderModelName, docs, progressFn any) *gomock.Call {
+// AddDocumentsToCollection indicates an expected call of AddDocumentsToCollection.
+func (mr *MockVectorStoreMockRecorder) AddDocumentsToCollection(ctx, collectionName, embedderModelName, docs, progressFn any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddDocumentsBatch", reflect.TypeOf((*MockVectorStore)(nil).AddDocumentsBatch), ctx, collectionName, embedderModelName, docs, progressFn)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddDocumentsToCollection", reflect.TypeOf((*MockVectorStore)(nil).AddDocumentsToCollection), ctx, collectionName, embedderModelName, docs, progressFn)
 }
 
 // DeleteCollection mocks base method.
@@ -71,32 +93,110 @@ func (mr *MockVectorStoreMockRecorder) DeleteCollection(ctx, collectionName any)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteCollection", reflect.TypeOf((*MockVectorStore)(nil).DeleteCollection), ctx, collectionName)
 }
 
-// DeleteDocuments mocks base method.
-func (m *MockVectorStore) DeleteDocuments(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteDocuments", ctx, collectionName, embedderModelName, documentIDs)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// DeleteDocuments indicates an expected call of DeleteDocuments.
-func (mr *MockVectorStoreMockRecorder) DeleteDocuments(ctx, collectionName, embedderModelName, documentIDs any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteDocuments", reflect.TypeOf((*MockVectorStore)(nil).DeleteDocuments), ctx, collectionName, embedderModelName, documentIDs)
-}
-
 // DeleteDocumentsByFilter mocks base method.
-func (m *MockVectorStore) DeleteDocumentsByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error {
+func (m *MockVectorStore) DeleteDocumentsByFilter(ctx context.Context, filters map[string]any, options ...vectorstores.Option) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteDocumentsByFilter", ctx, collectionName, embedderModelName, filters)
+	varargs := []any{ctx, filters}
+	for _, a := range options {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DeleteDocumentsByFilter", varargs...)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // DeleteDocumentsByFilter indicates an expected call of DeleteDocumentsByFilter.
-func (mr *MockVectorStoreMockRecorder) DeleteDocumentsByFilter(ctx, collectionName, embedderModelName, filters any) *gomock.Call {
+func (mr *MockVectorStoreMockRecorder) DeleteDocumentsByFilter(ctx, filters any, options ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteDocumentsByFilter", reflect.TypeOf((*MockVectorStore)(nil).DeleteDocumentsByFilter), ctx, collectionName, embedderModelName, filters)
+	varargs := append([]any{ctx, filters}, options...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteDocumentsByFilter", reflect.TypeOf((*MockVectorStore)(nil).DeleteDocumentsByFilter), varargs...)
+}
+
+// DeleteDocumentsFromCollection mocks base method.
+func (m *MockVectorStore) DeleteDocumentsFromCollection(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteDocumentsFromCollection", ctx, collectionName, embedderModelName, documentIDs)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteDocumentsFromCollection indicates an expected call of DeleteDocumentsFromCollection.
+func (mr *MockVectorStoreMockRecorder) DeleteDocumentsFromCollection(ctx, collectionName, embedderModelName, documentIDs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteDocumentsFromCollection", reflect.TypeOf((*MockVectorStore)(nil).DeleteDocumentsFromCollection), ctx, collectionName, embedderModelName, documentIDs)
+}
+
+// DeleteDocumentsFromCollectionByFilter mocks base method.
+func (m *MockVectorStore) DeleteDocumentsFromCollectionByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteDocumentsFromCollectionByFilter", ctx, collectionName, embedderModelName, filters)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteDocumentsFromCollectionByFilter indicates an expected call of DeleteDocumentsFromCollectionByFilter.
+func (mr *MockVectorStoreMockRecorder) DeleteDocumentsFromCollectionByFilter(ctx, collectionName, embedderModelName, filters any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteDocumentsFromCollectionByFilter", reflect.TypeOf((*MockVectorStore)(nil).DeleteDocumentsFromCollectionByFilter), ctx, collectionName, embedderModelName, filters)
+}
+
+// ForRepo mocks base method.
+func (m *MockVectorStore) ForRepo(collectionName, embedderModel string) storage.ScopedVectorStore {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ForRepo", collectionName, embedderModel)
+	ret0, _ := ret[0].(storage.ScopedVectorStore)
+	return ret0
+}
+
+// ForRepo indicates an expected call of ForRepo.
+func (mr *MockVectorStoreMockRecorder) ForRepo(collectionName, embedderModel any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ForRepo", reflect.TypeOf((*MockVectorStore)(nil).ForRepo), collectionName, embedderModel)
+}
+
+// ListCollections mocks base method.
+func (m *MockVectorStore) ListCollections(ctx context.Context) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListCollections", ctx)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListCollections indicates an expected call of ListCollections.
+func (mr *MockVectorStoreMockRecorder) ListCollections(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListCollections", reflect.TypeOf((*MockVectorStore)(nil).ListCollections), ctx)
+}
+
+// SearchCollection mocks base method.
+func (m *MockVectorStore) SearchCollection(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SearchCollection", ctx, collectionName, embedderModelName, query, numDocs)
+	ret0, _ := ret[0].([]schema.Document)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SearchCollection indicates an expected call of SearchCollection.
+func (mr *MockVectorStoreMockRecorder) SearchCollection(ctx, collectionName, embedderModelName, query, numDocs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchCollection", reflect.TypeOf((*MockVectorStore)(nil).SearchCollection), ctx, collectionName, embedderModelName, query, numDocs)
+}
+
+// SearchCollectionBatch mocks base method.
+func (m *MockVectorStore) SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SearchCollectionBatch", ctx, collectionName, embedderModelName, queries, numDocs)
+	ret0, _ := ret[0].([][]schema.Document)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SearchCollectionBatch indicates an expected call of SearchCollectionBatch.
+func (mr *MockVectorStoreMockRecorder) SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, numDocs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchCollectionBatch", reflect.TypeOf((*MockVectorStore)(nil).SearchCollectionBatch), ctx, collectionName, embedderModelName, queries, numDocs)
 }
 
 // SetBatchConfig mocks base method.
@@ -114,31 +214,61 @@ func (mr *MockVectorStoreMockRecorder) SetBatchConfig(config any) *gomock.Call {
 }
 
 // SimilaritySearch mocks base method.
-func (m *MockVectorStore) SimilaritySearch(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error) {
+func (m *MockVectorStore) SimilaritySearch(ctx context.Context, query string, numDocuments int, options ...vectorstores.Option) ([]schema.Document, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SimilaritySearch", ctx, collectionName, embedderModelName, query, numDocs)
+	varargs := []any{ctx, query, numDocuments}
+	for _, a := range options {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "SimilaritySearch", varargs...)
 	ret0, _ := ret[0].([]schema.Document)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // SimilaritySearch indicates an expected call of SimilaritySearch.
-func (mr *MockVectorStoreMockRecorder) SimilaritySearch(ctx, collectionName, embedderModelName, query, numDocs any) *gomock.Call {
+func (mr *MockVectorStoreMockRecorder) SimilaritySearch(ctx, query, numDocuments any, options ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SimilaritySearch", reflect.TypeOf((*MockVectorStore)(nil).SimilaritySearch), ctx, collectionName, embedderModelName, query, numDocs)
+	varargs := append([]any{ctx, query, numDocuments}, options...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SimilaritySearch", reflect.TypeOf((*MockVectorStore)(nil).SimilaritySearch), varargs...)
 }
 
 // SimilaritySearchBatch mocks base method.
-func (m *MockVectorStore) SimilaritySearchBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error) {
+func (m *MockVectorStore) SimilaritySearchBatch(ctx context.Context, queries []string, numDocuments int, options ...vectorstores.Option) ([][]schema.Document, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SimilaritySearchBatch", ctx, collectionName, embedderModelName, queries, numDocs)
+	varargs := []any{ctx, queries, numDocuments}
+	for _, a := range options {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "SimilaritySearchBatch", varargs...)
 	ret0, _ := ret[0].([][]schema.Document)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // SimilaritySearchBatch indicates an expected call of SimilaritySearchBatch.
-func (mr *MockVectorStoreMockRecorder) SimilaritySearchBatch(ctx, collectionName, embedderModelName, queries, numDocs any) *gomock.Call {
+func (mr *MockVectorStoreMockRecorder) SimilaritySearchBatch(ctx, queries, numDocuments any, options ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SimilaritySearchBatch", reflect.TypeOf((*MockVectorStore)(nil).SimilaritySearchBatch), ctx, collectionName, embedderModelName, queries, numDocs)
+	varargs := append([]any{ctx, queries, numDocuments}, options...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SimilaritySearchBatch", reflect.TypeOf((*MockVectorStore)(nil).SimilaritySearchBatch), varargs...)
+}
+
+// SimilaritySearchWithScores mocks base method.
+func (m *MockVectorStore) SimilaritySearchWithScores(ctx context.Context, query string, numDocuments int, options ...vectorstores.Option) ([]vectorstores.DocumentWithScore, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, query, numDocuments}
+	for _, a := range options {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "SimilaritySearchWithScores", varargs...)
+	ret0, _ := ret[0].([]vectorstores.DocumentWithScore)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SimilaritySearchWithScores indicates an expected call of SimilaritySearchWithScores.
+func (mr *MockVectorStoreMockRecorder) SimilaritySearchWithScores(ctx, query, numDocuments any, options ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, query, numDocuments}, options...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SimilaritySearchWithScores", reflect.TypeOf((*MockVectorStore)(nil).SimilaritySearchWithScores), varargs...)
 }
