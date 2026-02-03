@@ -99,7 +99,7 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 
 // fetchSummaryCache fetches existing architectural summaries from Qdrant to build a cache map.
 func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.ScopedVectorStore) map[string]string {
-	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 10000,
+	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 500,
 		vectorstores.WithFilters(map[string]any{
 			"chunk_type": "arch",
 		}),
