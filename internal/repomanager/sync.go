@@ -113,6 +113,20 @@ func (m *manager) incrementalUpdate(
 		return nil, err
 	}
 
+	// If no previous SHA recorded, treat as full re-index
+	if rec.LastIndexedSHA == "" {
+		m.logger.Info("no previous index SHA, listing all files", "repo", ev.RepoFullName)
+		files, err := m.listRepoFiles(rec.ClonePath)
+		if err != nil {
+			return nil, fmt.Errorf("list files: %w", err)
+		}
+		return &core.UpdateResult{
+			FilesToAddOrUpdate: files,
+			RepoPath:           rec.ClonePath,
+			IsInitialClone:     true, // Treat as initial for indexing purposes
+		}, nil
+	}
+
 	added, modified, deleted, err := m.gitClient.Diff(gitRepo, rec.LastIndexedSHA, ev.HeadSHA)
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
