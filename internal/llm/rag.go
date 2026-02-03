@@ -107,13 +107,6 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	// Create a scoped store for this repository
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 
-	// Ensure we start with a fresh collection since this is an initial index.
-	// This prevents vector duplication if the Postgres record was lost but Qdrant persisted.
-	if err := scopedStore.DeleteCollection(ctx, ""); err != nil {
-		// Log but continue - if it didn't exist, that's fine.
-		r.logger.Info("attempted to clear collection (expected if new)", "error", err)
-	}
-
 	// This is the new streaming pipeline.
 	// The loader walks the filesystem and calls this function with batches of documents.
 	// This function then immediately sends the batch to the vector store.
@@ -292,7 +285,17 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 
 	var docs []schema.Document
 	for _, chunk := range chunks {
+		// Generate deterministic ID to allow idempotent updates (deduplication)
+		// ID = SHA256(FilePath + LineStart + LineEnd)
+		h := sha256.New()
+		h.Write([]byte(file))
+		h.Write([]byte(fmt.Sprintf(":%d:%d", chunk.LineStart, chunk.LineEnd)))
+		sum := h.Sum(nil)
+		// Format as UUID: 8-4-4-4-12
+		id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+
 		doc := schema.NewDocument(chunk.Content, map[string]any{
+			"id":         id,
 			"source":     file,
 			"identifier": chunk.Identifier,
 			"chunk_type": chunk.Type,
