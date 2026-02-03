@@ -81,10 +81,24 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 }
 
 // runFullReview handles the initial `/review` command.
-func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) (err error) {
+func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+	return j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
+}
 
-	reviewEnv, err := j.setupReviewEnvironment(ctx, event)
+// runReReview handles the `/rereview` command.
+// It reuses the same robust workflow as full review, ensuring repository state is consistent
+// before generating the review. Since indexing is incremental, this is efficient even if
+// run repeatedly.
+func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
+}
+
+// executeReviewWorkflow contains the core logic for running a code review.
+// It handles setup, syncing, indexing (if needed), review generation, and posting results.
+func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHubEvent, title, summary string) (err error) {
+	reviewEnv, err := j.setupReviewEnvironment(ctx, event, title, summary)
 	if err != nil {
 		return err
 	}
@@ -112,8 +126,8 @@ type reviewEnvironment struct {
 }
 
 // setupReviewEnvironment initializes clients, syncs the repo, and loads all necessary configs.
-func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent) (*reviewEnvironment, error) {
-	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Code Review", "AI analysis in progress...")
+func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent, title, summary string) (*reviewEnvironment, error) {
+	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, title, summary)
 	if err != nil {
 		return nil, err
 	}
@@ -258,64 +272,6 @@ func (j *ReviewJob) updateStatusOnError(ctx context.Context, statusUpdater githu
 			j.logger.Error("Failed to update failure status on GitHub", "original_error", jobErr, "status_update_error", err)
 		}
 	}
-}
-
-// runReReview handles the `/rereview` command.
-// It skips indexing (vectors already exist) and regenerates only the review.
-func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) (err error) {
-	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
-
-	ghClient, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Re-analyzing PR...")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
-		}
-	}()
-
-	// Get existing repo record (must exist from previous /review)
-	repo, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
-	if err != nil || repo == nil {
-		return fmt.Errorf("repository not found - run /review first to index the repository: %w", err)
-	}
-
-	// Load repo config
-	repoConfig := j.loadAndProcessRepoConfig(repo.ClonePath, event.RepoFullName)
-
-	// Skip indexing - just generate a fresh review
-	j.logger.Info("Generating fresh review (skipping indexing)", "repo", event.RepoFullName)
-
-	structuredReview, rawReviewJSON, err := j.ragService.GenerateReview(ctx, repoConfig, repo, event, ghClient)
-	if err != nil {
-		return fmt.Errorf("failed to generate review: %w", err)
-	}
-	if structuredReview == nil || (structuredReview.Summary == "" && len(structuredReview.Suggestions) == 0) {
-		return errors.New("generated review is empty or invalid")
-	}
-
-	// Post and save the review
-	if err := statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
-		return fmt.Errorf("failed to post review comment to GitHub: %w", err)
-	}
-
-	dbReview := &core.Review{
-		RepoFullName:  event.RepoFullName,
-		PRNumber:      event.PRNumber,
-		HeadSHA:       event.HeadSHA,
-		ReviewContent: rawReviewJSON,
-	}
-	if err := j.store.SaveReview(ctx, dbReview); err != nil {
-		j.logger.Error("failed to save review to database", "error", err)
-	}
-
-	if err := statusUpdater.Completed(ctx, event, checkRunID, "success", "Re-Review Complete", "Fresh analysis finished."); err != nil {
-		return fmt.Errorf("failed to update completion status: %w", err)
-	}
-
-	j.logger.Info("Re-review job completed successfully")
-	return nil
 }
 
 func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
