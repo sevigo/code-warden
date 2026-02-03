@@ -106,7 +106,7 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 		if relErr != nil {
 			return relErr
 		}
-		files = append(files, rel)
+		files = append(files, filepath.ToSlash(rel))
 		return nil
 	})
 	return files, err

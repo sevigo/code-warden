@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -120,7 +121,7 @@ func (r *ragService) getDirectoryPath(doc schema.Document) string {
 		return ""
 	}
 
-	dirPath := filepath.Dir(source)
+	dirPath := path.Dir(filepath.ToSlash(source))
 	if dirPath == "." {
 		return "root"
 	}
@@ -129,7 +130,7 @@ func (r *ragService) getDirectoryPath(doc schema.Document) string {
 
 func (r *ragService) extractDocMetadata(doc schema.Document, info *DirectoryInfo) {
 	source, _ := doc.Metadata["source"].(string)
-	fileName := filepath.Base(source)
+	fileName := path.Base(filepath.ToSlash(source))
 	if !containsString(info.Files, fileName) {
 		info.Files = append(info.Files, fileName)
 	}
@@ -263,8 +264,8 @@ func containsString(slice []string, s string) bool {
 func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore storage.ScopedVectorStore, paths []string) (string, error) {
 	// Extract unique directories from paths
 	dirs := make(map[string]struct{})
-	for _, path := range paths {
-		dir := filepath.Dir(path)
+	for _, p := range paths {
+		dir := path.Dir(filepath.ToSlash(p))
 		if dir == "." {
 			dir = "root"
 		}

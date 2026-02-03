@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/sevigo/goframe/schema"
@@ -14,10 +13,12 @@ func TestGetDirectoryPath(t *testing.T) {
 		source   string
 		expected string
 	}{
-		{"internal/llm/rag.go", filepath.FromSlash("internal/llm")},
+		{"internal/llm/rag.go", "internal/llm"},
+		{"internal\\llm\\rag.go", "internal/llm"},
 		{"main.go", "root"},
 		{"", ""},
 		{"./local_file.go", "root"},
+		{".\\local_file.go", "root"},
 	}
 
 	for _, tt := range tests {

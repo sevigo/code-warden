@@ -253,10 +253,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		return nil, "", fmt.Errorf("failed to get changed files: %w", err)
 	}
 
-	contextString, err := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
-	if err != nil {
-		return nil, "", err
-	}
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
@@ -519,9 +516,9 @@ func (r *ragService) matchTypeSymbol(line string) string {
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
 // It also fetches architectural summaries for the affected directories.
-func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName string, changedFiles []internalgithub.ChangedFile) (string, error) {
+func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName string, changedFiles []internalgithub.ChangedFile) string {
 	if len(changedFiles) == 0 {
-		return "", nil
+		return ""
 	}
 
 	var contextBuilder strings.Builder
@@ -570,7 +567,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		}
 	}
 
-	return contextBuilder.String(), nil
+	return contextBuilder.String()
 }
 
 func (r *ragService) getArchContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
