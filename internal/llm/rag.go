@@ -4,6 +4,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -46,6 +48,7 @@ type ragService struct {
 	reranker       schema.Reranker
 	parserRegistry parsers.ParserRegistry
 	logger         *slog.Logger
+	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
 }
 
 // NewRAGService creates a new RAGService instance with a vector store, LLM model,
@@ -193,38 +196,8 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		return nil
 	}
 
-	var allDocs []schema.Document
-	for _, file := range filesToProcess {
-		fullPath := filepath.Join(repoPath, file)
-		contentBytes, err := os.ReadFile(fullPath)
-		if err != nil {
-			r.logger.Error("failed to read file for update, skipping", "file", file, "error", err)
-			continue
-		}
-
-		parser, err := r.parserRegistry.GetParserForFile(fullPath, nil)
-		if err != nil {
-			r.logger.Warn("no suitable parser found for file, skipping", "file", file, "error", err)
-			continue
-		}
-
-		chunks, err := parser.Chunk(string(contentBytes), file, nil)
-		if err != nil {
-			r.logger.Error("failed to chunk file", "file", file, "error", err)
-			continue
-		}
-
-		for _, chunk := range chunks {
-			doc := schema.NewDocument(chunk.Content, map[string]any{
-				"source":     file,
-				"identifier": chunk.Identifier,
-				"chunk_type": chunk.Type,
-				"line_start": chunk.LineStart,
-				"line_end":   chunk.LineEnd,
-			})
-			allDocs = append(allDocs, doc)
-		}
-	}
+	// Process files in parallel using worker pool
+	allDocs := r.processFilesParallel(repoPath, filesToProcess, 4)
 
 	if len(allDocs) > 0 {
 		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
@@ -240,6 +213,88 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	}
 
 	return nil
+}
+
+// processFilesParallel processes files concurrently using a worker pool.
+func (r *ragService) processFilesParallel(repoPath string, files []string, numWorkers int) []schema.Document {
+	if len(files) == 0 {
+		return nil
+	}
+
+	type result struct {
+		docs []schema.Document
+	}
+
+	fileChan := make(chan string, len(files))
+	resultChan := make(chan result, len(files))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for range numWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileChan {
+				docs := r.processFile(repoPath, file)
+				resultChan <- result{docs: docs}
+			}
+		}()
+	}
+
+	// Send files to workers
+	for _, file := range files {
+		fileChan <- file
+	}
+	close(fileChan)
+
+	// Wait for workers and close result channel
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var allDocs []schema.Document
+	for res := range resultChan {
+		allDocs = append(allDocs, res.docs...)
+	}
+
+	return allDocs
+}
+
+// processFile reads, parses, and chunks a single file.
+func (r *ragService) processFile(repoPath, file string) []schema.Document {
+	fullPath := filepath.Join(repoPath, file)
+	contentBytes, err := os.ReadFile(fullPath)
+	if err != nil {
+		r.logger.Error("failed to read file for update, skipping", "file", file, "error", err)
+		return nil
+	}
+
+	parser, err := r.parserRegistry.GetParserForFile(fullPath, nil)
+	if err != nil {
+		r.logger.Warn("no suitable parser found for file, skipping", "file", file, "error", err)
+		return nil
+	}
+
+	chunks, err := parser.Chunk(string(contentBytes), file, nil)
+	if err != nil {
+		r.logger.Error("failed to chunk file", "file", file, "error", err)
+		return nil
+	}
+
+	var docs []schema.Document
+	for _, chunk := range chunks {
+		doc := schema.NewDocument(chunk.Content, map[string]any{
+			"source":     file,
+			"identifier": chunk.Identifier,
+			"chunk_type": chunk.Type,
+			"line_start": chunk.LineStart,
+			"line_end":   chunk.LineEnd,
+		})
+		docs = append(docs, doc)
+	}
+	return docs
 }
 
 // GenerateReview now focuses on data preparation and delegates to the helper.
@@ -683,13 +738,27 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 	var wg sync.WaitGroup
 	// Semaphore to limit concurrent LLM calls (e.g., 5 at a time)
 	sem := make(chan struct{}, 5)
+	cacheHits := 0
 
 	for i, file := range files {
 		if file.Patch == "" {
 			continue
 		}
+
+		// Compute patch hash for cache lookup
+		patchHash := r.hashPatch(file.Patch)
+
+		// Check cache first
+		if cached, ok := r.hydeCache.Load(patchHash); ok {
+			if snippet, valid := cached.(string); valid {
+				hydeChan <- hydeResult{index: i, snippet: snippet}
+				cacheHits++
+				continue
+			}
+		}
+
 		wg.Add(1)
-		go func(idx int, f internalgithub.ChangedFile) {
+		go func(idx int, f internalgithub.ChangedFile, hash string) {
 			defer wg.Done()
 
 			sem <- struct{}{}        // Acquire
@@ -704,9 +773,10 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 			}
 			snippet, _ := llms.GenerateFromSinglePrompt(ctx, r.generatorLLM, prompt)
 			if snippet != "" {
+				r.hydeCache.Store(hash, snippet) // Cache for future use
 				hydeChan <- hydeResult{index: idx, snippet: snippet}
 			}
-		}(i, file)
+		}(i, file, patchHash)
 	}
 
 	go func() {
@@ -718,7 +788,17 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 	for res := range hydeChan {
 		hydeMap[res.index] = res.snippet
 	}
+
+	if cacheHits > 0 {
+		r.logger.Debug("hyde cache hits", "hits", cacheHits, "total", len(files))
+	}
 	return hydeMap
+}
+
+// hashPatch computes a short hash of the patch content for caching.
+func (r *ragService) hashPatch(patch string) string {
+	hash := sha256.Sum256([]byte(patch))
+	return hex.EncodeToString(hash[:8])
 }
 
 func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedderModelName string, files []internalgithub.ChangedFile, hydeMap map[int]string) ([][]schema.Document, []int) {
