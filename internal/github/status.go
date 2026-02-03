@@ -119,7 +119,7 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	if len(review.Suggestions) > 0 {
 		sb.WriteString("---\n\n")
 		sb.WriteString("### 📊 Issue Summary\n")
-		sb.WriteString(fmt.Sprintf("| Severity | Count |\n"))
+		sb.WriteString("| Severity | Count |\n")
 		sb.WriteString("|----------|-------|\n")
 		if counts["Critical"] > 0 {
 			sb.WriteString(fmt.Sprintf("| 🔴 Critical | %d |\n", counts["Critical"]))

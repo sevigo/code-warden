@@ -1,0 +1,207 @@
+diff --git a/internal/github/client.go b/internal/github/client.go
+index 37fb0d6..4b6327d 100644
+--- a/internal/github/client.go
++++ b/internal/github/client.go
+@@ -32,7 +32,7 @@ type Client interface {
+ 	GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error)
+ 	GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]ChangedFile, error)
+ 	CreateComment(ctx context.Context, owner, repo string, number int, body string) error
+-	CreateReview(ctx context.Context, owner, repo string, number int, body string, comments []DraftReviewComment) error
++	CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error
+ 	CreateCheckRun(ctx context.Context, owner, repo string, opts github.CreateCheckRunOptions) (*github.CheckRun, error)
+ 	UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, opts github.UpdateCheckRunOptions) (*github.CheckRun, error)
+ }
+@@ -60,7 +60,7 @@ func NewPATClient(ctx context.Context, token string, logger *slog.Logger) Client
+ }
+ 
+ // CreateReview creates a new pull request review with a summary and line-specific comments.
+-func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, number int, body string, comments []DraftReviewComment) error {
++func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error {
+ 	var ghComments []*github.DraftReviewComment
+ 	for _, c := range comments {
+ 		ghComments = append(ghComments, &github.DraftReviewComment{
+@@ -71,6 +71,7 @@ func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, num
+ 	}
+ 
+ 	reviewRequest := &github.PullRequestReviewRequest{
++		CommitID: &commitSHA,
+ 		Body:     &body,
+ 		Event:    github.Ptr("COMMENT"),
+ 		Comments: ghComments,
+diff --git a/internal/github/status.go b/internal/github/status.go
+index d21a7c2..f0436f2 100644
+--- a/internal/github/status.go
++++ b/internal/github/status.go
+@@ -4,6 +4,7 @@ package github
+ import (
+ 	"context"
+ 	"fmt"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/google/go-github/v73/github"
+@@ -69,16 +70,86 @@ func (s *statusUpdater) Completed(ctx context.Context, event *core.GitHubEvent,
+ }
+ 
+ // PostStructuredReview posts a new pull request review with line-specific comments.
++// It formats comments with severity badges and posts a nicely formatted summary.
+ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
+ 	var comments []DraftReviewComment
+ 	for _, sug := range review.Suggestions {
+ 		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
++			formattedComment := formatInlineComment(sug)
+ 			comments = append(comments, DraftReviewComment{
+ 				Path: sug.FilePath,
+ 				Line: sug.LineNumber,
+-				Body: sug.Comment,
++				Body: formattedComment,
+ 			})
+ 		}
+ 	}
+-	return s.client.CreateReview(ctx, event.RepoOwner, event.RepoName, event.PRNumber, review.Summary, comments)
++
++	formattedSummary := formatReviewSummary(review)
++	return s.client.CreateReview(ctx, event.RepoOwner, event.RepoName, event.PRNumber, event.HeadSHA, formattedSummary, comments)
++}
++
++// formatInlineComment creates a nicely formatted comment with severity and category.
++func formatInlineComment(sug core.Suggestion) string {
++	severity := sug.Severity
++	emoji := severityEmoji(severity)
++
++	var sb strings.Builder
++	sb.WriteString(fmt.Sprintf("%s **[%s]**", emoji, severity))
++	if sug.Category != "" {
++		sb.WriteString(fmt.Sprintf(" | _%s_", sug.Category))
++	}
++	sb.WriteString("\n\n")
++	sb.WriteString(sug.Comment)
++	return sb.String()
++}
++
++// formatReviewSummary creates a nicely formatted summary with statistics.
++func formatReviewSummary(review *core.StructuredReview) string {
++	// Count severities
++	counts := map[string]int{"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
++	for _, sug := range review.Suggestions {
++		counts[sug.Severity]++
++	}
++
++	var sb strings.Builder
++	sb.WriteString("## 🔍 Code Review Summary\n\n")
++	sb.WriteString(review.Summary)
++	sb.WriteString("\n\n")
++
++	if len(review.Suggestions) > 0 {
++		sb.WriteString("---\n\n")
++		sb.WriteString("### 📊 Issue Summary\n")
++		sb.WriteString(fmt.Sprintf("| Severity | Count |\n"))
++		sb.WriteString("|----------|-------|\n")
++		if counts["Critical"] > 0 {
++			sb.WriteString(fmt.Sprintf("| 🔴 Critical | %d |\n", counts["Critical"]))
++		}
++		if counts["High"] > 0 {
++			sb.WriteString(fmt.Sprintf("| 🟠 High | %d |\n", counts["High"]))
++		}
++		if counts["Medium"] > 0 {
++			sb.WriteString(fmt.Sprintf("| 🟡 Medium | %d |\n", counts["Medium"]))
++		}
++		if counts["Low"] > 0 {
++			sb.WriteString(fmt.Sprintf("| 🟢 Low | %d |\n", counts["Low"]))
++		}
++	}
++
++	return sb.String()
++}
++
++// severityEmoji returns an emoji for the given severity level.
++func severityEmoji(severity string) string {
++	switch severity {
++	case "Critical":
++		return "🔴"
++	case "High":
++		return "🟠"
++	case "Medium":
++		return "🟡"
++	case "Low":
++		return "🟢"
++	default:
++		return "⚪"
++	}
+ }
+diff --git a/internal/jobs/review.go b/internal/jobs/review.go
+index f8105bd..cd4de48 100644
+--- a/internal/jobs/review.go
++++ b/internal/jobs/review.go
+@@ -74,17 +74,31 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
+ 	case core.FullReview:
+ 		return j.runFullReview(ctx, event)
+ 	case core.ReReview:
+-		return j.handleUnsupportedReReview(ctx, event)
++		return j.runReReview(ctx, event)
+ 	default:
+ 		return fmt.Errorf("unknown review type: %v", event.Type)
+ 	}
+ }
+ 
+ // runFullReview handles the initial `/review` command.
+-func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) (err error) {
++func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) error {
+ 	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
++	return j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
++}
++
++// runReReview handles the `/rereview` command.
++// It reuses the same robust workflow as full review, ensuring repository state is consistent
++// before generating the review. Since indexing is incremental, this is efficient even if
++// run repeatedly.
++func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
++	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
++	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
++}
+ 
+-	reviewEnv, err := j.setupReviewEnvironment(ctx, event)
++// executeReviewWorkflow contains the core logic for running a code review.
++// It handles setup, syncing, indexing (if needed), review generation, and posting results.
++func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHubEvent, title, summary string) (err error) {
++	reviewEnv, err := j.setupReviewEnvironment(ctx, event, title, summary)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -112,8 +126,8 @@ type reviewEnvironment struct {
+ }
+ 
+ // setupReviewEnvironment initializes clients, syncs the repo, and loads all necessary configs.
+-func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent) (*reviewEnvironment, error) {
+-	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Code Review", "AI analysis in progress...")
++func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent, title, summary string) (*reviewEnvironment, error) {
++	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, title, summary)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -260,25 +274,6 @@ func (j *ReviewJob) updateStatusOnError(ctx context.Context, statusUpdater githu
+ 	}
+ }
+ 
+-func (j *ReviewJob) handleUnsupportedReReview(ctx context.Context, event *core.GitHubEvent) error {
+-	j.logger.Info("Handling temporarily disabled /rereview command", "repo", event.RepoFullName)
+-	_, _, statusUpdater, checkRunID, err := j.setupReview(ctx, event, "Follow-up Review", "Preparing for follow-up...")
+-	if err != nil {
+-		return err
+-	}
+-
+-	comment := "The `/rereview` command is being upgraded and is temporarily unavailable. Please use `/review` for a full new analysis."
+-	if postErr := statusUpdater.PostSimpleComment(ctx, event, comment); postErr != nil {
+-		j.logger.Error("Failed to post comment for disabled feature", "error", postErr)
+-	}
+-
+-	summary := "The `/rereview` command is temporarily disabled while it's being upgraded."
+-	if completeErr := statusUpdater.Completed(ctx, event, checkRunID, "neutral", "Feature Unavailable", summary); completeErr != nil {
+-		return fmt.Errorf("failed to update completion status: %w", completeErr)
+-	}
+-	return nil
+-}
+-
+ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
+ 	if event == nil {
+ 		return errors.New("event cannot be nil")
