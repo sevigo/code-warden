@@ -19,12 +19,11 @@ import (
 
 var verbose bool
 
-// Color definitions
+// Color definitions for terminal output.
 var (
 	titleColor   = color.New(color.FgCyan, color.Bold)
 	successColor = color.New(color.FgGreen)
 	warnColor    = color.New(color.FgYellow)
-	errorColor   = color.New(color.FgRed)
 	infoColor    = color.New(color.FgWhite)
 	dimColor     = color.New(color.FgHiBlack)
 	boldColor    = color.New(color.Bold)
@@ -50,7 +49,7 @@ func init() { //nolint:gochecknoinits // Cobra command registration
 	rootCmd.AddCommand(reviewCmd)
 }
 
-// stepTimer tracks timing for verbose output
+// stepTimer tracks timing for verbose output.
 type stepTimer struct {
 	stepNum    int
 	totalSteps int
@@ -58,11 +57,11 @@ type stepTimer struct {
 	verbose    bool
 }
 
-func newStepTimer(totalSteps int, verbose bool) *stepTimer {
+func newStepTimer(totalSteps int, verboseMode bool) *stepTimer {
 	return &stepTimer{
 		stepNum:    0,
 		totalSteps: totalSteps,
-		verbose:    verbose,
+		verbose:    verboseMode,
 	}
 }
 
@@ -70,37 +69,36 @@ func (t *stepTimer) step(name string) {
 	t.stepNum++
 	t.start = time.Now()
 	if t.verbose {
+		//nolint:errcheck // CLI output, errors are intentionally ignored
 		titleColor.Printf("\n🔧 Step %d/%d: %s...\n", t.stepNum, t.totalSteps, name)
 	} else {
 		fmt.Printf("%s...\n", name)
 	}
 }
 
-func (t *stepTimer) done(details ...string) {
+func (t *stepTimer) done() {
 	if t.verbose {
 		elapsed := time.Since(t.start).Round(time.Millisecond)
+		//nolint:errcheck // CLI output, errors are intentionally ignored
 		successColor.Printf("   ✓ Done (%s)\n", elapsed)
-		for _, d := range details {
-			dimColor.Printf("   └── %s\n", d)
-		}
 	}
 }
 
-func (t *stepTimer) info(format string, args ...any) {
+func (t *stepTimer) infof(format string, args ...any) {
 	if t.verbose {
+		//nolint:errcheck // CLI output, errors are intentionally ignored
 		dimColor.Printf("   ├── "+format+"\n", args...)
 	}
 }
 
-func runReview(_ *cobra.Command, args []string) error {
+func runReview(_ *cobra.Command, args []string) error { //nolint:funlen // CLI workflow requires sequential steps
 	ctx := context.Background()
 	prURL := args[0]
 
 	timer := newStepTimer(5, verbose)
 	overallStart := time.Now()
 
-	titleColor.Println("🚀 Code Warden - PR Review")
-	dimColor.Printf("   Target: %s\n\n", prURL)
+	printHeader(prURL)
 
 	// 1. Initialize Application
 	timer.step("Initializing application")
@@ -117,25 +115,71 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	// 2. Parse URL and fetch PR metadata
 	timer.step("Fetching PR metadata")
+	event, ghClient, err := fetchPRMetadata(ctx, appInstance, prURL, timer)
+	if err != nil {
+		return err
+	}
+	timer.done()
+
+	// 3. Sync Repository
+	timer.step("Syncing repository")
+	syncResult, repo, err := syncRepository(ctx, appInstance, event, timer)
+	if err != nil {
+		return err
+	}
+	timer.done()
+
+	// 4. Indexing
+	timer.step("Updating index")
+	if err := handleIndexing(ctx, appInstance, syncResult, repo, timer); err != nil {
+		return err
+	}
+	timer.done()
+
+	// 5. Generate Review
+	timer.step("Generating review")
+	review, err := generateReview(ctx, appInstance, repo, event, ghClient, timer)
+	if err != nil {
+		return err
+	}
+	timer.done()
+
+	// Print results
+	if verbose {
+		//nolint:errcheck // CLI output
+		dimColor.Printf("\n⏱️  Total time: %s\n", time.Since(overallStart).Round(time.Millisecond))
+	}
+
+	printReview(review)
+	return nil
+}
+
+func printHeader(prURL string) {
+	//nolint:errcheck // CLI output, errors are intentionally ignored
+	titleColor.Println("🚀 Code Warden - PR Review")
+	//nolint:errcheck // CLI output
+	dimColor.Printf("   Target: %s\n\n", prURL)
+}
+
+func fetchPRMetadata(ctx context.Context, appInstance *app.App, prURL string, timer *stepTimer) (*core.GitHubEvent, github.Client, error) {
 	owner, repoName, prNumber, err := gitutil.ParsePullRequestURL(prURL)
 	if err != nil {
-		return fmt.Errorf("invalid PR URL: %w\n\nExpected format: https://github.com/owner/repo/pull/123", err)
+		return nil, nil, fmt.Errorf("invalid PR URL: %w\n\nExpected format: https://github.com/owner/repo/pull/123", err)
 	}
 
 	if appInstance.Cfg.GitHub.Token == "" {
-		return fmt.Errorf("GITHUB_TOKEN is not set\n\nTip: Set CW_GITHUB_TOKEN or GITHUB_TOKEN environment variable")
+		return nil, nil, fmt.Errorf("GITHUB_TOKEN is not set\n\nTip: Set CW_GITHUB_TOKEN or GITHUB_TOKEN environment variable")
 	}
 	ghClient := github.NewPATClient(ctx, appInstance.Cfg.GitHub.Token, appInstance.Logger)
 
 	pr, err := ghClient.GetPullRequest(ctx, owner, repoName, prNumber)
 	if err != nil {
-		return fmt.Errorf("failed to fetch PR: %w\n\nTip: Check that the PR exists and your token has access", err)
+		return nil, nil, fmt.Errorf("failed to fetch PR: %w\n\nTip: Check that the PR exists and your token has access", err)
 	}
 
-	timer.info("PR #%d: %s", pr.GetNumber(), pr.GetTitle())
-	timer.info("Head SHA: %s", truncateSHA(pr.GetHead().GetSHA()))
-	timer.info("Language: %s", pr.GetBase().GetRepo().GetLanguage())
-	timer.done()
+	timer.infof("PR #%d: %s", pr.GetNumber(), pr.GetTitle())
+	timer.infof("Head SHA: %s", truncateSHA(pr.GetHead().GetSHA()))
+	timer.infof("Language: %s", pr.GetBase().GetRepo().GetLanguage())
 
 	event := &core.GitHubEvent{
 		Type:         core.FullReview,
@@ -150,52 +194,39 @@ func runReview(_ *cobra.Command, args []string) error {
 		Language:     pr.GetBase().GetRepo().GetLanguage(),
 	}
 
-	// 3. Sync Repository
-	timer.step("Syncing repository")
+	return event, ghClient, nil
+}
+
+func syncRepository(ctx context.Context, appInstance *app.App, event *core.GitHubEvent, timer *stepTimer) (*core.UpdateResult, *storage.Repository, error) {
 	syncResult, err := appInstance.RepoMgr.SyncRepo(ctx, event, appInstance.Cfg.GitHub.Token)
 	if err != nil {
-		return fmt.Errorf("failed to sync repo: %w\n\nTip: Check network connectivity and disk space", err)
+		return nil, nil, fmt.Errorf("failed to sync repo: %w\n\nTip: Check network connectivity and disk space", err)
 	}
-	timer.info("Path: %s", syncResult.RepoPath)
+	timer.infof("Path: %s", syncResult.RepoPath)
 	if syncResult.IsInitialClone {
-		timer.info("Initial clone completed")
+		timer.infof("Initial clone completed")
 	} else if len(syncResult.FilesToAddOrUpdate) > 0 {
-		timer.info("Files changed: %d", len(syncResult.FilesToAddOrUpdate))
+		timer.infof("Files changed: %d", len(syncResult.FilesToAddOrUpdate))
 	}
-	timer.done()
 
-	// 3.1 Fetch Repo Record
 	repo, err := appInstance.RepoMgr.GetRepoRecord(ctx, event.RepoFullName)
 	if err != nil {
-		return fmt.Errorf("failed to get repo record: %w", err)
+		return nil, nil, fmt.Errorf("failed to get repo record: %w", err)
 	}
 	if repo == nil {
-		return fmt.Errorf("repository record not found after sync")
+		return nil, nil, fmt.Errorf("repository record not found after sync")
 	}
 
-	// 4. Indexing
-	timer.step("Updating index")
-	if err := handleIndexing(ctx, appInstance, syncResult, repo, timer); err != nil {
-		return err
-	}
-	timer.done()
+	return syncResult, repo, nil
+}
 
-	// 5. Generate Review
-	timer.step("Generating review")
+func generateReview(ctx context.Context, appInstance *app.App, repo *storage.Repository, event *core.GitHubEvent, ghClient github.Client, timer *stepTimer) (*core.StructuredReview, error) {
 	review, _, err := appInstance.RAGService.GenerateReview(ctx, nil, repo, event, ghClient)
 	if err != nil {
-		return fmt.Errorf("failed to generate review: %w\n\nTip: Check that the LLM service is running", err)
+		return nil, fmt.Errorf("failed to generate review: %w\n\nTip: Check that the LLM service is running", err)
 	}
-	timer.info("Suggestions: %d", len(review.Suggestions))
-	timer.done()
-
-	// Print results
-	if verbose {
-		dimColor.Printf("\n⏱️  Total time: %s\n", time.Since(overallStart).Round(time.Millisecond))
-	}
-
-	printReview(review)
-	return nil
+	timer.infof("Suggestions: %d", len(review.Suggestions))
+	return review, nil
 }
 
 func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResult, repo *storage.Repository, timer *stepTimer) error {
@@ -205,19 +236,19 @@ func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResu
 
 	switch {
 	case syncResult.IsInitialClone:
-		timer.info("Performing initial full indexing")
-		timer.info("Collection: %s", collectionName)
+		timer.infof("Performing initial full indexing")
+		timer.infof("Collection: %s", collectionName)
 		if err := a.RAGService.SetupRepoContext(ctx, nil, collectionName, embedderModel, repoPath); err != nil {
 			return fmt.Errorf("failed to setup repo context: %w", err)
 		}
 	case len(syncResult.FilesToAddOrUpdate) > 0 || len(syncResult.FilesToDelete) > 0:
-		timer.info("Incremental update: %d added/modified, %d deleted",
+		timer.infof("Incremental update: %d added/modified, %d deleted",
 			len(syncResult.FilesToAddOrUpdate), len(syncResult.FilesToDelete))
 		if err := a.RAGService.UpdateRepoContext(ctx, nil, repo, repoPath, syncResult.FilesToAddOrUpdate, syncResult.FilesToDelete); err != nil {
 			return fmt.Errorf("failed to update repo context: %w", err)
 		}
 	default:
-		timer.info("Index up to date, skipping")
+		timer.infof("Index up to date, skipping")
 	}
 	return nil
 }
@@ -234,37 +265,50 @@ func printReview(review *core.StructuredReview) {
 	thinSeparator := strings.Repeat("─", 60)
 
 	fmt.Println()
+	//nolint:errcheck // CLI output, errors are intentionally ignored
 	titleColor.Println(separator)
+	//nolint:errcheck // CLI output
 	titleColor.Println("📋 REVIEW SUMMARY")
+	//nolint:errcheck // CLI output
 	titleColor.Println(separator)
 	fmt.Println()
+	//nolint:errcheck // CLI output
 	infoColor.Println(review.Summary)
 
 	if len(review.Suggestions) == 0 {
 		fmt.Println()
+		//nolint:errcheck // CLI output
 		successColor.Println("✅ No issues found!")
 		return
 	}
 
 	fmt.Println()
+	//nolint:errcheck // CLI output
 	warnColor.Println(thinSeparator)
+	//nolint:errcheck // CLI output
 	warnColor.Printf("💡 SUGGESTIONS (%d)\n", len(review.Suggestions))
+	//nolint:errcheck // CLI output
 	warnColor.Println(thinSeparator)
 
 	for i, s := range review.Suggestions {
 		fmt.Println()
 		printSeverityBadge(s.Severity)
+		//nolint:errcheck // CLI output
 		boldColor.Printf(" %s", s.FilePath)
+		//nolint:errcheck // CLI output
 		dimColor.Printf(":%d\n", s.LineNumber)
 
 		if s.Category != "" {
+			//nolint:errcheck // CLI output
 			dimColor.Printf("   Category: %s\n", s.Category)
 		}
 		fmt.Println()
+		//nolint:errcheck // CLI output
 		infoColor.Printf("%s\n", s.Comment)
 
 		if i < len(review.Suggestions)-1 {
 			fmt.Println()
+			//nolint:errcheck // CLI output
 			dimColor.Println(strings.Repeat("─", 40))
 		}
 	}
@@ -272,6 +316,7 @@ func printReview(review *core.StructuredReview) {
 }
 
 func printSeverityBadge(severity string) {
+	//nolint:errcheck // CLI output, errors are intentionally ignored
 	switch severity {
 	case "Critical":
 		color.New(color.BgRed, color.FgWhite, color.Bold).Printf(" %s ", severity)
