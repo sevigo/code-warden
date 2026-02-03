@@ -46,11 +46,6 @@ func (m *manager) scanLocalRepo(
 	return m.incrementalLocalScan(ctx, gitRepo, repoFullName, repoPath, headSHA)
 }
 
-func (m *manager) getExcludedPaths() []string {
-	// This could come from config
-	return []string{".git", ".idea", ".vscode", "node_modules", "vendor"}
-}
-
 func (m *manager) fullLocalScan(
 	ctx context.Context,
 	repoPath, repoFullName, headSHA string,

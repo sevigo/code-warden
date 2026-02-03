@@ -74,7 +74,11 @@ func (m *manager) UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string
 
 func (m *manager) lockFor(key string) *sync.Mutex {
 	val, _ := m.repoMux.LoadOrStore(key, &sync.Mutex{})
-	return val.(*sync.Mutex)
+	mux, ok := val.(*sync.Mutex)
+	if !ok {
+		return &sync.Mutex{}
+	}
+	return mux
 }
 
 func (m *manager) updateRepoSHA(ctx context.Context, repoFullName, newSHA string) error {
@@ -102,7 +106,7 @@ func (m *manager) listRepoFiles(repoPath string) ([]string, error) {
 		if relErr != nil {
 			return relErr
 		}
-		files = append(files, rel)
+		files = append(files, strings.ReplaceAll(rel, "\\", "/"))
 		return nil
 	})
 	return files, err

@@ -27,10 +27,6 @@ type dispatcher struct {
 	mainCtx    context.Context
 }
 
-const (
-	llmProviderGemini = "gemini"
-)
-
 // NewDispatcher initializes a dispatcher with a worker pool.
 func NewDispatcher(ctx context.Context, reviewJob core.Job, cfg *config.Config, logger *slog.Logger) core.JobDispatcher {
 	maxWorkers := cfg.Server.MaxWorkers

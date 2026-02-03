@@ -1,0 +1,19 @@
+You are an expert software architect analyzing a codebase.
+
+Directory: {{.Path}}
+
+Files in this directory:
+{{.Files}}
+
+Exported symbols (functions, types, constants):
+{{.Symbols}}
+
+Imports from other packages:
+{{.Imports}}
+
+Provide a concise 2-3 sentence summary of this module's responsibility. Focus on:
+1. What is the primary purpose of this package/directory?
+2. What abstraction layer does it belong to (e.g., data access, business logic, API, utilities)?
+3. What other components might depend on it?
+
+Summary:
