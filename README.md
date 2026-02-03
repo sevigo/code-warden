@@ -118,6 +118,35 @@ export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
 ./bin/warden-cli scan /path/to/your/local/repo
 ```
 
+### 7. CLI Review Command
+
+Run a code review for any GitHub pull request directly from the command line:
+
+```sh
+# Set your GitHub token (required for API access)
+export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
+
+# Basic usage
+./bin/warden-cli review https://github.com/owner/repo/pull/123
+
+# With verbose output (shows timing and debug info)
+./bin/warden-cli review --verbose https://github.com/owner/repo/pull/123
+```
+
+**Verbose mode output includes:**
+- Step-by-step progress with timing for each phase
+- PR metadata (title, SHA, language)
+- Index update statistics
+- Suggestion count and severity breakdown
+
+**Troubleshooting:**
+| Issue | Solution |
+|-------|----------|
+| `GITHUB_TOKEN is not set` | Set `CW_GITHUB_TOKEN` or `GITHUB_TOKEN` environment variable |
+| `failed to fetch PR` | Check PR URL format and token permissions |
+| `failed to sync repo` | Verify network connectivity and disk space |
+| `failed to generate review` | Ensure LLM service (Ollama/Gemini) is running |
+
 
 ## RunPod
 
