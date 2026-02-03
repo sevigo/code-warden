@@ -14,7 +14,6 @@ import (
 
 const (
 	llmProviderGemini = "gemini"
-	llmProviderOllama = "ollama"
 )
 
 // Config represents the top-level configuration structure.
@@ -184,7 +183,6 @@ func (c *Config) ValidateForCLI() error {
 	return nil
 }
 
-// Helper to construct DSN (Data Source Name)
 func (db *DBConfig) GetDSN() string {
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		db.Host,

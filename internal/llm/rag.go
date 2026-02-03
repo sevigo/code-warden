@@ -495,8 +495,8 @@ func (r *ragService) matchFuncSymbol(line string) string {
 				}
 			}
 		}
-		// Strip params
-		if idx := strings.Index(name, "("); idx != -1 {
+		// Strip params and generics
+		if idx := strings.IndexAny(name, "(["); idx != -1 {
 			name = name[:idx]
 		}
 		return strings.TrimSpace(name)
