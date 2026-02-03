@@ -35,6 +35,12 @@ func runReview(_ *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
+	// 1.1 Run Migrations
+	fmt.Println("Applying database migrations...")
+	if err := app.DB.RunMigrations(); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
 	// 2. Parse URL
 	owner, repoName, prNumber, err := gitutil.ParsePullRequestURL(prURL)
 	if err != nil {
