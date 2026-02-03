@@ -69,7 +69,7 @@ func (t *stepTimer) step(name string) {
 	t.stepNum++
 	t.start = time.Now()
 	if t.verbose {
-		//nolint:errcheck // CLI output, errors are intentionally ignored
+		//nolint:gosec // CLI output, errors are intentionally ignored
 		titleColor.Printf("\n🔧 Step %d/%d: %s...\n", t.stepNum, t.totalSteps, name)
 	} else {
 		fmt.Printf("%s...\n", name)
@@ -79,19 +79,19 @@ func (t *stepTimer) step(name string) {
 func (t *stepTimer) done() {
 	if t.verbose {
 		elapsed := time.Since(t.start).Round(time.Millisecond)
-		//nolint:errcheck // CLI output, errors are intentionally ignored
+		//nolint:gosec // CLI output, errors are intentionally ignored
 		successColor.Printf("   ✓ Done (%s)\n", elapsed)
 	}
 }
 
 func (t *stepTimer) infof(format string, args ...any) {
 	if t.verbose {
-		//nolint:errcheck // CLI output, errors are intentionally ignored
+		//nolint:gosec // CLI output, errors are intentionally ignored
 		dimColor.Printf("   ├── "+format+"\n", args...)
 	}
 }
 
-func runReview(_ *cobra.Command, args []string) error { //nolint:funlen // CLI workflow requires sequential steps
+func runReview(_ *cobra.Command, args []string) error {
 	ctx := context.Background()
 	prURL := args[0]
 
@@ -134,6 +134,12 @@ func runReview(_ *cobra.Command, args []string) error { //nolint:funlen // CLI w
 	if err := handleIndexing(ctx, appInstance, syncResult, repo, timer); err != nil {
 		return err
 	}
+	// Save the indexed SHA before the LLM call so we don't lose indexing progress if review fails
+	if event.HeadSHA != "" {
+		if err := appInstance.RepoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
+			return fmt.Errorf("failed to update repo SHA: %w", err)
+		}
+	}
 	timer.done()
 
 	// 5. Generate Review
@@ -146,7 +152,7 @@ func runReview(_ *cobra.Command, args []string) error { //nolint:funlen // CLI w
 
 	// Print results
 	if verbose {
-		//nolint:errcheck // CLI output
+		//nolint:gosec // CLI output
 		dimColor.Printf("\n⏱️  Total time: %s\n", time.Since(overallStart).Round(time.Millisecond))
 	}
 
@@ -155,9 +161,9 @@ func runReview(_ *cobra.Command, args []string) error { //nolint:funlen // CLI w
 }
 
 func printHeader(prURL string) {
-	//nolint:errcheck // CLI output, errors are intentionally ignored
+	//nolint:gosec // CLI output, errors are intentionally ignored
 	titleColor.Println("🚀 Code Warden - PR Review")
-	//nolint:errcheck // CLI output
+	//nolint:gosec // CLI output
 	dimColor.Printf("   Target: %s\n\n", prURL)
 }
 
@@ -265,50 +271,50 @@ func printReview(review *core.StructuredReview) {
 	thinSeparator := strings.Repeat("─", 60)
 
 	fmt.Println()
-	//nolint:errcheck // CLI output, errors are intentionally ignored
+	//nolint:gosec // CLI output, errors are intentionally ignored
 	titleColor.Println(separator)
-	//nolint:errcheck // CLI output
+	//nolint:gosec // CLI output
 	titleColor.Println("📋 REVIEW SUMMARY")
-	//nolint:errcheck // CLI output
+	//nolint:gosec // CLI output
 	titleColor.Println(separator)
 	fmt.Println()
-	//nolint:errcheck // CLI output
+	//nolint:gosec // CLI output
 	infoColor.Println(review.Summary)
 
 	if len(review.Suggestions) == 0 {
 		fmt.Println()
-		//nolint:errcheck // CLI output
+		//nolint:gosec // CLI output
 		successColor.Println("✅ No issues found!")
 		return
 	}
 
 	fmt.Println()
-	//nolint:errcheck // CLI output
+	//nolint:gosec // CLI output
 	warnColor.Println(thinSeparator)
-	//nolint:errcheck // CLI output
+	//nolint:gosec // CLI output
 	warnColor.Printf("💡 SUGGESTIONS (%d)\n", len(review.Suggestions))
-	//nolint:errcheck // CLI output
+	//nolint:gosec // CLI output
 	warnColor.Println(thinSeparator)
 
 	for i, s := range review.Suggestions {
 		fmt.Println()
 		printSeverityBadge(s.Severity)
-		//nolint:errcheck // CLI output
+		//nolint:gosec // CLI output
 		boldColor.Printf(" %s", s.FilePath)
-		//nolint:errcheck // CLI output
+		//nolint:gosec // CLI output
 		dimColor.Printf(":%d\n", s.LineNumber)
 
 		if s.Category != "" {
-			//nolint:errcheck // CLI output
+			//nolint:gosec // CLI output
 			dimColor.Printf("   Category: %s\n", s.Category)
 		}
 		fmt.Println()
-		//nolint:errcheck // CLI output
+		//nolint:gosec // CLI output
 		infoColor.Printf("%s\n", s.Comment)
 
 		if i < len(review.Suggestions)-1 {
 			fmt.Println()
-			//nolint:errcheck // CLI output
+			//nolint:gosec // CLI output
 			dimColor.Println(strings.Repeat("─", 40))
 		}
 	}
@@ -316,7 +322,7 @@ func printReview(review *core.StructuredReview) {
 }
 
 func printSeverityBadge(severity string) {
-	//nolint:errcheck // CLI output, errors are intentionally ignored
+	//nolint:gosec // CLI output, errors are intentionally ignored
 	switch severity {
 	case "Critical":
 		color.New(color.BgRed, color.FgWhite, color.Bold).Printf(" %s ", severity)

@@ -70,4 +70,3 @@ If you find no issues, respond with an empty suggestions array and a summary sta
 ```
 
 Now analyze the PR and respond with your review in the required JSON format:
-```json

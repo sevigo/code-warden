@@ -99,7 +99,7 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 
 // fetchSummaryCache fetches existing architectural summaries from Qdrant to build a cache map.
 func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.ScopedVectorStore) map[string]string {
-	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 10000,
+	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 500,
 		vectorstores.WithFilters(map[string]any{
 			"chunk_type": "arch",
 		}),
@@ -384,11 +384,10 @@ func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*Director
 
 		files = append(files, entry.Name())
 
-		// Use mtime+size for fast hashing (avoids reading file content)
+		// Hash by name+size only. Don't use mtime—git resets it on clone/checkout.
 		info, err := entry.Info()
 		if err == nil {
-			hashBuilder.WriteString(entry.Name())
-			hashBuilder.WriteString(fmt.Sprintf(":%d:%d|", info.Size(), info.ModTime().UnixNano()))
+			hashBuilder.WriteString(fmt.Sprintf("%s:%d|", entry.Name(), info.Size()))
 		}
 	}
 
