@@ -343,8 +343,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	// Parse the JSON string into the structured format
 	var structuredReview core.StructuredReview
 
-	// Find the first '{' and the last '}' to extract the JSON object,
-	// ignoring any surrounding text or markdown code fences.
+	// Extract JSON by finding outer braces (handles markdown fencing)
 	start := strings.Index(rawReview, "{")
 	end := strings.LastIndex(rawReview, "}")
 

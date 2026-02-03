@@ -384,9 +384,7 @@ func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*Director
 
 		files = append(files, entry.Name())
 
-		// Use filename+size for stable hashing across git operations.
-		// NOTE: We intentionally do NOT use ModTime because git clone/checkout
-		// resets all mtimes to "now", which would falsely invalidate the cache.
+		// Hash by name+size only. Don't use mtime—git resets it on clone/checkout.
 		info, err := entry.Info()
 		if err == nil {
 			hashBuilder.WriteString(fmt.Sprintf("%s:%d|", entry.Name(), info.Size()))

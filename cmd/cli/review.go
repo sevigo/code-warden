@@ -134,8 +134,7 @@ func runReview(_ *cobra.Command, args []string) error { //nolint:funlen // CLI w
 	if err := handleIndexing(ctx, appInstance, syncResult, repo, timer); err != nil {
 		return err
 	}
-	// IMPORTANT: Update the repo record with the new SHA so subsequent runs are incremental
-	// Defensive check: only persist if we have a valid SHA
+	// Save the indexed SHA before the LLM call so we don't lose indexing progress if review fails
 	if event.HeadSHA != "" {
 		if err := appInstance.RepoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
 			return fmt.Errorf("failed to update repo SHA: %w", err)
