@@ -541,8 +541,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	seenDocs := make(map[string]struct{})
 
 	// 1. Get Architectural Context (The "Why")
-	archContext := r.getArchContext(ctx, scopedStore, changedFiles)
-	if archContext != "" {
+	if archContext := r.getArchContext(ctx, scopedStore, changedFiles); archContext != "" {
 		contextBuilder.WriteString("# Architectural Context\n\n")
 		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
 		contextBuilder.WriteString(archContext)
@@ -551,14 +550,10 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	// 2. Get HyDE-augmented Snippets (The "How")
 	hydeMap := r.generateHyDESnippets(ctx, changedFiles)
-	hydeResults, _, indices, err := r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
-	if err != nil {
-		r.logger.Warn("failed to fetch HyDE context", "error", err)
-	}
+	hydeResults, indices := r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
 
 	// 3. Get Impact Context (The "Ripple Effect")
-	impactContext := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs)
-	if impactContext != "" {
+	if impactContext := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs); impactContext != "" {
 		r.logger.Info("impact analysis identified potential ripple effects", "context_length", len(impactContext))
 		contextBuilder.WriteString("# Potential Impacted Callers & Usages\n\n")
 		contextBuilder.WriteString("The following code snippets may be affected by the changes in modified symbols:\n\n")
@@ -567,41 +562,10 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	}
 
 	// 4. Finalize Related Code Snippets
-	contextBuilder.WriteString("# Related Code Snippets\n\n")
-	var topFiles []string
-	for i, docs := range hydeResults {
-		originalFile := changedFiles[indices[i]]
-		for j, doc := range docs {
-			source, _ := doc.Metadata["source"].(string)
-			if source == "" || r.isArchDocument(doc) {
-				continue
-			}
-			if _, exists := seenDocs[source]; !exists {
-				if len(topFiles) < 3 {
-					topFiles = append(topFiles, source)
-				}
-				contextBuilder.WriteString(fmt.Sprintf("**%s** (relevant to %s):\n```\n%s\n```\n\n",
-					source, originalFile.Filename, doc.PageContent))
-				seenDocs[source] = struct{}{}
-			}
-			// Fallback: even if we've seen it, if it's top result for another file, it's worth noting in debug logs
-			if j == 0 && len(topFiles) < 3 {
-				alreadyLogged := false
-				for _, f := range topFiles {
-					if f == source {
-						alreadyLogged = true
-						break
-					}
-				}
-				if !alreadyLogged {
-					topFiles = append(topFiles, source)
-				}
-			}
-		}
-	}
-
-	if len(topFiles) > 0 {
-		r.logger.Info("HyDE search results", "top_files", topFiles)
+	relatedSnippets := r.formatRelatedSnippets(hydeResults, indices, changedFiles, seenDocs)
+	if relatedSnippets != "" {
+		contextBuilder.WriteString("# Related Code Snippets\n\n")
+		contextBuilder.WriteString(relatedSnippets)
 	}
 
 	r.logger.Info("relevant context built",
@@ -611,6 +575,54 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	)
 
 	return contextBuilder.String()
+}
+
+func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indices []int, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
+	var builder strings.Builder
+	var topFiles []string
+
+	for i, docs := range hydeResults {
+		originalFile := changedFiles[indices[i]]
+		for j, doc := range docs {
+			topFiles = r.processRelatedSnippet(doc, originalFile, j, seenDocs, topFiles, &builder)
+		}
+	}
+
+	if len(topFiles) > 0 {
+		r.logger.Info("HyDE search results", "top_files", topFiles)
+	}
+	return builder.String()
+}
+
+func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, topFiles []string, builder *strings.Builder) []string {
+	source, _ := doc.Metadata["source"].(string)
+	if source == "" || r.isArchDocument(doc) {
+		return topFiles
+	}
+
+	if _, exists := seenDocs[source]; !exists {
+		if len(topFiles) < 3 {
+			topFiles = append(topFiles, source)
+		}
+		fmt.Fprintf(builder, "**%s** (relevant to %s):\n```\n%s\n```\n\n",
+			source, originalFile.Filename, doc.PageContent)
+		seenDocs[source] = struct{}{}
+	}
+
+	// Fallback: even if we've seen it, if it's top result for another file, it's worth noting in debug logs
+	if rank == 0 && len(topFiles) < 3 {
+		alreadyLogged := false
+		for _, f := range topFiles {
+			if f == source {
+				alreadyLogged = true
+				break
+			}
+		}
+		if !alreadyLogged {
+			topFiles = append(topFiles, source)
+		}
+	}
+	return topFiles
 }
 
 func (r *ragService) getArchContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
@@ -676,7 +688,7 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 	return hydeMap
 }
 
-func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedderModelName string, files []internalgithub.ChangedFile, hydeMap map[int]string) ([][]schema.Document, []string, []int, error) {
+func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedderModelName string, files []internalgithub.ChangedFile, hydeMap map[int]string) ([][]schema.Document, []int) {
 	queries := make([]string, 0, len(files)*2)
 	indices := make([]int, 0, len(files)*2)
 
@@ -697,7 +709,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 	}
 
 	if len(queries) == 0 {
-		return nil, nil, nil, nil
+		return nil, nil
 	}
 
 	// Two-stage retrieval:
@@ -740,7 +752,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 		finalResults[i] = docs
 	}
 
-	return finalResults, queries, indices, nil
+	return finalResults, indices
 }
 
 func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
