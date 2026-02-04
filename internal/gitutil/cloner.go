@@ -12,10 +12,8 @@ import (
 	"strings"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/utils/merkletrie"
 )
 
@@ -49,55 +47,55 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 	}
 
 	c.Logger.InfoContext(ctx, "cloning repository", "url", repoURL, "path", path)
-	repo, err := git.PlainCloneContext(ctx, path, false, &git.CloneOptions{
-		URL: authURL,
-	})
+	// Use git CLI to clone
+	cmd := exec.CommandContext(ctx, "git", "clone", authURL, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git clone failed: %s: %w", string(out), err)
+	}
+
+	// Make sure we can open it with go-git for Diff operations later
+	repo, err := git.PlainOpen(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to clone repo '%s' to '%s': %w", repoURL, path, err)
+		return nil, fmt.Errorf("failed to open cloned repo: %w", err)
 	}
 	return repo, nil
 }
 
 // Fetch fetches updates from the 'origin' remote.
-func (c *Client) Fetch(ctx context.Context, repo *git.Repository, token string, refSpecs ...string) error {
+// Fetch fetches updates from the 'origin' remote using git CLI.
+func (c *Client) Fetch(ctx context.Context, path string, token string, refSpecs ...string) error {
 	c.Logger.InfoContext(ctx, "fetching latest changes from origin")
 
-	fetchOptions := &git.FetchOptions{
-		RemoteName: "origin",
-		Auth:       c.getBasicAuth(token),
-		Force:      true,
-	}
+	args := []string{"fetch", "origin", "--force"}
+	args = append(args, refSpecs...)
 
-	if len(refSpecs) > 0 {
-		var specs []config.RefSpec
-		for _, spec := range refSpecs {
-			specs = append(specs, config.RefSpec(spec))
-		}
-		fetchOptions.RefSpecs = specs
-	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = path
+	// Inject token into URL if needed, but since we cloned with token in URL,
+	// origin should already have it. However, if origin URL doesn't have token,
+	// we might need to handle auth.
+	// For simplicity, assuming the clone URL (with token) is persisted in .git/config
+	// or we rely on git credential helpers.
+	// But wait, we used getAuthenticatedURL for clone. So origin remote url has the token.
 
-	err := repo.FetchContext(ctx, fetchOptions)
-	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("failed to fetch from remote: %w", err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch failed: %s: %w", string(out), err)
 	}
 	c.Logger.InfoContext(ctx, "fetch complete")
 	return nil
 }
 
 // Checkout switches the repository's worktree to a specific commit.
-func (c *Client) Checkout(repo *git.Repository, sha string) error {
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
-	}
-
+// Checkout switches the repository's worktree to a specific commit using git CLI.
+func (c *Client) Checkout(ctx context.Context, path string, sha string) error {
 	c.Logger.Info("checking out commit", "sha", sha)
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Hash:  plumbing.NewHash(sha),
-		Force: true,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to checkout commit '%s': %w", sha, err)
+
+	// Ensure we don't have lingering locks by using force
+	cmd := exec.CommandContext(ctx, "git", "checkout", "--force", sha)
+	cmd.Dir = path
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout failed: %s: %w", string(out), err)
 	}
 	return nil
 }
@@ -186,15 +184,18 @@ func (c *Client) CloneAndCheckoutTemp(ctx context.Context, repoURL, sha, token s
 		}
 	}
 
-	repo, err := c.Clone(ctx, repoURL, repoPath, token)
+	_, err = c.Clone(ctx, repoURL, repoPath, token)
 	if err != nil {
 		cleanup()
 		return "", nil, err // Error is already well-formatted
 	}
 
-	if err := c.Checkout(repo, sha); err != nil {
+	// repo is unused for Checkout now, but we need it to return for potential Open later if needed
+	// or we just ignore it. Clone already returned it opened.
+
+	if err := c.Checkout(ctx, repoPath, sha); err != nil {
 		cleanup()
-		return "", nil, err // Error is already well-formatted
+		return "", nil, err
 	}
 
 	c.Logger.InfoContext(ctx, "repository cloned and checked out successfully")
@@ -215,14 +216,4 @@ func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
 	}
 	parsedURL.User = url.UserPassword("x-access-token", token)
 	return parsedURL.String(), nil
-}
-
-func (c *Client) getBasicAuth(token string) *githttp.BasicAuth {
-	if token == "" {
-		return nil
-	}
-	return &githttp.BasicAuth{
-		Username: "x-access-token",
-		Password: token,
-	}
 }

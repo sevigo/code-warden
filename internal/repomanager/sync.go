@@ -66,19 +66,20 @@ func (m *manager) cloneAndIndex(
 	cloneCtx, cancel := context.WithTimeout(ctx, cloneTimeout)
 	defer cancel()
 
-	gitRepo, err := m.gitClient.Clone(cloneCtx, ev.RepoCloneURL, clonePath, token)
+	_, err := m.gitClient.Clone(cloneCtx, ev.RepoCloneURL, clonePath, token)
 	if err != nil {
 		m.cleanupRepoDir(clonePath)
 		return nil, err
 	}
 
 	// Fetch PR specific reference to ensure we have the commit (handling forks)
+	// Fetch PR specific reference to ensure we have the commit (handling forks)
 	prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
-	if err := m.gitClient.Fetch(cloneCtx, gitRepo, token, prRefSpec); err != nil {
+	if err := m.gitClient.Fetch(cloneCtx, clonePath, token, prRefSpec); err != nil {
 		m.cleanupRepoDir(clonePath)
 		return nil, fmt.Errorf("git fetch pr: %w", err)
 	}
-	if err = m.gitClient.Checkout(gitRepo, ev.HeadSHA); err != nil {
+	if err = m.gitClient.Checkout(cloneCtx, clonePath, ev.HeadSHA); err != nil {
 		m.cleanupRepoDir(clonePath)
 		return nil, err
 	}
@@ -141,11 +142,12 @@ func (m *manager) incrementalUpdate(
 	}
 
 	// Fetch PR specific reference to ensure we have the commit (handling forks)
+	// Fetch PR specific reference to ensure we have the commit (handling forks)
 	prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
-	if err = m.gitClient.Fetch(ctx, gitRepo, token, prRefSpec); err != nil {
+	if err = m.gitClient.Fetch(ctx, rec.ClonePath, token, prRefSpec); err != nil {
 		return nil, fmt.Errorf("git fetch: %w", err)
 	}
-	if err = m.gitClient.Checkout(gitRepo, ev.HeadSHA); err != nil {
+	if err = m.gitClient.Checkout(ctx, rec.ClonePath, ev.HeadSHA); err != nil {
 		return nil, err
 	}
 
