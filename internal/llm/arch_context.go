@@ -41,7 +41,7 @@ type DirectoryInfo struct {
 // GenerateArchSummaries generates architectural summaries for directories in the repository.
 // It uses filesystem walking to discover directories and checks for existing summaries in batch.
 func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string) error {
-	r.logger.Info("generating architectural summaries (Level 2 Optimization)",
+	r.logger.Info("generating architectural summaries",
 		"collection", collectionName,
 		"repoPath", repoPath,
 	)

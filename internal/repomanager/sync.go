@@ -28,11 +28,20 @@ func (m *manager) syncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 			"repo", ev.RepoFullName,
 			"old", repoRec.EmbedderModelName,
 			"new", m.cfg.AI.EmbedderModel,
+			"new_collection", GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel),
 		)
 		if err := m.vectorStore.DeleteCollection(ctx, repoRec.QdrantCollectionName); err != nil {
-			m.logger.Error("delete old qdrant collection", "err", err)
+			m.logger.Warn("delete old qdrant collection failed (might not exist)", "err", err)
 		}
-		repoRec = nil // treat as new repository
+
+		// Update repository record to reflect new model
+		repoRec.EmbedderModelName = m.cfg.AI.EmbedderModel
+		repoRec.QdrantCollectionName = GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel)
+		repoRec.LastIndexedSHA = "" // Reset SHA to force full re-list in incrementalUpdate
+
+		if err := m.store.UpdateRepository(ctx, repoRec); err != nil {
+			return nil, fmt.Errorf("failed to update repo record for new embedder: %w", err)
+		}
 	}
 
 	clonePath := filepath.Join(m.cfg.Storage.RepoPath, ev.RepoFullName)
@@ -80,15 +89,33 @@ func (m *manager) cloneAndIndex(
 		return nil, fmt.Errorf("list files after clone: %w", err)
 	}
 
+	// Check if record exists (it might if we are recovering from missing disk files)
+	existing, err := m.store.GetRepositoryByFullName(ctx, ev.RepoFullName)
+	if err != nil {
+		m.cleanupRepoDir(clonePath)
+		return nil, fmt.Errorf("check existing repo: %w", err)
+	}
+
 	newRec := &storage.Repository{
 		FullName:             ev.RepoFullName,
 		ClonePath:            clonePath,
 		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel),
 		EmbedderModelName:    m.cfg.AI.EmbedderModel,
 	}
-	if err = m.store.CreateRepository(ctx, newRec); err != nil {
-		m.cleanupRepoDir(clonePath)
-		return nil, fmt.Errorf("store repo record: %w", err)
+
+	if existing != nil {
+		// Update existing record
+		newRec.ID = existing.ID
+		if err = m.store.UpdateRepository(ctx, newRec); err != nil {
+			m.cleanupRepoDir(clonePath)
+			return nil, fmt.Errorf("update repo record: %w", err)
+		}
+	} else {
+		// Create new record
+		if err = m.store.CreateRepository(ctx, newRec); err != nil {
+			m.cleanupRepoDir(clonePath)
+			return nil, fmt.Errorf("store repo record: %w", err)
+		}
 	}
 
 	return &core.UpdateResult{
