@@ -62,6 +62,7 @@ type StorageConfig struct {
 type FeaturesConfig struct {
 	EnableBinaryQuantization bool `mapstructure:"enable_binary_quantization"`
 	EnableGraphAnalysis      bool `mapstructure:"enable_graph_analysis"`
+	DetectGeneratedCode      bool `mapstructure:"detect_generated_code"`
 }
 
 type DBConfig struct {
@@ -162,6 +163,7 @@ func setDefaults(v *viper.Viper) {
 	// Features
 	v.SetDefault("features.enable_binary_quantization", true)
 	v.SetDefault("features.enable_graph_analysis", true)
+	v.SetDefault("features.detect_generated_code", true)
 }
 
 func (c *Config) ValidateForServer() error {

@@ -401,6 +401,12 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		return nil
 	}
 
+	// Check for generated code if enabled
+	if r.cfg.Features.DetectGeneratedCode && parser.IsGenerated(string(contentBytes), file) {
+		r.logger.Debug("Skipping generated file", "file", file, "parser", parser.Name())
+		return nil
+	}
+
 	chunks, err := parser.Chunk(string(contentBytes), file, nil)
 	if err != nil {
 		r.logger.Error("failed to chunk file", "file", file, "error", err)
