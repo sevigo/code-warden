@@ -74,8 +74,9 @@ avoiding cold-start delays on large repositories.`,
 			return fmt.Errorf("failed to retrieve repository record after sync: %w", err)
 		}
 
-		fmt.Printf("Performing initial indexing and embedding... collection: %s\n", repoRecord.QdrantCollectionName)
-		err = app.RAGService.SetupRepoContext(ctx, core.DefaultRepoConfig(), repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName, updateResult.RepoPath)
+		// For initial setup, we need to index everything
+		app.Logger.Info("performing full initial indexing for repository", "path", updateResult.RepoPath)
+		err = app.RAGService.SetupRepoContext(ctx, core.DefaultRepoConfig(), repoRecord, updateResult.RepoPath)
 		if err != nil {
 			return fmt.Errorf("failed to setup repository context: %w", err)
 		}

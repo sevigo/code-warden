@@ -216,7 +216,7 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *cor
 	switch {
 	case updateResult.IsInitialClone:
 		j.logger.Info("Performing initial repository indexing", "repo", repo.FullName)
-		err := j.ragService.SetupRepoContext(ctx, repoConfig, repo.QdrantCollectionName, repo.EmbedderModelName, updateResult.RepoPath)
+		err := j.ragService.SetupRepoContext(ctx, repoConfig, repo, updateResult.RepoPath)
 		if err != nil {
 			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}
