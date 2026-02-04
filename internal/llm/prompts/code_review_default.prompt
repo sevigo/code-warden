@@ -34,6 +34,8 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
 3. **Performance & Scalability**: Identify resource leaks, unnecessary computations, or bottlenecks.
 4. **Security**: Look for common vulnerabilities (injection, improper data handling, etc.) relevant to {{.Language}}.
 5. **Readability & Standards**: Ensure the code follows the idiomatic conventions of {{.Language}}.
+6. **Test Coverage**: specific check for missing tests, especially for edge cases and error conditions.
+7. **Dependency Management**: Check for unnecessary or heavy dependencies that could be avoided.
 
 ### SEVERITY GUIDELINES
 - **Critical**: Security vulnerabilities, data loss risks, or guaranteed crashers in production
