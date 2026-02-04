@@ -420,12 +420,14 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
 
 		doc := schema.NewDocument(chunk.Content, map[string]any{
-			"id":         id,
-			"source":     file,
-			"identifier": chunk.Identifier,
-			"chunk_type": chunk.Type,
-			"line_start": chunk.LineStart,
-			"line_end":   chunk.LineEnd,
+			"id":               id,
+			"source":           file,
+			"identifier":       chunk.Identifier,
+			"chunk_type":       chunk.Type,
+			"line_start":       chunk.LineStart,
+			"line_end":         chunk.LineEnd,
+			"parent_id":        chunk.ParentID,
+			"full_parent_text": chunk.FullParentText,
 		})
 
 		// Generate sparse vector for hybrid search
@@ -591,8 +593,14 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
 		identifier, _ := doc.Metadata["identifier"].(string)
+		parentID, _ := doc.Metadata["parent_id"].(string)
 
-		docKey := fmt.Sprintf("%s-%s", source, identifier)
+		// Deduplicate based on parent_id if available, otherwise use source + identifier
+		docKey := parentID
+		if docKey == "" {
+			docKey = fmt.Sprintf("%s-%s", source, identifier)
+		}
+
 		if _, exists := seenDocs[docKey]; exists {
 			continue
 		}
@@ -601,12 +609,17 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 		contextBuilder.WriteString("---\n")
 		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", source))
 
-		if identifier != "" {
+		if identifier != "" && parentID == "" {
 			contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
 		}
 
 		contextBuilder.WriteString("\n")
-		contextBuilder.WriteString(doc.PageContent)
+		// Swap snippet with full parent text if available
+		content := doc.PageContent
+		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
+			content = parentText
+		}
+		contextBuilder.WriteString(content)
 		contextBuilder.WriteString("\n---\n\n")
 	}
 	return contextBuilder.String()
@@ -844,13 +857,24 @@ func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile int
 		return topFiles
 	}
 
-	if _, exists := seenDocs[source]; !exists {
+	parentID, _ := doc.Metadata["parent_id"].(string)
+	docKey := parentID
+	if docKey == "" {
+		docKey = source
+	}
+
+	if _, exists := seenDocs[docKey]; !exists {
 		if len(topFiles) < 3 {
 			topFiles = append(topFiles, source)
 		}
+		// Swap snippet with full parent text if available
+		content := doc.PageContent
+		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
+			content = parentText
+		}
 		fmt.Fprintf(builder, "**%s** (relevant to %s):\n```\n%s\n```\n\n",
-			source, originalFile.Filename, doc.PageContent)
-		seenDocs[source] = struct{}{}
+			source, originalFile.Filename, content)
+		seenDocs[docKey] = struct{}{}
 	}
 
 	// Fallback: even if we've seen it, if it's top result for another file, it's worth noting in debug logs
@@ -1083,12 +1107,25 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 	var builder strings.Builder
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
-		if _, exists := seenDocs[source]; exists || r.isArchDocument(doc) {
+		parentID, _ := doc.Metadata["parent_id"].(string)
+		docKey := parentID
+		if docKey == "" {
+			docKey = source
+		}
+
+		if _, exists := seenDocs[docKey]; exists || r.isArchDocument(doc) {
 			continue
 		}
+
+		// Swap snippet with full parent text if available
+		content := doc.PageContent
+		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
+			content = parentText
+		}
+
 		builder.WriteString(fmt.Sprintf("**%s** (potential impact usage):\n```\n%s\n```\n\n",
-			source, doc.PageContent))
-		seenDocs[source] = struct{}{}
+			source, content))
+		seenDocs[docKey] = struct{}{}
 	}
 	return builder.String()
 }
