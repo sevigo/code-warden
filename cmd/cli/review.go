@@ -238,13 +238,12 @@ func generateReview(ctx context.Context, appInstance *app.App, repo *storage.Rep
 func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResult, repo *storage.Repository, timer *stepTimer) error {
 	repoPath := syncResult.RepoPath
 	collectionName := repo.QdrantCollectionName
-	embedderModel := repo.EmbedderModelName
 
 	switch {
 	case syncResult.IsInitialClone:
 		timer.infof("Performing initial full indexing")
 		timer.infof("Collection: %s", collectionName)
-		if err := a.RAGService.SetupRepoContext(ctx, nil, collectionName, embedderModel, repoPath); err != nil {
+		if err := a.RAGService.SetupRepoContext(ctx, nil, repo, repoPath); err != nil {
 			return fmt.Errorf("failed to setup repo context: %w", err)
 		}
 	case len(syncResult.FilesToAddOrUpdate) > 0 || len(syncResult.FilesToDelete) > 0:

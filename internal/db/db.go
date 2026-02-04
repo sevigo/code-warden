@@ -54,6 +54,14 @@ func NewDatabase(cfg *config.DBConfig) (*DB, func(), error) {
 		DB: conn,
 	}
 
+	// Run migrations automatically on startup
+	slog.Info("running database migrations")
+	if err := db.RunMigrations(); err != nil {
+		_ = conn.Close()
+		return nil, func() {}, fmt.Errorf("failed to run migrations: %w", err)
+	}
+	slog.Info("database migrations completed successfully")
+
 	return db, func() {
 		if err := conn.Close(); err != nil {
 			slog.Error("failed to close database connection", "error", err)

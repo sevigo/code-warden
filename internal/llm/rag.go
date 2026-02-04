@@ -8,15 +8,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -32,7 +31,7 @@ import (
 
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
-	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, embedderModelName, repoPath string) error
+	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
@@ -75,88 +74,214 @@ func NewRAGService(
 	}
 }
 
-// SetupRepoContext processes a repository for the first time, storing all its embeddings.
-func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, collectionName, embedderModelName, repoPath string) error {
-	r.logger.Info("performing initial full indexing of repository",
+// SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
+func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
+	r.logger.Info("performing smart indexing of repository",
 		"path", repoPath,
-		"collection", collectionName,
-		"embedder", embedderModelName,
+		"collection", repo.QdrantCollectionName,
+		"embedder", repo.EmbedderModelName,
 	)
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
 	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
-	r.logger.Info("final loader configuration", "exclude_dirs", finalExcludeDirs, "exclude_exts", repoConfig.ExcludeExts)
 
-	gitLoader, err := documentloaders.NewGit(
-		repoPath,
-		r.parserRegistry,
-		documentloaders.WithLogger(r.logger),
-		documentloaders.WithExcludeDirs(finalExcludeDirs),
-		documentloaders.WithExcludeExts(repoConfig.ExcludeExts),
-	)
+	// Smart Scan: Fetch existing file states
+	existingFiles, err := r.store.GetFilesForRepo(ctx, repo.ID)
 	if err != nil {
-		return fmt.Errorf("failed to create Git document loader: %w", err)
+		r.logger.Warn("failed to fetch existing file states (proceeding with full scan)", "error", err)
+		existingFiles = make(map[string]storage.FileRecord)
 	}
 
-	var totalProcessed atomic.Int64
-	var totalDocsFound atomic.Int64
 	startTime := time.Now()
 
 	// Create a scoped store for this repository
-	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+	scopedStore := r.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
 
-	// This is the new streaming pipeline.
-	// The loader walks the filesystem and calls this function with batches of documents.
-	// This function then immediately sends the batch to the vector store.
-	processFunc := func(ctx context.Context, docs []schema.Document) error {
-		if len(docs) == 0 {
-			return nil
-		}
-		totalDocsFound.Add(int64(len(docs)))
+	// IMPLEMENTATION OF PRE-SCAN
+	filesOnDisk, err := listFiles(repoPath, finalExcludeDirs, repoConfig.ExcludeExts)
+	if err != nil {
+		return err
+	}
 
-		_, err := scopedStore.AddDocuments(ctx, docs)
+	filesToProcess := make([]string, 0, len(filesOnDisk))
+	skippedCount := 0
+
+	// Collect file records to update later
+	filesToUpdate := make([]storage.FileRecord, 0)
+
+	for _, file := range filesOnDisk {
+		fullPath := filepath.Join(repoPath, file)
+		hash, err := computeFileHash(fullPath)
 		if err != nil {
-			return fmt.Errorf("failed to add document batch to vector store: %w", err)
+			r.logger.Warn("failed to hash file, will process", "file", file, "error", err)
+			filesToProcess = append(filesToProcess, file)
+			continue
 		}
 
-		processedInBatch := int64(len(docs))
-		totalProcessed.Add(processedInBatch)
+		if rec, exists := existingFiles[file]; exists && rec.FileHash == hash {
+			// Unchanged!
+			skippedCount++
+			continue
+		}
 
-		r.logger.Info("processed document stream batch",
-			"collection", collectionName,
-			"docs_in_batch", processedInBatch,
-			"total_docs_processed", totalProcessed.Load(),
-			"elapsed_time", time.Since(startTime).Round(time.Second),
-		)
-		return nil
+		// New or Changed
+		filesToProcess = append(filesToProcess, file)
+		filesToUpdate = append(filesToUpdate, storage.FileRecord{
+			RepositoryID: repo.ID,
+			FilePath:     file,
+			FileHash:     hash,
+		})
 	}
 
-	// Start the streaming process.
-	if err := gitLoader.LoadAndProcessStream(ctx, processFunc); err != nil {
-		return fmt.Errorf("failed during streamed repository processing: %w", err)
+	r.logger.Info("Smart Scan Analysis",
+		"total_files", len(filesOnDisk),
+		"unchanged_skipped", skippedCount,
+		"to_index", len(filesToProcess),
+	)
+
+	if len(filesToProcess) == 0 {
+		r.logger.Info("No files changed, skipping indexing.")
 	}
 
-	if totalDocsFound.Load() == 0 {
-		r.logger.Warn("no indexable documents found after loader filtering", "path", repoPath)
-		return nil
+	// Execute indexing and cleanup
+	// We proceed regardless of count, but check filesToProcess for indexing
+
+	// Now use processFilesParallel for the filtered list of files
+	r.logger.Info("indexing changed files", "count", len(filesToProcess))
+	allDocs := r.processFilesParallel(repoPath, filesToProcess, 8) // Parallelize
+
+	// Index the documents
+	if len(allDocs) > 0 {
+		// Upsert documents in batches
+		// Note: processFilesParallel returns all docs. For 17k files, this might be large.
+		// But we are filtered now.
+
+		_, err := scopedStore.AddDocuments(ctx, allDocs)
+		if err != nil {
+			return fmt.Errorf("failed to add documents to vector store: %w", err)
+		}
+	} else if len(filesToProcess) > 0 {
+		r.logger.Warn("files marked for processing produced no documents (parser issue?)", "count", len(filesToProcess))
+	}
+
+	// Upsert file records to DB (mark them as indexed)
+	if len(filesToUpdate) > 0 {
+		r.logger.Info("updating file tracking in database", "count", len(filesToUpdate))
+		if err := r.store.UpsertFiles(ctx, repo.ID, filesToUpdate); err != nil {
+			r.logger.Error("failed to update file tracking records", "error", err)
+			// Non-critical: we indexed them, but next time we might re-scan.
+		}
+	}
+
+	// Cleanup: Delete records for files that no longer exist on disk
+	// (We need to identify files in existingFiles but NOT in filesOnDisk)
+	var pathsToDelete []string
+	onDiskMap := make(map[string]struct{})
+	for _, f := range filesOnDisk {
+		onDiskMap[f] = struct{}{}
+	}
+
+	for path := range existingFiles {
+		if _, onDisk := onDiskMap[path]; !onDisk {
+			pathsToDelete = append(pathsToDelete, path)
+		}
+	}
+
+	if len(pathsToDelete) > 0 {
+		r.logger.Info("pruning deleted files from tracking", "count", len(pathsToDelete))
+		if err := r.store.DeleteFiles(ctx, repo.ID, pathsToDelete); err != nil {
+			r.logger.Warn("failed to delete stale file records", "error", err)
+		}
+		// Also remove from Qdrant?
+		// We assume Qdrant clean up is handled via re-indexing or manual pruned?
+		// Actually `processFilesParallel` handles UPSERT.
+		// Deleting from Qdrant requires `DeleteDocumentsByFilter` ("source" in pathsToDelete).
+		if len(pathsToDelete) > 0 && repo.QdrantCollectionName != "" {
+			if err := r.vectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, map[string]any{"source": pathsToDelete}); err != nil {
+				r.logger.Warn("failed to delete vectors for removed files", "error", err)
+			}
+		}
 	}
 
 	// Generate architectural summaries for directories (post-processing)
 	r.logger.Info("generating architectural summaries for indexed content")
-	if err := r.GenerateArchSummaries(ctx, collectionName, embedderModelName, repoPath); err != nil {
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath); err != nil {
 		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
-		// Don't fail the whole indexing if arch summaries fail
 	}
 
 	r.logger.Info("repository setup complete",
-		"collection", collectionName,
-		"total_docs", totalProcessed.Load(),
+		"collection", repo.QdrantCollectionName,
+		"newly_indexed_files", len(filesToProcess),
 		"duration", time.Since(startTime).Round(time.Second),
 	)
 
 	return nil
+}
+
+// computeFileHash calculates SHA256 hash of a file
+func computeFileHash(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// listFiles recurses directory and returns list of relative paths
+func listFiles(root string, excludeDirs, excludeExts []string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if isExcludedDir(info.Name(), excludeDirs) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isExcludedExt(info.Name(), excludeExts) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, rel)
+		return nil
+	})
+	return files, err
+}
+
+func isExcludedDir(name string, excludes []string) bool {
+	// Check hidden dirs
+	if strings.HasPrefix(name, ".") && name != "." {
+		return true
+	}
+	for _, ex := range excludes {
+		if name == ex {
+			return true
+		}
+	}
+	return false
+}
+
+func isExcludedExt(name string, excludes []string) bool {
+	ext := strings.TrimPrefix(filepath.Ext(name), ".")
+	for _, ex := range excludes {
+		if ext == ex {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateRepoContext incrementally updates the vector store based on file changes.

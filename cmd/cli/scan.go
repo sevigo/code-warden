@@ -77,8 +77,7 @@ var scanCmd = &cobra.Command{
 			err = app.RAGService.SetupRepoContext(
 				ctx,
 				repoConfig,
-				collectionName,
-				repoRecord.EmbedderModelName,
+				repoRecord,
 				updateResult.RepoPath,
 			)
 

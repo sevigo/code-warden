@@ -29,6 +29,15 @@ type Repository struct {
 	UpdatedAt            time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// FileRecord represents a tracked file in a repository.
+type FileRecord struct {
+	ID            int64     `db:"id"`
+	RepositoryID  int64     `db:"repository_id"`
+	FilePath      string    `db:"file_path"`
+	FileHash      string    `db:"file_hash"`
+	LastIndexedAt time.Time `db:"last_indexed_at"`
+}
+
 // Store defines the interface for all database operations.
 //
 //go:generate mockgen -destination=../../mocks/mock_store.go -package=mocks github.com/sevigo/code-warden/internal/storage Store
@@ -40,7 +49,13 @@ type Store interface {
 	GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error)
 	GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error)
 	UpdateRepository(ctx context.Context, repo *Repository) error
+
 	GetAllRepositories(ctx context.Context) ([]*Repository, error)
+
+	// File tracking
+	GetFilesForRepo(ctx context.Context, repoID int64) (map[string]FileRecord, error)
+	UpsertFiles(ctx context.Context, repoID int64, files []FileRecord) error
+	DeleteFiles(ctx context.Context, repoID int64, paths []string) error
 }
 
 type postgresStore struct {
@@ -186,4 +201,77 @@ func (s *postgresStore) GetRepositoryByClonePath(ctx context.Context, clonePath 
 		return nil, fmt.Errorf("failed to get repository by clone path %s: %w", clonePath, err)
 	}
 	return &repo, nil
+}
+
+// GetFilesForRepo returns a map of file_path -> FileRecord for a repository.
+func (s *postgresStore) GetFilesForRepo(ctx context.Context, repoID int64) (map[string]FileRecord, error) {
+	query := `SELECT id, repository_id, file_path, file_hash, last_indexed_at FROM repository_files WHERE repository_id = $1`
+	rows, err := s.db.QueryxContext(ctx, query, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files for repo %d: %w", repoID, err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]FileRecord)
+	for rows.Next() {
+		var rec FileRecord
+		if err := rows.StructScan(&rec); err != nil {
+			return nil, err
+		}
+		result[rec.FilePath] = rec
+	}
+	return result, nil
+}
+
+// UpsertFiles updates or inserts file tracking records in bulk.
+func (s *postgresStore) UpsertFiles(ctx context.Context, repoID int64, files []FileRecord) error {
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Use a transaction for bulk insert
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Prepare statement for bulk upsert
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO repository_files (repository_id, file_path, file_hash, last_indexed_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (repository_id, file_path) 
+		DO UPDATE SET file_hash = EXCLUDED.file_hash, last_indexed_at = NOW()
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare upsert stmt: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, f := range files {
+		if _, err := stmt.ExecContext(ctx, repoID, f.FilePath, f.FileHash); err != nil {
+			return fmt.Errorf("failed to upsert file %s: %w", f.FilePath, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// DeleteFiles removes file tracking records.
+func (s *postgresStore) DeleteFiles(ctx context.Context, repoID int64, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	query, args, err := sqlx.In("DELETE FROM repository_files WHERE repository_id = ? AND file_path IN (?)", repoID, paths)
+	if err != nil {
+		return err
+	}
+	query = s.db.Rebind(query)
+
+	_, err = s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to delete files for repo %d: %w", repoID, err)
+	}
+	return nil
 }
