@@ -48,10 +48,14 @@ ai:
   # Set via environment variable AI_GEMINI_API_KEY for security
   gemini_api_key: ""
 
-  # Reranker model (small model for fast retrieval), gemma3:1b, qwen2.5-coder:1.5b
-  reranker_model: "qwen2.5-coder:1.5b" 
+  # Reranker model for 2-stage retrieval (always uses Ollama, regardless of llm_provider).
+  # Use a code-optimized model for best quality - it understands code semantics better.
+  # Recommended: "qwen2.5-coder:7b" (best quality) or "qwen2.5-coder:1.5b" (faster, smaller)
+  # Alternatives: "gemma3:1b" (lightweight), "codellama:7b"
+  reranker_model: "qwen2.5-coder:7b"
 
-  # Enable 2-stage retrieval (reranker)
+  # Enable 2-stage retrieval (reranker improves context relevance, adds ~0.5s latency).
+  # Set to false if you want maximum speed and can tolerate slightly less precise context.
   enable_reranking: true
 
   # Model names
