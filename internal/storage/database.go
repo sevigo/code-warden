@@ -213,15 +213,20 @@ func (s *postgresStore) GetFilesForRepo(ctx context.Context, repoID int64) (map[
 	}
 	defer rows.Close()
 
-	result := make(map[string]FileRecord)
+	files := make(map[string]FileRecord)
 	for rows.Next() {
-		var rec FileRecord
-		if err := rows.StructScan(&rec); err != nil {
+		var record FileRecord
+		if err := rows.StructScan(&record); err != nil {
 			return nil, err
 		}
-		result[rec.FilePath] = rec
+		files[record.FilePath] = record
 	}
-	return result, nil
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return files, nil
 }
 
 // UpsertFiles updates or inserts file tracking records in bulk.
@@ -235,7 +240,10 @@ func (s *postgresStore) UpsertFiles(ctx context.Context, repoID int64, files []F
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	// internal/storage/database.go:238: Error return value of `tx.Rollback` is not checked
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	// Prepare statement for bulk upsert
 	stmt, err := tx.PrepareContext(ctx, `

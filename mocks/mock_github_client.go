@@ -72,17 +72,17 @@ func (mr *MockClientMockRecorder) CreateComment(ctx, owner, repo, number, body a
 }
 
 // CreateReview mocks base method.
-func (m *MockClient) CreateReview(ctx context.Context, owner, repo string, number int, body string, comments []github0.DraftReviewComment) error {
+func (m *MockClient) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []github0.DraftReviewComment) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CreateReview", ctx, owner, repo, number, body, comments)
+	ret := m.ctrl.Call(m, "CreateReview", ctx, owner, repo, number, commitSHA, body, comments)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // CreateReview indicates an expected call of CreateReview.
-func (mr *MockClientMockRecorder) CreateReview(ctx, owner, repo, number, body, comments any) *gomock.Call {
+func (mr *MockClientMockRecorder) CreateReview(ctx, owner, repo, number, commitSHA, body, comments any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateReview", reflect.TypeOf((*MockClient)(nil).CreateReview), ctx, owner, repo, number, body, comments)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateReview", reflect.TypeOf((*MockClient)(nil).CreateReview), ctx, owner, repo, number, commitSHA, body, comments)
 }
 
 // GetChangedFiles mocks base method.

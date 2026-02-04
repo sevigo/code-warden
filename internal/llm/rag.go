@@ -77,6 +77,9 @@ func NewRAGService(
 }
 
 // SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
+// SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
+//
+//nolint:gocognit,funlen // This function implements complex smart-scan logic that is difficult to split without losing context.
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
 	r.logger.Info("performing smart indexing of repository",
 		"path", repoPath,
@@ -384,7 +387,6 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 	for res := range resultChan {
 		allDocs = append(allDocs, res.docs...)
 	}
-
 	return allDocs
 }
 
@@ -427,7 +429,7 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		// ID = SHA256(FilePath + LineStart + LineEnd)
 		h := sha256.New()
 		h.Write([]byte(file))
-		h.Write([]byte(fmt.Sprintf(":%d:%d", chunk.LineStart, chunk.LineEnd)))
+		fmt.Fprintf(h, ":%d:%d", chunk.LineStart, chunk.LineEnd)
 		sum := h.Sum(nil)
 		// Format as UUID: 8-4-4-4-12
 		id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
@@ -444,10 +446,8 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		})
 
 		// Merge file-level metadata
-		if fileMeta != nil {
-			for k, v := range fileMeta {
-				doc.Metadata[k] = v
-			}
+		for k, v := range fileMeta {
+			doc.Metadata[k] = v
 		}
 
 		// Copy annotations (e.g. is_test)
@@ -1042,6 +1042,7 @@ func (r *ragService) hashPatch(patch string) string {
 	return hex.EncodeToString(hash[:8])
 }
 
+//nolint:gocognit,nestif // Complex hybrid search logic with multiple fallbacks
 func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedderModelName string, files []internalgithub.ChangedFile, hydeMap map[int]string) ([][]schema.Document, []int) {
 	queries := make([]string, 0, len(files)*2)
 	indices := make([]int, 0, len(files)*2)
@@ -1121,9 +1122,12 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 				count = 5
 			}
 			docs = make([]schema.Document, count)
-			for j := 0; j < count; j++ {
+			for j := range count {
 				// We might want to preserve the score in metadata if needed
 				docs[j] = scoredDocs[j].Document
+				if docs[j].Metadata == nil {
+					docs[j].Metadata = make(map[string]any)
+				}
 				docs[j].Metadata["score"] = scoredDocs[j].Score
 				docs[j].Metadata["rerank_reason"] = scoredDocs[j].Reason
 			}
@@ -1134,6 +1138,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 	return finalResults, indices
 }
 
+//nolint:gocognit
 func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
 	symbols := make(map[string]struct{})
 	for _, file := range files {
