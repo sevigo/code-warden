@@ -56,6 +56,20 @@ func (mr *MockStoreMockRecorder) CreateRepository(ctx, repo any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateRepository", reflect.TypeOf((*MockStore)(nil).CreateRepository), ctx, repo)
 }
 
+// DeleteFiles mocks base method.
+func (m *MockStore) DeleteFiles(ctx context.Context, repoID int64, paths []string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteFiles", ctx, repoID, paths)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteFiles indicates an expected call of DeleteFiles.
+func (mr *MockStoreMockRecorder) DeleteFiles(ctx, repoID, paths any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteFiles", reflect.TypeOf((*MockStore)(nil).DeleteFiles), ctx, repoID, paths)
+}
+
 // GetAllRepositories mocks base method.
 func (m *MockStore) GetAllRepositories(ctx context.Context) ([]*storage.Repository, error) {
 	m.ctrl.T.Helper()
@@ -84,6 +98,21 @@ func (m *MockStore) GetAllReviewsForPR(ctx context.Context, repoFullName string,
 func (mr *MockStoreMockRecorder) GetAllReviewsForPR(ctx, repoFullName, prNumber any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllReviewsForPR", reflect.TypeOf((*MockStore)(nil).GetAllReviewsForPR), ctx, repoFullName, prNumber)
+}
+
+// GetFilesForRepo mocks base method.
+func (m *MockStore) GetFilesForRepo(ctx context.Context, repoID int64) (map[string]storage.FileRecord, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetFilesForRepo", ctx, repoID)
+	ret0, _ := ret[0].(map[string]storage.FileRecord)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetFilesForRepo indicates an expected call of GetFilesForRepo.
+func (mr *MockStoreMockRecorder) GetFilesForRepo(ctx, repoID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFilesForRepo", reflect.TypeOf((*MockStore)(nil).GetFilesForRepo), ctx, repoID)
 }
 
 // GetLatestReviewForPR mocks base method.
@@ -157,4 +186,18 @@ func (m *MockStore) UpdateRepository(ctx context.Context, repo *storage.Reposito
 func (mr *MockStoreMockRecorder) UpdateRepository(ctx, repo any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateRepository", reflect.TypeOf((*MockStore)(nil).UpdateRepository), ctx, repo)
+}
+
+// UpsertFiles mocks base method.
+func (m *MockStore) UpsertFiles(ctx context.Context, repoID int64, files []storage.FileRecord) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertFiles", ctx, repoID, files)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertFiles indicates an expected call of UpsertFiles.
+func (mr *MockStoreMockRecorder) UpsertFiles(ctx, repoID, files any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertFiles", reflect.TypeOf((*MockStore)(nil).UpsertFiles), ctx, repoID, files)
 }

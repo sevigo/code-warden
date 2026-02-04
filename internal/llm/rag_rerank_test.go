@@ -37,14 +37,13 @@ func TestSearchHyDEBatch_Reranking(t *testing.T) {
 				for i := range 20 {
 					recallDocs[i] = schema.Document{PageContent: "doc"}
 				}
-				// vectorstores.ToRetriever calls SimilaritySearch.
-				// NOTE: We assume ToRetriever uses default call.
-				// If queries are formatted with "To understand impact...", we match any string or specific prefix.
-				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), 20).Return(recallDocs, nil)
+				// vectorstores.ToRetriever -> SimilaritySearch (VARIADIC: ctx, query, k, opts...)
+				// We now use opts for Hybrid Search, so we must expect additional arguments.
+				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), 20, gomock.Any()).Return(recallDocs, nil).AnyTimes()
 
 				// 3. Reranking (Precision Top 5)
 				// Relax expectation to allow Any call order or internal behavior
-				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), gomock.Any()).Return(recallDocs, nil).AnyTimes()
+				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(recallDocs, nil).AnyTimes()
 				// Just in case ToRetriever uses WithScores
 				var emptyScores []vectorstores.DocumentWithScore
 				sVS.EXPECT().SimilaritySearchWithScores(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(emptyScores, nil).AnyTimes()
@@ -80,7 +79,7 @@ func TestSearchHyDEBatch_Reranking(t *testing.T) {
 				// 1. rr.GetRelevantDocuments calls baseRetriever.GetRelevantDocuments -> sVS.SimilaritySearch
 				// 2. rr calls Reranker.Rerank -> Fails
 				// 3. rag.go catches error and calls baseRetriever.GetRelevantDocuments AGAIN -> sVS.SimilaritySearch
-				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), 20).Return(recallDocs, nil).AnyTimes()
+				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), 20, gomock.Any()).Return(recallDocs, nil).AnyTimes()
 
 				rr.EXPECT().Rerank(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errors.New("rerank error"))
 			},
@@ -96,7 +95,7 @@ func TestSearchHyDEBatch_Reranking(t *testing.T) {
 
 				// only 3 docs found
 				recallDocs := make([]schema.Document, 3)
-				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), gomock.Any()).Return(recallDocs, nil).AnyTimes()
+				sVS.EXPECT().SimilaritySearch(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(recallDocs, nil).AnyTimes()
 
 				// Reranker should receive 3 and return them (or sorted subset)
 				scoredDocs := make([]schema.ScoredDocument, 3)

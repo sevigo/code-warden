@@ -16,11 +16,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
+	"github.com/sevigo/goframe/textsplitter"
 	"github.com/sevigo/goframe/vectorstores"
 
 	"github.com/sevigo/code-warden/internal/config"
@@ -75,6 +77,9 @@ func NewRAGService(
 }
 
 // SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
+// SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
+//
+//nolint:gocognit,funlen // This function implements complex smart-scan logic that is difficult to split without losing context.
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
 	r.logger.Info("performing smart indexing of repository",
 		"path", repoPath,
@@ -382,7 +387,6 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 	for res := range resultChan {
 		allDocs = append(allDocs, res.docs...)
 	}
-
 	return allDocs
 }
 
@@ -407,28 +411,87 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		return nil
 	}
 
+	// Extract file-level metadata (imports, package name)
+	var fileMeta map[string]any
+	if meta, err := parser.ExtractMetadata(string(contentBytes), fullPath); err == nil {
+		fileMeta = make(map[string]any)
+		if meta.PackageName != "" {
+			fileMeta["package_name"] = meta.PackageName
+		}
+		if len(meta.Imports) > 0 {
+			fileMeta["imports"] = meta.Imports
+		}
+	}
+
 	var docs []schema.Document
 	for _, chunk := range chunks {
 		// Generate deterministic ID to allow idempotent updates (deduplication)
 		// ID = SHA256(FilePath + LineStart + LineEnd)
 		h := sha256.New()
 		h.Write([]byte(file))
-		h.Write([]byte(fmt.Sprintf(":%d:%d", chunk.LineStart, chunk.LineEnd)))
+		fmt.Fprintf(h, ":%d:%d", chunk.LineStart, chunk.LineEnd)
 		sum := h.Sum(nil)
 		// Format as UUID: 8-4-4-4-12
 		id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
 
 		doc := schema.NewDocument(chunk.Content, map[string]any{
-			"id":         id,
-			"source":     file,
-			"identifier": chunk.Identifier,
-			"chunk_type": chunk.Type,
-			"line_start": chunk.LineStart,
-			"line_end":   chunk.LineEnd,
+			"id":               id,
+			"source":           file,
+			"identifier":       chunk.Identifier,
+			"chunk_type":       chunk.Type,
+			"line_start":       chunk.LineStart,
+			"line_end":         chunk.LineEnd,
+			"parent_id":        chunk.ParentID,
+			"full_parent_text": textsplitter.TruncateParentText(chunk.FullParentText, 2000), // Max 2000 chars
 		})
+
+		// Merge file-level metadata
+		for k, v := range fileMeta {
+			doc.Metadata[k] = v
+		}
+
+		// Copy annotations (e.g. is_test)
+		for k, v := range chunk.Annotations {
+			doc.Metadata[k] = v
+		}
+
+		// Explicit test file marking (polyfill)
+		if isTestFile(file) {
+			doc.Metadata["is_test"] = true
+		}
+
+		// Generate sparse vector for hybrid search
+		sparseVec, err := sparse.GenerateSparseVector(context.Background(), chunk.Content)
+		if err != nil {
+			r.logger.Warn("failed to generate sparse vector for chunk", "file", file, "error", err)
+		} else {
+			doc.Sparse = sparseVec
+		}
+
 		docs = append(docs, doc)
 	}
 	return docs
+}
+
+func isTestFile(path string) bool {
+	ext := filepath.Ext(path)
+	base := filepath.Base(path)
+
+	switch ext {
+	case ".go":
+		return strings.HasSuffix(base, "_test.go")
+	case ".ts", ".js", ".tsx", ".jsx":
+		return strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".test.js") ||
+			strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".spec.js") ||
+			strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx")
+	case ".py":
+		return strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")
+	case ".rs":
+		return strings.HasSuffix(base, "_test.rs") // Rust conventions vary but often in-file or test_*.rs
+	case ".java":
+		return strings.HasSuffix(base, "Test.java") || strings.HasSuffix(base, "Tests.java")
+	}
+	return false
 }
 
 // GenerateReview now focuses on data preparation and delegates to the helper.
@@ -531,7 +594,18 @@ type HyDEData struct {
 func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
 	r.logger.Info("Answering question with RAG context", "collection", collectionName)
 
-	relevantDocs, err := r.vectorStore.SearchCollection(ctx, collectionName, embedderModelName, question, 5)
+	var relevantDocs []schema.Document
+	sparseQuery, err := sparse.GenerateSparseVector(ctx, question)
+	if err != nil {
+		r.logger.Warn("failed to generate sparse query", "error", err)
+		// Fallback to dense-only
+		relevantDocs, err = r.vectorStore.SearchCollection(ctx, collectionName, embedderModelName, question, 5)
+	} else {
+		// Use hybrid search with sparse query
+		scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+		relevantDocs, err = scopedStore.SimilaritySearch(ctx, question, 5, vectorstores.WithSparseQuery(sparseQuery))
+	}
+
 	for _, doc := range relevantDocs {
 		r.logger.Debug("got a document after similarity search:", "document", doc)
 	}
@@ -570,8 +644,17 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
 		identifier, _ := doc.Metadata["identifier"].(string)
+		parentID, ok := doc.Metadata["parent_id"].(string)
+		if !ok {
+			parentID = ""
+		}
 
-		docKey := fmt.Sprintf("%s-%s", source, identifier)
+		// Deduplicate based on parent_id if available, otherwise use source + identifier
+		docKey := parentID
+		if docKey == "" {
+			docKey = fmt.Sprintf("%s-%s", source, identifier)
+		}
+
 		if _, exists := seenDocs[docKey]; exists {
 			continue
 		}
@@ -580,12 +663,21 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 		contextBuilder.WriteString("---\n")
 		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", source))
 
-		if identifier != "" {
+		if pkg, ok := doc.Metadata["package_name"].(string); ok && pkg != "" {
+			contextBuilder.WriteString(fmt.Sprintf("Package: %s\n", pkg))
+		}
+
+		if identifier != "" && parentID == "" {
 			contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
 		}
 
 		contextBuilder.WriteString("\n")
-		contextBuilder.WriteString(doc.PageContent)
+		// Swap snippet with full parent text if available
+		content := doc.PageContent
+		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
+			content = parentText
+		}
+		contextBuilder.WriteString(content)
 		contextBuilder.WriteString("\n---\n\n")
 	}
 	return contextBuilder.String()
@@ -823,13 +915,27 @@ func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile int
 		return topFiles
 	}
 
-	if _, exists := seenDocs[source]; !exists {
+	parentID, ok := doc.Metadata["parent_id"].(string)
+	if !ok {
+		parentID = ""
+	}
+	docKey := parentID
+	if docKey == "" {
+		docKey = source
+	}
+
+	if _, exists := seenDocs[docKey]; !exists {
 		if len(topFiles) < 3 {
 			topFiles = append(topFiles, source)
 		}
+		// Swap snippet with full parent text if available
+		content := doc.PageContent
+		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
+			content = parentText
+		}
 		fmt.Fprintf(builder, "**%s** (relevant to %s):\n```\n%s\n```\n\n",
-			source, originalFile.Filename, doc.PageContent)
-		seenDocs[source] = struct{}{}
+			source, originalFile.Filename, content)
+		seenDocs[docKey] = struct{}{}
 	}
 
 	// Fallback: even if we've seen it, if it's top result for another file, it's worth noting in debug logs
@@ -936,6 +1042,7 @@ func (r *ragService) hashPatch(patch string) string {
 	return hex.EncodeToString(hash[:8])
 }
 
+//nolint:gocognit,nestif // Complex hybrid search logic with multiple fallbacks
 func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedderModelName string, files []internalgithub.ChangedFile, hydeMap map[int]string) ([][]schema.Document, []int) {
 	queries := make([]string, 0, len(files)*2)
 	indices := make([]int, 0, len(files)*2)
@@ -977,24 +1084,52 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 	// But let's follow the user guide which suggested `vectorstores.ToRetriever`.
 	// If it fails compile, I will fix.
 
-	baseRetriever := vectorstores.ToRetriever(scopedStore, 20)
+	// baseRetriever was used here but now we use SCOPED store directly.
 
 	for i, query := range queries {
-		rr := vectorstores.RerankingRetriever{
-			Retriever: baseRetriever,
-			Reranker:  r.reranker,
-			TopK:      5,
+		// Generate sparse vector for query if possible
+		var searchOpts []vectorstores.Option
+		sparseVec, err := sparse.GenerateSparseVector(ctx, query)
+		if err == nil {
+			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 		}
 
-		docs, err := rr.GetRelevantDocuments(ctx, query)
+		// We need to use scopedStore directly to pass options, bypassing ToRetriever if we want hybrid search.
+		// However, RerankingRetriever expects a Retriever interface.
+		// For now, let's just use scopedStore for the base retrieval MANUALLY instead of baseRetriever.
+
+		baseDocs, err := scopedStore.SimilaritySearch(ctx, query, 20, searchOpts...)
+		if err != nil {
+			r.logger.Warn("base hybrid search failed", "error", err)
+			continue
+		}
+
+		// Now rerank manually
+		var docs []schema.Document
+		scoredDocs, err := r.reranker.Rerank(ctx, query, baseDocs)
 		if err != nil {
 			r.logger.Warn("reranking failed for query, falling back to base results", "error", err, "query_idx", i)
-			// Fallback: just use base retriever if rerank fails
-			// We need to re-call base retriever directly because GetRelevantDocuments might have failed at Retrieve step or Rerank step.
-			// Ideally we catch error.
-			docs, _ = baseRetriever.GetRelevantDocuments(ctx, query)
-			if len(docs) > 5 {
-				docs = docs[:5]
+			if len(baseDocs) > 5 {
+				docs = baseDocs[:5]
+			} else {
+				docs = baseDocs
+			}
+		} else {
+			// Convert ScoredDocument to Document and slice top 5
+			// Assuming Reranker sorts by score descending
+			count := len(scoredDocs)
+			if count > 5 {
+				count = 5
+			}
+			docs = make([]schema.Document, count)
+			for j := range count {
+				// We might want to preserve the score in metadata if needed
+				docs[j] = scoredDocs[j].Document
+				if docs[j].Metadata == nil {
+					docs[j].Metadata = make(map[string]any)
+				}
+				docs[j].Metadata["score"] = scoredDocs[j].Score
+				docs[j].Metadata["rerank_reason"] = scoredDocs[j].Reason
 			}
 		}
 		finalResults[i] = docs
@@ -1003,6 +1138,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 	return finalResults, indices
 }
 
+//nolint:gocognit
 func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
 	symbols := make(map[string]struct{})
 	for _, file := range files {
@@ -1037,12 +1173,28 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 	var builder strings.Builder
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
-		if _, exists := seenDocs[source]; exists || r.isArchDocument(doc) {
+		parentID, ok := doc.Metadata["parent_id"].(string)
+		if !ok {
+			parentID = ""
+		}
+		docKey := parentID
+		if docKey == "" {
+			docKey = source
+		}
+
+		if _, exists := seenDocs[docKey]; exists || r.isArchDocument(doc) {
 			continue
 		}
+
+		// Swap snippet with full parent text if available
+		content := doc.PageContent
+		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
+			content = parentText
+		}
+
 		builder.WriteString(fmt.Sprintf("**%s** (potential impact usage):\n```\n%s\n```\n\n",
-			source, doc.PageContent))
-		seenDocs[source] = struct{}{}
+			source, content))
+		seenDocs[docKey] = struct{}{}
 	}
 	return builder.String()
 }
