@@ -206,7 +206,6 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 
 	// Generate architectural summaries for directories (post-processing)
-	r.logger.Info("generating architectural summaries for indexed content")
 	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath); err != nil {
 		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
 	}

@@ -34,6 +34,10 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
 3. **Performance & Scalability**: Identify resource leaks, unnecessary computations, or bottlenecks.
 4. **Security**: Look for common vulnerabilities (injection, improper data handling, etc.) relevant to {{.Language}}.
 5. **Readability & Standards**: Ensure the code follows the idiomatic conventions of {{.Language}}.
+6. **Test Coverage**: specific check for missing tests, especially for edge cases and error conditions.
+7. **Dependency Management**: Check for unnecessary or heavy dependencies that could be avoided.
+8. **API Design**: Evaluate the public API for consistency, usability, and proper abstraction (e.g., exported vs unexported types).
+9. **Backward Compatibility**: Check if changes break existing behavior or APIs, especially for public libraries.
 
 ### SEVERITY GUIDELINES
 - **Critical**: Security vulnerabilities, data loss risks, or guaranteed crashers in production
@@ -48,7 +52,7 @@ The 'comment' field in suggestions MUST be formatted in Markdown and include a '
 
 ```json
 {
-  "summary": "Provide a high-level technical assessment. Evaluate the overall health of the PR, the clarity of the logic, and how well it integrates into the existing architecture. End with a clear verdict: Approve, Approve with Suggestions, or Request Changes.",
+  "summary": "Provide a high-level technical assessment. Evaluate the overall health of the PR, the clarity of the logic, how well it integrates into the existing architecture, and highlight any significant refactorings or improvements. End with a clear verdict: Approve, Approve with Suggestions, or Request Changes.",
   "suggestions": [
     {
       "file_path": "relative/path/to/file",

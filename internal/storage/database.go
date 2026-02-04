@@ -137,6 +137,7 @@ func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) 
 		SET 
 			clone_path = :clone_path, 
 			qdrant_collection_name = :qdrant_collection_name, 
+			embedder_model_name = :embedder_model_name,
 			last_indexed_sha = :last_indexed_sha, 
 			updated_at = :updated_at 
 		WHERE id = :id`
