@@ -2,7 +2,7 @@ module github.com/sevigo/code-warden
 
 go 1.25.6
 
-// replace github.com/sevigo/goframe => ../goframe
+replace github.com/sevigo/goframe => ../goframe
 
 require (
 	github.com/bradleyfalzon/ghinstallation/v2 v2.17.0
@@ -27,6 +27,16 @@ require (
 )
 
 require (
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
+	github.com/schollz/progressbar/v2 v2.15.0 // indirect
+	github.com/schollz/progressbar/v3 v3.14.1 // indirect
+	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
+	github.com/sugarme/tokenizer v0.3.0 // indirect
+	github.com/yalue/onnxruntime_go v1.7.0 // indirect
+)
+
+require (
 	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/auth v0.16.3 // indirect
 	cloud.google.com/go/compute/metadata v0.7.0 // indirect
@@ -35,6 +45,7 @@ require (
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/alecthomas/chroma/v2 v2.14.0 // indirect
+	github.com/anush008/fastembed-go v1.0.0
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

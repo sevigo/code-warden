@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -426,6 +427,15 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 			"line_start": chunk.LineStart,
 			"line_end":   chunk.LineEnd,
 		})
+
+		// Generate sparse vector for hybrid search
+		sparseVec, err := sparse.GenerateSparseVector(context.Background(), chunk.Content)
+		if err != nil {
+			r.logger.Warn("failed to generate sparse vector for chunk", "file", file, "error", err)
+		} else {
+			doc.Sparse = sparseVec
+		}
+
 		docs = append(docs, doc)
 	}
 	return docs
@@ -531,7 +541,18 @@ type HyDEData struct {
 func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
 	r.logger.Info("Answering question with RAG context", "collection", collectionName)
 
-	relevantDocs, err := r.vectorStore.SearchCollection(ctx, collectionName, embedderModelName, question, 5)
+	var relevantDocs []schema.Document
+	sparseQuery, err := sparse.GenerateSparseVector(ctx, question)
+	if err != nil {
+		r.logger.Warn("failed to generate sparse query", "error", err)
+		// Fallback to dense-only
+		relevantDocs, err = r.vectorStore.SearchCollection(ctx, collectionName, embedderModelName, question, 5)
+	} else {
+		// Use hybrid search with sparse query
+		scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+		relevantDocs, err = scopedStore.SimilaritySearch(ctx, question, 5, vectorstores.WithSparseQuery(sparseQuery))
+	}
+
 	for _, doc := range relevantDocs {
 		r.logger.Debug("got a document after similarity search:", "document", doc)
 	}
@@ -977,24 +998,49 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 	// But let's follow the user guide which suggested `vectorstores.ToRetriever`.
 	// If it fails compile, I will fix.
 
-	baseRetriever := vectorstores.ToRetriever(scopedStore, 20)
+	// baseRetriever was used here but now we use SCOPED store directly.
 
 	for i, query := range queries {
-		rr := vectorstores.RerankingRetriever{
-			Retriever: baseRetriever,
-			Reranker:  r.reranker,
-			TopK:      5,
+		// Generate sparse vector for query if possible
+		var searchOpts []vectorstores.Option
+		sparseVec, err := sparse.GenerateSparseVector(ctx, query)
+		if err == nil {
+			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 		}
 
-		docs, err := rr.GetRelevantDocuments(ctx, query)
+		// We need to use scopedStore directly to pass options, bypassing ToRetriever if we want hybrid search.
+		// However, RerankingRetriever expects a Retriever interface.
+		// For now, let's just use scopedStore for the base retrieval MANUALLY instead of baseRetriever.
+
+		baseDocs, err := scopedStore.SimilaritySearch(ctx, query, 20, searchOpts...)
+		if err != nil {
+			r.logger.Warn("base hybrid search failed", "error", err)
+			continue
+		}
+
+		// Now rerank manually
+		var docs []schema.Document
+		scoredDocs, err := r.reranker.Rerank(ctx, query, baseDocs)
 		if err != nil {
 			r.logger.Warn("reranking failed for query, falling back to base results", "error", err, "query_idx", i)
-			// Fallback: just use base retriever if rerank fails
-			// We need to re-call base retriever directly because GetRelevantDocuments might have failed at Retrieve step or Rerank step.
-			// Ideally we catch error.
-			docs, _ = baseRetriever.GetRelevantDocuments(ctx, query)
-			if len(docs) > 5 {
-				docs = docs[:5]
+			if len(baseDocs) > 5 {
+				docs = baseDocs[:5]
+			} else {
+				docs = baseDocs
+			}
+		} else {
+			// Convert ScoredDocument to Document and slice top 5
+			// Assuming Reranker sorts by score descending
+			count := len(scoredDocs)
+			if count > 5 {
+				count = 5
+			}
+			docs = make([]schema.Document, count)
+			for j := 0; j < count; j++ {
+				// We might want to preserve the score in metadata if needed
+				docs[j] = scoredDocs[j].Document
+				docs[j].Metadata["score"] = scoredDocs[j].Score
+				docs[j].Metadata["rerank_reason"] = scoredDocs[j].Reason
 			}
 		}
 		finalResults[i] = docs

@@ -462,18 +462,22 @@ func (s *scopedVectorStore) AddDocuments(ctx context.Context, docs []schema.Docu
 	return ids, nil
 }
 
-// SimilaritySearch delegates to the parent's SearchCollection.
-func (s *scopedVectorStore) SimilaritySearch(ctx context.Context, query string, numDocs int, _ ...vectorstores.Option) ([]schema.Document, error) {
-	return s.parent.SearchCollection(ctx, s.collectionName, s.embedderModel, query, numDocs)
+// SimilaritySearch delegates to the parent's generic generic interface.
+func (s *scopedVectorStore) SimilaritySearch(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]schema.Document, error) {
+	// Append collection name to opts
+	opts = append(opts, vectorstores.WithCollectionName(s.collectionName))
+
+	// We call the parent's generic SimilaritySearch, which DOES accept opts.
+	// Note: s.parent.SimilaritySearch also extracts collection name from opts, so we are good.
+	return s.parent.SimilaritySearch(ctx, query, numDocs, opts...)
 }
 
 // SimilaritySearchWithScores delegates to the underlying store.
 func (s *scopedVectorStore) SimilaritySearchWithScores(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]vectorstores.DocumentWithScore, error) {
-	store, err := s.parent.getStoreForCollection(s.collectionName, s.embedderModel)
-	if err != nil {
-		return nil, err
-	}
-	return store.SimilaritySearchWithScores(ctx, query, numDocs, opts...)
+	// Append collection name to opts
+	opts = append(opts, vectorstores.WithCollectionName(s.collectionName))
+
+	return s.parent.SimilaritySearchWithScores(ctx, query, numDocs, opts...)
 }
 
 // SimilaritySearchBatch delegates to the parent's SearchCollectionBatch.
