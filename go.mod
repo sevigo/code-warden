@@ -2,7 +2,7 @@ module github.com/sevigo/code-warden
 
 go 1.25.6
 
-replace github.com/sevigo/goframe => ../goframe
+// replace github.com/sevigo/goframe => ../goframe
 
 require (
 	github.com/bradleyfalzon/ghinstallation/v2 v2.17.0
@@ -17,7 +17,7 @@ require (
 	github.com/google/wire v0.6.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.10.9
-	github.com/sevigo/goframe v0.19.0
+	github.com/sevigo/goframe v0.21.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.11.1
