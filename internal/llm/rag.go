@@ -593,7 +593,10 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
 		identifier, _ := doc.Metadata["identifier"].(string)
-		parentID, _ := doc.Metadata["parent_id"].(string)
+		parentID, ok := doc.Metadata["parent_id"].(string)
+		if !ok {
+			parentID = ""
+		}
 
 		// Deduplicate based on parent_id if available, otherwise use source + identifier
 		docKey := parentID
@@ -857,7 +860,10 @@ func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile int
 		return topFiles
 	}
 
-	parentID, _ := doc.Metadata["parent_id"].(string)
+	parentID, ok := doc.Metadata["parent_id"].(string)
+	if !ok {
+		parentID = ""
+	}
 	docKey := parentID
 	if docKey == "" {
 		docKey = source
@@ -1107,7 +1113,10 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 	var builder strings.Builder
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
-		parentID, _ := doc.Metadata["parent_id"].(string)
+		parentID, ok := doc.Metadata["parent_id"].(string)
+		if !ok {
+			parentID = ""
+		}
 		docKey := parentID
 		if docKey == "" {
 			docKey = source
