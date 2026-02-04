@@ -52,6 +52,8 @@ type AIConfig struct {
 	EmbedderTask     string `mapstructure:"embedder_task_description"`
 	RerankerModel    string `mapstructure:"reranker_model"`
 	EnableReranking  bool   `mapstructure:"enable_reranking"`
+	EnableHybrid     bool   `mapstructure:"enable_hybrid_search"`
+	SparseVectorName string `mapstructure:"sparse_vector_name"`
 }
 
 type StorageConfig struct {
@@ -136,6 +138,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.embedder_task_description", "search_document")
 	v.SetDefault("ai.enable_reranking", false)     // Disabled by default for speed
 	v.SetDefault("ai.reranker_model", "gemma2:2b") // Default to a small, fast model
+	v.SetDefault("ai.enable_hybrid_search", true)
+	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")

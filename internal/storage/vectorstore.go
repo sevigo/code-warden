@@ -170,6 +170,10 @@ func (q *qdrantVectorStore) getStoreForCollection(collectionName string, embedde
 		qdrant.WithLogger(q.logger),
 	}
 
+	if q.cfg.AI.EnableHybrid {
+		opts = append(opts, qdrant.WithSparseVector(q.cfg.AI.SparseVectorName))
+	}
+
 	if q.cfg.Features.EnableBinaryQuantization {
 		opts = append(opts, qdrant.WithBinaryQuantization(true))
 	}
