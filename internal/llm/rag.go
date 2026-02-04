@@ -22,6 +22,7 @@ import (
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
+	"github.com/sevigo/goframe/textsplitter"
 	"github.com/sevigo/goframe/vectorstores"
 
 	"github.com/sevigo/code-warden/internal/config"
@@ -408,6 +409,18 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		return nil
 	}
 
+	// Extract file-level metadata (imports, package name)
+	var fileMeta map[string]any
+	if meta, err := parser.ExtractMetadata(string(contentBytes), fullPath); err == nil {
+		fileMeta = make(map[string]any)
+		if meta.PackageName != "" {
+			fileMeta["package_name"] = meta.PackageName
+		}
+		if len(meta.Imports) > 0 {
+			fileMeta["imports"] = meta.Imports
+		}
+	}
+
 	var docs []schema.Document
 	for _, chunk := range chunks {
 		// Generate deterministic ID to allow idempotent updates (deduplication)
@@ -427,8 +440,25 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 			"line_start":       chunk.LineStart,
 			"line_end":         chunk.LineEnd,
 			"parent_id":        chunk.ParentID,
-			"full_parent_text": chunk.FullParentText,
+			"full_parent_text": textsplitter.TruncateParentText(chunk.FullParentText, 2000), // Max 2000 chars
 		})
+
+		// Merge file-level metadata
+		if fileMeta != nil {
+			for k, v := range fileMeta {
+				doc.Metadata[k] = v
+			}
+		}
+
+		// Copy annotations (e.g. is_test)
+		for k, v := range chunk.Annotations {
+			doc.Metadata[k] = v
+		}
+
+		// Explicit test file marking (polyfill)
+		if isTestFile(file) {
+			doc.Metadata["is_test"] = true
+		}
 
 		// Generate sparse vector for hybrid search
 		sparseVec, err := sparse.GenerateSparseVector(context.Background(), chunk.Content)
@@ -441,6 +471,27 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		docs = append(docs, doc)
 	}
 	return docs
+}
+
+func isTestFile(path string) bool {
+	ext := filepath.Ext(path)
+	base := filepath.Base(path)
+
+	switch ext {
+	case ".go":
+		return strings.HasSuffix(base, "_test.go")
+	case ".ts", ".js", ".tsx", ".jsx":
+		return strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".test.js") ||
+			strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".spec.js") ||
+			strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx")
+	case ".py":
+		return strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")
+	case ".rs":
+		return strings.HasSuffix(base, "_test.rs") // Rust conventions vary but often in-file or test_*.rs
+	case ".java":
+		return strings.HasSuffix(base, "Test.java") || strings.HasSuffix(base, "Tests.java")
+	}
+	return false
 }
 
 // GenerateReview now focuses on data preparation and delegates to the helper.
@@ -611,6 +662,10 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 
 		contextBuilder.WriteString("---\n")
 		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", source))
+
+		if pkg, ok := doc.Metadata["package_name"].(string); ok && pkg != "" {
+			contextBuilder.WriteString(fmt.Sprintf("Package: %s\n", pkg))
+		}
 
 		if identifier != "" && parentID == "" {
 			contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
