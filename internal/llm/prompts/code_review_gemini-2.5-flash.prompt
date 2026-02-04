@@ -8,7 +8,8 @@ Analyze the provided pull request information and generate a comprehensive code 
 2.  **Analyze the Diff:** Examine the code diff and any provided context.
 3.  **Identify Potential Issues:** Find potential problems based on the diff.
 4.  ***CRITICAL VALIDATION STEP:*** For each issue, verify it is present in the "Code Changes to Review (Diff)". If you cannot find direct evidence, discard the issue.
-5.  **Formulate Suggestions:** Create an actionable suggestion for each validated issue.
+5.  **Check for Tests & Deps:** Explicitly look for missing edge case tests and unnecessary heavy dependencies.
+6.  **Formulate Suggestions:** Create an actionable suggestion for each validated issue.
 6.  **Synthesize & Recommend:** Compose a summary and make a final recommendation.
 
 ---
