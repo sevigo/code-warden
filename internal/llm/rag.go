@@ -405,7 +405,11 @@ func (r *ragService) processFile(repoPath, file string) []schema.Document {
 		return nil
 	}
 
-	chunks, err := parser.Chunk(string(contentBytes), file, nil)
+	// Sanitize content to ensure valid UTF-8.
+	// This prevents "string field contains invalid UTF-8" errors in gRPC/Qdrant.
+	validContent := strings.ToValidUTF8(string(contentBytes), "")
+
+	chunks, err := parser.Chunk(validContent, file, nil)
 	if err != nil {
 		r.logger.Error("failed to chunk file", "file", file, "error", err)
 		return nil
