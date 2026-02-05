@@ -82,7 +82,7 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 
 // runFullReview handles the initial `/review` command.
 func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) error {
-	j.logger.Info("Starting full review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+	j.logger.Info("🚀 Starting Code Review", "repo", event.RepoFullName, "pr", event.PRNumber)
 	return j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
 }
 
@@ -91,7 +91,7 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 // before generating the review. Since indexing is incremental, this is efficient even if
 // run repeatedly.
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
-	j.logger.Info("Starting re-review job", "repo", event.RepoFullName, "pr", event.PRNumber)
+	j.logger.Info("🔄 Starting Re-Review", "repo", event.RepoFullName, "pr", event.PRNumber)
 	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
 }
 
@@ -215,21 +215,21 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, updateResult *core.UpdateResult) error {
 	switch {
 	case updateResult.IsInitialClone:
-		j.logger.Info("Performing initial repository indexing", "repo", repo.FullName)
+		j.logger.Info("⚠️ Initial indexing required (fresh clone or reset state)", "repo", repo.FullName)
 		err := j.ragService.SetupRepoContext(ctx, repoConfig, repo, updateResult.RepoPath)
 		if err != nil {
 			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}
 
 	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
-		j.logger.Info("Performing incremental repository indexing", "repo", repo.FullName)
+		j.logger.Info("⚡ Incremental update required", "repo", repo.FullName, "changed_files", len(updateResult.FilesToAddOrUpdate))
 		err := j.ragService.UpdateRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
 		if err != nil {
 			return fmt.Errorf("failed to update repository context in vector store: %w", err)
 		}
 
 	default:
-		j.logger.Info("No file changes detected, skipping vector store update", "repo", repo.FullName)
+		j.logger.Info("✅ Repository up-to-date. Skipping Scan.", "repo", repo.FullName)
 	}
 
 	if err := j.repoMgr.UpdateRepoSHA(ctx, repo.FullName, updateResult.HeadSHA); err != nil {
