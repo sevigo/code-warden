@@ -47,8 +47,8 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 	}
 
 	c.Logger.InfoContext(ctx, "cloning repository", "url", repoURL, "path", path)
-	// Use git CLI to clone
-	cmd := exec.CommandContext(ctx, "git", "clone", authURL, path)
+	// Use git CLI to clone with longpaths enabled
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "clone", authURL, path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git clone failed: %s: %w", string(out), err)
 	}
@@ -66,7 +66,8 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 func (c *Client) Fetch(ctx context.Context, path string, token string, refSpecs ...string) error {
 	c.Logger.InfoContext(ctx, "fetching latest changes from origin")
 
-	args := []string{"fetch", "origin", "--force"}
+	// Inject global config for longpaths
+	args := []string{"-c", "core.longpaths=true", "fetch", "origin", "--force"}
 	args = append(args, refSpecs...)
 
 	cmd := exec.CommandContext(ctx, "git", args...)
@@ -90,8 +91,8 @@ func (c *Client) Fetch(ctx context.Context, path string, token string, refSpecs 
 func (c *Client) Checkout(ctx context.Context, path string, sha string) error {
 	c.Logger.Info("checking out commit", "sha", sha)
 
-	// Ensure we don't have lingering locks by using force
-	cmd := exec.CommandContext(ctx, "git", "checkout", "--force", sha)
+	// Ensure we don't have lingering locks by using force, and enable longpaths
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "checkout", "--force", sha)
 	cmd.Dir = path
 
 	if out, err := cmd.CombinedOutput(); err != nil {

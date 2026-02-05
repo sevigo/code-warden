@@ -3,12 +3,14 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	// The blank import is required to register the PostgreSQL driver.
 	_ "github.com/lib/pq"
 
@@ -38,6 +40,16 @@ type FileRecord struct {
 	LastIndexedAt time.Time `db:"last_indexed_at"`
 }
 
+// ScanState represents the state of a scan process.
+type ScanState struct {
+	ID           int64           `db:"id"`
+	RepositoryID int64           `db:"repository_id"`
+	Status       string          `db:"status"`
+	Progress     json.RawMessage `db:"progress"`
+	CreatedAt    time.Time       `db:"created_at"`
+	UpdatedAt    time.Time       `db:"updated_at"`
+}
+
 // Store defines the interface for all database operations.
 //
 //go:generate mockgen -destination=../../mocks/mock_store.go -package=mocks github.com/sevigo/code-warden/internal/storage Store
@@ -56,6 +68,10 @@ type Store interface {
 	GetFilesForRepo(ctx context.Context, repoID int64) (map[string]FileRecord, error)
 	UpsertFiles(ctx context.Context, repoID int64, files []FileRecord) error
 	DeleteFiles(ctx context.Context, repoID int64, paths []string) error
+
+	// Scan State
+	GetScanState(ctx context.Context, repoID int64) (*ScanState, error)
+	UpsertScanState(ctx context.Context, state *ScanState) error
 }
 
 type postgresStore struct {
@@ -281,6 +297,47 @@ func (s *postgresStore) DeleteFiles(ctx context.Context, repoID int64, paths []s
 	_, err = s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to delete files for repo %d: %w", repoID, err)
+	}
+	return nil
+}
+
+// GetScanState retrieves the scan state for a repository.
+func (s *postgresStore) GetScanState(ctx context.Context, repoID int64) (*ScanState, error) {
+	query := `SELECT id, repository_id, status, progress, created_at, updated_at FROM scan_state WHERE repository_id = $1`
+	var state ScanState
+	err := s.db.GetContext(ctx, &state, query, repoID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get scan state for repo %d: %w", repoID, err)
+	}
+	return &state, nil
+}
+
+// UpsertScanState updates or inserts a scan state record.
+func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) error {
+	query := `
+		INSERT INTO scan_state (repository_id, status, progress, updated_at)
+		VALUES (:repository_id, :status, :progress, NOW())
+		ON CONFLICT (repository_id)
+		DO UPDATE SET status = EXCLUDED.status, progress = EXCLUDED.progress, updated_at = NOW()
+		RETURNING id, created_at, updated_at`
+	
+	rows, err := s.db.NamedQueryContext(ctx, query, state)
+	if err != nil {
+		// Checks for specific pq errors if needed, but for now generic error
+		if pqErr, ok := err.(*pq.Error); ok {
+			slog.Error("postgres error during upsert scan state", "code", pqErr.Code, "message", pqErr.Message)
+		}
+		return fmt.Errorf("failed to upsert scan state for repo %d: %w", state.RepositoryID, err)
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		if err := rows.Scan(&state.ID, &state.CreatedAt, &state.UpdatedAt); err != nil {
+			return fmt.Errorf("failed to scan returned id/dates: %w", err)
+		}
 	}
 	return nil
 }

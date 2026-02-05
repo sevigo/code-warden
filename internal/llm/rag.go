@@ -38,6 +38,7 @@ type RAGService interface {
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
+	ProcessFile(repoPath, file string) []schema.Document
 }
 
 type ragService struct {
@@ -364,7 +365,7 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 		go func() {
 			defer wg.Done()
 			for file := range fileChan {
-				docs := r.processFile(repoPath, file)
+				docs := r.ProcessFile(repoPath, file)
 				resultChan <- result{docs: docs}
 			}
 		}()
@@ -390,8 +391,8 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 	return allDocs
 }
 
-// processFile reads, parses, and chunks a single file.
-func (r *ragService) processFile(repoPath, file string) []schema.Document {
+// ProcessFile reads, parses, and chunks a single file.
+func (r *ragService) ProcessFile(repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
