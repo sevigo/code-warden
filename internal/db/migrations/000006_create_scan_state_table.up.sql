@@ -1,3 +1,11 @@
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
 CREATE TABLE IF NOT EXISTS scan_state (
     id SERIAL PRIMARY KEY,
     repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
