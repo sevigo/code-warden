@@ -11,6 +11,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
+
 	// The blank import is required to register the PostgreSQL driver.
 	_ "github.com/lib/pq"
 
@@ -42,12 +43,13 @@ type FileRecord struct {
 
 // ScanState represents the state of a scan process.
 type ScanState struct {
-	ID           int64           `db:"id"`
-	RepositoryID int64           `db:"repository_id"`
-	Status       string          `db:"status"`
-	Progress     json.RawMessage `db:"progress"`
-	CreatedAt    time.Time       `db:"created_at"`
-	UpdatedAt    time.Time       `db:"updated_at"`
+	ID           int64            `db:"id"`
+	RepositoryID int64            `db:"repository_id"`
+	Status       string           `db:"status"`
+	Progress     json.RawMessage  `db:"progress"`
+	Artifacts    *json.RawMessage `db:"artifacts"`
+	CreatedAt    time.Time        `db:"created_at"`
+	UpdatedAt    time.Time        `db:"updated_at"`
 }
 
 // Store defines the interface for all database operations.
@@ -303,7 +305,7 @@ func (s *postgresStore) DeleteFiles(ctx context.Context, repoID int64, paths []s
 
 // GetScanState retrieves the scan state for a repository.
 func (s *postgresStore) GetScanState(ctx context.Context, repoID int64) (*ScanState, error) {
-	query := `SELECT id, repository_id, status, progress, created_at, updated_at FROM scan_state WHERE repository_id = $1`
+	query := `SELECT id, repository_id, status, progress, artifacts, created_at, updated_at FROM scan_state WHERE repository_id = $1`
 	var state ScanState
 	err := s.db.GetContext(ctx, &state, query, repoID)
 	if err != nil {
@@ -318,12 +320,12 @@ func (s *postgresStore) GetScanState(ctx context.Context, repoID int64) (*ScanSt
 // UpsertScanState updates or inserts a scan state record.
 func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) error {
 	query := `
-		INSERT INTO scan_state (repository_id, status, progress, updated_at)
-		VALUES (:repository_id, :status, :progress, NOW())
+		INSERT INTO scan_state (repository_id, status, progress, artifacts, updated_at)
+		VALUES (:repository_id, :status, :progress, :artifacts, NOW())
 		ON CONFLICT (repository_id)
-		DO UPDATE SET status = EXCLUDED.status, progress = EXCLUDED.progress, updated_at = NOW()
+		DO UPDATE SET status = EXCLUDED.status, progress = EXCLUDED.progress, artifacts = EXCLUDED.artifacts, updated_at = NOW()
 		RETURNING id, created_at, updated_at`
-	
+
 	rows, err := s.db.NamedQueryContext(ctx, query, state)
 	if err != nil {
 		// Checks for specific pq errors if needed, but for now generic error

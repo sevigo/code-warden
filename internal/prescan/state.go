@@ -55,16 +55,26 @@ func (sm *StateManager) LoadState(ctx context.Context) (*storage.ScanState, *Pro
 	return state, &progress, nil
 }
 
-func (sm *StateManager) SaveState(ctx context.Context, status ScanStatus, progress *Progress) error {
+func (sm *StateManager) SaveState(ctx context.Context, status ScanStatus, progress *Progress, artifacts map[string]interface{}) error {
 	progressJSON, err := json.Marshal(progress)
 	if err != nil {
 		return fmt.Errorf("failed to marshal progress: %w", err)
+	}
+
+	var artifactsJSON json.RawMessage
+	if artifacts != nil {
+		b, err := json.Marshal(artifacts)
+		if err != nil {
+			return fmt.Errorf("failed to marshal artifacts: %w", err)
+		}
+		artifactsJSON = b
 	}
 
 	state := &storage.ScanState{
 		RepositoryID: sm.repoID,
 		Status:       string(status),
 		Progress:     progressJSON,
+		Artifacts:    &artifactsJSON,
 	}
 
 	return sm.store.UpsertScanState(ctx, state)

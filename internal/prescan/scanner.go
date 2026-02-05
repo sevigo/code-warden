@@ -54,7 +54,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 			Files:       make(map[string]bool),
 			LastUpdated: time.Now(),
 		}
-		if err := stateMgr.SaveState(ctx, StatusPending, progress); err != nil {
+		if err := stateMgr.SaveState(ctx, StatusPending, progress, nil); err != nil {
 			return err
 		}
 	} else {
@@ -69,33 +69,11 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	progress.TotalFiles = len(files)
 
 	// 5. Update State to In Progress
-	if err := stateMgr.SaveState(ctx, StatusInProgress, progress); err != nil {
+	if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {
 		return err
 	}
 
 	// 6. Iterate and Process
-	// We use the scoped store directly via RAG service logic (we need RAG to expose AddDocuments or we use underlying store)
-	// Actually RAGService has `UpdateRepoContext` but that's for batch.
-	// The requirement is to be granular.
-	// We will use `RAGService.ProcessFile` to get docs, then Add manually.
-
-	// Issue: RAGService doesn't expose `AddDocuments`.
-	// We can cast `s.Manager.store`? No, vector store is separate.
-	// We should probably rely on `UpdateRepoContext` for BATCHES of granular files if we want to reuse logic,
-	// OR we need to access the vector store.
-
-	// Assumption: We can't easily access vector store here without exposing it from Manager or RAG.
-	// Let's assume for now we just want to ensure we "Process" them.
-	// Wait, if we don't store embeddings, the scan is useless.
-	// `RAGService` is interface. `ragService` struct has `vectorStore`.
-	// We should probably add `AddDocuments` to RAGService interface or use `UpdateRepoContext` with single/batch files.
-	// But `UpdateRepoContext` does diff checks.
-
-	// Workaround: We will use `UpdateRepoContext` with a batch of files.
-	// Since `UpdateRepoContext` handles "filesToProcess", we can pass a batch of 10-20 files.
-	// But `UpdateRepoContext` also does filtering/hashing.
-
-	// Let's implement granular processing by batching.
 	batchSize := 10
 	var batch []string
 
@@ -110,13 +88,9 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 			// Process Batch
 			s.Manager.logger.Info("Processing batch", "size", len(batch), "current", i+1, "total", len(files))
 
-			// We can use UpdateRepoContext to process these specific files.
-			// It will re-hash them, but that's fine.
 			err := s.RAGService.UpdateRepoContext(ctx, nil, repoRecord, localPath, batch, nil)
 			if err != nil {
 				s.Manager.logger.Error("Failed to process batch", "error", err)
-				// Don't fail entire scan, maybe? Or do?
-				// For now, fail to be safe.
 				return err
 			}
 
@@ -126,7 +100,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 				progress.ProcessedFiles++
 			}
 			progress.LastUpdated = time.Now()
-			if err := stateMgr.SaveState(ctx, StatusInProgress, progress); err != nil {
+			if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {
 				s.Manager.logger.Warn("Failed to save state", "error", err)
 			}
 
@@ -134,14 +108,33 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 		}
 	}
 
-	// 7. Complete
-	if err := stateMgr.SaveState(ctx, StatusCompleted, progress); err != nil {
+	// 7. Generate Documentation
+	docGen := NewDocGenerator(localPath)
+	structure, err := docGen.GenerateProjectStructure(localPath)
+	var artifacts map[string]interface{}
+
+	if err != nil {
+		s.Manager.logger.Warn("Failed to generate project structure", "error", err)
+	} else {
+		// Save locally
+		docPath := filepath.Join(localPath, "project_structure.md")
+		if err := os.WriteFile(docPath, []byte(structure), 0644); err != nil {
+			s.Manager.logger.Error("Failed to save project structure", "error", err)
+		} else {
+			s.Manager.logger.Info("Generated project documentation", "path", docPath)
+		}
+
+		// Prepare for DB
+		artifacts = map[string]interface{}{
+			"project_structure": structure,
+		}
+	}
+
+	// 8. Complete & Save Artifacts
+	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, artifacts); err != nil {
 		return err
 	}
 	s.Manager.logger.Info("Scan completed successfully")
-
-	// 8. Generate Documentation (TODO)
-	// DocGen logic here
 
 	return nil
 }
