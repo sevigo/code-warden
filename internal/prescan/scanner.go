@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -136,6 +137,37 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	}
 	s.Manager.logger.Info("Scan completed successfully")
 
+	// 9. Update Repository LastIndexedSHA
+	// We need the current HEAD SHA.
+	// Since we cloned/fetched to localPath, we can get it from there.
+	// Assuming git is installed and redundant check with internal/gitutil or just direct exec.
+	// We can reuse gitutil.
+	// But Scanner struct doesn't have direct access to gitutil helper methods easily for SHA.
+	// We can use a simple exec command or add helper to Manager.
+	// For now, let's try to read HEAD from gitutil if possible, or use exec.
+
+	// We can use the gitutil.Cloner which we don't hold a reference to?
+	// s.Manager has Cloner? No, `manager.go` has `prepareRepo`.
+	// We can just run a quick git command.
+	s.Manager.logger.Info("Updating repository index version")
+
+	// Simple execution to get SHA
+	cm := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cm.Dir = localPath
+	shaBytes, err := cm.Output()
+	if err == nil {
+		sha := strings.TrimSpace(string(shaBytes))
+		repoRecord.LastIndexedSHA = sha
+		// Also update updated_at? Store should handle it.
+		if err := s.Manager.store.UpdateRepository(ctx, repoRecord); err != nil {
+			s.Manager.logger.Warn("Failed to update repository LastIndexedSHA", "error", err)
+		} else {
+			s.Manager.logger.Info("Updated synced SHA", "sha", sha)
+		}
+	} else {
+		s.Manager.logger.Warn("Failed to determine HEAD SHA", "error", err)
+	}
+
 	return nil
 }
 
@@ -149,7 +181,7 @@ func (s *Scanner) ensureRepoRecord(ctx context.Context, fullName, path string) (
 			FullName:             fullName,
 			ClonePath:            path,
 			EmbedderModelName:    s.Manager.cfg.AI.EmbedderModel,
-			QdrantCollectionName: strings.ReplaceAll(strings.ReplaceAll(fullName, "/", "_"), "-", "_") + "_" + s.Manager.cfg.AI.EmbedderModel,
+			QdrantCollectionName: strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(fullName, "/", "_"), "-", "_")+"_"+s.Manager.cfg.AI.EmbedderModel, ":", "_"),
 		}
 		if err := s.Manager.store.CreateRepository(ctx, newRec); err != nil {
 			return nil, err
@@ -157,28 +189,26 @@ func (s *Scanner) ensureRepoRecord(ctx context.Context, fullName, path string) (
 		return newRec, nil
 	}
 
-	// Check for model mismatch
-	if rec.EmbedderModelName != s.Manager.cfg.AI.EmbedderModel {
-		s.Manager.logger.Warn("Embedder model mismatch, resetting repo state", "old", rec.EmbedderModelName, "new", s.Manager.cfg.AI.EmbedderModel)
+	// Check for model mismatch OR collection name mismatch
+	// Note: We deliberately include the full model name (sanitized) in the collection name to prevent collisions.
+	sanitizedModel := strings.ReplaceAll(s.Manager.cfg.AI.EmbedderModel, ":", "_")
+	expectedCollectionName := strings.ReplaceAll(strings.ReplaceAll(fullName, "/", "_"), "-", "_") + "_" + sanitizedModel
 
-		// 1. Delete old Qdrant collection (best effort)
-		// We rely on the RAG service or direct vector store access if possible.
-		// Since we don't have direct delete access easily exposed via Manager,
-		// we will try to use the *old* collection name if we can derive it, or just use the current record's collection name.
-		// NOTE: logic in server/repomanager/sync.go handles this more robustly, but here we do a simple reset.
+	if rec.EmbedderModelName != s.Manager.cfg.AI.EmbedderModel || rec.QdrantCollectionName != expectedCollectionName {
+		s.Manager.logger.Warn("Repo configuration mismatch",
+			"old_model", rec.EmbedderModelName, "new_model", s.Manager.cfg.AI.EmbedderModel,
+			"old_collection", rec.QdrantCollectionName, "new_collection", expectedCollectionName)
 
-		// Update record with new model and collection name
+		// Update record
 		rec.EmbedderModelName = s.Manager.cfg.AI.EmbedderModel
-		rec.QdrantCollectionName = strings.ReplaceAll(strings.ReplaceAll(fullName, "/", "_"), "-", "_") + "_" + s.Manager.cfg.AI.EmbedderModel
+		rec.QdrantCollectionName = expectedCollectionName
 
 		if err := s.Manager.store.UpdateRepository(ctx, rec); err != nil {
 			return nil, fmt.Errorf("failed to update repo record: %w", err)
 		}
 
-		// We should also reset the scan state to force a fresh scan
+		// Reset scan state
 		stateMgr := NewStateManager(s.Manager.store, rec.ID)
-		// We can just SaveState with "Pending" or delete the state.
-		// Saving as Pending with empty progress is safer.
 		emptyProgress := &Progress{
 			Files:       make(map[string]bool),
 			LastUpdated: time.Now(),
