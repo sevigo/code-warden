@@ -51,9 +51,9 @@ func TestSanitizeModelForFilename(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := sanitizeModelForFilename(tt.input)
+			got := SanitizeModelForFilename(tt.input)
 			if got != tt.expected {
-				t.Errorf("sanitizeModelForFilename(%q) = %q, want %q", tt.input, got, tt.expected)
+				t.Errorf("SanitizeModelForFilename(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
 	}

@@ -58,6 +58,25 @@ type AIConfig struct {
 	ComparisonPaths  []string `mapstructure:"comparison_paths"`
 }
 
+func (c *AIConfig) Validate() error {
+	if len(c.ComparisonModels) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for _, m := range c.ComparisonModels {
+		if seen[m] {
+			return fmt.Errorf("duplicate model in comparison_models: %s", m)
+		}
+		seen[m] = true
+	}
+	// Check if generator model is explicit in comparison models if comparison models are set
+	// This is a soft check, just logging a warning might be better, but unexpected behavior if not present.
+	// For now, let's keep it strict if we want to force consistency, or lenient.
+	// The AI review suggested: "If cfg.GeneratorModel != "" && !seen[cfg.GeneratorModel]" warn.
+	// We'll leave it simple for now (uniqueness check).
+	return nil
+}
+
 type StorageConfig struct {
 	QdrantHost string `mapstructure:"qdrant_host"`
 	RepoPath   string `mapstructure:"repo_path"`
@@ -183,12 +202,18 @@ func (c *Config) ValidateForServer() error {
 	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
 		return errors.New("ai.gemini_api_key is required for gemini provider")
 	}
+	if err := c.AI.Validate(); err != nil {
+		return fmt.Errorf("ai config invalid: %w", err)
+	}
 	return nil
 }
 
 func (c *Config) ValidateForCLI() error {
 	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
 		return errors.New("ai.gemini_api_key is required for gemini provider")
+	}
+	if err := c.AI.Validate(); err != nil {
+		return fmt.Errorf("ai config invalid: %w", err)
 	}
 	return nil
 }

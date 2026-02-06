@@ -152,6 +152,7 @@ func (m *manager) incrementalUpdate(
 		}
 	} else {
 		// Just fetch origin (standard fetch)
+		// Fix: Pass token to prevent hanging on private repos (caught by AI review)
 		if err = m.gitClient.Fetch(ctx, rec.ClonePath, token); err != nil {
 			return nil, fmt.Errorf("git fetch: %w", err)
 		}

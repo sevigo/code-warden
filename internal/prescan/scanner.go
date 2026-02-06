@@ -125,12 +125,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 		} else {
 			for modelName, summaries := range results {
 				// potential path traversal: strictly replace invalid chars
-				sanitizedModel := strings.Map(func(r rune) rune {
-					if strings.ContainsRune(":/\\", r) || r == '.' {
-						return '_'
-					}
-					return r
-				}, modelName)
+				sanitizedModel := llm.SanitizeModelForFilename(modelName)
 				fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
 				filePath := filepath.Join(localPath, fileName)
 

@@ -579,7 +579,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
 //
-//nolint:gocognit // Complex logic with parallel execution and error aggregation
+//nolint:gocognit,funlen // Complex logic with parallel execution and error aggregation
 func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -619,7 +619,9 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 
 	g, ctx := errgroup.WithContext(ctx)
 	// Limit concurrency to avoid rate limits
-	sem := make(chan struct{}, 3)
+	// Review feedback: 3 is arbitrary. Bumping to 5 for now.
+	const maxConcurrentModels = 5
+	sem := make(chan struct{}, maxConcurrentModels)
 	defer close(sem)
 
 	for _, modelName := range models {
@@ -713,6 +715,11 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 	resultCh := make(chan result, 1)
 
 	go func() {
+		// Early exit if context already done to prevent leaking goroutine
+		if ctx.Err() != nil {
+			resultCh <- result{"", ctx.Err()}
+			return
+		}
 		resp, err := llm.Call(ctx, prompt)
 		resultCh <- result{resp, err}
 	}()
@@ -727,7 +734,7 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
 //
-//nolint:funlen,gocognit // High-level orchestration function with error handling and artifact saving
+//nolint:funlen // High-level orchestration function with error handling and artifact saving
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
 	if len(models) == 0 {
 		return nil, fmt.Errorf("consensus review requires at least one model")
@@ -757,7 +764,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	for _, res := range comparisonResults {
 		// potential path traversal: strictly replace invalid chars
-		sanitizedModel := sanitizeModelForFilename(res.Model)
+		sanitizedModel := SanitizeModelForFilename(res.Model)
 
 		if res.Error != nil {
 			r.logger.Warn("skipping model due to failure", "model", res.Model, "error", res.Error)
@@ -879,6 +886,7 @@ func (r *ragService) extractJSON(raw string) (string, error) {
 		return "", fmt.Errorf("response did not contain valid JSON start")
 	}
 
+	// Fix: Strip preamble text before any further processing (caught by AI review)
 	raw = raw[start:]
 	var stack int
 	for i, char := range raw {
@@ -964,8 +972,8 @@ func (r *ragService) sanitizeJSON(input string) string {
 	return repaired
 }
 
-// sanitizeModelForFilename ensures model names are safe for use in filenames.
-func sanitizeModelForFilename(modelName string) string {
+// SanitizeModelForFilename ensures model names are safe for use in filenames.
+func SanitizeModelForFilename(modelName string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z':
@@ -1262,15 +1270,18 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		r.logger.Info("stage completed", "name", "ArchitecturalContext")
 	}()
 
-	// 2. HyDE Snippets (generation + search)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		r.logger.Info("stage started", "name", "HyDE")
-		hydeMap = r.generateHyDESnippets(ctx, changedFiles)
-		hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
-		r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
-	}()
+	// 2. HyDE Snippets (Disabled for performance)
+	// HyDE triggered an LLM call for every changed file, causing massive latency ("takes forever").
+	// We disable it by default until we have a more selective strategy (e.g. only for complex diffs).
+	//
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// 	r.logger.Info("stage started", "name", "HyDE")
+	// 	hydeMap = r.generateHyDESnippets(ctx, changedFiles)
+	// 	hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
+	// 	r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
+	// }()
 
 	// 3. Impact Context (uses local seenDocs to avoid data race)
 	wg.Add(1)
