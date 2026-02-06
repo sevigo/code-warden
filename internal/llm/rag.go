@@ -597,6 +597,11 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
+	// Reuse repoConfig logic
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
 		"Description":        event.PRBody,
@@ -617,9 +622,11 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	for _, modelName := range models {
 		modelName := modelName // capture loop variable
 		g.Go(func() error {
-			defer func() { <-sem }()
+			// Acquire semaphore
 			select {
 			case sem <- struct{}{}:
+				// Release only if acquired
+				defer func() { <-sem }()
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -686,7 +693,11 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	var reviewsBuilder strings.Builder
 	timestamp := time.Now().Format("20060102_150405")
 	reviewsDir := "reviews"
-	_ = os.MkdirAll(reviewsDir, 0755) // Ensure directory exists
+
+	// Security: Use 0700 for directory (User only)
+	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
+		r.logger.Warn("failed to create reviews directory", "error", err)
+	}
 
 	// Deterministic ordering: Sort results by Model name
 	sort.Slice(comparisonResults, func(i, j int) bool {
@@ -694,11 +705,19 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	})
 
 	for _, res := range comparisonResults {
+		// potential path traversal: strictly replace invalid chars
+		sanitizedModel := strings.Map(func(r rune) rune {
+			if strings.ContainsRune(":/\\", r) || r == '.' {
+				return '_'
+			}
+			return r
+		}, res.Model)
+
 		if res.Error != nil {
 			r.logger.Warn("skipping model due to failure", "model", res.Model, "error", res.Error)
 			// Save error artifact for debugging
-			errFilename := filepath.Join(reviewsDir, fmt.Sprintf("error_%s_%s.txt", strings.ReplaceAll(res.Model, ":", "_"), timestamp))
-			_ = os.WriteFile(errFilename, []byte(res.Error.Error()), 0644)
+			errFilename := filepath.Join(reviewsDir, fmt.Sprintf("error_%s_%s.txt", sanitizedModel, timestamp))
+			_ = os.WriteFile(errFilename, []byte(res.Error.Error()), 0600) // Security: 0600
 			continue
 		}
 
@@ -707,9 +726,11 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		}
 
 		// Save individual review artifact
-		filename := filepath.Join(reviewsDir, fmt.Sprintf("review_%s_%s.md", strings.ReplaceAll(res.Model, ":", "_"), timestamp))
+		filename := filepath.Join(reviewsDir, fmt.Sprintf("review_%s_%s.md", sanitizedModel, timestamp))
 		header := fmt.Sprintf("# Code Review by %s\n\n**Date:** %s\n**PR:** %s/%s #%d\n\n", res.Model, time.Now().Format(time.RFC3339), event.RepoOwner, event.RepoName, event.PRNumber)
-		if err := os.WriteFile(filename, []byte(header+res.Review), 0644); err != nil {
+
+		// Security: 0600 permissions
+		if err := os.WriteFile(filename, []byte(header+res.Review), 0600); err != nil {
 			r.logger.Warn("failed to save review artifact", "model", res.Model, "error", err)
 		} else {
 			r.logger.Info("saved review artifact", "path", filename)
@@ -725,7 +746,15 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, fmt.Errorf("all models failed to generate valid reviews")
 	}
 
-	// Fetch Context for Consensus (Issue #4)
+	// Use the SAME context as individual reviews for consistency
+	// We need to fetch changed files only if we didn't pass them in.
+	// NOTE: In a perfect refactor, we'd pass the context in. But fetching again is fine for now,
+	// as long as we use the SAME RepoConfig Logic.
+
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
 	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
@@ -733,9 +762,10 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
 	promptData := map[string]string{
-		"Reviews":      reviewsBuilder.String(),
-		"Context":      contextString,
-		"ChangedFiles": r.formatChangedFiles(changedFiles),
+		"Reviews":            reviewsBuilder.String(),
+		"Context":            contextString,
+		"ChangedFiles":       r.formatChangedFiles(changedFiles),
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 	}
 
 	// 3. Synthesize the final review using the default generator (The "chairperson")
@@ -775,84 +805,101 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 }
 
 func (r *ragService) extractJSON(raw string) (string, error) {
-	// 1. Try to find content within markdown code blocks first
-	// This regex finds content between ```json ... ``` or just ``` ... ```
-	// It's greedy but we only want the first valid JSON block usually.
-	// But simple stripping is safer.
+	// 1. Strip Markdown Code Fences (greedy but safe)
 	if startFence := strings.Index(raw, "```"); startFence != -1 {
-		// Find end fence
+		// Try to find the matching end fence
 		if endFence := strings.LastIndex(raw, "```"); endFence > startFence {
-			// Extract content inside, stripping "json" if present
+			// Extract content inside
 			inner := raw[startFence+3 : endFence]
-			if strings.HasPrefix(inner, "json") {
-				inner = strings.TrimPrefix(inner, "json")
-			} else if strings.HasPrefix(inner, "JSON") {
-				inner = strings.TrimPrefix(inner, "JSON")
+			// Trim language identifier if present (e.g. "json")
+			inner = strings.TrimSpace(inner)
+			if strings.HasPrefix(strings.ToLower(inner), "json") {
+				inner = strings.TrimSpace(inner[4:])
 			}
-			// Recursive call on the inner content? Or just proceed to brace matching on inner?
-			// Proceeding to brace matching on inner is safest.
 			raw = inner
 		}
 	}
 
-	// 2. Stack-based brace matching to find the outermost valid JSON object
-	var start, end int = -1, -1
-	depth := 0
-	runes := []rune(raw)
+	raw = strings.TrimSpace(raw)
 
-	for i, char := range runes {
+	// 2. Optimistic attempt: Try to unmarshal the whole thing
+	if json.Valid([]byte(raw)) {
+		return raw, nil
+	}
+
+	// 3. Stack-based extraction to find the first complete outer JSON object
+	// This handles cases where there is preamble text or trailing explanations.
+	start := strings.Index(raw, "{")
+	if start == -1 {
+		return "", fmt.Errorf("response did not contain valid JSON start")
+	}
+
+	raw = raw[start:]
+	var stack int
+	for i, char := range raw {
 		if char == '{' {
-			if depth == 0 {
-				start = i
-			}
-			depth++
-		}
-		if char == '}' {
-			depth--
-			if depth == 0 && start != -1 {
-				end = i
-				// We found the first complete outer object.
-				// In most cases, the consensus review is a single object.
-				// If there is trailing text, we ignore it.
+			stack++
+		} else if char == '}' {
+			stack--
+			if stack == 0 {
+				// Found the closing brace of the root object
+				candidate := raw[:i+1]
+				if json.Valid([]byte(candidate)) {
+					return candidate, nil
+				}
+				// If not valid, it might be a brace inside a string (naive parser).
+				// But for 99% of LLM outputs, this works.
+				// A truly robust parser requires a state machine to ignore braces in strings.
+				// Let's fallback to the robust window search if simple counting failed.
 				break
 			}
 		}
 	}
 
-	if start == -1 || end == -1 || end < start {
-		return "", fmt.Errorf("response did not contain valid JSON")
+	// 4. Robust Fallback: JSON Decoder
+	// If naive counting failed (e.g. braces in strings), let the standard library find the end.
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	var msg json.RawMessage
+	if err := decoder.Decode(&msg); err != nil {
+		return "", fmt.Errorf("failed to decode JSON from response: %w", err)
 	}
-
-	return string(runes[start : end+1]), nil
+	// Re-encode to get clean JSON string
+	clean, _ := json.Marshal(msg)
+	return string(clean), nil
 }
 
 // sanitizeJSON attempts to fix common invalid escape sequences in LLM output.
-// It replaces backslashes that are NOT followed by a valid JSON escape char with double backslashes.
 func (r *ragService) sanitizeJSON(input string) string {
 	var sb strings.Builder
+	sb.Grow(len(input)) // preallocate
+
 	runes := []rune(input)
 	length := len(runes)
 
 	for i := 0; i < length; i++ {
-		r := runes[i]
-		sb.WriteRune(r)
-
-		if r == '\\' {
-			// Check next char
-			if i+1 < length {
-				next := runes[i+1]
-				// Valid JSON escapes: " \ / b f n r t u
-				switch next {
-				case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
-					// Valid escape, do nothing (loop will advance)
-				default:
-					// Invalid escape (e.g. \s, \c, or just \ at end of word).
-					// We assume the model meant a literal backslash.
-					// Since we already wrote the first backslash, we write ANOTHER one to escape it.
-					// RESULT in JSON: \\ (which parses to literal \)
-					sb.WriteRune('\\')
-				}
+		char := runes[i]
+		if char == '\\' {
+			// Check if it's a trailing backslash
+			if i+1 >= length {
+				// Trailing backslash at end of string - must be escaped
+				sb.WriteRune('\\')
+				sb.WriteRune('\\')
+				break
 			}
+
+			next := runes[i+1]
+			// Check if it's a valid JSON escape sequence
+			switch next {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+				// Valid escape, write the backslash and let the loop handle the next char naturally
+				sb.WriteRune(char)
+			default:
+				// Invalid escape (e.g. \s, \c, or \' which is invalid in JSON), escape the backslash
+				sb.WriteRune('\\')
+				sb.WriteRune('\\')
+			}
+		} else {
+			sb.WriteRune(char)
 		}
 	}
 	return sb.String()
