@@ -16,13 +16,14 @@ type ModelProvider string
 type PromptKey string
 
 const (
-	DefaultProvider      ModelProvider = "default"
-	CodeReviewPrompt     PromptKey     = "code_review"
-	CodeGenerationPrompt PromptKey     = "code_generation"
-	ReReviewPrompt       PromptKey     = "rereview"
-	ArchSummaryPrompt    PromptKey     = "arch_summary"
-	QuestionPrompt       PromptKey     = "question"
-	HyDEPrompt           PromptKey     = "hyde_code"
+	DefaultProvider       ModelProvider = "default"
+	CodeReviewPrompt      PromptKey     = "code_review"
+	CodeGenerationPrompt  PromptKey     = "code_generation"
+	ReReviewPrompt        PromptKey     = "rereview"
+	ArchSummaryPrompt     PromptKey     = "arch_summary"
+	QuestionPrompt        PromptKey     = "question"
+	HyDEPrompt            PromptKey     = "hyde_code"
+	ConsensusReviewPrompt PromptKey     = "consensus_review"
 )
 
 type PromptManager struct {

@@ -39,6 +39,9 @@ type RAGService interface {
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
+	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
+	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (map[string]string, error)
+	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error)
 }
 
 type ragService struct {
@@ -562,6 +565,112 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	return &structuredReview, jsonString, nil
+}
+
+// GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
+func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (map[string]string, error) {
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	r.logger.Info("preparing data for multi-model comparison reviews", "repo", event.RepoFullName, "pr", event.PRNumber, "models", models)
+	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PR diff: %w", err)
+	}
+
+	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changed files: %w", err)
+	}
+
+	// Use default model (Cogito) for context gathering
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+
+	promptData := map[string]string{
+		"Title":              event.PRTitle,
+		"Description":        event.PRBody,
+		"Language":           event.Language,
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+		"ChangedFiles":       r.formatChangedFiles(changedFiles),
+		"Context":            contextString,
+		"Diff":               diff,
+	}
+
+	results := make(map[string]string)
+	for _, modelName := range models {
+		r.logger.Info("generating review summary", "model", modelName)
+
+		llmModel, err := r.getOrCreateLLM(modelName)
+		if err != nil {
+			results[modelName] = fmt.Sprintf("Error creating LLM: %v", err)
+			continue
+		}
+
+		modelForPrompt := ModelProvider(modelName)
+		prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, promptData)
+		if err != nil {
+			results[modelName] = fmt.Sprintf("Error rendering prompt: %v", err)
+			continue
+		}
+
+		response, err := llmModel.Call(ctx, prompt)
+		if err != nil {
+			results[modelName] = fmt.Sprintf("Generation Error: %v", err)
+			continue
+		}
+		results[modelName] = response
+	}
+
+	return results, nil
+}
+
+// GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
+func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
+	// 1. Get independent reviews from all models (The "Committee")
+	rawReviews, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models)
+	if err != nil {
+		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
+	}
+
+	// 2. Prepare the consensus prompt data
+	var reviewsBuilder strings.Builder
+	for model, review := range rawReviews {
+		reviewsBuilder.WriteString(fmt.Sprintf("\n--- Review from %s ---\n", model))
+		reviewsBuilder.WriteString(review)
+		reviewsBuilder.WriteString("\n")
+	}
+
+	promptData := map[string]string{
+		"Reviews": reviewsBuilder.String(),
+	}
+
+	// 3. Synthesize the final review using the default generator (The "chairperson")
+	r.logger.Info("synthesizing consensus review", "models", models)
+	rawConsensus, err := r.generateResponseWithPrompt(ctx, event, ConsensusReviewPrompt, promptData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate consensus: %w", err)
+	}
+
+	// 4. Parse JSON
+	var structuredReview core.StructuredReview
+	start := strings.Index(rawConsensus, "{")
+	end := strings.LastIndex(rawConsensus, "}")
+
+	if start == -1 || end == -1 || end < start {
+		return nil, fmt.Errorf("consensus response did not contain valid JSON")
+	}
+
+	jsonString := rawConsensus[start : end+1]
+	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
+		return nil, fmt.Errorf("failed to parse consensus JSON: %w", err)
+	}
+
+	// 5. Add Disclaimer
+	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by minimizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(models, ", "))
+	structuredReview.Summary += disclaimer
+
+	return &structuredReview, nil
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.

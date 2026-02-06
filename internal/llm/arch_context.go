@@ -420,3 +420,63 @@ func isCodeExtension(ext string) bool {
 		return false
 	}
 }
+
+// GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
+func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
+	r.logger.Info("generating multi-directory comparison summaries", "models", models, "paths", relPaths)
+
+	results := make(map[string]map[string]string)
+	for _, model := range models {
+		results[model] = make(map[string]string)
+	}
+
+	for _, relPath := range relPaths {
+		path := filepath.Join(repoPath, relPath)
+		if relPath == "." || relPath == "" || relPath == "/" {
+			relPath = rootDir
+			path = repoPath
+		}
+
+		// scan dir on disk
+		info, _, err := r.scanDirectoryOnDisk(repoPath, path, relPath)
+		if err != nil {
+			r.logger.Warn("failed to scan directory for comparison", "path", relPath, "error", err)
+			continue
+		}
+		if info == nil {
+			info = &DirectoryInfo{Path: relPath}
+		}
+
+		for _, modelName := range models {
+			r.logger.Info("generating summary", "model", modelName, "path", relPath)
+
+			llm, err := r.getOrCreateLLM(modelName)
+			if err != nil {
+				results[modelName][relPath] = fmt.Sprintf("Error creating LLM: %v", err)
+				continue
+			}
+
+			promptData := ArchSummaryData{
+				Path:    info.Path,
+				Files:   strings.Join(info.Files, "\n"),
+				Symbols: "N/A (Comparison Mode)",
+				Imports: "N/A (Comparison Mode)",
+			}
+
+			prompt, err := r.promptMgr.Render(ArchSummaryPrompt, DefaultProvider, promptData)
+			if err != nil {
+				results[modelName][relPath] = fmt.Sprintf("Error rendering prompt: %v", err)
+				continue
+			}
+
+			summary, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+			if err != nil {
+				results[modelName][relPath] = fmt.Sprintf("Generation Error: %v", err)
+				continue
+			}
+			results[modelName][relPath] = summary
+		}
+	}
+
+	return results, nil
+}

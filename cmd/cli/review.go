@@ -144,9 +144,21 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	// 5. Generate Review
 	timer.step("Generating review")
-	review, err := generateReview(ctx, appInstance, repo, event, ghClient, timer)
-	if err != nil {
-		return err
+
+	var review *core.StructuredReview
+	if len(appInstance.Cfg.AI.ComparisonModels) > 0 {
+		timer.infof("Running consensus review with %d models...", len(appInstance.Cfg.AI.ComparisonModels))
+		// In consensus mode, we get a single synthesized review
+		review, err = appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, ghClient, appInstance.Cfg.AI.ComparisonModels)
+		if err != nil {
+			return fmt.Errorf("consensus review failed: %w", err)
+		}
+	} else {
+		// Standard single-model review
+		review, err = generateReview(ctx, appInstance, repo, event, ghClient, timer)
+		if err != nil {
+			return err
+		}
 	}
 	timer.done()
 

@@ -101,7 +101,33 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 		}
 	}
 
-	// 8. Complete & Save Artifacts
+	// 8. Multi-Model Comparison (if configured)
+	if len(s.Manager.cfg.AI.ComparisonModels) > 0 {
+		s.Manager.logger.Info("Starting multi-model architectural comparison", "models", s.Manager.cfg.AI.ComparisonModels)
+		characteristicPaths := []string{".", "internal/llm", "internal/storage", "cmd/cli"}
+		results, err := s.RAGService.GenerateComparisonSummaries(ctx, s.Manager.cfg.AI.ComparisonModels, localPath, characteristicPaths)
+		if err != nil {
+			s.Manager.logger.Warn("Multi-model comparison failed", "error", err)
+		} else {
+			for modelName, summaries := range results {
+				sanitizedModel := strings.ReplaceAll(modelName, ":", "_")
+				fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
+				filePath := filepath.Join(localPath, fileName)
+
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("# Architectural Comparison: %s\n\n", modelName))
+				for path, summary := range summaries {
+					sb.WriteString(fmt.Sprintf("## Directory: %s\n\n%s\n\n", path, summary))
+				}
+
+				if err := os.WriteFile(filePath, []byte(sb.String()), 0600); err != nil {
+					s.Manager.logger.Warn("Failed to save comparison file", "file", fileName, "error", err)
+				}
+			}
+		}
+	}
+
+	// 9. Complete & Save Artifacts
 	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, artifacts); err != nil {
 		return err
 	}
@@ -172,7 +198,7 @@ func (s *Scanner) updateRepoIndexVersion(ctx context.Context, localPath string, 
 	// 9. Update Repository LastIndexedSHA
 	s.Manager.logger.Info("Updating repository index version")
 
-	sha, err := s.Manager.gitClient.GetHeadSHA(ctx, localPath)
+	sha, err := s.Manager.GetRepoSHA(ctx, localPath)
 	if err == nil {
 		repoRecord.LastIndexedSHA = sha
 		if err := s.Manager.store.UpdateRepository(ctx, repoRecord); err != nil {

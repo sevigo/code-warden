@@ -59,7 +59,15 @@ ai:
   enable_reranking: true
 
   # Model names
-  generator_model: "qwen3-coder:480b-cloud"
+  # Generator Model (The "Main Driver" - Kimi)
+  generator_model: "kimi-k2.5:cloud"
+  
+  # Consensus Models (The "Trio" - Kimi, DeepSeek, Gemini)
+  comparison_models: 
+    - "kimi-k2.5:cloud"
+    - "deepseek-v3.1:671b-cloud"
+    - "gemini-3-pro-preview:latest"
+
   embedder_model: "nomic-embed-text"
   embedder_task_description: "search_document"
 
