@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -618,9 +619,9 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	g, ctx := errgroup.WithContext(ctx)
 	// Limit concurrency to avoid rate limits
 	sem := make(chan struct{}, 3)
+	defer close(sem)
 
 	for _, modelName := range models {
-		modelName := modelName // capture loop variable
 		g.Go(func() error {
 			// Acquire semaphore
 			select {
@@ -666,10 +667,16 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 				return ctx.Err()
 			}
 
-			response, err := llmModel.Call(ctx, prompt)
+			// Use generateWithTimeout to ensure we respect cancellation even if the LLM client hangs
+			response, err := r.generateWithTimeout(ctx, llmModel, prompt, 2*time.Minute)
 			if err != nil {
 				mu.Lock()
-				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("LLM call failed: %w", err)})
+				// Check if it was a timeout
+				if errors.Is(err, context.DeadlineExceeded) {
+					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("generation timed out: %w", err)})
+				} else {
+					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("LLM call failed: %w", err)})
+				}
 				mu.Unlock()
 				return nil
 			}
@@ -691,6 +698,30 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	}
 
 	return results, nil
+}
+
+// generateWithTimeout wraps LLM generation with a hard timeout.
+func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, prompt string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type result struct {
+		resp string
+		err  error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		resp, err := llm.Call(ctx, prompt)
+		resultCh <- result{resp, err}
+	}()
+
+	select {
+	case res := <-resultCh:
+		return res.resp, res.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
@@ -723,12 +754,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	for _, res := range comparisonResults {
 		// potential path traversal: strictly replace invalid chars
-		sanitizedModel := strings.Map(func(r rune) rune {
-			if strings.ContainsRune(":/\\", r) || r == '.' {
-				return '_'
-			}
-			return r
-		}, res.Model)
+		sanitizedModel := sanitizeModelForFilename(res.Model)
 
 		if res.Error != nil {
 			r.logger.Warn("skipping model due to failure", "model", res.Model, "error", res.Error)
@@ -794,7 +820,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	// Save consensus raw artifact
 	consensusFilename := filepath.Join(reviewsDir, fmt.Sprintf("review_consensus_%s.md", timestamp))
-	if err := os.WriteFile(consensusFilename, []byte(rawConsensus), 0644); err != nil {
+	if err := os.WriteFile(consensusFilename, []byte(rawConsensus), 0600); err != nil {
 		r.logger.Warn("failed to save consensus artifact", "error", err)
 	} else {
 		r.logger.Info("saved consensus artifact", "path", consensusFilename)
@@ -893,10 +919,6 @@ func (r *ragService) sanitizeJSON(input string) string {
 	}
 
 	// 2. Try simple repairs for common LLM mistakes
-	// Replace invalid escapes like \s (which might be a Windows path separator) with \\s
-	// But simply replacing all backslashes is dangerous if they are already escaped.
-
-	// Let's try a heuristic: if we see a backslash followed by a non-escape char, escape it.
 	var sb strings.Builder
 	sb.Grow(len(input) + 20)
 
@@ -907,7 +929,7 @@ func (r *ragService) sanitizeJSON(input string) string {
 		char := runes[i]
 		if char == '\\' {
 			if i+1 >= length {
-				// Trailing backslash
+				// Trailing backslash - escape it
 				sb.WriteRune('\\')
 				sb.WriteRune('\\')
 				break
@@ -916,12 +938,15 @@ func (r *ragService) sanitizeJSON(input string) string {
 			next := runes[i+1]
 			switch next {
 			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
-				// Valid escape
+				// Valid escape - write both and skip next
 				sb.WriteRune(char)
+				sb.WriteRune(next)
+				i++ // skip next
 			default:
 				// Invalid escape (e.g. \s in C:\src), escape the backslash
 				sb.WriteRune('\\')
 				sb.WriteRune('\\')
+				// do NOT skip next, let it be processed as normal char
 			}
 		} else {
 			sb.WriteRune(char)
@@ -933,11 +958,26 @@ func (r *ragService) sanitizeJSON(input string) string {
 		return repaired
 	}
 
-	// 3. If still invalid, try to strip control characters that might break JSON
-	// (newlines in strings are invalid in strict JSON, but some LLMs output them)
-	// We can't easily fix newlines without a parser, so we return the best-effort repaired string.
-	// The robust extractJSON caller will likely fail or extract a substring.
+	// 3. Fallback
 	return repaired
+}
+
+// sanitizeModelForFilename ensures model names are safe for use in filenames.
+func sanitizeModelForFilename(modelName string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, modelName)
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.

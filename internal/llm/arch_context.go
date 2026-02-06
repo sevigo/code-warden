@@ -17,6 +17,7 @@ import (
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
+	"golang.org/x/sync/errgroup"
 )
 
 const rootDir = "root"
@@ -422,60 +423,104 @@ func isCodeExtension(ext string) bool {
 }
 
 // GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
+// GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
+// It uses parallel execution to speed up the process, with a semaphore to limit concurrency.
 func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
 	r.logger.Info("generating multi-directory comparison summaries", "models", models, "paths", relPaths)
 
+	// Initialize results map and mutex
 	results := make(map[string]map[string]string)
+	resultsMu := &sync.RWMutex{}
 	for _, model := range models {
 		results[model] = make(map[string]string)
 	}
 
+	// Use errgroup for parallel execution
+	g, ctx := errgroup.WithContext(ctx)
+	// Limit concurrency to avoid overloading the LLM provider or local system
+	// Using a buffer of 10 allows reasonable parallelism for network-bound LLM calls
+	sem := make(chan struct{}, 10)
+	defer close(sem) // Ensure channel is closed
+
 	for _, relPath := range relPaths {
-		path := filepath.Join(repoPath, relPath)
-		if relPath == "." || relPath == "" || relPath == "/" {
-			relPath = rootDir
-			path = repoPath
-		}
+		relPath := relPath // capture loop variable
+		g.Go(func() error {
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 
-		// scan dir on disk
-		info, _, err := r.scanDirectoryOnDisk(repoPath, path, relPath)
-		if err != nil {
-			r.logger.Warn("failed to scan directory for comparison", "path", relPath, "error", err)
-			continue
-		}
-		if info == nil {
-			info = &DirectoryInfo{Path: relPath}
-		}
+			path := filepath.Join(repoPath, relPath)
+			if relPath == "." || relPath == "" || relPath == "/" {
+				relPath = rootDir
+				path = repoPath
+			}
 
-		for _, modelName := range models {
-			r.logger.Info("generating summary", "model", modelName, "path", relPath)
-
-			llm, err := r.getOrCreateLLM(modelName)
+			// scan dir on disk (fast, local)
+			info, _, err := r.scanDirectoryOnDisk(repoPath, path, relPath)
 			if err != nil {
-				results[modelName][relPath] = fmt.Sprintf("Error creating LLM: %v", err)
-				continue
+				r.logger.Warn("failed to scan directory for comparison", "path", relPath, "error", err)
+				return nil
+			}
+			if info == nil {
+				info = &DirectoryInfo{Path: relPath}
 			}
 
-			promptData := ArchSummaryData{
-				Path:    info.Path,
-				Files:   strings.Join(info.Files, "\n"),
-				Symbols: "N/A (Comparison Mode)",
-				Imports: "N/A (Comparison Mode)",
-			}
+			// Generate summary with each model
+			for _, modelName := range models {
+				// Check context before expensive operation
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 
-			prompt, err := r.promptMgr.Render(ArchSummaryPrompt, DefaultProvider, promptData)
-			if err != nil {
-				results[modelName][relPath] = fmt.Sprintf("Error rendering prompt: %v", err)
-				continue
-			}
+				r.logger.Info("generating summary", "model", modelName, "path", relPath)
 
-			summary, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
-			if err != nil {
-				results[modelName][relPath] = fmt.Sprintf("Generation Error: %v", err)
-				continue
+				llm, err := r.getOrCreateLLM(modelName)
+				if err != nil {
+					resultsMu.Lock()
+					results[modelName][relPath] = fmt.Sprintf("Error creating LLM: %v", err)
+					resultsMu.Unlock()
+					continue
+				}
+
+				promptData := ArchSummaryData{
+					Path:    info.Path,
+					Files:   strings.Join(info.Files, "\n"),
+					Symbols: "N/A (Comparison Mode)",
+					Imports: "N/A (Comparison Mode)",
+				}
+
+				modelForPrompt := ModelProvider(modelName)
+				// Note: ArchSummaryPrompt might need model-specific adjustment in future
+				prompt, err := r.promptMgr.Render(ArchSummaryPrompt, modelForPrompt, promptData)
+				if err != nil {
+					resultsMu.Lock()
+					results[modelName][relPath] = fmt.Sprintf("Error rendering prompt: %v", err)
+					resultsMu.Unlock()
+					continue
+				}
+
+				summary, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+				if err != nil {
+					resultsMu.Lock()
+					results[modelName][relPath] = fmt.Sprintf("Generation Error: %v", err)
+					resultsMu.Unlock()
+					continue
+				}
+
+				resultsMu.Lock()
+				results[modelName][relPath] = summary
+				resultsMu.Unlock()
 			}
-			results[modelName][relPath] = summary
-		}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	return results, nil

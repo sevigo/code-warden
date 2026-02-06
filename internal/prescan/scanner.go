@@ -27,7 +27,7 @@ func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
 	}
 }
 
-func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]interface{}, error) {
+func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any, error) {
 	docGen := NewDocGenerator(localPath)
 	structure, err := docGen.GenerateProjectStructure(localPath)
 
@@ -43,12 +43,11 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]int
 		// We return the error but maybe we should allow partial success?
 		// For now, let's return error as it's cleaner.
 		return nil, err
-	} else {
-		s.Manager.logger.Info("Generated project documentation", "path", docPath)
 	}
+	s.Manager.logger.Info("Generated project documentation", "path", docPath)
 
 	// Prepare for DB
-	return map[string]interface{}{
+	return map[string]any{
 		"project_structure": structure,
 	}, nil
 }
@@ -107,7 +106,6 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	}
 
 	// 7. Generate Documentation
-	// 7. Generate Documentation
 	artifacts, err := s.generateAndSaveDocumentation(localPath)
 	if err != nil {
 		s.Manager.logger.Warn("documentation generation failed", "error", err)
@@ -148,7 +146,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 		}
 	}
 
-	// 9. Complete & Save Artifacts
+	// Complete & Save Artifacts
 	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, artifacts); err != nil {
 		return err
 	}
@@ -216,7 +214,7 @@ func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repo
 }
 
 func (s *Scanner) updateRepoIndexVersion(ctx context.Context, localPath string, repoRecord *storage.Repository) error {
-	// 9. Update Repository LastIndexedSHA
+	// Update Repository LastIndexedSHA
 	s.Manager.logger.Info("Updating repository index version")
 
 	sha, err := s.Manager.GetRepoSHA(ctx, localPath)
