@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -75,38 +75,8 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	}
 
 	// 6. Iterate and Process
-	batchSize := 10
-	var batch []string
-
-	for i, file := range files {
-		if progress.Files[file] {
-			continue
-		}
-
-		batch = append(batch, file)
-
-		if len(batch) >= batchSize || i == len(files)-1 {
-			// Process Batch
-			s.Manager.logger.Info("Processing batch", "size", len(batch), "current", i+1, "total", len(files))
-
-			err := s.RAGService.UpdateRepoContext(ctx, nil, repoRecord, localPath, batch, nil)
-			if err != nil {
-				s.Manager.logger.Error("Failed to process batch", "error", err)
-				return err
-			}
-
-			// Update Progress
-			for _, f := range batch {
-				progress.Files[f] = true
-				progress.ProcessedFiles++
-			}
-			progress.LastUpdated = time.Now()
-			if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {
-				s.Manager.logger.Warn("Failed to save state", "error", err)
-			}
-
-			batch = nil // Reset batch
-		}
+	if err := s.runScanLoop(ctx, stateMgr, repoRecord, localPath, files, progress); err != nil {
+		return err
 	}
 
 	// 7. Generate Documentation
@@ -117,9 +87,9 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	if err != nil {
 		s.Manager.logger.Warn("Failed to generate project structure", "error", err)
 	} else {
-		// Save locally
+		// Save locally (0600 per gosec)
 		docPath := filepath.Join(localPath, "project_structure.md")
-		if err := os.WriteFile(docPath, []byte(structure), 0644); err != nil {
+		if err := os.WriteFile(docPath, []byte(structure), 0600); err != nil {
 			s.Manager.logger.Error("Failed to save project structure", "error", err)
 		} else {
 			s.Manager.logger.Info("Generated project documentation", "path", docPath)
@@ -137,28 +107,74 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	}
 	s.Manager.logger.Info("Scan completed successfully")
 
-	// 9. Update Repository LastIndexedSHA
-	// We need the current HEAD SHA.
-	// Since we cloned/fetched to localPath, we can get it from there.
-	// Assuming git is installed and redundant check with internal/gitutil or just direct exec.
-	// We can reuse gitutil.
-	// But Scanner struct doesn't have direct access to gitutil helper methods easily for SHA.
-	// We can use a simple exec command or add helper to Manager.
-	// For now, let's try to read HEAD from gitutil if possible, or use exec.
+	return s.updateRepoIndexVersion(ctx, localPath, repoRecord)
+}
 
-	// We can use the gitutil.Cloner which we don't hold a reference to?
-	// s.Manager has Cloner? No, `manager.go` has `prepareRepo`.
-	// We can just run a quick git command.
+func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, files []string, progress *Progress) error {
+	batchSize := 100
+	var batch []string
+
+	for i, file := range files {
+		if progress.Files[file] {
+			continue
+		}
+
+		batch = append(batch, file)
+
+		if len(batch) >= batchSize {
+			// Process Batch
+			s.Manager.logger.Info("Processing batch", "size", len(batch), "current", i+1, "total", len(files))
+
+			err := s.processBatch(ctx, stateMgr, repoRecord, localPath, &batch, progress)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Flush remaining batch
+	if len(batch) > 0 {
+		s.Manager.logger.Info("Processing final batch", "size", len(batch))
+		if err := s.processBatch(ctx, stateMgr, repoRecord, localPath, &batch, progress); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, batch *[]string, progress *Progress) error {
+	repoConfig, configErr := config.LoadRepoConfig(localPath)
+	if configErr != nil && configErr != config.ErrConfigNotFound {
+		s.Manager.logger.Warn("Failed to load .code-warden.yml", "error", configErr)
+	}
+
+	err := s.RAGService.UpdateRepoContext(ctx, repoConfig, repoRecord, localPath, *batch, nil)
+	if err != nil {
+		s.Manager.logger.Error("Failed to process batch", "error", err)
+		return err
+	}
+
+	// Update Progress
+	for _, f := range *batch {
+		progress.Files[f] = true
+		progress.ProcessedFiles++
+	}
+	progress.LastUpdated = time.Now()
+	if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {
+		s.Manager.logger.Warn("Failed to save state", "error", err)
+	}
+
+	*batch = nil // Reset batch
+	return nil
+}
+
+func (s *Scanner) updateRepoIndexVersion(ctx context.Context, localPath string, repoRecord *storage.Repository) error {
+	// 9. Update Repository LastIndexedSHA
 	s.Manager.logger.Info("Updating repository index version")
 
-	// Simple execution to get SHA
-	cm := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	cm.Dir = localPath
-	shaBytes, err := cm.Output()
+	sha, err := s.Manager.gitClient.GetHeadSHA(ctx, localPath)
 	if err == nil {
-		sha := strings.TrimSpace(string(shaBytes))
 		repoRecord.LastIndexedSHA = sha
-		// Also update updated_at? Store should handle it.
 		if err := s.Manager.store.UpdateRepository(ctx, repoRecord); err != nil {
 			s.Manager.logger.Warn("Failed to update repository LastIndexedSHA", "error", err)
 		} else {
@@ -167,7 +183,6 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	} else {
 		s.Manager.logger.Warn("Failed to determine HEAD SHA", "error", err)
 	}
-
 	return nil
 }
 

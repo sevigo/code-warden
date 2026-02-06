@@ -12,9 +12,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 
-	// The blank import is required to register the PostgreSQL driver.
-	_ "github.com/lib/pq"
-
 	"github.com/sevigo/code-warden/internal/core"
 )
 
@@ -329,7 +326,8 @@ func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) e
 	rows, err := s.db.NamedQueryContext(ctx, query, state)
 	if err != nil {
 		// Checks for specific pq errors if needed, but for now generic error
-		if pqErr, ok := err.(*pq.Error); ok {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) {
 			slog.Error("postgres error during upsert scan state", "code", pqErr.Code, "message", pqErr.Message)
 		}
 		return fmt.Errorf("failed to upsert scan state for repo %d: %w", state.RepositoryID, err)
@@ -341,5 +339,10 @@ func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) e
 			return fmt.Errorf("failed to scan returned id/dates: %w", err)
 		}
 	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating rows: %w", err)
+	}
+
 	return nil
 }
