@@ -41,13 +41,14 @@ Here are the individual reviews:
 ### Output Format:
 
 **IMPORTANT**: You must produce VALID JSON.
-*   **Escape all backslashes** in strings: use `\\` for `\`, especially in file paths ("C:\\path") and regex.
-*   **Escape quote characters** inside strings: use `\"`.
-*   **Windows Paths**: Ensure `C:\Users` becomes `C:\\Users`.
+*   **Escape all backslashes**: Use `\\` for `\`, especially in file paths (`"C:\\path"`).
+*   **Escape quote characters**: Use `\"` inside strings.
+*   **No Literal Newlines**: Use `\n` inside JSON strings.
 
 ```json
 {
   "summary": "High-level summary of consensus. Highlight key strengths and critical weaknesses.",
+  "verdict": "APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES",
   "suggestions": [
     {
       "file_path": "path/to/file.go",
@@ -55,7 +56,8 @@ Here are the individual reviews:
       "severity": "Critical",
       "category": "Security",
       "comment": "Description... [Include context note if needed]",
-      "fix": "```go\n// Minimal, correct fix\n...\n```"
+      "fix": "```go\\n// Minimal, correct fix\\n...\\n```"
     }
   ]
 }
+```

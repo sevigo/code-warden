@@ -91,11 +91,9 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
    - Migration path for deprecated features
 
 ### VERIFICATION REQUIREMENTS (Self-Check)
-Before finalizing:
-- Cross-reference summary claims against actual code (if you claim "parallel execution", verify goroutines exist)
-- Validate suggested fixes don't introduce new bugs (e.g., race conditions, deadlocks)
-- For concurrency: verify mutex usage, defer placement, channel closure
-- Flag uncertainty with "Needs verification: ..." rather than guessing
+- **Context Check**: Do NOT flag issues in code that is not visible in the diff unless logical inference is certain. Missing variable definitions or imports are likely just outside the diff context.
+- **Validation**: Ensure suggested fixes are syntactically correct and don't introduce new bugs (e.g., race conditions).
+- **Tone**: Be constructive. Distinguish between BLOCKING errors (bugs/security) and NON-BLOCKING suggestions (style/perf).
 
 ### SEVERITY GUIDELINES
 - **Critical**: Security vulnerabilities, data loss/corruption, guaranteed crashes, path traversal, injection flaws
@@ -104,22 +102,28 @@ Before finalizing:
 - **Low**: Minor improvements, style suggestions (ONLY include if highly valuable)
 
 ## OUTPUT FORMAT
-Respond ONLY with valid JSON inside a ```json code block. No text before or after.
+Respond ONLY with valid JSON inside a ```json code block.
+**CRITICAL JSON RULES**:
+- **Escape ALL backslashes**: Use `\\` for `\`, especially in Windows paths (e.g., `"C:\\Users"`).
+- **Escape quotes**: Use `\"` for quotes inside strings.
+- **Newlines**: Use `\n` for newlines in code blocks/comments. Do NOT use literal newlines inside strings.
+
 ```json
 {
-  "summary": "High-level technical assessment: overall health, architectural integration, significant changes. End with verdict: Approve | Approve with Suggestions | Request Changes",
+  "summary": "High-level assessment: overall health, architectural integration.",
+  "verdict": "APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES",
   "suggestions": [
     {
-      "file_path": "relative/path/to/file",
+      "file_path": "internal/foo/bar.go",
       "line_number": 123,
       "severity": "Critical|High|Medium|Low",
       "category": "Logic|Performance|Security|Architecture|Readability|Testing",
-      "comment": "### Issue\nConcise problem statement.\n\n### Rationale\nWhy this is a risk. What breaks? What's the impact?\n\n### Fix\n```{{.Language}}\n// Corrected implementation\n```"
+      "comment": "### Issue\nConcise problem statement.\n\n### Rationale\nWhy this is a risk.\n\n### Fix\n```{{.Language}}\n// Corrected implementation\n```"
     }
   ]
 }
 ```
 
-If no issues: `{"summary": "Well-structured, follows best practices. ✅ Approve.", "suggestions": []}`
+If no issues: `{"summary": "Well-structured, follows best practices.", "verdict": "APPROVE", "suggestions": []}`
 
 Now analyze the PR:
