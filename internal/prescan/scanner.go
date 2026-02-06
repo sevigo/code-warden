@@ -125,7 +125,13 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 			s.Manager.logger.Warn("Multi-model comparison failed", "error", err)
 		} else {
 			for modelName, summaries := range results {
-				sanitizedModel := strings.ReplaceAll(modelName, ":", "_")
+				// potential path traversal: strictly replace invalid chars
+				sanitizedModel := strings.Map(func(r rune) rune {
+					if strings.ContainsRune(":/\\", r) || r == '.' {
+						return '_'
+					}
+					return r
+				}, modelName)
 				fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
 				filePath := filepath.Join(localPath, fileName)
 

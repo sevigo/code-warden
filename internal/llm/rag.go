@@ -631,7 +631,7 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 				return ctx.Err()
 			}
 
-			// Check context again
+			// Check context again before starting work
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -645,13 +645,25 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 				return nil
 			}
 
+			// Render prompt: Make a defensive copy of promptData to avoid data races
+			// (Template rendering might modify internal map state in some implementations)
+			localPromptData := make(map[string]string, len(promptData))
+			for k, v := range promptData {
+				localPromptData[k] = v
+			}
+
 			modelForPrompt := ModelProvider(modelName)
-			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, promptData)
+			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
 			if err != nil {
 				mu.Lock()
 				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to render prompt: %w", err)})
 				mu.Unlock()
 				return nil
+			}
+
+			// Check context before expensive LLM call
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 
 			response, err := llmModel.Call(ctx, prompt)
@@ -660,6 +672,11 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("LLM call failed: %w", err)})
 				mu.Unlock()
 				return nil
+			}
+
+			// Check context before saving result
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 
 			mu.Lock()
@@ -868,10 +885,20 @@ func (r *ragService) extractJSON(raw string) (string, error) {
 	return string(clean), nil
 }
 
-// sanitizeJSON attempts to fix common invalid escape sequences in LLM output.
+// sanitizeJSON attempts to fix common invalid escape sequences in LLM output using round-trip validation.
 func (r *ragService) sanitizeJSON(input string) string {
+	// 1. Valid JSON? Return as is.
+	if json.Valid([]byte(input)) {
+		return input
+	}
+
+	// 2. Try simple repairs for common LLM mistakes
+	// Replace invalid escapes like \s (which might be a Windows path separator) with \\s
+	// But simply replacing all backslashes is dangerous if they are already escaped.
+
+	// Let's try a heuristic: if we see a backslash followed by a non-escape char, escape it.
 	var sb strings.Builder
-	sb.Grow(len(input)) // preallocate
+	sb.Grow(len(input) + 20)
 
 	runes := []rune(input)
 	length := len(runes)
@@ -879,22 +906,20 @@ func (r *ragService) sanitizeJSON(input string) string {
 	for i := 0; i < length; i++ {
 		char := runes[i]
 		if char == '\\' {
-			// Check if it's a trailing backslash
 			if i+1 >= length {
-				// Trailing backslash at end of string - must be escaped
+				// Trailing backslash
 				sb.WriteRune('\\')
 				sb.WriteRune('\\')
 				break
 			}
 
 			next := runes[i+1]
-			// Check if it's a valid JSON escape sequence
 			switch next {
 			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
-				// Valid escape, write the backslash and let the loop handle the next char naturally
+				// Valid escape
 				sb.WriteRune(char)
 			default:
-				// Invalid escape (e.g. \s, \c, or \' which is invalid in JSON), escape the backslash
+				// Invalid escape (e.g. \s in C:\src), escape the backslash
 				sb.WriteRune('\\')
 				sb.WriteRune('\\')
 			}
@@ -902,7 +927,17 @@ func (r *ragService) sanitizeJSON(input string) string {
 			sb.WriteRune(char)
 		}
 	}
-	return sb.String()
+
+	repaired := sb.String()
+	if json.Valid([]byte(repaired)) {
+		return repaired
+	}
+
+	// 3. If still invalid, try to strip control characters that might break JSON
+	// (newlines in strings are invalid in strict JSON, but some LLMs output them)
+	// We can't easily fix newlines without a parser, so we return the best-effort repaired string.
+	// The robust extractJSON caller will likely fail or extract a substring.
+	return repaired
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.
