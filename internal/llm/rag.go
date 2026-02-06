@@ -789,10 +789,9 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, fmt.Errorf("all models failed to generate valid reviews")
 	}
 
-	// Use the SAME context as individual reviews for consistency
-	// We need to fetch changed files only if we didn't pass them in.
-	// NOTE: In a perfect refactor, we'd pass the context in. But fetching again is fine for now,
-	// as long as we use the SAME RepoConfig Logic.
+	// Use the same repo configuration as the individual reviews to ensure consistency.
+	// While we fetch the changed files again here, this ensures the consensus phase operates
+	// on the latest state of the PR.
 
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()

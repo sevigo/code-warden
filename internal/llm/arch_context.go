@@ -65,17 +65,9 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 		return nil
 	}
 
-	// 3. For directories that need update, we need Symbols/Imports.
-	// Since we avoided parsing everything locally, we can now fetch details from Qdrant if available,
-	// OR we might have to rely on the file scan we just did?
-	// The `scanDirectoryOnDisk` implementation below will collect files.
-	// We still need symbols.
-	// Stragegy: For the directories we ARE generating summaries for, we can either:
-	// a) Parse locally (slow but correct)
-	// b) Query Qdrant for chunks in this directory (fast if indexed)
-	// Let's go with (b) - Query Qdrant for context validation.
-	// Actually, `scanDirectoryOnDisk` can just get filenames.
-	// We will hydrate the `Symbols` and `Imports` in the worker pool before generation.
+	// 3. For directories that need updates, we need to gather Symbols and Imports.
+	// We defer this data gathering to the worker pool phase to avoid blocking the discovery loop.
+	// The hydration of directory metadata happens efficiently just before the LLM prompt value generation.
 
 	// Generate summaries with a worker pool
 	archDocs := r.generateSummariesWithWorkerPool(ctx, dirsToProcess, 3)
