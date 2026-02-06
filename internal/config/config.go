@@ -43,17 +43,18 @@ type GitHubConfig struct {
 }
 
 type AIConfig struct {
-	LLMProvider      string `mapstructure:"llm_provider"`
-	EmbedderProvider string `mapstructure:"embedder_provider"`
-	OllamaHost       string `mapstructure:"ollama_host"`
-	GeminiAPIKey     string `mapstructure:"gemini_api_key"`
-	GeneratorModel   string `mapstructure:"generator_model"`
-	EmbedderModel    string `mapstructure:"embedder_model"`
-	EmbedderTask     string `mapstructure:"embedder_task_description"`
-	RerankerModel    string `mapstructure:"reranker_model"`
-	EnableReranking  bool   `mapstructure:"enable_reranking"`
-	EnableHybrid     bool   `mapstructure:"enable_hybrid_search"`
-	SparseVectorName string `mapstructure:"sparse_vector_name"`
+	LLMProvider      string   `mapstructure:"llm_provider"`
+	EmbedderProvider string   `mapstructure:"embedder_provider"`
+	OllamaHost       string   `mapstructure:"ollama_host"`
+	GeminiAPIKey     string   `mapstructure:"gemini_api_key"`
+	GeneratorModel   string   `mapstructure:"generator_model"`
+	EmbedderModel    string   `mapstructure:"embedder_model"`
+	EmbedderTask     string   `mapstructure:"embedder_task_description"`
+	RerankerModel    string   `mapstructure:"reranker_model"`
+	EnableReranking  bool     `mapstructure:"enable_reranking"`
+	EnableHybrid     bool     `mapstructure:"enable_hybrid_search"`
+	SparseVectorName string   `mapstructure:"sparse_vector_name"`
+	ComparisonModels []string `mapstructure:"comparison_models"`
 }
 
 type StorageConfig struct {
