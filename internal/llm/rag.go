@@ -649,15 +649,9 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 				return nil
 			}
 
-			// Render prompt: Make a defensive copy of promptData to avoid data races
-			// (Template rendering might modify internal map state in some implementations)
-			localPromptData := make(map[string]string, len(promptData))
-			for k, v := range promptData {
-				localPromptData[k] = v
-			}
-
 			modelForPrompt := ModelProvider(modelName)
-			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
+			// No copy needed for immutable string data (per review)
+			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, promptData)
 			if err != nil {
 				mu.Lock()
 				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to render prompt: %w", err)})
@@ -671,7 +665,8 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 			}
 
 			// Use generateWithTimeout to ensure we respect cancellation even if the LLM client hangs
-			response, err := r.generateWithTimeout(ctx, llmModel, prompt, 2*time.Minute)
+			// Increased to 5m based on logs showing deepseek/kimi taking >2m
+			response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
 			if err != nil {
 				mu.Lock()
 				// Check if it was a timeout
@@ -879,44 +874,20 @@ func (r *ragService) extractJSON(raw string) (string, error) {
 		return raw, nil
 	}
 
-	// 3. Stack-based extraction to find the first complete outer JSON object
-	// This handles cases where there is preamble text or trailing explanations.
-	start := strings.Index(raw, "{")
-	if start == -1 {
+	// 3. Robust JSON Extraction Using Standard Library Decoder
+	// Skip preamble text by finding the first '{' and delegating to decoder
+	startBrace := strings.Index(raw, "{")
+	if startBrace == -1 {
 		return "", fmt.Errorf("response did not contain valid JSON start")
 	}
+	raw = raw[startBrace:]
 
-	// Fix: Strip preamble text before any further processing (caught by AI review)
-	raw = raw[start:]
-	var stack int
-	for i, char := range raw {
-		if char == '{' {
-			stack++
-		} else if char == '}' {
-			stack--
-			if stack == 0 {
-				// Found the closing brace of the root object
-				candidate := raw[:i+1]
-				if json.Valid([]byte(candidate)) {
-					return candidate, nil
-				}
-				// If not valid, it might be a brace inside a string (naive parser).
-				// But for 99% of LLM outputs, this works.
-				// A truly robust parser requires a state machine to ignore braces in strings.
-				// Let's fallback to the robust window search if simple counting failed.
-				break
-			}
-		}
-	}
-
-	// 4. Robust Fallback: JSON Decoder
-	// If naive counting failed (e.g. braces in strings), let the standard library find the end.
 	decoder := json.NewDecoder(strings.NewReader(raw))
-	var msg json.RawMessage
+	var msg any
 	if err := decoder.Decode(&msg); err != nil {
 		return "", fmt.Errorf("failed to decode JSON from response: %w", err)
 	}
-	// Re-encode to get clean JSON string
+	// Re-encode to get clean, compacted JSON string
 	clean, _ := json.Marshal(msg)
 	return string(clean), nil
 }

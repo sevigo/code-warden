@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,72 @@ func TestSanitizeModelForFilename(t *testing.T) {
 			got := SanitizeModelForFilename(tt.input)
 			if got != tt.expected {
 				t.Errorf("SanitizeModelForFilename(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractJSON(t *testing.T) {
+	r := &ragService{}
+
+	tests := []struct {
+		name      string
+		input     string
+		want      string
+		shouldErr bool
+	}{
+		{
+			name:  "Clean JSON",
+			input: `{"key": "value"}`,
+			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "JSON with Preamble",
+			input: `Here is the JSON: {"key": "value"}`,
+			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "JSON with Trailing Text",
+			input: `{"key": "value"} ... and some explanation`,
+			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "Nested Braces in String",
+			input: `{"path": "C:\\Users\\{app}"}`,
+			want:  `{"path":"C:\\Users\\{app}"}`,
+		},
+		{
+			name:  "Escaped Quotes",
+			input: `{"summary": "He said \"Hello\""}`,
+			want:  `{"summary":"He said \"Hello\""}`,
+		},
+		{
+			name:      "Invalid JSON",
+			input:     `not json`,
+			shouldErr: true,
+		},
+		{
+			name:      "Incomplete JSON",
+			input:     `{"key": "value"`,
+			shouldErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := r.extractJSON(tt.input)
+			if (err != nil) != tt.shouldErr {
+				t.Errorf("extractJSON() error = %v, shouldErr %v", err, tt.shouldErr)
+				return
+			}
+			// Normalize for Windows/whitespace differences
+			normalize := func(s string) string {
+				return strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", "")
+			}
+			if !tt.shouldErr && normalize(got) != normalize(tt.want) {
+				t.Errorf("extractJSON() mismatch for %s", tt.name)
+				t.Logf("got:  %q", got)
+				t.Logf("want: %q", tt.want)
 			}
 		})
 	}
