@@ -63,10 +63,18 @@ ai:
   generator_model: "kimi-k2.5:cloud"
   
   # Consensus Models (The "Trio" - Kimi, DeepSeek, Gemini)
+  # Used for both "Consensus Code Review" and "Architectural Comparison"
   comparison_models: 
     - "kimi-k2.5:cloud"
     - "deepseek-v3.1:671b-cloud"
     - "gemini-3-pro-preview:latest"
+    
+  # Paths for Architectural Comparison (used by `prescan`)
+  # Default is "." (root only). Add specific high-level directories for deeper analysis.
+  comparison_paths:
+    - "."
+    - "internal/core"
+    - "internal/llm"
 
   embedder_model: "nomic-embed-text"
   embedder_task_description: "search_document"

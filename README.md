@@ -139,6 +139,10 @@ export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
 - PR metadata (title, SHA, language)
 - Index update statistics
 - Suggestion count and severity breakdown
+- **Consensus Review**: If `comparison_models` are configured in `config.yaml`, the CLI will automatically trigger a **Multi-Model Consensus Review**.
+    1.  It queries all configured models + the generator model in parallel.
+    2.  It synthesizes their findings into a single, high-quality "Remix" review.
+    3.  Benefits: Drastically reduced hallucinations, higher confidence in critical issues, and "Safety in Numbers".
 
 **Troubleshooting:**
 | Issue | Solution |
@@ -169,6 +173,10 @@ The `prescan` command allows you to pre-process a repository (local or remote) t
 - **Auto-Resume**: Automatically tracks progress. Re-running the command resumes from the last processed file.
 - **Centralized Storage**: Remote URLs are cloned to the directory specified in `repo_path`.
 - **Documentation**: Generates project structure summaries.
+- **Architectural Comparison**: If `comparison_models` are configured, `prescan` will also generate `arch_comparison_<model>.md` files.
+    - These files contain high-level architectural summaries of the repository from the perspective of each model.
+    - Useful for evaluating which model understands your codebase best before setting it as the main reviewer.
+    - Configure specific directories to analyze via `comparison_paths` in `config.yaml`.
 
 ## RunPod
 
