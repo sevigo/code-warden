@@ -144,3 +144,8 @@ func (m *Manager) prepareLocalRepo(input string) (string, string, string, error)
 
 	return absPath, owner, repo, nil
 }
+
+// GetRepoSHA is a helper to get the HEAD SHA of a repository.
+func (m *Manager) GetRepoSHA(ctx context.Context, path string) (string, error) {
+	return m.gitClient.GetHeadSHA(ctx, path)
+}
