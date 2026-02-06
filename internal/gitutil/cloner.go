@@ -63,7 +63,7 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 
 // Fetch fetches updates from the 'origin' remote.
 // Fetch fetches updates from the 'origin' remote using git CLI.
-func (c *Client) Fetch(ctx context.Context, path string, token string, refSpecs ...string) error {
+func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...string) error {
 	c.Logger.InfoContext(ctx, "fetching latest changes from origin")
 
 	// Inject global config for longpaths
@@ -217,4 +217,15 @@ func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
 	}
 	parsedURL.User = url.UserPassword("x-access-token", token)
 	return parsedURL.String(), nil
+}
+
+// GetHeadSHA returns the current HEAD SHA of the repository at the given path.
+func (c *Client) GetHeadSHA(ctx context.Context, path string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "rev-parse", "HEAD")
+	cmd.Dir = path
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse failed: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
