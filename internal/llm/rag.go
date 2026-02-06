@@ -578,7 +578,8 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 }
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
-
+//
+//nolint:gocognit // Complex logic with parallel execution and error aggregation
 func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -725,6 +726,8 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 }
 
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
+//
+//nolint:funlen,gocognit // High-level orchestration function with error handling and artifact saving
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
 	if len(models) == 0 {
 		return nil, fmt.Errorf("consensus review requires at least one model")

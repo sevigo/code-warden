@@ -417,6 +417,8 @@ func isCodeExtension(ext string) bool {
 // GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
 // GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
 // It uses parallel execution to speed up the process, with a semaphore to limit concurrency.
+//
+//nolint:gocognit // Complex parallel logic with error handling
 func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
 	r.logger.Info("generating multi-directory comparison summaries", "models", models, "paths", relPaths)
 
@@ -435,7 +437,6 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 	defer close(sem) // Ensure channel is closed
 
 	for _, relPath := range relPaths {
-		relPath := relPath // capture loop variable
 		g.Go(func() error {
 			// Acquire semaphore
 			select {

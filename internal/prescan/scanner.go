@@ -52,6 +52,7 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 	}, nil
 }
 
+//nolint:gocognit,nestif // Core scanning loop with state management
 func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	// 1. Prepare Repo (Clone if needed)
 	localPath, owner, repo, err := s.Manager.PrepareRepo(ctx, input)
