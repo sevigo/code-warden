@@ -2,6 +2,7 @@ package prescan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,29 @@ func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
 	return &Scanner{
 		Manager:    m,
 		RAGService: rag,
+	}
+}
+
+func (s *Scanner) generateAndSaveDocumentation(localPath string, artifacts *map[string]interface{}) {
+	docGen := NewDocGenerator(localPath)
+	structure, err := docGen.GenerateProjectStructure(localPath)
+
+	if err != nil {
+		s.Manager.logger.Warn("Failed to generate project structure", "error", err)
+		return
+	}
+
+	// Save locally (0600 per gosec)
+	docPath := filepath.Join(localPath, "project_structure.md")
+	if err := os.WriteFile(docPath, []byte(structure), 0600); err != nil {
+		s.Manager.logger.Error("Failed to save project structure", "error", err)
+	} else {
+		s.Manager.logger.Info("Generated project documentation", "path", docPath)
+	}
+
+	// Prepare for DB
+	*artifacts = map[string]interface{}{
+		"project_structure": structure,
 	}
 }
 
@@ -80,26 +104,8 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	}
 
 	// 7. Generate Documentation
-	docGen := NewDocGenerator(localPath)
-	structure, err := docGen.GenerateProjectStructure(localPath)
 	var artifacts map[string]interface{}
-
-	if err != nil {
-		s.Manager.logger.Warn("Failed to generate project structure", "error", err)
-	} else {
-		// Save locally (0600 per gosec)
-		docPath := filepath.Join(localPath, "project_structure.md")
-		if err := os.WriteFile(docPath, []byte(structure), 0600); err != nil {
-			s.Manager.logger.Error("Failed to save project structure", "error", err)
-		} else {
-			s.Manager.logger.Info("Generated project documentation", "path", docPath)
-		}
-
-		// Prepare for DB
-		artifacts = map[string]interface{}{
-			"project_structure": structure,
-		}
-	}
+	s.generateAndSaveDocumentation(localPath, &artifacts)
 
 	// 8. Multi-Model Comparison (if configured)
 	if len(s.Manager.cfg.AI.ComparisonModels) > 0 {
@@ -170,7 +176,7 @@ func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoR
 
 func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, batch *[]string, progress *Progress) error {
 	repoConfig, configErr := config.LoadRepoConfig(localPath)
-	if configErr != nil && configErr != config.ErrConfigNotFound {
+	if configErr != nil && !errors.Is(configErr, config.ErrConfigNotFound) {
 		s.Manager.logger.Warn("Failed to load .code-warden.yml", "error", configErr)
 	}
 
