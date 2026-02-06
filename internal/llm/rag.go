@@ -12,9 +12,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
@@ -31,6 +34,12 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+type ComparisonResult struct {
+	Model  string
+	Review string
+	Error  error
+}
+
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
@@ -40,7 +49,7 @@ type RAGService interface {
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
-	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (map[string]string, error)
+	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) ([]ComparisonResult, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error)
 }
 
@@ -568,23 +577,24 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 }
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
-func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (map[string]string, error) {
+
+func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	r.logger.Info("preparing data for multi-model comparison reviews", "repo", event.RepoFullName, "pr", event.PRNumber, "models", models)
+	// Precompute shared data once
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get PR diff: %w", err)
 	}
 
+	// Use default model (Cogito) for context gathering
 	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get changed files: %w", err)
 	}
 
-	// Use default model (Cogito) for context gathering
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
 	promptData := map[string]string{
@@ -597,29 +607,63 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 		"Diff":               diff,
 	}
 
-	results := make(map[string]string)
+	results := make([]ComparisonResult, 0, len(models))
+	var mu sync.Mutex
+
+	g, ctx := errgroup.WithContext(ctx)
+	// Limit concurrency to avoid rate limits
+	sem := make(chan struct{}, 3)
+
 	for _, modelName := range models {
-		r.logger.Info("generating review summary", "model", modelName)
+		modelName := modelName // capture loop variable
+		g.Go(func() error {
+			defer func() { <-sem }()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 
-		llmModel, err := r.getOrCreateLLM(modelName)
-		if err != nil {
-			results[modelName] = fmt.Sprintf("Error creating LLM: %v", err)
-			continue
-		}
+			// Check context again
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 
-		modelForPrompt := ModelProvider(modelName)
-		prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, promptData)
-		if err != nil {
-			results[modelName] = fmt.Sprintf("Error rendering prompt: %v", err)
-			continue
-		}
+			r.logger.Info("generating review summary", "model", modelName)
+			llmModel, err := r.getOrCreateLLM(modelName)
+			if err != nil {
+				mu.Lock()
+				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to create LLM: %w", err)})
+				mu.Unlock()
+				return nil
+			}
 
-		response, err := llmModel.Call(ctx, prompt)
-		if err != nil {
-			results[modelName] = fmt.Sprintf("Generation Error: %v", err)
-			continue
-		}
-		results[modelName] = response
+			modelForPrompt := ModelProvider(modelName)
+			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, promptData)
+			if err != nil {
+				mu.Lock()
+				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to render prompt: %w", err)})
+				mu.Unlock()
+				return nil
+			}
+
+			response, err := llmModel.Call(ctx, prompt)
+			if err != nil {
+				mu.Lock()
+				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("LLM call failed: %w", err)})
+				mu.Unlock()
+				return nil
+			}
+
+			mu.Lock()
+			results = append(results, ComparisonResult{Model: modelName, Review: response})
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	return results, nil
@@ -627,50 +671,191 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
+	if len(models) == 0 {
+		return nil, fmt.Errorf("consensus review requires at least one model")
+	}
+
 	// 1. Get independent reviews from all models (The "Committee")
-	rawReviews, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models)
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models)
 	if err != nil {
 		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
 
-	// 2. Prepare the consensus prompt data
+	// 2. Prepare the consensus prompt data & Save Artifacts
+	var validReviews []string
 	var reviewsBuilder strings.Builder
-	for model, review := range rawReviews {
-		reviewsBuilder.WriteString(fmt.Sprintf("\n--- Review from %s ---\n", model))
-		reviewsBuilder.WriteString(review)
+	timestamp := time.Now().Format("20060102_150405")
+	reviewsDir := "reviews"
+	_ = os.MkdirAll(reviewsDir, 0755) // Ensure directory exists
+
+	// Deterministic ordering: Sort results by Model name
+	sort.Slice(comparisonResults, func(i, j int) bool {
+		return comparisonResults[i].Model < comparisonResults[j].Model
+	})
+
+	for _, res := range comparisonResults {
+		if res.Error != nil {
+			r.logger.Warn("skipping model due to failure", "model", res.Model, "error", res.Error)
+			// Save error artifact for debugging
+			errFilename := filepath.Join(reviewsDir, fmt.Sprintf("error_%s_%s.txt", strings.ReplaceAll(res.Model, ":", "_"), timestamp))
+			_ = os.WriteFile(errFilename, []byte(res.Error.Error()), 0644)
+			continue
+		}
+
+		if strings.TrimSpace(res.Review) == "" {
+			continue
+		}
+
+		// Save individual review artifact
+		filename := filepath.Join(reviewsDir, fmt.Sprintf("review_%s_%s.md", strings.ReplaceAll(res.Model, ":", "_"), timestamp))
+		header := fmt.Sprintf("# Code Review by %s\n\n**Date:** %s\n**PR:** %s/%s #%d\n\n", res.Model, time.Now().Format(time.RFC3339), event.RepoOwner, event.RepoName, event.PRNumber)
+		if err := os.WriteFile(filename, []byte(header+res.Review), 0644); err != nil {
+			r.logger.Warn("failed to save review artifact", "model", res.Model, "error", err)
+		} else {
+			r.logger.Info("saved review artifact", "path", filename)
+		}
+
+		reviewsBuilder.WriteString(fmt.Sprintf("\n--- Review from %s ---\n", res.Model))
+		reviewsBuilder.WriteString(res.Review)
 		reviewsBuilder.WriteString("\n")
+		validReviews = append(validReviews, res.Model)
 	}
 
+	if len(validReviews) == 0 {
+		return nil, fmt.Errorf("all models failed to generate valid reviews")
+	}
+
+	// Fetch Context for Consensus (Issue #4)
+	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
+	}
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+
 	promptData := map[string]string{
-		"Reviews": reviewsBuilder.String(),
+		"Reviews":      reviewsBuilder.String(),
+		"Context":      contextString,
+		"ChangedFiles": r.formatChangedFiles(changedFiles),
 	}
 
 	// 3. Synthesize the final review using the default generator (The "chairperson")
-	r.logger.Info("synthesizing consensus review", "models", models)
+	r.logger.Info("synthesizing consensus review", "models", validReviews)
 	rawConsensus, err := r.generateResponseWithPrompt(ctx, event, ConsensusReviewPrompt, promptData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate consensus: %w", err)
 	}
 
-	// 4. Parse JSON
-	var structuredReview core.StructuredReview
-	start := strings.Index(rawConsensus, "{")
-	end := strings.LastIndex(rawConsensus, "}")
-
-	if start == -1 || end == -1 || end < start {
-		return nil, fmt.Errorf("consensus response did not contain valid JSON")
+	// Save consensus raw artifact
+	consensusFilename := filepath.Join(reviewsDir, fmt.Sprintf("review_consensus_%s.md", timestamp))
+	if err := os.WriteFile(consensusFilename, []byte(rawConsensus), 0644); err != nil {
+		r.logger.Warn("failed to save consensus artifact", "error", err)
+	} else {
+		r.logger.Info("saved consensus artifact", "path", consensusFilename)
 	}
 
-	jsonString := rawConsensus[start : end+1]
+	// 4. Parse JSON
+	jsonString, err := r.extractJSON(rawConsensus)
+	if err != nil {
+		return nil, err
+	}
+
+	// Attempt to sanitize JSON (fix common LLM escaping errors like \s in paths)
+	jsonString = r.sanitizeJSON(jsonString)
+
+	var structuredReview core.StructuredReview
 	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
 		return nil, fmt.Errorf("failed to parse consensus JSON: %w", err)
 	}
 
 	// 5. Add Disclaimer
-	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by minimizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(models, ", "))
+	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by synthesizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(validReviews, ", "))
 	structuredReview.Summary += disclaimer
 
 	return &structuredReview, nil
+}
+
+func (r *ragService) extractJSON(raw string) (string, error) {
+	// 1. Try to find content within markdown code blocks first
+	// This regex finds content between ```json ... ``` or just ``` ... ```
+	// It's greedy but we only want the first valid JSON block usually.
+	// But simple stripping is safer.
+	if startFence := strings.Index(raw, "```"); startFence != -1 {
+		// Find end fence
+		if endFence := strings.LastIndex(raw, "```"); endFence > startFence {
+			// Extract content inside, stripping "json" if present
+			inner := raw[startFence+3 : endFence]
+			if strings.HasPrefix(inner, "json") {
+				inner = strings.TrimPrefix(inner, "json")
+			} else if strings.HasPrefix(inner, "JSON") {
+				inner = strings.TrimPrefix(inner, "JSON")
+			}
+			// Recursive call on the inner content? Or just proceed to brace matching on inner?
+			// Proceeding to brace matching on inner is safest.
+			raw = inner
+		}
+	}
+
+	// 2. Stack-based brace matching to find the outermost valid JSON object
+	var start, end int = -1, -1
+	depth := 0
+	runes := []rune(raw)
+
+	for i, char := range runes {
+		if char == '{' {
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		}
+		if char == '}' {
+			depth--
+			if depth == 0 && start != -1 {
+				end = i
+				// We found the first complete outer object.
+				// In most cases, the consensus review is a single object.
+				// If there is trailing text, we ignore it.
+				break
+			}
+		}
+	}
+
+	if start == -1 || end == -1 || end < start {
+		return "", fmt.Errorf("response did not contain valid JSON")
+	}
+
+	return string(runes[start : end+1]), nil
+}
+
+// sanitizeJSON attempts to fix common invalid escape sequences in LLM output.
+// It replaces backslashes that are NOT followed by a valid JSON escape char with double backslashes.
+func (r *ragService) sanitizeJSON(input string) string {
+	var sb strings.Builder
+	runes := []rune(input)
+	length := len(runes)
+
+	for i := 0; i < length; i++ {
+		r := runes[i]
+		sb.WriteRune(r)
+
+		if r == '\\' {
+			// Check next char
+			if i+1 < length {
+				next := runes[i+1]
+				// Valid JSON escapes: " \ / b f n r t u
+				switch next {
+				case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+					// Valid escape, do nothing (loop will advance)
+				default:
+					// Invalid escape (e.g. \s, \c, or just \ at end of word).
+					// We assume the model meant a literal backslash.
+					// Since we already wrote the first backslash, we write ANOTHER one to escape it.
+					// RESULT in JSON: \\ (which parses to literal \)
+					sb.WriteRune('\\')
+				}
+			}
+		}
+	}
+	return sb.String()
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.

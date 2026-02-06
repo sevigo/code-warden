@@ -27,27 +27,30 @@ func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
 	}
 }
 
-func (s *Scanner) generateAndSaveDocumentation(localPath string, artifacts *map[string]interface{}) {
+func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]interface{}, error) {
 	docGen := NewDocGenerator(localPath)
 	structure, err := docGen.GenerateProjectStructure(localPath)
 
 	if err != nil {
 		s.Manager.logger.Warn("Failed to generate project structure", "error", err)
-		return
+		return nil, err
 	}
 
 	// Save locally (0600 per gosec)
 	docPath := filepath.Join(localPath, "project_structure.md")
 	if err := os.WriteFile(docPath, []byte(structure), 0600); err != nil {
 		s.Manager.logger.Error("Failed to save project structure", "error", err)
+		// We return the error but maybe we should allow partial success?
+		// For now, let's return error as it's cleaner.
+		return nil, err
 	} else {
 		s.Manager.logger.Info("Generated project documentation", "path", docPath)
 	}
 
 	// Prepare for DB
-	*artifacts = map[string]interface{}{
+	return map[string]interface{}{
 		"project_structure": structure,
-	}
+	}, nil
 }
 
 func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
@@ -104,13 +107,19 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	}
 
 	// 7. Generate Documentation
-	var artifacts map[string]interface{}
-	s.generateAndSaveDocumentation(localPath, &artifacts)
+	// 7. Generate Documentation
+	artifacts, err := s.generateAndSaveDocumentation(localPath)
+	if err != nil {
+		s.Manager.logger.Warn("documentation generation failed", "error", err)
+	}
 
 	// 8. Multi-Model Comparison (if configured)
 	if len(s.Manager.cfg.AI.ComparisonModels) > 0 {
 		s.Manager.logger.Info("Starting multi-model architectural comparison", "models", s.Manager.cfg.AI.ComparisonModels)
-		characteristicPaths := []string{".", "internal/llm", "internal/storage", "cmd/cli"}
+		characteristicPaths := s.Manager.cfg.AI.ComparisonPaths
+		if len(characteristicPaths) == 0 {
+			characteristicPaths = []string{"."}
+		}
 		results, err := s.RAGService.GenerateComparisonSummaries(ctx, s.Manager.cfg.AI.ComparisonModels, localPath, characteristicPaths)
 		if err != nil {
 			s.Manager.logger.Warn("Multi-model comparison failed", "error", err)

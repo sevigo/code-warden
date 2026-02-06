@@ -73,11 +73,13 @@ func (m *manager) cloneAndIndex(
 	}
 
 	// Fetch PR specific reference to ensure we have the commit (handling forks)
-	// Fetch PR specific reference to ensure we have the commit (handling forks)
-	prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
-	if err := m.gitClient.Fetch(cloneCtx, clonePath, token, prRefSpec); err != nil {
-		m.cleanupRepoDir(clonePath)
-		return nil, fmt.Errorf("git fetch pr: %w", err)
+	// Fetch PR specific reference only if it's a PR event
+	if ev.PRNumber > 0 {
+		prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
+		if err := m.gitClient.Fetch(cloneCtx, clonePath, token, prRefSpec); err != nil {
+			m.cleanupRepoDir(clonePath)
+			return nil, fmt.Errorf("git fetch pr: %w", err)
+		}
 	}
 	if err = m.gitClient.Checkout(cloneCtx, clonePath, ev.HeadSHA); err != nil {
 		m.cleanupRepoDir(clonePath)
@@ -142,10 +144,17 @@ func (m *manager) incrementalUpdate(
 	}
 
 	// Fetch PR specific reference to ensure we have the commit (handling forks)
-	// Fetch PR specific reference to ensure we have the commit (handling forks)
-	prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
-	if err = m.gitClient.Fetch(ctx, rec.ClonePath, token, prRefSpec); err != nil {
-		return nil, fmt.Errorf("git fetch: %w", err)
+	// Fetch PR specific reference only if it's a PR event
+	if ev.PRNumber > 0 {
+		prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
+		if err = m.gitClient.Fetch(ctx, rec.ClonePath, token, prRefSpec); err != nil {
+			return nil, fmt.Errorf("git fetch pr: %w", err)
+		}
+	} else {
+		// Just fetch origin (standard fetch)
+		if err = m.gitClient.Fetch(ctx, rec.ClonePath, token); err != nil {
+			return nil, fmt.Errorf("git fetch: %w", err)
+		}
 	}
 	if err = m.gitClient.Checkout(ctx, rec.ClonePath, ev.HeadSHA); err != nil {
 		return nil, err

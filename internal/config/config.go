@@ -55,6 +55,7 @@ type AIConfig struct {
 	EnableHybrid     bool     `mapstructure:"enable_hybrid_search"`
 	SparseVectorName string   `mapstructure:"sparse_vector_name"`
 	ComparisonModels []string `mapstructure:"comparison_models"`
+	ComparisonPaths  []string `mapstructure:"comparison_paths"`
 }
 
 type StorageConfig struct {
