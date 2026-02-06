@@ -1270,18 +1270,19 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		r.logger.Info("stage completed", "name", "ArchitecturalContext")
 	}()
 
-	// 2. HyDE Snippets (Disabled for performance)
-	// HyDE triggered an LLM call for every changed file, causing massive latency ("takes forever").
-	// We disable it by default until we have a more selective strategy (e.g. only for complex diffs).
-	//
-	// wg.Add(1)
-	// go func() {
-	// 	defer wg.Done()
-	// 	r.logger.Info("stage started", "name", "HyDE")
-	// 	hydeMap = r.generateHyDESnippets(ctx, changedFiles)
-	// 	hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
-	// 	r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
-	// }()
+	// 2. HyDE Snippets (Optional: High Latency, High Recall)
+	if r.cfg.AI.EnableHyDE {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.logger.Info("stage started", "name", "HyDE")
+			hydeMap = r.generateHyDESnippets(ctx, changedFiles)
+			hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
+			r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
+		}()
+	} else {
+		r.logger.Info("stage skipped", "name", "HyDE", "reason", "disabled_in_config")
+	}
 
 	// 3. Impact Context (uses local seenDocs to avoid data race)
 	wg.Add(1)
