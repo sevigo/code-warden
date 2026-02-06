@@ -38,6 +38,7 @@ type RAGService interface {
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
+	ProcessFile(repoPath, file string) []schema.Document
 }
 
 type ragService struct {
@@ -364,7 +365,7 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 		go func() {
 			defer wg.Done()
 			for file := range fileChan {
-				docs := r.processFile(repoPath, file)
+				docs := r.ProcessFile(repoPath, file)
 				resultChan <- result{docs: docs}
 			}
 		}()
@@ -390,8 +391,8 @@ func (r *ragService) processFilesParallel(repoPath string, files []string, numWo
 	return allDocs
 }
 
-// processFile reads, parses, and chunks a single file.
-func (r *ragService) processFile(repoPath, file string) []schema.Document {
+// ProcessFile reads, parses, and chunks a single file.
+func (r *ragService) ProcessFile(repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
@@ -836,27 +837,33 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		r.logger.Info("stage started", "name", "ArchitecturalContext")
 		if ac := r.getArchContext(ctx, scopedStore, changedFiles); ac != "" {
 			archContext = ac
 		}
+		r.logger.Info("stage completed", "name", "ArchitecturalContext")
 	}()
 
 	// 2. HyDE Snippets (generation + search)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		r.logger.Info("stage started", "name", "HyDE")
 		hydeMap = r.generateHyDESnippets(ctx, changedFiles)
 		hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
+		r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
 	}()
 
 	// 3. Impact Context (uses local seenDocs to avoid data race)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		r.logger.Info("stage started", "name", "ImpactAnalysis")
 		localSeen := make(map[string]struct{})
 		if ic := r.getImpactContext(ctx, scopedStore, changedFiles, localSeen); ic != "" {
 			impactContext = ic
 		}
+		r.logger.Info("stage completed", "name", "ImpactAnalysis")
 	}()
 
 	wg.Wait()
@@ -1107,6 +1114,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 			r.logger.Warn("base hybrid search failed", "error", err)
 			continue
 		}
+		r.logger.Info("retrieval stats", "step", "pre-rerank", "query_idx", i, "doc_count", len(baseDocs))
 
 		// Now rerank manually
 		var docs []schema.Document
@@ -1136,6 +1144,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 				docs[j].Metadata["rerank_reason"] = scoredDocs[j].Reason
 			}
 		}
+		r.logger.Info("retrieval stats", "step", "post-rerank", "query_idx", i, "doc_count", len(docs))
 		finalResults[i] = docs
 	}
 

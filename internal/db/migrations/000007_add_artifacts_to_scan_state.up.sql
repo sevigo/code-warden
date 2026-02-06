@@ -1,0 +1,1 @@
+ALTER TABLE scan_state ADD COLUMN IF NOT EXISTS artifacts JSONB;

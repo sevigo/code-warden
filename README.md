@@ -149,6 +149,27 @@ export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
 | `failed to generate review` | Ensure LLM service (Ollama/Gemini) is running |
 
 
+
+### 8. CLI Prescan Command
+
+The `prescan` command allows you to pre-process a repository (local or remote) to populate the vector store and generate documentation. It supports resumable scans, meaning if the process is interrupted, it can pick up where it left off.
+
+```sh
+# Scan a remote repository (will be cloned to your configured repo_path)
+./bin/warden-cli prescan https://github.com/owner/repo
+
+# Scan a local repository
+./bin/warden-cli prescan /path/to/local/repo
+
+# Force a fresh scan (ignoring previous progress)
+./bin/warden-cli prescan --force https://github.com/owner/repo
+```
+
+**Key Features:**
+- **Auto-Resume**: Automatically tracks progress. Re-running the command resumes from the last processed file.
+- **Centralized Storage**: Remote URLs are cloned to the directory specified in `repo_path`.
+- **Documentation**: Generates project structure summaries.
+
 ## RunPod
 
 ```bash
