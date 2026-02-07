@@ -648,6 +648,14 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 			}
 
 			r.logger.Info("generating review summary", "model", modelName)
+
+			// Con: Create a local copy of promptData for this goroutine to ensure isolation
+			// Although promptData is read-only here, this prevents future regressions.
+			localPromptData := make(map[string]string, len(promptData))
+			for k, v := range promptData {
+				localPromptData[k] = v
+			}
+
 			llmModel, err := r.getOrCreateLLM(modelName)
 			if err != nil {
 				mu.Lock()
@@ -657,8 +665,7 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 			}
 
 			modelForPrompt := ModelProvider(modelName)
-			// No copy needed for immutable string data (per review)
-			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, promptData)
+			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
 			if err != nil {
 				mu.Lock()
 				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to render prompt: %w", err)})
@@ -743,6 +750,9 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	if event == nil {
 		return nil, errors.New("event cannot be nil")
 	}
+	if ghClient == nil {
+		return nil, errors.New("ghClient cannot be nil")
+	}
 	if len(models) == 0 {
 		return nil, fmt.Errorf("consensus review requires at least one model")
 	}
@@ -767,7 +777,8 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	// 3. Prepare the consensus prompt data & Save Artifacts
 	var validReviews []string
 	var reviewsBuilder strings.Builder
-	timestamp := time.Now().Format("20060102_150405")
+	// Rob: Nanosecond precision to prevent collisions in fast CI
+	timestamp := time.Now().Format("20060102_150405_000000000")
 	reviewsDir := "reviews"
 
 	// Security: Use 0700 for directory (User only)
@@ -988,58 +999,63 @@ func (r *ragService) sanitizeJSON(input string) string {
 	if json.Valid([]byte(repaired)) {
 		return repaired
 	}
+
 	// 3. Fallback
 	return repaired
 }
 
-// SanitizeModelForFilename ensures model names are safe for use in filenames.
-// It handles path traversal, Windows reserved names, and length limits.
+// SanitizeModelForFilename cleans model names for safe use as filenames.
+// It handles Windows reserved names and includes a short hash to prevent collisions.
 func SanitizeModelForFilename(modelName string) string {
 	sanitized := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z':
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			return r
-		case r >= 'A' && r <= 'Z':
-			return r
-		case r >= '0' && r <= '9':
-			return r
-		case r == '_':
-			return r
-		default:
-			return '_'
 		}
+		if r == '-' || r == '.' {
+			return r
+		}
+		return '_'
 	}, modelName)
 
-	// Remove leading/trailing underscores and redundant dots handled by map
-	sanitized = strings.TrimLeft(sanitized, "_")
-	sanitized = strings.TrimRight(sanitized, "_")
-
-	if sanitized == "" {
-		sanitized = "model"
-	}
-
-	// Prevent Windows reserved names (case-insensitive)
-	lower := strings.ToLower(sanitized)
-	reserved := map[string]bool{
-		"con": true, "prn": true, "aux": true, "nul": true,
-		"com1": true, "com2": true, "com3": true, "com4": true, "com5": true, "com6": true, "com7": true, "com8": true, "com9": true,
-		"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true, "lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
-	}
-	if reserved[lower] {
-		sanitized = "safe_" + sanitized
-	}
-
-	// De-duplicate underscores (e.g., "suspicious__name" -> "suspicious_name")
+	// De-duplicate underscores
 	for strings.Contains(sanitized, "__") {
 		sanitized = strings.ReplaceAll(sanitized, "__", "_")
 	}
 
-	// Limit length to prevent OS errors
-	if len(sanitized) > 128 {
-		sanitized = sanitized[:128]
+	sanitized = strings.Trim(sanitized, "_")
+	if sanitized == "" {
+		sanitized = "model"
 	}
 
-	return sanitized
+	// Security: Prevent collisions by adding a short deterministic hash
+	h := sha256.New()
+	h.Write([]byte(modelName))
+	hashStr := hex.EncodeToString(h.Sum(nil))[:8]
+
+	// Windows reserved names check (case-insensitive)
+	// Ref: Deepseek review - handle extension-like suffixes (e.g., COM1.txt)
+	reserved := map[string]bool{
+		"CON": true, "PRN": true, "AUX": true, "NUL": true,
+		"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+		"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+	}
+
+	base := sanitized
+	if dot := strings.LastIndex(base, "."); dot > 0 {
+		base = base[:dot]
+	}
+
+	if reserved[strings.ToUpper(base)] {
+		sanitized = "safe_" + sanitized
+	}
+
+	// Append hash and limit length
+	fullName := sanitized + "_" + hashStr
+	if len(fullName) > 120 {
+		fullName = fullName[:120]
+	}
+
+	return fullName
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.
@@ -1496,10 +1512,11 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 		go func(idx int, f internalgithub.ChangedFile, hash string) {
 			defer wg.Done()
 
-			sem <- struct{}{}        // Acquire
-			defer func() { <-sem }() // Release
-
-			if ctx.Err() != nil {
+			// Con: Select-based acquisition to respect context cancellation
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
 				return
 			}
 			prompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: f.Patch})

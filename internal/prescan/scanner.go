@@ -324,41 +324,30 @@ func validExt(ext string) bool {
 
 // validateRepoPath ensures that a provided path stays within a base directory, resolving symlinks for security.
 func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error) {
-	// Standardize separators for cross-platform consistency
-	providedPath = filepath.Clean(providedPath)
-
-	// Join and get absolute path
-	fullPath := filepath.Join(basePath, providedPath)
-	cleanPath, err := filepath.Abs(fullPath)
+	absBase, err := filepath.Abs(basePath)
 	if err != nil {
 		return "", err
 	}
 
-	// Resolve symlinks to prevent traversal bypass via symlink targets
-	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
-	if err != nil && !os.IsNotExist(err) {
+	// Use filepath.Join to combine. It's safe as we use Abs later.
+	fullPath := filepath.Join(absBase, providedPath)
+	absPath, err := filepath.Abs(fullPath)
+	if err != nil {
 		return "", err
 	}
+
+	// Resolve symlinks. We ignore "not exist" as the path might be a new file.
+	// We also ignore "invalid name" errors which can happen on Windows for traversal attempts.
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
 	if err == nil {
-		cleanPath = resolvedPath
+		absPath = resolvedPath
 	}
 
-	baseAbs, err := filepath.Abs(basePath)
-	if err != nil {
-		return "", err
+	// Sec: Robust containment check using Rel (Deepseek review suggestion)
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("provided path %q is outside of the repository base path", providedPath)
 	}
 
-	// Case-insensitive check for Windows, ensuring path starts with baseAbs
-	normalizedClean := strings.ToLower(cleanPath)
-	normalizedBase := strings.ToLower(baseAbs)
-
-	// Ensure normalizedBase ends with a separator to avoid partial matching (e.g., /app vs /app-data)
-	if !strings.HasSuffix(normalizedBase, string(os.PathSeparator)) {
-		normalizedBase += string(os.PathSeparator)
-	}
-
-	if !strings.HasPrefix(normalizedClean, normalizedBase) && normalizedClean != strings.ToLower(baseAbs) {
-		return "", fmt.Errorf("path traversal attempt detected: %s", cleanPath)
-	}
-	return cleanPath, nil
+	return absPath, nil
 }

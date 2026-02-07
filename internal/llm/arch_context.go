@@ -428,6 +428,16 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 	for _, model := range models {
 		results[model] = make(map[string]string)
 	}
+	// Optimization: Pre-fetch LLM instances outside the directory loop
+	llmInstances := make(map[string]llms.Model)
+	for _, modelName := range models {
+		llm, err := r.getOrCreateLLM(modelName)
+		if err != nil {
+			r.logger.Warn("failed to pre-fetch LLM", "model", modelName, "error", err)
+			continue
+		}
+		llmInstances[modelName] = llm
+	}
 
 	// Use errgroup for parallel execution
 	g, ctx := errgroup.WithContext(ctx)
@@ -448,10 +458,27 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 				return ctx.Err()
 			}
 
-			path := filepath.Join(repoPath, relPath)
+			// Sec: Path validation to prevent traversal via relPath
+			cleanRepo, err := filepath.Abs(repoPath)
+			if err != nil {
+				return fmt.Errorf("invalid repo path: %w", err)
+			}
+			path := filepath.Join(cleanRepo, relPath)
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				return fmt.Errorf("invalid join path: %w", err)
+			}
+
+			// Cross-platform case-insensitive check for base prefix
+			if !strings.HasPrefix(strings.ToLower(absPath), strings.ToLower(cleanRepo)) {
+				return fmt.Errorf("path traversal attempt detected: %s", relPath)
+			}
+
 			if relPath == "." || relPath == "" || relPath == "/" {
 				relPath = rootDir
-				path = repoPath
+				path = cleanRepo
+			} else {
+				path = absPath
 			}
 
 			// scan dir on disk (fast, local)
@@ -473,10 +500,10 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 
 				r.logger.Info("generating summary", "model", modelName, "path", relPath)
 
-				llm, err := r.getOrCreateLLM(modelName)
-				if err != nil {
+				llm := llmInstances[modelName]
+				if llm == nil {
 					resultsMu.Lock()
-					results[modelName][relPath] = fmt.Sprintf("Error creating LLM: %v", err)
+					results[modelName][relPath] = "Error: LLM not initialized"
 					resultsMu.Unlock()
 					continue
 				}

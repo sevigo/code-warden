@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -36,24 +37,37 @@ func TestSanitizeJSON(t *testing.T) {
 
 func TestSanitizeModelForFilename(t *testing.T) {
 	tests := []struct {
-		input    string
-		expected string
+		input      string
+		wantPrefix string
 	}{
-		{"kimi-k2.5:cloud", "kimi_k2_5_cloud"},
-		{"deepseek/v3", "deepseek_v3"},
-		{"suspicious..name", "suspicious_name"},
-		{"<invalid>", "invalid"},
-		{"COM1", "safe_COM1"},
+		{"kimi-k2.5:cloud", "kimi-k2.5_cloud_"},
+		{"deepseek/v3", "deepseek_v3_"},
+		{"suspicious..name", "suspicious..name_"},
+		{"<invalid>", "invalid_"},
+		{"COM1", "safe_COM1_"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			got := SanitizeModelForFilename(tt.input)
-			if got != tt.expected {
-				t.Errorf("SanitizeModelForFilename(%q) = %q, want %q", tt.input, got, tt.expected)
+			if !strings.HasPrefix(got, tt.wantPrefix) {
+				t.Errorf("SanitizeModelForFilename(%q) = %q, want prefix %q", tt.input, got, tt.wantPrefix)
+			}
+			// Check if hash part is exactly 8 hex chars (plus underscore)
+			hashPart := got[len(tt.wantPrefix):]
+			if len(hashPart) != 8 {
+				t.Errorf("SanitizeModelForFilename(%q) hash part %q length = %d, want 8", tt.input, hashPart, len(hashPart))
 			}
 		})
 	}
+
+	t.Run("CollisionResistance", func(t *testing.T) {
+		m1 := SanitizeModelForFilename("model:v1")
+		m2 := SanitizeModelForFilename("model/v1")
+		if m1 == m2 {
+			t.Errorf("Collision detected: %q and %q both sanitize to %q", "model:v1", "model/v1", m1)
+		}
+	})
 }
 
 func TestExtractJSON(t *testing.T) {
