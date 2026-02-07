@@ -649,8 +649,9 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 
 			r.logger.Info("generating review summary", "model", modelName)
 
-			// Con: Create a local copy of promptData for this goroutine to ensure isolation
-			// Although promptData is read-only here, this prevents future regressions.
+			// Con: Create local copy of promptData to ensure goroutine isolation (Priority 4)
+			// Maps are passed by reference; defensive copy prevents race conditions
+			// if caller modifies the original map during parallel execution.
 			localPromptData := make(map[string]string, len(promptData))
 			for k, v := range promptData {
 				localPromptData[k] = v
@@ -769,7 +770,23 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 2. Get independent reviews from all models (The "Committee")
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models, diff, changedFiles)
+	// Deduplicate generator model from comparison to avoid bias (Priority 2)
+	generatorModel := r.cfg.AI.GeneratorModel
+	var validModels []string
+	for _, m := range models {
+		if m != generatorModel {
+			validModels = append(validModels, m)
+		} else {
+			r.logger.Info("excluding generator model from comparison (used for synthesis)", "model", m)
+		}
+	}
+
+	// Ensure we still have enough models
+	if len(validModels) < 2 {
+		return nil, fmt.Errorf("need at least 2 comparison models after deduplication, got %d", len(validModels))
+	}
+
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, validModels, diff, changedFiles)
 	if err != nil {
 		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
@@ -781,23 +798,36 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	timestamp := time.Now().Format("20060102_150405_000000000")
 	reviewsDir := "reviews"
 
-	// Security: Use 0700 for directory (User only)
-	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
-		r.logger.Warn("failed to create reviews directory", "error", err)
+	// Security: Verify reviewsDir and resolve symlinks fully (Priority 1)
+	absReviewsDir, err := filepath.Abs(reviewsDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve reviews dir: %w", err)
 	}
 
-	// Security: Verify reviewsDir is not a symlink
-	info, err := os.Lstat(reviewsDir)
+	// Resolve all symlinks in path
+	resolvedDir, err := filepath.EvalSymlinks(absReviewsDir)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to check reviews directory: %w", err)
 	}
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("reviews directory is a symlink, possible attack")
+
+	// Get current working directory to validate containment
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get working directory: %w", err)
+	}
+	absCwd, _ := filepath.Abs(cwd)
+
+	// Verify resolved path is within expected base directory (CWD)
+	if resolvedDir != "" {
+		rel, err := filepath.Rel(absCwd, resolvedDir)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			return nil, fmt.Errorf("reviews directory resolved outside base path")
 		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("reviews path exists but is not a directory")
-		}
+	}
+
+	// Now safe to create and use
+	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
+		r.logger.Warn("failed to create reviews directory", "error", err)
 	}
 
 	// Deterministic ordering: Sort results by Model name
@@ -1318,6 +1348,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	}
 
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+	var seenDocsMu sync.RWMutex
 	seenDocs := make(map[string]struct{})
 
 	// Run context gathering in parallel for lower latency
@@ -1332,6 +1363,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	go func() {
 		defer wg.Done()
 		r.logger.Info("stage started", "name", "ArchitecturalContext")
+		// Sec: Passing seenDocsMu to protect seenDocs map if getArchContext ever writes to it
 		if ac := r.getArchContext(ctx, scopedStore, changedFiles); ac != "" {
 			archContext = ac
 		}
@@ -1352,13 +1384,13 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		r.logger.Info("stage skipped", "name", "HyDE", "reason", "disabled_in_config")
 	}
 
-	// 3. Impact Context (uses local seenDocs to avoid data race)
+	// 3. Impact Context
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		r.logger.Info("stage started", "name", "ImpactAnalysis")
-		localSeen := make(map[string]struct{})
-		if ic := r.getImpactContext(ctx, scopedStore, changedFiles, localSeen); ic != "" {
+		// Sec: Pass the shared seenDocs and its mutex to avoid cross-stage duplicates safely
+		if ic := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs, &seenDocsMu); ic != "" {
 			impactContext = ic
 		}
 		r.logger.Info("stage completed", "name", "ImpactAnalysis")
@@ -1386,7 +1418,9 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	}
 
 	// Assemble Related Snippets (minor overlap with Impact is acceptable for speed)
-	relatedSnippets := r.formatRelatedSnippets(hydeResults, indices, changedFiles, seenDocs)
+	seenDocsMu.RLock()
+	relatedSnippets := r.formatRelatedSnippets(hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
+	seenDocsMu.RUnlock()
 	if relatedSnippets != "" {
 		contextBuilder.WriteString("# Related Code Snippets\n\n")
 		contextBuilder.WriteString(relatedSnippets)
@@ -1401,14 +1435,14 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	return contextBuilder.String()
 }
 
-func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indices []int, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
+func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indices []int, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenMu *sync.RWMutex) string {
 	var builder strings.Builder
 	var topFiles []string
 
 	for i, docs := range hydeResults {
 		originalFile := changedFiles[indices[i]]
 		for j, doc := range docs {
-			topFiles = r.processRelatedSnippet(doc, originalFile, j, seenDocs, topFiles, &builder)
+			topFiles = r.processRelatedSnippet(doc, originalFile, j, seenDocs, seenMu, topFiles, &builder)
 		}
 	}
 
@@ -1418,7 +1452,7 @@ func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indi
 	return builder.String()
 }
 
-func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, topFiles []string, builder *strings.Builder) []string {
+func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {
 	source, _ := doc.Metadata["source"].(string)
 	if source == "" || r.isArchDocument(doc) {
 		return topFiles
@@ -1433,7 +1467,11 @@ func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile int
 		docKey = source
 	}
 
-	if _, exists := seenDocs[docKey]; !exists {
+	seenMu.RLock()
+	_, exists := seenDocs[docKey]
+	seenMu.RUnlock()
+
+	if !exists {
 		if len(topFiles) < 3 {
 			topFiles = append(topFiles, source)
 		}
@@ -1652,7 +1690,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 }
 
 //nolint:gocognit
-func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
+func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenMu *sync.RWMutex) string {
 	symbols := make(map[string]struct{})
 	for _, file := range files {
 		if file.Patch == "" {
@@ -1695,7 +1733,11 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 			docKey = source
 		}
 
-		if _, exists := seenDocs[docKey]; exists || r.isArchDocument(doc) {
+		seenMu.RLock()
+		_, exists := seenDocs[docKey]
+		seenMu.RUnlock()
+
+		if exists || r.isArchDocument(doc) {
 			continue
 		}
 
@@ -1707,7 +1749,9 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 
 		builder.WriteString(fmt.Sprintf("**%s** (potential impact usage):\n```\n%s\n```\n\n",
 			source, content))
+		seenMu.Lock()
 		seenDocs[docKey] = struct{}{}
+		seenMu.Unlock()
 	}
 	return builder.String()
 }

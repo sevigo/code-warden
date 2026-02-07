@@ -111,6 +111,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	docMap, err := s.generateAndSaveDocumentation(localPath)
 	if err != nil {
 		s.Manager.logger.Warn("Failed to generate documentation artifacts", "error", err)
+		docMap = make(map[string]any) // Initialize empty map to prevent panic in SaveState
 	}
 
 	// 2. Generate and save architectural comparisons (if configured)
@@ -326,20 +327,44 @@ func validExt(ext string) bool {
 func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error) {
 	absBase, err := filepath.Abs(basePath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get absolute base path: %w", err)
 	}
 
-	// Use filepath.Join to combine. It's safe as we use Abs later.
-	fullPath := filepath.Join(absBase, providedPath)
-	absPath, err := filepath.Abs(fullPath)
+	// If providedPath is already absolute, use it directly.
+	// Otherwise, join it with the base path.
+	absPath := providedPath
+	if !filepath.IsAbs(providedPath) {
+		absPath = filepath.Join(absBase, providedPath)
+	}
+
+	absPath, err = filepath.Abs(absPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Resolve symlinks. We ignore "not exist" as the path might be a new file.
-	// We also ignore "invalid name" errors which can happen on Windows for traversal attempts.
+	// Resolve symlinks - fail on ANY error that indicates security issue (Priority 2)
 	resolvedPath, err := filepath.EvalSymlinks(absPath)
-	if err == nil {
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Path doesn't exist yet - validate the closest existing parent (Priority 2)
+			curr := absPath
+			for {
+				parent := filepath.Dir(curr)
+				if parent == curr || parent == "." || parent == "/" || parent == filepath.VolumeName(parent) {
+					break
+				}
+				if resolved, pErr := filepath.EvalSymlinks(parent); pErr == nil {
+					absPath = filepath.Join(resolved, filepath.Base(curr))
+					break
+				} else if !os.IsNotExist(pErr) {
+					return "", fmt.Errorf("parent path validation failed: %w", pErr)
+				}
+				curr = parent
+			}
+		} else {
+			return "", fmt.Errorf("symlink resolution failed (possible traversal): %w", err)
+		}
+	} else {
 		absPath = resolvedPath
 	}
 

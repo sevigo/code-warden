@@ -444,6 +444,8 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 	// Limit concurrency to avoid overloading the LLM provider or local system
 	// Using a buffer of 10 allows reasonable parallelism for network-bound LLM calls
 	sem := make(chan struct{}, 10)
+	// Safe to close because errgroup.Wait() ensures all goroutines complete
+	// before function returns. Closing prevents accidental reuse (Priority 4).
 	defer close(sem)
 
 	for _, relPath := range relPaths {
@@ -458,7 +460,7 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 				return ctx.Err()
 			}
 
-			// Sec: Path validation to prevent traversal via relPath
+			// Sec: Path validation to prevent traversal via relPath (Priority 2)
 			cleanRepo, err := filepath.Abs(repoPath)
 			if err != nil {
 				return fmt.Errorf("invalid repo path: %w", err)
@@ -469,8 +471,9 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 				return fmt.Errorf("invalid join path: %w", err)
 			}
 
-			// Cross-platform case-insensitive check for base prefix
-			if !strings.HasPrefix(strings.ToLower(absPath), strings.ToLower(cleanRepo)) {
+			// Cross-platform check using Rel (Priority 2)
+			rel, err := filepath.Rel(cleanRepo, absPath)
+			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
 				return fmt.Errorf("path traversal attempt detected: %s", relPath)
 			}
 
