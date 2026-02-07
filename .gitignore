@@ -22,6 +22,7 @@ cli
 data/
 bin/
 keys/
+reviews/
 *.sh
 
 # Go workspace file

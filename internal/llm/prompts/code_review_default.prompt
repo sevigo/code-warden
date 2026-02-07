@@ -15,7 +15,6 @@ Primary Language Context: {{.Language}}
 {{.ChangedFiles}}
 
 ### ARCHITECTURAL OVERVIEW
-The following summaries describe the purpose of the modules affected by this PR. Use these to understand the "Big Picture" and how this change impacts the rest of the system:
 {{if .Context}}
 {{.Context}}
 {{else}}
@@ -28,49 +27,103 @@ No architectural context available. Review based solely on the diff.
 ```
 
 ## TASK
-Analyze the diff using the provided Architectural Context and your knowledge of {{.Language}} best practices. Focus on:
-1. **Logic & Correctness**: Identify bugs, edge cases, and potential runtime errors.
-2. **Architecture & Design**: Check for violations of clean code principles, improper abstractions, or tight coupling.
-3. **Performance & Scalability**: Identify resource leaks, unnecessary computations, or bottlenecks.
-4. **Security**: Look for common vulnerabilities (injection, improper data handling, etc.) relevant to {{.Language}}.
-5. **Readability & Standards**: Ensure the code follows the idiomatic conventions of {{.Language}}.
-6. **Test Coverage**: specific check for missing tests, especially for edge cases and error conditions.
-7. **Dependency Management**: Check for unnecessary or heavy dependencies that could be avoided.
-8. **API Design**: Evaluate the public API for consistency, usability, and proper abstraction (e.g., exported vs unexported types).
-9. **Backward Compatibility**: Check if changes break existing behavior or APIs, especially for public libraries.
+Analyze the diff using the provided Architectural Context and your knowledge of {{.Language}} best practices.
+
+### CORE REVIEW DIMENSIONS
+
+1. **Logic & Correctness**
+   - Identify bugs, edge cases, and potential runtime errors
+   - **Nil/Zero Value Safety**: Check for nil pointer dereferences, verify empty string/slice/map returns are handled
+   - **Error Handling**: 
+     - Verify errors are propagated (not stored as string values)
+     - Check error paths don't skip required cleanup/state changes
+     - Ensure early returns in error paths don't leave data uninitialized
+   - **Boundary Conditions**: Test min/max values, empty inputs, concurrent access
+
+2. **Architecture & Design**
+   - Check for violations of clean code principles, improper abstractions, or tight coupling
+   - **Interface Design**: Verify exported types are minimal and well-documented
+   - **Separation of Concerns**: Check for business logic leaking into data/presentation layers
+   - **Hidden Dependencies**: Flag unexported helper functions that create untestable coupling
+
+3. **Performance & Scalability**
+   - **Resource Leaks**: Unclosed connections, goroutine leaks, unbounded allocations
+   - **Context Lifecycle**: CRITICAL - Verify long-running loops check `ctx.Done()` between iterations
+   - **Concurrency**: Check goroutines respect context cancellation and proper synchronization
+   - **Algorithmic Complexity**: Identify O(n²) or worse patterns that could be optimized
+
+4. **Security**
+   - **Input Validation**: ALL user/external inputs must be sanitized:
+     - File paths: check for `..`, `/`, `\`, null bytes, path traversal
+     - Regex: check for ReDoS vulnerabilities
+     - String operations: check for buffer overflows or injection
+   - **Path Traversal**: Verify `filepath.Join()` / `path.join()` results stay within intended directory
+   - **Sensitive Data**: Ensure credentials/secrets aren't logged, returned in errors, or exposed
+
+5. **Readability & Standards**
+   - Follow idiomatic {{.Language}} conventions
+   - **Anti-Patterns** ({{.Language}}-specific):
+     - Go: pointer to map/slice/channel, mutex in value receiver, missing context checks
+     - Python: mutable default arguments, bare except clauses
+     - JavaScript: async without await, promise without catch
+
+6. **Test Coverage**
+   - Check for missing tests, especially for:
+     - Edge cases (empty input, max values, nil values)
+     - Error conditions (network failures, context cancellation)
+     - Concurrent access patterns
+     - Path traversal prevention
+
+7. **Data Flow Analysis**
+   - **Trace function parameters through ALL execution paths**
+   - Verify pointer/reference parameters are initialized on error paths
+   - Check for functions returning empty values without error indication
+   - Ensure state changes happen atomically or are properly rolled back on failure
+
+8. **Dependency Management**
+   - Unnecessary or heavy dependencies
+   - Transitive dependency vulnerabilities
+   - License compatibility
+
+9. **Backward Compatibility**
+   - Breaking changes to public APIs
+   - Changed behavior in existing features
+   - Migration path for deprecated features
+
+### VERIFICATION REQUIREMENTS (Self-Check)
+- **Context Check**: Do NOT flag issues in code that is not visible in the diff unless logical inference is certain. Missing variable definitions or imports are likely just outside the diff context.
+- **Validation**: Ensure suggested fixes are syntactically correct and don't introduce new bugs (e.g., race conditions).
+- **Tone**: Be constructive. Distinguish between BLOCKING errors (bugs/security) and NON-BLOCKING suggestions (style/perf).
 
 ### SEVERITY GUIDELINES
-- **Critical**: Security vulnerabilities, data loss risks, or guaranteed crashers in production
-- **High**: Logic bugs, incorrect behavior, or breaking changes that affect users
-- **Medium**: Performance issues, code smells, or maintainability concerns
-- **Low**: Minor improvements or suggestions (only include if highly valuable)
+- **Critical**: Security vulnerabilities, data loss/corruption, guaranteed crashes, path traversal, injection flaws
+- **High**: Logic bugs, incorrect behavior, breaking changes, resource leaks, missing error handling
+- **Medium**: Performance issues, code smells, maintainability concerns, anti-patterns
+- **Low**: Minor improvements, style suggestions (ONLY include if highly valuable)
 
 ## OUTPUT FORMAT
-You must respond ONLY with a valid JSON object inside a ```json code block. No text before or after the JSON block.
-
-The 'comment' field in suggestions MUST be formatted in Markdown and include a 'Rationale' and a 'Fix' example when applicable.
+Respond ONLY with valid JSON inside a ```json code block.
+**CRITICAL JSON RULES**:
+- **Escape ALL backslashes**: Use `\\` for `\`, especially in Windows paths (e.g., `"C:\\Users"`).
+- **Escape quotes**: Use `\"` for quotes inside strings.
+- **Newlines**: Use `\n` for newlines in code blocks/comments. Do NOT use literal newlines inside strings.
 
 ```json
 {
-  "summary": "Provide a high-level technical assessment. Evaluate the overall health of the PR, the clarity of the logic, how well it integrates into the existing architecture, and highlight any significant refactorings or improvements. End with a clear verdict: Approve, Approve with Suggestions, or Request Changes.",
+  "summary": "High-level assessment: overall health, architectural integration.",
+  "verdict": "APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES",
   "suggestions": [
     {
-      "file_path": "relative/path/to/file",
+      "file_path": "internal/foo/bar.go",
       "line_number": 123,
       "severity": "Critical|High|Medium|Low",
-      "category": "Logic|Performance|Security|Architecture|Readability",
-      "comment": "### Issue\nShort description of the problem.\n\n### Rationale\nExplain the technical risk or negative impact of this code. Why should it be changed?\n\n### Fix\nProvide a code snippet showing the corrected implementation.\n```{{.Language}}\n// Corrected code here\n```"
+      "category": "Logic|Performance|Security|Architecture|Readability|Testing",
+      "comment": "### Issue\nConcise problem statement.\n\n### Rationale\nWhy this is a risk.\n\n### Fix\n```{{.Language}}\n// Corrected implementation\n```"
     }
   ]
 }
 ```
 
-If you find no issues, respond with an empty suggestions array and a summary stating the code looks good:
-```json
-{
-  "summary": "The changes are well-structured and follow best practices. No issues found. ✅ Approve.",
-  "suggestions": []
-}
-```
+If no issues: `{"summary": "Well-structured, follows best practices.", "verdict": "APPROVE", "suggestions": []}`
 
-Now analyze the PR and respond with your review in the required JSON format:
+Now analyze the PR:

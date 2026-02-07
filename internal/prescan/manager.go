@@ -115,25 +115,29 @@ func (m *Manager) prepareLocalRepo(input string) (string, string, string, error)
 
 	// Try to detect owner/repo from .git config
 	// For now, simpler fallback: use folder names? or try opening with gitutil
+	// Try to detect owner/repo from .git config
+	// For now, simpler fallback: use folder names? or try opening with gitutil
 	gitRepo, err := m.gitClient.Open(absPath)
 	if err == nil {
 		// Try to extract from remote
 		remotes, _ := gitRepo.Remotes()
 		for _, r := range remotes {
-			if len(r.Config().URLs) > 0 {
-				u := r.Config().URLs[0]
-				// very naive parsing
-				parts := strings.Split(u, "/")
-				if len(parts) >= 2 {
-					repo := strings.TrimSuffix(parts[len(parts)-1], ".git")
-					owner := parts[len(parts)-2]
-					// handle git@github.com:owner/repo
-					if strings.Contains(owner, ":") {
-						owner = strings.Split(owner, ":")[1]
-					}
-					return absPath, owner, repo, nil
-				}
+			if len(r.Config().URLs) == 0 {
+				continue
 			}
+			u := r.Config().URLs[0]
+			// very naive parsing
+			parts := strings.Split(u, "/")
+			if len(parts) < 2 {
+				continue
+			}
+			repo := strings.TrimSuffix(parts[len(parts)-1], ".git")
+			owner := parts[len(parts)-2]
+			// handle git@github.com:owner/repo
+			if strings.Contains(owner, ":") {
+				owner = strings.Split(owner, ":")[1]
+			}
+			return absPath, owner, repo, nil
 		}
 	}
 
@@ -143,4 +147,9 @@ func (m *Manager) prepareLocalRepo(input string) (string, string, string, error)
 	m.logger.Warn("Could not detect git remote, using defaults", "owner", owner, "repo", repo)
 
 	return absPath, owner, repo, nil
+}
+
+// GetRepoSHA is a helper to get the HEAD SHA of a repository.
+func (m *Manager) GetRepoSHA(ctx context.Context, path string) (string, error) {
+	return m.gitClient.GetHeadSHA(ctx, path)
 }

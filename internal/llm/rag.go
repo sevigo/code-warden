@@ -7,14 +7,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
@@ -31,6 +35,12 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+type ComparisonResult struct {
+	Model  string
+	Review string
+	Error  error
+}
+
 // RAGService defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
@@ -39,6 +49,9 @@ type RAGService interface {
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
+	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
+	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error)
+	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error)
 }
 
 type ragService struct {
@@ -545,16 +558,12 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	// Parse the JSON string into the structured format
 	var structuredReview core.StructuredReview
 
-	// Extract JSON by finding outer braces (handles markdown fencing)
-	start := strings.Index(rawReview, "{")
-	end := strings.LastIndex(rawReview, "}")
-
-	if start == -1 || end == -1 || end < start {
-		r.logger.Error("LLM response did not contain a valid JSON object", "raw_response", rawReview)
-		return nil, "", fmt.Errorf("LLM response did not contain a valid JSON object (missing curly braces)")
+	// Use robust extraction helper
+	jsonString, err := r.extractJSON(rawReview)
+	if err != nil {
+		r.logger.Error("failed to extract JSON from LLM response", "error", err, "raw_response", rawReview)
+		return nil, "", fmt.Errorf("failed to extract JSON object: %w", err)
 	}
-
-	jsonString := rawReview[start : end+1]
 
 	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
 		r.logger.Error("failed to unmarshal LLM response", "error", err, "json", jsonString)
@@ -562,6 +571,526 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	return &structuredReview, jsonString, nil
+}
+
+// GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
+//
+//nolint:gocognit,funlen // Complex logic with parallel execution and error aggregation
+func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error) {
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	diff := preFetchedDiff
+	var changedFiles []internalgithub.ChangedFile
+	if len(preFetchedFiles) > 0 {
+		changedFiles = preFetchedFiles
+	}
+
+	// If data wasn't provided, fetch it (fallback for direct calls)
+	if diff == "" {
+		var err error
+		diff, err = ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get PR diff: %w", err)
+		}
+	}
+	if len(changedFiles) == 0 {
+		var err error
+		changedFiles, err = ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get changed files: %w", err)
+		}
+	}
+
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+
+	// Reuse repoConfig logic
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	promptData := map[string]string{
+		"Title":              event.PRTitle,
+		"Description":        event.PRBody,
+		"Language":           event.Language,
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+		"ChangedFiles":       r.formatChangedFiles(changedFiles),
+		"Context":            contextString,
+		"Diff":               diff,
+	}
+
+	results := make([]ComparisonResult, 0, len(models))
+	var mu sync.Mutex
+
+	g, ctx := errgroup.WithContext(ctx)
+	// Limit concurrency to avoid rate limits
+	// Review feedback: 3 is arbitrary. Bumping to 5 for now.
+	const maxConcurrentModels = 5
+	sem := make(chan struct{}, maxConcurrentModels)
+	// No defer close(sem) - channel will be GC'd or we can close after Wait()
+
+	for _, modelName := range models {
+		modelName := modelName // Capture for closure safety
+		g.Go(func() error {
+			// Acquire semaphore
+			select {
+			case sem <- struct{}{}:
+				// Release only if acquired
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+
+			// Check context again before starting work
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			r.logger.Info("generating review summary", "model", modelName)
+
+			// Con: Create local copy of promptData to ensure goroutine isolation (Priority 4)
+			// Maps are passed by reference; defensive copy prevents race conditions
+			// if caller modifies the original map during parallel execution.
+			localPromptData := make(map[string]string, len(promptData))
+			for k, v := range promptData {
+				localPromptData[k] = v
+			}
+
+			llmModel, err := r.getOrCreateLLM(modelName)
+			if err != nil {
+				mu.Lock()
+				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to create LLM: %w", err)})
+				mu.Unlock()
+				return nil
+			}
+
+			modelForPrompt := ModelProvider(modelName)
+			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
+			if err != nil {
+				mu.Lock()
+				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to render prompt: %w", err)})
+				mu.Unlock()
+				return nil
+			}
+
+			// Check context before expensive LLM call
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			// Use generateWithTimeout to ensure we respect cancellation even if the LLM client hangs
+			// Increased to 5m based on logs showing deepseek/kimi taking >2m
+			response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
+			if err != nil {
+				mu.Lock()
+				// Check if it was a timeout
+				if errors.Is(err, context.DeadlineExceeded) {
+					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("generation timed out: %w", err)})
+				} else {
+					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("LLM call failed: %w", err)})
+				}
+				mu.Unlock()
+				return nil
+			}
+
+			// Check context before saving result
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			mu.Lock()
+			results = append(results, ComparisonResult{Model: modelName, Review: response})
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+// generateWithTimeout wraps LLM generation with a hard timeout.
+func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, prompt string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type result struct {
+		resp string
+		err  error
+	}
+	resultCh := make(chan result, 1)
+
+	go func() {
+		resp, err := llm.Call(ctx, prompt)
+		select {
+		case resultCh <- result{resp, err}:
+		case <-ctx.Done():
+			// Do not block the goroutine if parent timed out/cancelled
+		}
+	}()
+
+	select {
+	case res := <-resultCh:
+		return res.resp, res.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
+//
+//nolint:funlen // High-level orchestration function with error handling and artifact saving
+func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
+	if repo == nil {
+		return nil, errors.New("repo cannot be nil")
+	}
+	if event == nil {
+		return nil, errors.New("event cannot be nil")
+	}
+	if ghClient == nil {
+		return nil, errors.New("ghClient cannot be nil")
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("consensus review requires at least one model")
+	}
+
+	// 1. Prepare data (once for all reviews)
+	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
+	}
+
+	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get diff for consensus: %w", err)
+	}
+
+	// 2. Get independent reviews from all models (The "Committee")
+	// Deduplicate generator model from comparison to avoid bias (Priority 2)
+	validModels := r.filterComparisonModels(models)
+
+	// Ensure we still have enough models
+	if len(validModels) < 2 {
+		return nil, fmt.Errorf("need at least 2 comparison models after deduplication, got %d", len(validModels))
+	}
+
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, validModels, diff, changedFiles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
+	}
+
+	// 3. Prepare the consensus prompt data & Save Artifacts
+	var validReviews []string
+	var reviewsBuilder strings.Builder
+	// Rob: Nanosecond precision to prevent collisions in fast CI
+	timestamp := time.Now().Format("20060102_150405_000000000")
+	reviewsDir := "reviews"
+
+	// Security: Verify reviewsDir and resolve symlinks fully (Priority 1)
+	absReviewsDir, err := filepath.Abs(reviewsDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve reviews dir: %w", err)
+	}
+
+	// Resolve all symlinks in path
+	resolvedDir, err := filepath.EvalSymlinks(absReviewsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to check reviews directory: %w", err)
+	}
+
+	// Get current working directory to validate containment
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get working directory: %w", err)
+	}
+	absCwd, _ := filepath.Abs(cwd)
+
+	// Verify resolved path is within expected base directory (CWD)
+	if resolvedDir != "" {
+		rel, err := filepath.Rel(absCwd, resolvedDir)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			return nil, fmt.Errorf("reviews directory resolved outside base path")
+		}
+	}
+
+	// Now safe to create and use
+	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
+		r.logger.Warn("failed to create reviews directory", "error", err)
+	}
+
+	// Deterministic ordering: Sort results by Model name
+	sort.Slice(comparisonResults, func(i, j int) bool {
+		return comparisonResults[i].Model < comparisonResults[j].Model
+	})
+
+	for _, res := range comparisonResults {
+		// potential path traversal: strictly replace invalid chars
+		sanitizedModel := SanitizeModelForFilename(res.Model)
+
+		if res.Error != nil {
+			r.logger.Warn("skipping model due to failure", "model", res.Model, "error", res.Error)
+			// Save error artifact for debugging
+			errFilename := filepath.Join(reviewsDir, fmt.Sprintf("error_%s_%s.txt", sanitizedModel, timestamp))
+			_ = os.WriteFile(errFilename, []byte(res.Error.Error()), 0600) // Security: 0600
+			continue
+		}
+
+		if strings.TrimSpace(res.Review) == "" {
+			continue
+		}
+
+		// Save individual review artifact
+		filename := filepath.Join(reviewsDir, fmt.Sprintf("review_%s_%s.md", sanitizedModel, timestamp))
+		header := fmt.Sprintf("# Code Review by %s\n\n**Date:** %s\n**PR:** %s/%s #%d\n\n", res.Model, time.Now().Format(time.RFC3339), event.RepoOwner, event.RepoName, event.PRNumber)
+
+		// Security: 0600 permissions
+		if err := os.WriteFile(filename, []byte(header+res.Review), 0600); err != nil {
+			r.logger.Warn("failed to save review artifact", "model", res.Model, "error", err)
+		} else {
+			r.logger.Info("saved review artifact", "path", filename)
+		}
+
+		reviewsBuilder.WriteString(fmt.Sprintf("\n--- Review from %s ---\n", res.Model))
+		reviewsBuilder.WriteString(res.Review)
+		reviewsBuilder.WriteString("\n")
+		validReviews = append(validReviews, res.Model)
+	}
+
+	if len(validReviews) == 0 {
+		return nil, fmt.Errorf("all models failed to generate valid reviews")
+	}
+
+	// Use the same repo configuration as the individual reviews to ensure consistency.
+	// While we fetch the changed files again here, this ensures the consensus phase operates
+	// on the latest state of the PR.
+
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+
+	promptData := map[string]string{
+		"Reviews":            reviewsBuilder.String(),
+		"Context":            contextString,
+		"ChangedFiles":       r.formatChangedFiles(changedFiles),
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+	}
+
+	// 3. Synthesize the final review using the default generator (The "chairperson")
+	r.logger.Info("synthesizing consensus review", "models", validReviews)
+	rawConsensus, err := r.generateResponseWithPrompt(ctx, event, ConsensusReviewPrompt, promptData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate consensus: %w", err)
+	}
+
+	// Save consensus raw artifact
+	consensusFilename := filepath.Join(reviewsDir, fmt.Sprintf("review_consensus_%s.md", timestamp))
+	if err := os.WriteFile(consensusFilename, []byte(rawConsensus), 0600); err != nil {
+		r.logger.Warn("failed to save consensus artifact", "error", err)
+	} else {
+		r.logger.Info("saved consensus artifact", "path", consensusFilename)
+	}
+
+	// 4. Parse JSON
+	jsonString, err := r.extractJSON(rawConsensus)
+	if err != nil {
+		return nil, err
+	}
+
+	// Attempt to sanitize JSON (fix common LLM escaping errors like \s in paths)
+	jsonString = r.sanitizeJSON(jsonString)
+
+	var structuredReview core.StructuredReview
+	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
+		return nil, fmt.Errorf("failed to parse consensus JSON: %w", err)
+	}
+
+	// 5. Add Disclaimer
+	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by synthesizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(validReviews, ", "))
+	structuredReview.Summary += disclaimer
+
+	return &structuredReview, nil
+}
+
+func (r *ragService) extractJSON(raw string) (string, error) {
+	// 1. Strip Markdown Code Fences (greedy but safe)
+	if startFence := strings.Index(raw, "```"); startFence != -1 {
+		// Try to find the matching end fence
+		if endFence := strings.LastIndex(raw, "```"); endFence > startFence {
+			// Extract content inside
+			inner := raw[startFence+3 : endFence]
+			// Trim language identifier if present (e.g. "json")
+			inner = strings.TrimSpace(inner)
+			if strings.HasPrefix(strings.ToLower(inner), "json") {
+				inner = strings.TrimSpace(inner[4:])
+			}
+			raw = inner
+		}
+	}
+
+	raw = strings.TrimSpace(raw)
+
+	// 2. Optimistic attempt: Try to unmarshal the whole thing
+	if json.Valid([]byte(raw)) {
+		return raw, nil
+	}
+
+	// 3. Robust JSON Extraction - handle markdown fences specifically
+	// Use a non-greedy approach: Find the first opening fence and the VERY NEXT closing fence.
+	startFence := strings.Index(raw, "```")
+	if startFence != -1 {
+		// Look for the next fence after the opening one
+		remaining := raw[startFence+3:]
+		endFenceRelative := strings.Index(remaining, "```")
+		if endFenceRelative != -1 {
+			inner := remaining[:endFenceRelative]
+			inner = strings.TrimSpace(inner)
+			// Remove optional language identifier
+			if strings.HasPrefix(strings.ToLower(inner), "json") {
+				inner = strings.TrimSpace(inner[4:])
+			}
+			raw = inner
+		}
+	}
+
+	// Now find the first '{' in whatever is left
+	startBrace := strings.Index(raw, "{")
+	if startBrace == -1 {
+		return "", fmt.Errorf("response did not contain valid JSON start")
+	}
+	raw = raw[startBrace:]
+
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	var msg any
+	if err := decoder.Decode(&msg); err != nil {
+		return "", fmt.Errorf("failed to decode JSON from response: %w", err)
+	}
+	// Re-encode to get clean, compacted JSON string
+	clean, _ := json.Marshal(msg)
+	return string(clean), nil
+}
+
+// sanitizeJSON attempts to fix common invalid escape sequences in LLM output using round-trip validation.
+func (r *ragService) sanitizeJSON(input string) string {
+	// 1. Valid JSON? Return as is.
+	if json.Valid([]byte(input)) {
+		return input
+	}
+
+	// 2. Try simple repairs for common LLM mistakes
+	var sb strings.Builder
+	sb.Grow(len(input) + 20)
+
+	runes := []rune(input)
+	length := len(runes)
+
+	for i := 0; i < length; i++ {
+		char := runes[i]
+		if char == '\\' {
+			if i+1 >= length {
+				// Trailing backslash - escape it
+				sb.WriteRune('\\')
+				sb.WriteRune('\\')
+				break
+			}
+
+			next := runes[i+1]
+			switch next {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+				// Valid escape - write both and skip next
+				sb.WriteRune(char)
+				sb.WriteRune(next)
+				i++ // skip next
+			default:
+				// Invalid escape (e.g. \s in C:\src), escape the backslash
+				sb.WriteRune('\\')
+				sb.WriteRune('\\')
+				// do NOT skip next, let it be processed as normal char
+			}
+		} else {
+			sb.WriteRune(char)
+		}
+	}
+
+	repaired := sb.String()
+	if json.Valid([]byte(repaired)) {
+		return repaired
+	}
+
+	// 3. Fallback
+	return repaired
+}
+
+// SanitizeModelForFilename cleans model names for safe use as filenames.
+// It handles Windows reserved names and includes a short hash to prevent collisions.
+func (r *ragService) filterComparisonModels(models []string) []string {
+	generatorModel := r.cfg.AI.GeneratorModel
+	var validModels []string
+	for _, m := range models {
+		if m != generatorModel {
+			validModels = append(validModels, m)
+		} else {
+			r.logger.Info("excluding generator model from comparison (used for synthesis)", "model", m)
+		}
+	}
+	return validModels
+}
+
+func SanitizeModelForFilename(modelName string) string {
+	sanitized := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		if r == '-' || r == '.' {
+			return r
+		}
+		return '_'
+	}, modelName)
+
+	// De-duplicate underscores
+	for strings.Contains(sanitized, "__") {
+		sanitized = strings.ReplaceAll(sanitized, "__", "_")
+	}
+
+	sanitized = strings.Trim(sanitized, "_")
+	if sanitized == "" {
+		sanitized = "model"
+	}
+
+	// Security: Prevent collisions by adding a short deterministic hash
+	h := sha256.New()
+	h.Write([]byte(modelName))
+	hashStr := hex.EncodeToString(h.Sum(nil))[:16]
+
+	// Windows reserved names check (case-insensitive)
+	// Ref: Deepseek review - handle extension-like suffixes (e.g., COM1.txt)
+	reserved := map[string]bool{
+		"CON": true, "PRN": true, "AUX": true, "NUL": true,
+		"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+		"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+	}
+
+	base := sanitized
+	if dot := strings.LastIndex(base, "."); dot > 0 {
+		base = base[:dot]
+	}
+
+	if reserved[strings.ToUpper(base)] {
+		sanitized = "safe_" + sanitized
+	}
+
+	// Append hash and limit length
+	fullName := sanitized + "_" + hashStr
+	if len(fullName) > 120 {
+		fullName = fullName[:120]
+	}
+
+	return fullName
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.
@@ -824,6 +1353,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	}
 
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+	var seenDocsMu sync.RWMutex
 	seenDocs := make(map[string]struct{})
 
 	// Run context gathering in parallel for lower latency
@@ -838,29 +1368,34 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	go func() {
 		defer wg.Done()
 		r.logger.Info("stage started", "name", "ArchitecturalContext")
+		// Sec: Passing seenDocsMu to protect seenDocs map if getArchContext ever writes to it
 		if ac := r.getArchContext(ctx, scopedStore, changedFiles); ac != "" {
 			archContext = ac
 		}
 		r.logger.Info("stage completed", "name", "ArchitecturalContext")
 	}()
 
-	// 2. HyDE Snippets (generation + search)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		r.logger.Info("stage started", "name", "HyDE")
-		hydeMap = r.generateHyDESnippets(ctx, changedFiles)
-		hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
-		r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
-	}()
+	// 2. HyDE Snippets (Optional: High Latency, High Recall)
+	if r.cfg.AI.EnableHyDE {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.logger.Info("stage started", "name", "HyDE")
+			hydeMap = r.generateHyDESnippets(ctx, changedFiles)
+			hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
+			r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
+		}()
+	} else {
+		r.logger.Info("stage skipped", "name", "HyDE", "reason", "disabled_in_config")
+	}
 
-	// 3. Impact Context (uses local seenDocs to avoid data race)
+	// 3. Impact Context
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		r.logger.Info("stage started", "name", "ImpactAnalysis")
-		localSeen := make(map[string]struct{})
-		if ic := r.getImpactContext(ctx, scopedStore, changedFiles, localSeen); ic != "" {
+		// Sec: Pass the shared seenDocs and its mutex to avoid cross-stage duplicates safely
+		if ic := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs, &seenDocsMu); ic != "" {
 			impactContext = ic
 		}
 		r.logger.Info("stage completed", "name", "ImpactAnalysis")
@@ -888,7 +1423,9 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	}
 
 	// Assemble Related Snippets (minor overlap with Impact is acceptable for speed)
-	relatedSnippets := r.formatRelatedSnippets(hydeResults, indices, changedFiles, seenDocs)
+	seenDocsMu.RLock()
+	relatedSnippets := r.formatRelatedSnippets(hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
+	seenDocsMu.RUnlock()
 	if relatedSnippets != "" {
 		contextBuilder.WriteString("# Related Code Snippets\n\n")
 		contextBuilder.WriteString(relatedSnippets)
@@ -903,14 +1440,14 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	return contextBuilder.String()
 }
 
-func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indices []int, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
+func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indices []int, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenMu *sync.RWMutex) string {
 	var builder strings.Builder
 	var topFiles []string
 
 	for i, docs := range hydeResults {
 		originalFile := changedFiles[indices[i]]
 		for j, doc := range docs {
-			topFiles = r.processRelatedSnippet(doc, originalFile, j, seenDocs, topFiles, &builder)
+			topFiles = r.processRelatedSnippet(doc, originalFile, j, seenDocs, seenMu, topFiles, &builder)
 		}
 	}
 
@@ -920,7 +1457,7 @@ func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indi
 	return builder.String()
 }
 
-func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, topFiles []string, builder *strings.Builder) []string {
+func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {
 	source, _ := doc.Metadata["source"].(string)
 	if source == "" || r.isArchDocument(doc) {
 		return topFiles
@@ -935,7 +1472,11 @@ func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile int
 		docKey = source
 	}
 
-	if _, exists := seenDocs[docKey]; !exists {
+	seenMu.RLock()
+	_, exists := seenDocs[docKey]
+	seenMu.RUnlock()
+
+	if !exists {
 		if len(topFiles) < 3 {
 			topFiles = append(topFiles, source)
 		}
@@ -946,7 +1487,10 @@ func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile int
 		}
 		fmt.Fprintf(builder, "**%s** (relevant to %s):\n```\n%s\n```\n\n",
 			source, originalFile.Filename, content)
+
+		seenMu.Lock()
 		seenDocs[docKey] = struct{}{}
+		seenMu.Unlock()
 	}
 
 	// Fallback: even if we've seen it, if it's top result for another file, it's worth noting in debug logs
@@ -989,7 +1533,8 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 	hydeChan := make(chan hydeResult, len(files))
 	var wg sync.WaitGroup
 	// Semaphore to limit concurrent LLM calls (e.g., 5 at a time)
-	sem := make(chan struct{}, 5)
+	sem := make(chan struct{}, 10)
+	defer close(sem)
 	cacheHits := 0
 
 	for i, file := range files {
@@ -1013,10 +1558,11 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 		go func(idx int, f internalgithub.ChangedFile, hash string) {
 			defer wg.Done()
 
-			sem <- struct{}{}        // Acquire
-			defer func() { <-sem }() // Release
-
-			if ctx.Err() != nil {
+			// Con: Select-based acquisition to respect context cancellation
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
 				return
 			}
 			prompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: f.Patch})
@@ -1152,7 +1698,7 @@ func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedd
 }
 
 //nolint:gocognit
-func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}) string {
+func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenMu *sync.RWMutex) string {
 	symbols := make(map[string]struct{})
 	for _, file := range files {
 		if file.Patch == "" {
@@ -1195,7 +1741,11 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 			docKey = source
 		}
 
-		if _, exists := seenDocs[docKey]; exists || r.isArchDocument(doc) {
+		seenMu.RLock()
+		_, exists := seenDocs[docKey]
+		seenMu.RUnlock()
+
+		if exists || r.isArchDocument(doc) {
 			continue
 		}
 
@@ -1207,7 +1757,9 @@ func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.S
 
 		builder.WriteString(fmt.Sprintf("**%s** (potential impact usage):\n```\n%s\n```\n\n",
 			source, content))
+		seenMu.Lock()
 		seenDocs[docKey] = struct{}{}
+		seenMu.Unlock()
 	}
 	return builder.String()
 }

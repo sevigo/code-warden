@@ -2,6 +2,7 @@ package prescan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,32 @@ func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
 	}
 }
 
+func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any, error) {
+	docGen := NewDocGenerator(localPath)
+	structure, err := docGen.GenerateProjectStructure(localPath)
+
+	if err != nil {
+		s.Manager.logger.Warn("Failed to generate project structure", "error", err)
+		return nil, err
+	}
+
+	// Save locally (0600 per gosec)
+	docPath := filepath.Join(localPath, "project_structure.md")
+	if err := os.WriteFile(docPath, []byte(structure), 0600); err != nil {
+		s.Manager.logger.Error("Failed to save project structure", "error", err)
+		// We return the error but maybe we should allow partial success?
+		// For now, let's return error as it's cleaner.
+		return nil, err
+	}
+	s.Manager.logger.Info("Generated project documentation", "path", docPath)
+
+	// Prepare for DB
+	return map[string]any{
+		"project_structure": structure,
+	}, nil
+}
+
+//nolint:gocognit,nestif // Core scanning loop with state management
 func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	// 1. Prepare Repo (Clone if needed)
 	localPath, owner, repo, err := s.Manager.PrepareRepo(ctx, input)
@@ -79,30 +106,53 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 		return err
 	}
 
-	// 7. Generate Documentation
-	docGen := NewDocGenerator(localPath)
-	structure, err := docGen.GenerateProjectStructure(localPath)
-	var artifacts map[string]interface{}
-
+	// 1. Prepare documentation
+	s.Manager.logger.Info("Generating documentation artifacts", "path", localPath)
+	docMap, err := s.generateAndSaveDocumentation(localPath)
 	if err != nil {
-		s.Manager.logger.Warn("Failed to generate project structure", "error", err)
-	} else {
-		// Save locally (0600 per gosec)
-		docPath := filepath.Join(localPath, "project_structure.md")
-		if err := os.WriteFile(docPath, []byte(structure), 0600); err != nil {
-			s.Manager.logger.Error("Failed to save project structure", "error", err)
-		} else {
-			s.Manager.logger.Info("Generated project documentation", "path", docPath)
+		s.Manager.logger.Warn("Failed to generate documentation artifacts", "error", err)
+		docMap = make(map[string]any) // Initialize empty map to prevent panic in SaveState
+	}
+
+	// 2. Generate and save architectural comparisons (if configured)
+	if len(s.Manager.cfg.AI.ComparisonModels) > 0 {
+		s.Manager.logger.Info("Generating architectural comparisons", "models", s.Manager.cfg.AI.ComparisonModels)
+
+		// Sanitize and validate repo path to prevent traversal
+		validatedLocalPath, err := s.validateRepoPath(s.Manager.cfg.Storage.RepoPath, localPath)
+		if err != nil {
+			return fmt.Errorf("invalid repository path: %w", err)
 		}
 
-		// Prepare for DB
-		artifacts = map[string]interface{}{
-			"project_structure": structure,
+		characteristicPaths := s.Manager.cfg.AI.ComparisonPaths
+		if len(characteristicPaths) == 0 {
+			characteristicPaths = []string{"."}
+		}
+		results, err := s.RAGService.GenerateComparisonSummaries(ctx, s.Manager.cfg.AI.ComparisonModels, validatedLocalPath, characteristicPaths)
+		if err != nil {
+			s.Manager.logger.Warn("Multi-model comparison failed", "error", err)
+		} else {
+			for modelName, summaries := range results {
+				// potential path traversal: strictly replace invalid chars
+				sanitizedModel := llm.SanitizeModelForFilename(modelName)
+				fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
+				filePath := filepath.Join(localPath, fileName)
+
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("# Architectural Comparison: %s\n\n", modelName))
+				for path, summary := range summaries {
+					sb.WriteString(fmt.Sprintf("## Directory: %s\n\n%s\n\n", path, summary))
+				}
+
+				if err := os.WriteFile(filePath, []byte(sb.String()), 0600); err != nil {
+					s.Manager.logger.Warn("Failed to save comparison file", "file", fileName, "error", err)
+				}
+			}
 		}
 	}
 
-	// 8. Complete & Save Artifacts
-	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, artifacts); err != nil {
+	// Complete & Save Artifacts
+	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, docMap); err != nil {
 		return err
 	}
 	s.Manager.logger.Info("Scan completed successfully")
@@ -144,7 +194,7 @@ func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoR
 
 func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, batch *[]string, progress *Progress) error {
 	repoConfig, configErr := config.LoadRepoConfig(localPath)
-	if configErr != nil && configErr != config.ErrConfigNotFound {
+	if configErr != nil && !errors.Is(configErr, config.ErrConfigNotFound) {
 		s.Manager.logger.Warn("Failed to load .code-warden.yml", "error", configErr)
 	}
 
@@ -169,10 +219,10 @@ func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repo
 }
 
 func (s *Scanner) updateRepoIndexVersion(ctx context.Context, localPath string, repoRecord *storage.Repository) error {
-	// 9. Update Repository LastIndexedSHA
+	// Update Repository LastIndexedSHA
 	s.Manager.logger.Info("Updating repository index version")
 
-	sha, err := s.Manager.gitClient.GetHeadSHA(ctx, localPath)
+	sha, err := s.Manager.GetRepoSHA(ctx, localPath)
 	if err == nil {
 		repoRecord.LastIndexedSHA = sha
 		if err := s.Manager.store.UpdateRepository(ctx, repoRecord); err != nil {
@@ -271,4 +321,58 @@ func validExt(ext string) bool {
 		return true
 	}
 	return false
+}
+
+// validateRepoPath ensures that a provided path stays within a base directory, resolving symlinks for security.
+func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error) {
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute base path: %w", err)
+	}
+
+	// If providedPath is already absolute, use it directly.
+	// Otherwise, join it with the base path.
+	absPath := providedPath
+	if !filepath.IsAbs(providedPath) {
+		absPath = filepath.Join(absBase, providedPath)
+	}
+
+	absPath, err = filepath.Abs(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Resolve symlinks - fail on ANY error that indicates security issue (Priority 2)
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Path doesn't exist yet - validate the closest existing parent (Priority 2)
+			curr := absPath
+			for {
+				parent := filepath.Dir(curr)
+				if parent == curr || parent == "." || parent == "/" || parent == filepath.VolumeName(parent) {
+					break
+				}
+				if resolved, pErr := filepath.EvalSymlinks(parent); pErr == nil {
+					absPath = filepath.Join(resolved, filepath.Base(curr))
+					break
+				} else if !os.IsNotExist(pErr) {
+					return "", fmt.Errorf("parent path validation failed: %w", pErr)
+				}
+				curr = parent
+			}
+		} else {
+			return "", fmt.Errorf("symlink resolution failed (possible traversal): %w", err)
+		}
+	} else {
+		absPath = resolvedPath
+	}
+
+	// Sec: Robust containment check using Rel (Deepseek review suggestion)
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("provided path %q is outside of the repository base path", providedPath)
+	}
+
+	return absPath, nil
 }

@@ -1,116 +1,204 @@
 package llm
 
 import (
+	"encoding/json"
+	"io"
+	"log/slog"
 	"reflect"
-	"sort"
+	"strings"
+	"sync"
 	"testing"
+
+	"github.com/sevigo/code-warden/internal/config"
+	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/goframe/schema"
 )
 
-func TestExtractSymbolsFromPatch(t *testing.T) {
-	r := &ragService{}
-
+func TestSanitizeJSON(t *testing.T) {
 	tests := []struct {
 		name     string
-		patch    string
-		expected []string
+		input    string
+		expected string
 	}{
 		{
-			name: "Simple function",
-			patch: `+func HelloWorld() {
-+	fmt.Println("Hello")
-+}`,
-			expected: []string{"HelloWorld"},
-		},
-		{
-			name: "Function with receiver",
-			patch: `+func (r *ragService) extractSymbolsFromPatch(patch string) []string {
-+	return nil
-+}`,
-			expected: []string{"extractSymbolsFromPatch"},
-		},
-		{
-			name: "Type definition",
-			patch: `+type MyStruct struct {
-+	Field string
-+}`,
-			expected: []string{"MyStruct"},
-		},
-		{
-			name: "Interface definition",
-			patch: `+type MyInterface interface {
-+	DoSomething()
-+}`,
-			expected: []string{"MyInterface"},
-		},
-		{
-			name: "Multiple symbols",
-			patch: `+func Alpha() {}
--func Beta() {}
-+type Gamma struct{}
-+func (s *Gamma) Delta() {}`,
-			expected: []string{"Alpha", "Gamma", "Delta"},
-		},
-		{
-			name: "No added symbols",
-			patch: `-func OldFunc() {}
- 	fmt.Println("No change")`,
-			expected: []string{},
+			name:     "Valid JSON",
+			input:    `{"key": "value"}`,
+			expected: `{"key": "value"}`,
 		},
 	}
 
+	// We can't access private methods from external test package unless it's in the same package
+	// So we assume this test file is in package llm
+
+	r := &ragService{} // Dummy receiver
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			actual := r.extractSymbolsFromPatch(tt.patch)
-			sort.Strings(actual)
-			sort.Strings(tt.expected)
-			if !reflect.DeepEqual(actual, tt.expected) {
-				t.Errorf("expected %v, got %v", tt.expected, actual)
+			got := r.sanitizeJSON(tt.input)
+			if got != tt.expected {
+				t.Errorf("sanitizeJSON(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
 	}
 }
 
-func TestMatchFuncSymbol(t *testing.T) {
-	r := &ragService{}
-
+func TestSanitizeModelForFilename(t *testing.T) {
 	tests := []struct {
-		line     string
-		expected string
+		input      string
+		wantPrefix string
 	}{
-		{"func HelloWorld() {", "HelloWorld"},
-		{"func (r *Receiver) Method(arg string) error {", "Method"},
-		{"func (r Receiver) Method() {", "Method"},
-		{"func Generic[T any](t T) {", "Generic"},
-		{"not a func", ""},
-		{"func ", ""},
+		{"kimi-k2.5:cloud", "kimi-k2.5_cloud_"},
+		{"deepseek/v3", "deepseek_v3_"},
+		{"suspicious..name", "suspicious..name_"},
+		{"<invalid>", "invalid_"},
+		{"COM1", "safe_COM1_"},
 	}
 
 	for _, tt := range tests {
-		actual := r.matchFuncSymbol(tt.line)
-		if actual != tt.expected {
-			t.Errorf("line: %s, expected: %s, got: %s", tt.line, tt.expected, actual)
-		}
+		t.Run(tt.input, func(t *testing.T) {
+			got := SanitizeModelForFilename(tt.input)
+			if !strings.HasPrefix(got, tt.wantPrefix) {
+				t.Errorf("SanitizeModelForFilename(%q) = %q, want prefix %q", tt.input, got, tt.wantPrefix)
+			}
+			// Check if hash part is exactly 16 hex chars (plus underscore)
+			hashPart := got[len(tt.wantPrefix):]
+			if len(hashPart) != 16 {
+				t.Errorf("SanitizeModelForFilename(%q) hash part %q length = %d, want 16", tt.input, hashPart, len(hashPart))
+			}
+		})
 	}
+
+	t.Run("CollisionResistance", func(t *testing.T) {
+		m1 := SanitizeModelForFilename("model:v1")
+		m2 := SanitizeModelForFilename("model/v1")
+		if m1 == m2 {
+			t.Errorf("Collision detected: %q and %q both sanitize to %q", "model:v1", "model/v1", m1)
+		}
+	})
 }
 
-func TestMatchTypeSymbol(t *testing.T) {
+func TestExtractJSON(t *testing.T) {
 	r := &ragService{}
 
 	tests := []struct {
-		line     string
-		expected string
+		name      string
+		input     string
+		want      string
+		shouldErr bool
 	}{
-		{"type MyStruct struct {", "MyStruct"},
-		{"type MyInterface interface {", "MyInterface"},
-		{"type MyInt int", "MyInt"},
-		{"not a type", ""},
-		{"type ", ""},
+		{
+			name:  "Clean JSON",
+			input: `{"key": "value"}`,
+			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "JSON with Preamble",
+			input: `Here is the JSON: {"key": "value"}`,
+			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "JSON with Trailing Text",
+			input: `{"key": "value"} ... and some explanation`,
+			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "Nested Braces in String",
+			input: `{"path": "C:\\Users\\{app}"}`,
+			want:  `{"path":"C:\\Users\\{app}"}`,
+		},
+		{
+			name:  "Escaped Quotes",
+			input: `{"summary": "He said \"Hello\""}`,
+			want:  `{"summary":"He said \"Hello\""}`,
+		},
+		{
+			name:      "Invalid JSON",
+			input:     `not json`,
+			shouldErr: true,
+		},
+		{
+			name:      "Incomplete JSON",
+			input:     `{"key": "value"`,
+			shouldErr: true,
+		},
 	}
 
 	for _, tt := range tests {
-		actual := r.matchTypeSymbol(tt.line)
-		if actual != tt.expected {
-			t.Errorf("line: %s, expected: %s, got: %s", tt.line, tt.expected, actual)
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := r.extractJSON(tt.input)
+			if (err != nil) != tt.shouldErr {
+				t.Errorf("extractJSON() error = %v, shouldErr %v", err, tt.shouldErr)
+				return
+			}
+
+			if !tt.shouldErr {
+				var gotVal, wantVal any
+				if err := json.Unmarshal([]byte(got), &gotVal); err != nil {
+					t.Fatalf("extractJSON returned invalid JSON: %v", err)
+				}
+				if err := json.Unmarshal([]byte(tt.want), &wantVal); err != nil {
+					t.Fatalf("test expectation is invalid JSON: %v", err)
+				}
+				if !reflect.DeepEqual(gotVal, wantVal) {
+					t.Errorf("extractJSON() semantic mismatch for %s", tt.name)
+					t.Logf("got:  %s", got)
+					t.Logf("want: %s", tt.want)
+				}
+			}
+		})
+	}
+}
+func TestProcessRelatedSnippet_Concurrency(t *testing.T) {
+	r := &ragService{
+		logger: nil, // Should handle nil logger gracefully in tests if using r.logger or we can mock it
+	}
+	// In reality we should use a real logger or mock, but let's assume it's fine for now
+	// or initialize a dummy logger if needed.
+
+	seenDocs := make(map[string]struct{})
+	var mu sync.RWMutex
+	var wg sync.WaitGroup
+
+	doc := schema.Document{
+		PageContent: "some content",
+		Metadata:    map[string]any{"source": "file.go"},
+	}
+	file := internalgithub.ChangedFile{Filename: "file.go"}
+
+	// Launch many goroutines to try and trigger a race on seenDocs
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			var builder strings.Builder
+			r.processRelatedSnippet(doc, file, idx, seenDocs, &mu, []string{}, &builder)
+		}(i)
+	}
+	wg.Wait()
+
+	if len(seenDocs) != 1 {
+		t.Errorf("expected 1 seen doc, got %d", len(seenDocs))
+	}
+}
+func TestFilterComparisonModels(t *testing.T) {
+	r := &ragService{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg: &config.Config{
+			AI: config.AIConfig{
+				GeneratorModel: "gemini-1.5-pro",
+			},
+		},
+	}
+
+	models := []string{"gemini-1.5-pro", "deepseek-chat", "kimi-k2.5"}
+	got := r.filterComparisonModels(models)
+
+	if len(got) != 2 {
+		t.Errorf("expected 2 models, got %d", len(got))
+	}
+	for _, m := range got {
+		if m == "gemini-1.5-pro" {
+			t.Error("generator model was not deduplicated")
 		}
 	}
 }

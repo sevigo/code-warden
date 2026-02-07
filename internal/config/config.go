@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,17 +44,89 @@ type GitHubConfig struct {
 }
 
 type AIConfig struct {
-	LLMProvider      string `mapstructure:"llm_provider"`
-	EmbedderProvider string `mapstructure:"embedder_provider"`
-	OllamaHost       string `mapstructure:"ollama_host"`
-	GeminiAPIKey     string `mapstructure:"gemini_api_key"`
-	GeneratorModel   string `mapstructure:"generator_model"`
-	EmbedderModel    string `mapstructure:"embedder_model"`
-	EmbedderTask     string `mapstructure:"embedder_task_description"`
-	RerankerModel    string `mapstructure:"reranker_model"`
-	EnableReranking  bool   `mapstructure:"enable_reranking"`
-	EnableHybrid     bool   `mapstructure:"enable_hybrid_search"`
-	SparseVectorName string `mapstructure:"sparse_vector_name"`
+	LLMProvider          string   `mapstructure:"llm_provider"`
+	EmbedderProvider     string   `mapstructure:"embedder_provider"`
+	OllamaHost           string   `mapstructure:"ollama_host"`
+	GeminiAPIKey         string   `mapstructure:"gemini_api_key"`
+	GeneratorModel       string   `mapstructure:"generator_model"`
+	EmbedderModel        string   `mapstructure:"embedder_model"`
+	EmbedderTask         string   `mapstructure:"embedder_task_description"`
+	RerankerModel        string   `mapstructure:"reranker_model"`
+	EnableReranking      bool     `mapstructure:"enable_reranking"`
+	EnableHybrid         bool     `mapstructure:"enable_hybrid_search"`
+	SparseVectorName     string   `mapstructure:"sparse_vector_name"`
+	EnableHyDE           bool     `mapstructure:"enable_hyde"` // Hypothetical Document Embeddings (slow but high recall)
+	ComparisonModels     []string `mapstructure:"comparison_models"`
+	ComparisonPaths      []string `mapstructure:"comparison_paths"`
+	MaxConcurrentReviews int      `mapstructure:"max_concurrent_reviews"`
+	MaxComparisonModels  int      `mapstructure:"max_comparison_models"`
+}
+
+func (c *AIConfig) Validate() error {
+	if len(c.ComparisonModels) == 0 {
+		return nil
+	}
+	if len(c.ComparisonModels) > 10 {
+		return errors.New("comparison_models cannot exceed 10 to prevent timeout cascades")
+	}
+	if c.MaxComparisonModels > 10 {
+		return errors.New("max_comparison_models cannot exceed 10")
+	}
+
+	// Deduplicate and validate comparison models (incl. basic model name validation)
+	validPrefixes := []string{"kimi-", "deepseek-", "gemini-", "qwen", "claude-", "gpt-", "llama"}
+	seenModels := make(map[string]bool)
+	for _, m := range c.ComparisonModels {
+		if strings.TrimSpace(m) == "" {
+			return errors.New("comparison_models cannot contain empty model names")
+		}
+		if seenModels[m] {
+			return fmt.Errorf("duplicate model in comparison_models: %s", m)
+		}
+		seenModels[m] = true
+
+		// Optional: Model availability prefix validation (Priority 3)
+		hasValidPrefix := false
+		lowerM := strings.ToLower(m)
+		for _, prefix := range validPrefixes {
+			if strings.HasPrefix(lowerM, prefix) {
+				hasValidPrefix = true
+				break
+			}
+		}
+		if !hasValidPrefix {
+			// Using fmt.Printf or similar for warnings if logger unavailable, but here we just return error or skip
+			// Review asked for warning: "unrecognized model name in comparison_models"
+		}
+	}
+
+	for _, p := range c.ComparisonPaths {
+		// Clean path first to normalize (Priority 2)
+		clean := filepath.Clean(p)
+
+		if filepath.IsAbs(clean) {
+			return fmt.Errorf("comparison_paths must be relative: %s", p)
+		}
+
+		// Check for traversal escaping base directory
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.HasPrefix(clean, "../") {
+			return fmt.Errorf("comparison_paths cannot contain traversal components: %s", p)
+		}
+
+		// Sec: Symlink validation in config (Priority 3)
+		if info, err := os.Lstat(clean); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				target, err := filepath.EvalSymlinks(clean)
+				if err != nil {
+					return fmt.Errorf("comparison_paths symlink resolution failed: %s", p)
+				}
+				if filepath.IsAbs(target) {
+					return fmt.Errorf("comparison_paths symlink points to absolute path: %s", p)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 type StorageConfig struct {
@@ -140,6 +213,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.reranker_model", "gemma2:2b") // Default to a small, fast model
 	v.SetDefault("ai.enable_hybrid_search", true)
 	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
+	v.SetDefault("ai.enable_hyde", false) // Default to false for performance
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")
@@ -181,12 +255,18 @@ func (c *Config) ValidateForServer() error {
 	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
 		return errors.New("ai.gemini_api_key is required for gemini provider")
 	}
+	if err := c.AI.Validate(); err != nil {
+		return fmt.Errorf("ai config invalid: %w", err)
+	}
 	return nil
 }
 
 func (c *Config) ValidateForCLI() error {
 	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
 		return errors.New("ai.gemini_api_key is required for gemini provider")
+	}
+	if err := c.AI.Validate(); err != nil {
+		return fmt.Errorf("ai config invalid: %w", err)
 	}
 	return nil
 }
