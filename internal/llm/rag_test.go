@@ -60,10 +60,10 @@ func TestSanitizeModelForFilename(t *testing.T) {
 			if !strings.HasPrefix(got, tt.wantPrefix) {
 				t.Errorf("SanitizeModelForFilename(%q) = %q, want prefix %q", tt.input, got, tt.wantPrefix)
 			}
-			// Check if hash part is exactly 8 hex chars (plus underscore)
+			// Check if hash part is exactly 16 hex chars (plus underscore)
 			hashPart := got[len(tt.wantPrefix):]
-			if len(hashPart) != 8 {
-				t.Errorf("SanitizeModelForFilename(%q) hash part %q length = %d, want 8", tt.input, hashPart, len(hashPart))
+			if len(hashPart) != 16 {
+				t.Errorf("SanitizeModelForFilename(%q) hash part %q length = %d, want 16", tt.input, hashPart, len(hashPart))
 			}
 		})
 	}
