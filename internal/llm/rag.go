@@ -771,15 +771,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	// 2. Get independent reviews from all models (The "Committee")
 	// Deduplicate generator model from comparison to avoid bias (Priority 2)
-	generatorModel := r.cfg.AI.GeneratorModel
-	var validModels []string
-	for _, m := range models {
-		if m != generatorModel {
-			validModels = append(validModels, m)
-		} else {
-			r.logger.Info("excluding generator model from comparison (used for synthesis)", "model", m)
-		}
-	}
+	validModels := r.filterComparisonModels(models)
 
 	// Ensure we still have enough models
 	if len(validModels) < 2 {
@@ -1036,6 +1028,19 @@ func (r *ragService) sanitizeJSON(input string) string {
 
 // SanitizeModelForFilename cleans model names for safe use as filenames.
 // It handles Windows reserved names and includes a short hash to prevent collisions.
+func (r *ragService) filterComparisonModels(models []string) []string {
+	generatorModel := r.cfg.AI.GeneratorModel
+	var validModels []string
+	for _, m := range models {
+		if m != generatorModel {
+			validModels = append(validModels, m)
+		} else {
+			r.logger.Info("excluding generator model from comparison (used for synthesis)", "model", m)
+		}
+	}
+	return validModels
+}
+
 func SanitizeModelForFilename(modelName string) string {
 	sanitized := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {

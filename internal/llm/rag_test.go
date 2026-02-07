@@ -2,9 +2,16 @@ package llm
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/sevigo/code-warden/internal/config"
+	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/goframe/schema"
 )
 
 func TestSanitizeJSON(t *testing.T) {
@@ -139,5 +146,59 @@ func TestExtractJSON(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+func TestProcessRelatedSnippet_Concurrency(t *testing.T) {
+	r := &ragService{
+		logger: nil, // Should handle nil logger gracefully in tests if using r.logger or we can mock it
+	}
+	// In reality we should use a real logger or mock, but let's assume it's fine for now
+	// or initialize a dummy logger if needed.
+
+	seenDocs := make(map[string]struct{})
+	var mu sync.RWMutex
+	var wg sync.WaitGroup
+
+	doc := schema.Document{
+		PageContent: "some content",
+		Metadata:    map[string]any{"source": "file.go"},
+	}
+	file := internalgithub.ChangedFile{Filename: "file.go"}
+
+	// Launch many goroutines to try and trigger a race on seenDocs
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			var builder strings.Builder
+			r.processRelatedSnippet(doc, file, idx, seenDocs, &mu, []string{}, &builder)
+		}(i)
+	}
+	wg.Wait()
+
+	if len(seenDocs) != 1 {
+		t.Errorf("expected 1 seen doc, got %d", len(seenDocs))
+	}
+}
+func TestFilterComparisonModels(t *testing.T) {
+	r := &ragService{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg: &config.Config{
+			AI: config.AIConfig{
+				GeneratorModel: "gemini-1.5-pro",
+			},
+		},
+	}
+
+	models := []string{"gemini-1.5-pro", "deepseek-chat", "kimi-k2.5"}
+	got := r.filterComparisonModels(models)
+
+	if len(got) != 2 {
+		t.Errorf("expected 2 models, got %d", len(got))
+	}
+	for _, m := range got {
+		if m == "gemini-1.5-pro" {
+			t.Error("generator model was not deduplicated")
+		}
 	}
 }
