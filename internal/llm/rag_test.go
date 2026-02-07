@@ -39,16 +39,11 @@ func TestSanitizeModelForFilename(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"kimi-k2.5:cloud", "kimi-k2_5_cloud"},
+		{"kimi-k2.5:cloud", "kimi_k2_5_cloud"},
 		{"deepseek/v3", "deepseek_v3"},
-		// Wait, current logic allows a-z A-Z 0-9 - _
-		// So .. would technically become __ in the strict allowlist version I implemented?
-		// Let's check the implementation I wrote:
-		// case r >= 'a' && r <= 'z': return r ... default: return '_'
-		// So '.' becomes '_'
-		{"suspicious..name", "suspicious__name"},
-		{"<invalid>", "_invalid_"},
-		{"COM1", "COM1"}, // Windows reserved names are not handled by char replacement, but that's okay for now
+		{"suspicious..name", "suspicious_name"},
+		{"<invalid>", "invalid"},
+		{"COM1", "safe_COM1"},
 	}
 
 	for _, tt := range tests {

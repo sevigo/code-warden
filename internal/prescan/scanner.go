@@ -106,20 +106,28 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 		return err
 	}
 
-	// 7. Generate Documentation
-	artifacts, err := s.generateAndSaveDocumentation(localPath)
+	// 1. Prepare documentation
+	s.Manager.logger.Info("Generating documentation artifacts", "path", localPath)
+	docMap, err := s.generateAndSaveDocumentation(localPath)
 	if err != nil {
-		s.Manager.logger.Warn("documentation generation failed", "error", err)
+		s.Manager.logger.Warn("Failed to generate documentation artifacts", "error", err)
 	}
 
-	// 8. Multi-Model Comparison (if configured)
+	// 2. Generate and save architectural comparisons (if configured)
 	if len(s.Manager.cfg.AI.ComparisonModels) > 0 {
-		s.Manager.logger.Info("Starting multi-model architectural comparison", "models", s.Manager.cfg.AI.ComparisonModels)
+		s.Manager.logger.Info("Generating architectural comparisons", "models", s.Manager.cfg.AI.ComparisonModels)
+
+		// Sanitize and validate repo path to prevent traversal
+		validatedLocalPath, err := s.validateRepoPath(s.Manager.cfg.Storage.RepoPath, localPath)
+		if err != nil {
+			return fmt.Errorf("invalid repository path: %w", err)
+		}
+
 		characteristicPaths := s.Manager.cfg.AI.ComparisonPaths
 		if len(characteristicPaths) == 0 {
 			characteristicPaths = []string{"."}
 		}
-		results, err := s.RAGService.GenerateComparisonSummaries(ctx, s.Manager.cfg.AI.ComparisonModels, localPath, characteristicPaths)
+		results, err := s.RAGService.GenerateComparisonSummaries(ctx, s.Manager.cfg.AI.ComparisonModels, validatedLocalPath, characteristicPaths)
 		if err != nil {
 			s.Manager.logger.Warn("Multi-model comparison failed", "error", err)
 		} else {
@@ -143,7 +151,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	}
 
 	// Complete & Save Artifacts
-	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, artifacts); err != nil {
+	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, docMap); err != nil {
 		return err
 	}
 	s.Manager.logger.Info("Scan completed successfully")
@@ -312,4 +320,21 @@ func validExt(ext string) bool {
 		return true
 	}
 	return false
+}
+
+// validateRepoPath ensures that a provided path stays within a base directory.
+func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error) {
+	fullPath := filepath.Join(basePath, providedPath)
+	cleanPath, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", err
+	}
+	baseAbs, err := filepath.Abs(basePath)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(cleanPath, baseAbs+string(os.PathSeparator)) && cleanPath != baseAbs {
+		return "", fmt.Errorf("path traversal attempt detected: %s", cleanPath)
+	}
+	return cleanPath, nil
 }

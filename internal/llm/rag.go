@@ -618,7 +618,7 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	// Review feedback: 3 is arbitrary. Bumping to 5 for now.
 	const maxConcurrentModels = 5
 	sem := make(chan struct{}, maxConcurrentModels)
-	defer close(sem)
+	// No defer close(sem) - channel will be GC'd or we can close after Wait()
 
 	for _, modelName := range models {
 		modelName := modelName // Capture for closure safety
@@ -728,6 +728,12 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 //
 //nolint:funlen // High-level orchestration function with error handling and artifact saving
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
+	if repo == nil {
+		return nil, errors.New("repo cannot be nil")
+	}
+	if event == nil {
+		return nil, errors.New("event cannot be nil")
+	}
 	if len(models) == 0 {
 		return nil, fmt.Errorf("consensus review requires at least one model")
 	}
@@ -873,8 +879,25 @@ func (r *ragService) extractJSON(raw string) (string, error) {
 		return raw, nil
 	}
 
-	// 3. Robust JSON Extraction Using Standard Library Decoder
-	// Skip preamble text by finding the first '{' and delegating to decoder
+	// 3. Robust JSON Extraction - handle markdown fences specifically
+	// Find the first opening fence and find the matching closing fence after it
+	startFence := strings.Index(raw, "```")
+	if startFence != -1 {
+		// Found a fence, look for the closing one *after* the opening one
+		endFence := strings.Index(raw[startFence+3:], "```")
+		if endFence != -1 {
+			endFence += startFence + 3 // Adjust relative to original string
+			inner := raw[startFence+3 : endFence]
+			inner = strings.TrimSpace(inner)
+			// Remove optional language identifier
+			if strings.HasPrefix(strings.ToLower(inner), "json") {
+				inner = strings.TrimSpace(inner[4:])
+			}
+			raw = inner
+		}
+	}
+
+	// Now find the first '{' in whatever is left
 	startBrace := strings.Index(raw, "{")
 	if startBrace == -1 {
 		return "", fmt.Errorf("response did not contain valid JSON start")
@@ -937,14 +960,14 @@ func (r *ragService) sanitizeJSON(input string) string {
 	if json.Valid([]byte(repaired)) {
 		return repaired
 	}
-
 	// 3. Fallback
 	return repaired
 }
 
-// SanitizeModelForFilename sanitizes a model name for use as a filename or safe identifier.
+// SanitizeModelForFilename ensures model names are safe for use in filenames.
+// It handles path traversal, Windows reserved names, and length limits.
 func SanitizeModelForFilename(modelName string) string {
-	return strings.Map(func(r rune) rune {
+	sanitized := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z':
 			return r
@@ -952,12 +975,43 @@ func SanitizeModelForFilename(modelName string) string {
 			return r
 		case r >= '0' && r <= '9':
 			return r
-		case r == '-' || r == '_':
+		case r == '_':
 			return r
 		default:
 			return '_'
 		}
 	}, modelName)
+
+	// Remove leading/trailing underscores and redundant dots handled by map
+	sanitized = strings.TrimLeft(sanitized, "_")
+	sanitized = strings.TrimRight(sanitized, "_")
+
+	if sanitized == "" {
+		sanitized = "model"
+	}
+
+	// Prevent Windows reserved names (case-insensitive)
+	lower := strings.ToLower(sanitized)
+	reserved := map[string]bool{
+		"con": true, "prn": true, "aux": true, "nul": true,
+		"com1": true, "com2": true, "com3": true, "com4": true, "com5": true, "com6": true, "com7": true, "com8": true, "com9": true,
+		"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true, "lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+	}
+	if reserved[lower] {
+		sanitized = "safe_" + sanitized
+	}
+
+	// De-duplicate underscores (e.g., "suspicious__name" -> "suspicious_name")
+	for strings.Contains(sanitized, "__") {
+		sanitized = strings.ReplaceAll(sanitized, "__", "_")
+	}
+
+	// Limit length to prevent OS errors
+	if len(sanitized) > 128 {
+		sanitized = sanitized[:128]
+	}
+
+	return sanitized
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.
