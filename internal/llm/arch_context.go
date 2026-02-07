@@ -434,7 +434,7 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 	// Limit concurrency to avoid overloading the LLM provider or local system
 	// Using a buffer of 10 allows reasonable parallelism for network-bound LLM calls
 	sem := make(chan struct{}, 10)
-	// No defer close(sem) - channel will be GC'd or we can close after g.Wait()
+	defer close(sem)
 
 	for _, relPath := range relPaths {
 		relPath := relPath // Capture loop variable for closure safety

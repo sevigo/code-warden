@@ -322,18 +322,42 @@ func validExt(ext string) bool {
 	return false
 }
 
-// validateRepoPath ensures that a provided path stays within a base directory.
+// validateRepoPath ensures that a provided path stays within a base directory, resolving symlinks for security.
 func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error) {
+	// Standardize separators for cross-platform consistency
+	providedPath = filepath.Clean(providedPath)
+
+	// Join and get absolute path
 	fullPath := filepath.Join(basePath, providedPath)
 	cleanPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", err
 	}
+
+	// Resolve symlinks to prevent traversal bypass via symlink targets
+	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if err == nil {
+		cleanPath = resolvedPath
+	}
+
 	baseAbs, err := filepath.Abs(basePath)
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(cleanPath, baseAbs+string(os.PathSeparator)) && cleanPath != baseAbs {
+
+	// Case-insensitive check for Windows, ensuring path starts with baseAbs
+	normalizedClean := strings.ToLower(cleanPath)
+	normalizedBase := strings.ToLower(baseAbs)
+
+	// Ensure normalizedBase ends with a separator to avoid partial matching (e.g., /app vs /app-data)
+	if !strings.HasSuffix(normalizedBase, string(os.PathSeparator)) {
+		normalizedBase += string(os.PathSeparator)
+	}
+
+	if !strings.HasPrefix(normalizedClean, normalizedBase) && normalizedClean != strings.ToLower(baseAbs) {
 		return "", fmt.Errorf("path traversal attempt detected: %s", cleanPath)
 	}
 	return cleanPath, nil

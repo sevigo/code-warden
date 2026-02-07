@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -82,11 +83,11 @@ func (c *AIConfig) Validate() error {
 		}
 		seen[m] = true
 	}
-	// Check if generator model is explicit in comparison models if comparison models are set
-	// This is a soft check, just logging a warning might be better, but unexpected behavior if not present.
-	// For now, let's keep it strict if we want to force consistency, or lenient.
-	// The AI review suggested: "If cfg.GeneratorModel != "" && !seen[cfg.GeneratorModel]" warn.
-	// We'll leave it simple for now (uniqueness check).
+	for _, p := range c.ComparisonPaths {
+		if filepath.IsAbs(p) || strings.Contains(p, "..") {
+			return fmt.Errorf("comparison_paths must be relative and cannot contain traversal components: %s", p)
+		}
+	}
 	return nil
 }
 

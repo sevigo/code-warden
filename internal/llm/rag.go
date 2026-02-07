@@ -50,7 +50,7 @@ type RAGService interface {
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
-	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) ([]ComparisonResult, error)
+	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error)
 }
 
@@ -576,21 +576,31 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
 //
 //nolint:gocognit,funlen // Complex logic with parallel execution and error aggregation
-func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) ([]ComparisonResult, error) {
+func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	// Precompute shared data once
-	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get PR diff: %w", err)
+	diff := preFetchedDiff
+	var changedFiles []internalgithub.ChangedFile
+	if len(preFetchedFiles) > 0 {
+		changedFiles = preFetchedFiles
 	}
 
-	// Use default model (Cogito) for context gathering
-	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get changed files: %w", err)
+	// If data wasn't provided, fetch it (fallback for direct calls)
+	if diff == "" {
+		var err error
+		diff, err = ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get PR diff: %w", err)
+		}
+	}
+	if len(changedFiles) == 0 {
+		var err error
+		changedFiles, err = ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get changed files: %w", err)
+		}
 	}
 
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
@@ -707,13 +717,12 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 	resultCh := make(chan result, 1)
 
 	go func() {
-		// Early exit if context already done to prevent leaking goroutine
-		if ctx.Err() != nil {
-			resultCh <- result{"", ctx.Err()}
-			return
-		}
 		resp, err := llm.Call(ctx, prompt)
-		resultCh <- result{resp, err}
+		select {
+		case resultCh <- result{resp, err}:
+		case <-ctx.Done():
+			// Do not block the goroutine if parent timed out/cancelled
+		}
 	}()
 
 	select {
@@ -744,8 +753,13 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
 	}
 
+	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get diff for consensus: %w", err)
+	}
+
 	// 2. Get independent reviews from all models (The "Committee")
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models)
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models, diff, changedFiles)
 	if err != nil {
 		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
@@ -759,6 +773,20 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	// Security: Use 0700 for directory (User only)
 	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
 		r.logger.Warn("failed to create reviews directory", "error", err)
+	}
+
+	// Security: Verify reviewsDir is not a symlink
+	info, err := os.Lstat(reviewsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to check reviews directory: %w", err)
+	}
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("reviews directory is a symlink, possible attack")
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("reviews path exists but is not a directory")
+		}
 	}
 
 	// Deterministic ordering: Sort results by Model name
@@ -880,14 +908,14 @@ func (r *ragService) extractJSON(raw string) (string, error) {
 	}
 
 	// 3. Robust JSON Extraction - handle markdown fences specifically
-	// Find the first opening fence and find the matching closing fence after it
+	// Use a non-greedy approach: Find the first opening fence and the VERY NEXT closing fence.
 	startFence := strings.Index(raw, "```")
 	if startFence != -1 {
-		// Found a fence, look for the closing one *after* the opening one
-		endFence := strings.Index(raw[startFence+3:], "```")
-		if endFence != -1 {
-			endFence += startFence + 3 // Adjust relative to original string
-			inner := raw[startFence+3 : endFence]
+		// Look for the next fence after the opening one
+		remaining := raw[startFence+3:]
+		endFenceRelative := strings.Index(remaining, "```")
+		if endFenceRelative != -1 {
+			inner := remaining[:endFenceRelative]
 			inner = strings.TrimSpace(inner)
 			// Remove optional language identifier
 			if strings.HasPrefix(strings.ToLower(inner), "json") {
@@ -1443,7 +1471,8 @@ func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalg
 	hydeChan := make(chan hydeResult, len(files))
 	var wg sync.WaitGroup
 	// Semaphore to limit concurrent LLM calls (e.g., 5 at a time)
-	sem := make(chan struct{}, 5)
+	sem := make(chan struct{}, 10)
+	defer close(sem)
 	cacheHits := 0
 
 	for i, file := range files {
