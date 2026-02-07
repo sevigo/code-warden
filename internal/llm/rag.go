@@ -1065,7 +1065,7 @@ func SanitizeModelForFilename(modelName string) string {
 	// Security: Prevent collisions by adding a short deterministic hash
 	h := sha256.New()
 	h.Write([]byte(modelName))
-	hashStr := hex.EncodeToString(h.Sum(nil))[:8]
+	hashStr := hex.EncodeToString(h.Sum(nil))[:16]
 
 	// Windows reserved names check (case-insensitive)
 	// Ref: Deepseek review - handle extension-like suffixes (e.g., COM1.txt)
