@@ -1487,7 +1487,10 @@ func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile int
 		}
 		fmt.Fprintf(builder, "**%s** (relevant to %s):\n```\n%s\n```\n\n",
 			source, originalFile.Filename, content)
+
+		seenMu.Lock()
 		seenDocs[docKey] = struct{}{}
+		seenMu.Unlock()
 	}
 
 	// Fallback: even if we've seen it, if it's top result for another file, it's worth noting in debug logs
