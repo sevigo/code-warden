@@ -437,6 +437,7 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 	defer close(sem) // Ensure channel is closed
 
 	for _, relPath := range relPaths {
+		relPath := relPath // Capture loop variable for closure safety
 		g.Go(func() error {
 			// Acquire semaphore
 			select {

@@ -1,7 +1,8 @@
 package llm
 
 import (
-	"strings"
+	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -113,14 +114,20 @@ func TestExtractJSON(t *testing.T) {
 				t.Errorf("extractJSON() error = %v, shouldErr %v", err, tt.shouldErr)
 				return
 			}
-			// Normalize for Windows/whitespace differences
-			normalize := func(s string) string {
-				return strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", "")
-			}
-			if !tt.shouldErr && normalize(got) != normalize(tt.want) {
-				t.Errorf("extractJSON() mismatch for %s", tt.name)
-				t.Logf("got:  %q", got)
-				t.Logf("want: %q", tt.want)
+
+			if !tt.shouldErr {
+				var gotVal, wantVal any
+				if err := json.Unmarshal([]byte(got), &gotVal); err != nil {
+					t.Fatalf("extractJSON returned invalid JSON: %v", err)
+				}
+				if err := json.Unmarshal([]byte(tt.want), &wantVal); err != nil {
+					t.Fatalf("test expectation is invalid JSON: %v", err)
+				}
+				if !reflect.DeepEqual(gotVal, wantVal) {
+					t.Errorf("extractJSON() semantic mismatch for %s", tt.name)
+					t.Logf("got:  %s", got)
+					t.Logf("want: %s", tt.want)
+				}
 			}
 		})
 	}

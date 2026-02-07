@@ -558,16 +558,12 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	// Parse the JSON string into the structured format
 	var structuredReview core.StructuredReview
 
-	// Extract JSON by finding outer braces (handles markdown fencing)
-	start := strings.Index(rawReview, "{")
-	end := strings.LastIndex(rawReview, "}")
-
-	if start == -1 || end == -1 || end < start {
-		r.logger.Error("LLM response did not contain a valid JSON object", "raw_response", rawReview)
-		return nil, "", fmt.Errorf("LLM response did not contain a valid JSON object (missing curly braces)")
+	// Use robust extraction helper
+	jsonString, err := r.extractJSON(rawReview)
+	if err != nil {
+		r.logger.Error("failed to extract JSON from LLM response", "error", err, "raw_response", rawReview)
+		return nil, "", fmt.Errorf("failed to extract JSON object: %w", err)
 	}
-
-	jsonString := rawReview[start : end+1]
 
 	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
 		r.logger.Error("failed to unmarshal LLM response", "error", err, "json", jsonString)
@@ -625,6 +621,7 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	defer close(sem)
 
 	for _, modelName := range models {
+		modelName := modelName // Capture for closure safety
 		g.Go(func() error {
 			// Acquire semaphore
 			select {
@@ -735,13 +732,19 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, fmt.Errorf("consensus review requires at least one model")
 	}
 
-	// 1. Get independent reviews from all models (The "Committee")
+	// 1. Prepare data (once for all reviews)
+	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
+	}
+
+	// 2. Get independent reviews from all models (The "Committee")
 	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models)
 	if err != nil {
 		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
 
-	// 2. Prepare the consensus prompt data & Save Artifacts
+	// 3. Prepare the consensus prompt data & Save Artifacts
 	var validReviews []string
 	var reviewsBuilder strings.Builder
 	timestamp := time.Now().Format("20060102_150405")
@@ -802,10 +805,6 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
-	}
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
 	promptData := map[string]string{
@@ -943,7 +942,7 @@ func (r *ragService) sanitizeJSON(input string) string {
 	return repaired
 }
 
-// SanitizeModelForFilename ensures model names are safe for use in filenames.
+// SanitizeModelForFilename sanitizes a model name for use as a filename or safe identifier.
 func SanitizeModelForFilename(modelName string) string {
 	return strings.Map(func(r rune) rune {
 		switch {

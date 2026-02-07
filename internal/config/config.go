@@ -65,6 +65,9 @@ func (c *AIConfig) Validate() error {
 	}
 	seen := make(map[string]bool)
 	for _, m := range c.ComparisonModels {
+		if strings.TrimSpace(m) == "" {
+			return errors.New("comparison_models cannot contain empty model names")
+		}
 		if seen[m] {
 			return fmt.Errorf("duplicate model in comparison_models: %s", m)
 		}
