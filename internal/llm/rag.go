@@ -968,6 +968,18 @@ func (r *ragService) extractJSON(raw string) (string, error) {
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	var msg any
 	if err := decoder.Decode(&msg); err != nil {
+		// FALLBACK: If decoding fails, it might be because the LLM escaped structural quotes (e.g. {\"key\": \"value\"}).
+		// This often happens if the prompt is too prescriptive about escaping.
+		// We try a "dirty" unescape for structural quotes if we see them.
+		if strings.Contains(raw, `\"`) {
+			repaired := strings.ReplaceAll(raw, `\"`, `"`)
+			// Try decoding again with repaired string
+			decoder = json.NewDecoder(strings.NewReader(repaired))
+			if err := decoder.Decode(&msg); err == nil {
+				clean, _ := json.Marshal(msg)
+				return string(clean), nil
+			}
+		}
 		return "", fmt.Errorf("failed to decode JSON from response: %w", err)
 	}
 	// Re-encode to get clean, compacted JSON string

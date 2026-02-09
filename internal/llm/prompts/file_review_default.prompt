@@ -57,22 +57,19 @@ Analyze the file content using the provided Architectural Context and your knowl
 - **Low**: Minor improvements, style suggestions
 
 ## OUTPUT FORMAT
-Respond ONLY with valid JSON inside a ```json code block.
-**CRITICAL JSON RULES**:
-- **Escape ALL backslashes**: Use `\\` for `\`.
-- **Escape quotes**: Use `\"` for quotes inside strings.
-- **Newlines**: Use `\n` for newlines in code blocks/comments.
+Respond ONLY with a valid JSON object inside a ```json code block. 
+Do not include any text before or after the code block.
 
 ```json
 {
-  "summary": "High-level assessment of the file.",
+  "summary": "...",
   "suggestions": [
     {
       "file_path": "{{.FilePath}}",
       "line_number": 123,
-      "severity": "Critical|High|Medium|Low",
-      "category": "Logic|Performance|Security|Architecture|Readability|Testing",
-      "comment": "### Issue\nConcise problem statement.\n\n### Rationale\nWhy this is a risk.\n\n### Fix\n```{{.Language}}\n// Corrected implementation\n```"
+      "severity": "...",
+      "category": "...",
+      "comment": "..."
     }
   ]
 }
