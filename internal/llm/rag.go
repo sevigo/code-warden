@@ -52,6 +52,7 @@ type RAGService interface {
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error)
+	GenerateFileReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, filePath string, repoPath string, skipContext bool) (*core.StructuredReview, error)
 }
 
 type ragService struct {
@@ -550,7 +551,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		"Diff":               diff,
 	}
 
-	rawReview, err := r.generateResponseWithPrompt(ctx, event, CodeReviewPrompt, promptData)
+	rawReview, err := r.generateResponseWithPrompt(ctx, event.RepoFullName, fmt.Sprintf("PR #%d", event.PRNumber), CodeReviewPrompt, promptData)
 	if err != nil {
 		return nil, "", err
 	}
@@ -631,7 +632,6 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	// No defer close(sem) - channel will be GC'd or we can close after Wait()
 
 	for _, modelName := range models {
-		modelName := modelName // Capture for closure safety
 		g.Go(func() error {
 			// Acquire semaphore
 			select {
@@ -883,7 +883,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	// 3. Synthesize the final review using the default generator (The "chairperson")
 	r.logger.Info("synthesizing consensus review", "models", validReviews)
-	rawConsensus, err := r.generateResponseWithPrompt(ctx, event, ConsensusReviewPrompt, promptData)
+	rawConsensus, err := r.generateResponseWithPrompt(ctx, event.RepoFullName, fmt.Sprintf("PR #%d", event.PRNumber), ConsensusReviewPrompt, promptData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate consensus: %w", err)
 	}
@@ -1112,7 +1112,7 @@ func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEve
 		NewDiff:        newDiff,
 	}
 
-	return r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)
+	return r.generateResponseWithPrompt(ctx, event.RepoFullName, fmt.Sprintf("PR #%d", event.PRNumber), ReReviewPrompt, promptData)
 }
 
 type QuestionPromptData struct {
@@ -1236,7 +1236,7 @@ func (r *ragService) getOrCreateLLM(modelName string) (llms.Model, error) {
 	)
 }
 
-func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey PromptKey, promptData any) (string, error) {
+func (r *ragService) generateResponseWithPrompt(ctx context.Context, repoFullName string, reference string, promptKey PromptKey, promptData any) (string, error) {
 	// Try using the main generator first
 	llmModel, err := r.getOrCreateLLM(r.cfg.AI.GeneratorModel)
 	if err != nil {
@@ -1252,8 +1252,8 @@ func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core
 	}
 
 	r.logger.Info("calling LLM for response generation",
-		"repo", event.RepoFullName,
-		"pr", event.PRNumber,
+		"repo", repoFullName,
+		"ref", reference,
 		"prompt_key", promptKey,
 	)
 
@@ -1264,6 +1264,87 @@ func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core
 
 	r.logger.Info("LLM response generated successfully", "chars", len(response))
 	return response, nil
+}
+
+// GenerateFileReview performs a full code review for a single file.
+func (r *ragService) GenerateFileReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, filePath string, repoPath string, skipContext bool) (*core.StructuredReview, error) {
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	fullPath := filepath.Join(repoPath, filePath)
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	r.logger.Info("preparing data for a file review", "repo", repo.FullName, "file", filePath, "skip_rag", skipContext)
+
+	var contextString string
+	if !skipContext {
+		// Build context for this specific file
+		changedFiles := []internalgithub.ChangedFile{
+			{
+				Filename: filePath,
+				Patch:    "", // no patch for full review
+			},
+		}
+		contextString = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	} else {
+		contextString = "RAG context disabled for this review."
+	}
+
+	lang := r.detectLanguage(filePath)
+	promptData := map[string]string{
+		"FilePath":           filePath,
+		"Language":           lang,
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+		"Context":            contextString,
+		"Content":            string(content),
+	}
+
+	rawReview, err := r.generateResponseWithPrompt(ctx, repo.FullName, filePath, FileReviewPrompt, promptData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse the JSON string into the structured format
+	var structuredReview core.StructuredReview
+
+	jsonString, err := r.extractJSON(rawReview)
+	if err != nil {
+		r.logger.Error("failed to extract JSON from LLM response", "error", err, "raw_response", rawReview)
+		return nil, fmt.Errorf("failed to extract JSON object: %w", err)
+	}
+
+	if err := json.Unmarshal([]byte(jsonString), &structuredReview); err != nil {
+		r.logger.Error("failed to unmarshal LLM response", "error", err, "json", jsonString)
+		return nil, fmt.Errorf("failed to parse LLM's JSON response: %w", err)
+	}
+
+	return &structuredReview, nil
+}
+
+func (r *ragService) detectLanguage(filePath string) string {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".go":
+		return "Go"
+	case ".ts", ".tsx":
+		return "TypeScript"
+	case ".js", ".jsx":
+		return "JavaScript"
+	case ".py":
+		return "Python"
+	case ".java":
+		return "Java"
+	case ".rs":
+		return "Rust"
+	case ".c", ".cpp", ".h", ".hpp":
+		return "C/C++"
+	default:
+		return "plaintext"
+	}
 }
 
 // formatChangedFiles returns a markdown-formatted list of changed file paths

@@ -59,8 +59,12 @@ ai:
   enable_reranking: true
 
   # Model names
-  # Generator Model (The "Main Driver" - Kimi)
-  generator_model: "kimi-k2.5:cloud"
+  # Generator Model (The "Main Driver")
+  # Recommended for project-wide audits:
+  # - "qwen3-coder-next:cloud" (High speed, sharp logic, concise)
+  # - "kimi-k2.5:cloud" (Great depth, but slower/pedantic)
+  # - "gemini-3-pro-preview:latest" (Excellent context, balanced speed)
+  generator_model: "qwen3-coder-next:cloud"
   
   # Consensus Models (The "Trio" - Kimi, DeepSeek, Gemini)
   # Used for both "Consensus Code Review" and "Architectural Comparison"

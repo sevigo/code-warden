@@ -7,7 +7,7 @@
 __debug*
 .DS_Store
 code-warden.log
-cli
+/cli
 
 # Test binary, built with `go test -c`
 *.test
@@ -23,6 +23,8 @@ data/
 bin/
 keys/
 reviews/
+full_reviews/
+warden-cli
 *.sh
 
 # Go workspace file
