@@ -918,68 +918,99 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 }
 
 func (r *ragService) extractJSON(raw string) (string, error) {
-	// 1. Strip Markdown Code Fences (greedy but safe)
-	if startFence := strings.Index(raw, "```"); startFence != -1 {
-		// Try to find the matching end fence
-		if endFence := strings.LastIndex(raw, "```"); endFence > startFence {
-			// Extract content inside
-			inner := raw[startFence+3 : endFence]
-			// Trim language identifier if present (e.g. "json")
-			inner = strings.TrimSpace(inner)
-			if strings.HasPrefix(strings.ToLower(inner), "json") {
-				inner = strings.TrimSpace(inner[4:])
+	raw = strings.TrimSpace(raw)
+
+	// 1. Handle "Quoted Response" Case
+	// Some LLMs wrap the entire response (including markdown fences) in quotes.
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		// Attempt to unquote it. We use a custom unquoter to handle multi-line strings
+		// and escaped backslashes without being as strict as strconv.Unquote.
+		unquoted := ""
+		escaped := false
+		for _, c := range raw[1 : len(raw)-1] {
+			if escaped {
+				switch c {
+				case 'n':
+					unquoted += "\n"
+				case 't':
+					unquoted += "\t"
+				case 'r':
+					unquoted += "\r"
+				case '\\':
+					unquoted += "\\"
+				case '"':
+					unquoted += "\""
+				default:
+					unquoted += string(c)
+				}
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else {
+				unquoted += string(c)
 			}
-			raw = inner
+		}
+		raw = strings.TrimSpace(unquoted)
+	}
+
+	// 2. Strip Markdown Code Fences (non-greedy)
+	// We look for the first occurrence of ```json or ``` and the closing ```
+	startFence := strings.Index(raw, "```")
+	if startFence != -1 {
+		remaining := raw[startFence+3:]
+		// Skip "json" identifier if present
+		if strings.HasPrefix(strings.ToLower(remaining), "json") {
+			remaining = remaining[4:]
+		}
+		endFenceRelative := strings.Index(remaining, "```")
+		if endFenceRelative != -1 {
+			raw = strings.TrimSpace(remaining[:endFenceRelative])
+		} else {
+			// No closing fence? Just take everything after start
+			raw = strings.TrimSpace(remaining)
 		}
 	}
 
 	raw = strings.TrimSpace(raw)
 
-	// 2. Optimistic attempt: Try to unmarshal the whole thing
+	// 3. Optimistic attempt: Try to unmarshal the whole thing
 	if json.Valid([]byte(raw)) {
 		return raw, nil
 	}
 
-	// 3. Robust JSON Extraction - handle markdown fences specifically
-	// Use a non-greedy approach: Find the first opening fence and the VERY NEXT closing fence.
-	startFence := strings.Index(raw, "```")
-	if startFence != -1 {
-		// Look for the next fence after the opening one
-		remaining := raw[startFence+3:]
-		endFenceRelative := strings.Index(remaining, "```")
-		if endFenceRelative != -1 {
-			inner := remaining[:endFenceRelative]
-			inner = strings.TrimSpace(inner)
-			// Remove optional language identifier
-			if strings.HasPrefix(strings.ToLower(inner), "json") {
-				inner = strings.TrimSpace(inner[4:])
+	// 4. Robust JSON Extraction - handle structural escaping (starts with {\")
+	// If the LLM returned {\"key\": \"value\"}, we try a more targeted repair
+	if strings.HasPrefix(raw, "{\\\"") || strings.HasPrefix(raw, "{\"") {
+		// Only trigger the "dirty" repair if it looks structurally escaped but invalid
+		if !json.Valid([]byte(raw)) && strings.Contains(raw, `\"`) {
+			// This is tricky. We want to replace structural quotes but not quotes inside values.
+			// A common pattern for structural quotes is \" followed by a key name and then \":
+			// We can try to replace \" with " only if they are not following an even number of backslashes.
+			// For simplicity and resilience, we try a common pattern:
+			repaired := raw
+			repaired = strings.ReplaceAll(repaired, `{\"`, `{"`)
+			repaired = strings.ReplaceAll(repaired, `\"}`, `"}`)
+			repaired = strings.ReplaceAll(repaired, `\",`, `",`)
+			repaired = strings.ReplaceAll(repaired, `,\"`, `,"`)
+			repaired = strings.ReplaceAll(repaired, `\" :`, `":`)
+			repaired = strings.ReplaceAll(repaired, `\":`, `":`)
+
+			if json.Valid([]byte(repaired)) {
+				return repaired, nil
 			}
-			raw = inner
 		}
 	}
 
-	// Now find the first '{' in whatever is left
+	// 5. Final attempt: Find the first '{' and the last '}'
 	startBrace := strings.Index(raw, "{")
-	if startBrace == -1 {
-		return "", fmt.Errorf("response did not contain valid JSON start")
+	endBrace := strings.LastIndex(raw, "}")
+	if startBrace != -1 && endBrace != -1 && endBrace > startBrace {
+		raw = raw[startBrace : endBrace+1]
 	}
-	raw = raw[startBrace:]
 
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	var msg any
 	if err := decoder.Decode(&msg); err != nil {
-		// FALLBACK: If decoding fails, it might be because the LLM escaped structural quotes (e.g. {\"key\": \"value\"}).
-		// This often happens if the prompt is too prescriptive about escaping.
-		// We try a "dirty" unescape for structural quotes if we see them.
-		if strings.Contains(raw, `\"`) {
-			repaired := strings.ReplaceAll(raw, `\"`, `"`)
-			// Try decoding again with repaired string
-			decoder = json.NewDecoder(strings.NewReader(repaired))
-			if err := decoder.Decode(&msg); err == nil {
-				clean, _ := json.Marshal(msg)
-				return string(clean), nil
-			}
-		}
 		return "", fmt.Errorf("failed to decode JSON from response: %w", err)
 	}
 	// Re-encode to get clean, compacted JSON string

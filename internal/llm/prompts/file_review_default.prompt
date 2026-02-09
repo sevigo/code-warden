@@ -57,8 +57,7 @@ Analyze the file content using the provided Architectural Context and your knowl
 - **Low**: Minor improvements, style suggestions
 
 ## OUTPUT FORMAT
-Respond ONLY with a valid JSON object inside a ```json code block. 
-Do not include any text before or after the code block.
+Return a valid JSON object. Do not include any other text.
 
 ```json
 {
@@ -67,8 +66,8 @@ Do not include any text before or after the code block.
     {
       "file_path": "{{.FilePath}}",
       "line_number": 123,
-      "severity": "...",
-      "category": "...",
+      "severity": "High",
+      "category": "Logic",
       "comment": "..."
     }
   ]
