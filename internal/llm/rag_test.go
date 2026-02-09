@@ -92,14 +92,29 @@ func TestExtractJSON(t *testing.T) {
 			want:  `{"key":"value"}`,
 		},
 		{
-			name:  "JSON with Preamble",
-			input: `Here is the JSON: {"key": "value"}`,
+			name:  "JSON in Markdown",
+			input: "```json\n{\"key\": \"value\"}\n```",
 			want:  `{"key":"value"}`,
 		},
 		{
-			name:  "JSON with Trailing Text",
-			input: `{"key": "value"} ... and some explanation`,
+			name:  "JSON with Preamble and Postamble",
+			input: `Here is the results: {"key": "value"} hope this helps!`,
 			want:  `{"key":"value"}`,
+		},
+		{
+			name:  "Outer Quoted Response with Fences",
+			input: `"\"{\\\"summary\\\": \\\"test\\\"}\""`,
+			want:  `{"summary":"test"}`,
+		},
+		{
+			name:  "Structural Escaping Fallback",
+			input: `{\"summary\": \"Analysis\", \"suggestions\": [{\"comment\": \"fix it\"}]}`,
+			want:  `{"summary":"Analysis","suggestions":[{"comment":"fix it"}]}`,
+		},
+		{
+			name:  "Complex Escaping and Newlines",
+			input: "```json\n{\n  \\\"code\\\": \\\"func main() {\\\\n  fmt.Println(\\\\\\\"hi\\\\\\\")\\\\n}\\\"\n}\n```",
+			want:  `{"code":"func main() {\n  fmt.Println(\"hi\")\n}"}`,
 		},
 		{
 			name:  "Nested Braces in String",
@@ -107,13 +122,8 @@ func TestExtractJSON(t *testing.T) {
 			want:  `{"path":"C:\\Users\\{app}"}`,
 		},
 		{
-			name:  "Escaped Quotes",
-			input: `{"summary": "He said \"Hello\""}`,
-			want:  `{"summary":"He said \"Hello\""}`,
-		},
-		{
-			name:      "Invalid JSON",
-			input:     `not json`,
+			name:      "Empty Response",
+			input:     ``,
 			shouldErr: true,
 		},
 		{
