@@ -11,10 +11,10 @@ import (
 func TestValidateSuggestions(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	validFiles := map[string]struct{}{
-		"main.go":       {},
-		"pkg/util.go":   {},
-		"cmd/server.go": {},
+	validFiles := map[string]map[int]struct{}{
+		"main.go":       {1: {}},
+		"pkg/util.go":   {1: {}},
+		"cmd/server.go": {1: {}},
 	}
 
 	tests := []struct {
@@ -25,26 +25,26 @@ func TestValidateSuggestions(t *testing.T) {
 		{
 			name: "All valid",
 			suggestions: []core.Suggestion{
-				{FilePath: "main.go"},
-				{FilePath: "pkg/util.go"},
+				{FilePath: "main.go", LineNumber: 1},
+				{FilePath: "pkg/util.go", LineNumber: 1},
 			},
 			wantLen: 2,
 		},
 		{
 			name: "Mix valid and invalid",
 			suggestions: []core.Suggestion{
-				{FilePath: "main.go"},
-				{FilePath: "invalid.go"},
-				{FilePath: "pkg/util.go"},
-				{FilePath: "src/old.java"},
+				{FilePath: "main.go", LineNumber: 1},
+				{FilePath: "invalid.go", LineNumber: 1},
+				{FilePath: "pkg/util.go", LineNumber: 1},
+				{FilePath: "src/old.java", LineNumber: 1},
 			},
 			wantLen: 2,
 		},
 		{
 			name: "With ./ prefix",
 			suggestions: []core.Suggestion{
-				{FilePath: "./main.go"},
-				{FilePath: "pkg/util.go"},
+				{FilePath: "./main.go", LineNumber: 1},
+				{FilePath: "pkg/util.go", LineNumber: 1},
 			},
 			wantLen: 2,
 		},
@@ -62,7 +62,7 @@ func TestValidateSuggestions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := validateSuggestions(logger, tt.suggestions, validFiles)
+			got, _ := validateSuggestions(logger, tt.suggestions, validFiles)
 			if len(got) != tt.wantLen {
 				t.Errorf("validateSuggestions() got %d suggestions, want %d", len(got), tt.wantLen)
 			}
@@ -70,7 +70,7 @@ func TestValidateSuggestions(t *testing.T) {
 	}
 
 	t.Run("No valid files provided", func(t *testing.T) {
-		got := validateSuggestions(logger, []core.Suggestion{{FilePath: "any.go"}}, nil)
+		got, _ := validateSuggestions(logger, []core.Suggestion{{FilePath: "any.go"}}, nil)
 		if len(got) != 1 {
 			t.Errorf("expected validation to be skipped when no valid files provided, got %d", len(got))
 		}

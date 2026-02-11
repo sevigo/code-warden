@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/sevigo/code-warden/internal/config"
@@ -153,7 +154,7 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 }
 
 // processRepository handles vector store updates and the actual review generation.
-func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]struct{}, error) {
+func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]map[int]struct{}, error) {
 	if err := j.updateVectorStoreAndSHA(ctx, env.repoConfig, env.repo, env.updateResult); err != nil {
 		return nil, "", nil, err
 	}
@@ -164,9 +165,9 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		return nil, "", nil, fmt.Errorf("failed to get changed files for validation: %w", err)
 	}
 
-	validFiles := make(map[string]struct{})
+	validLineMaps := make(map[string]map[int]struct{})
 	for _, f := range changedFiles {
-		validFiles[f.Filename] = struct{}{}
+		validLineMaps[f.Filename] = github.ParseValidLinesFromPatch(f.Patch)
 	}
 
 	var structuredReview *core.StructuredReview
@@ -200,14 +201,28 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		return nil, "", nil, errors.New("generated review is empty or invalid")
 	}
 
-	return structuredReview, rawReview, validFiles, nil
+	return structuredReview, rawReview, validLineMaps, nil
 }
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
-func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validFiles map[string]struct{}) error {
+func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validLineMaps map[string]map[int]struct{}) error {
 	// Validate and filter suggestions to prevent 422 errors
-	validSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validFiles)
-	structuredReview.Suggestions = validSuggestions
+	inlineSuggestions, offDiffSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validLineMaps)
+	structuredReview.Suggestions = inlineSuggestions
+
+	// If there are off-diff suggestions, append them to the summary as "General Findings"
+	if len(offDiffSuggestions) > 0 {
+		var offDiffBuilder strings.Builder
+		offDiffBuilder.WriteString(structuredReview.Summary)
+		offDiffBuilder.WriteString("\n\n---\n### 💡 General Findings (Outside Modified Lines)\n\n")
+		offDiffBuilder.WriteString("The following issues were identified in parts of the code not directly modified in this PR:\n\n")
+		for _, s := range offDiffSuggestions {
+			offDiffBuilder.WriteString(fmt.Sprintf("*   **File:** `%s` (Line %d)\n", s.FilePath, s.LineNumber))
+			offDiffBuilder.WriteString(fmt.Sprintf("    **Severity:** %s\n", s.Severity))
+			offDiffBuilder.WriteString(fmt.Sprintf("    **Issue:** %s\n\n", s.Comment))
+		}
+		structuredReview.Summary = offDiffBuilder.String()
+	}
 
 	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
 		return fmt.Errorf("failed to post review comment to GitHub: %w", err)

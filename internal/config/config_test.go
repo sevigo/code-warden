@@ -7,11 +7,7 @@ import (
 )
 
 func TestAIConfig_Validate(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "config-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	// tempDir := t.TempDir() // Not used in this test but available if needed
 
 	tests := []struct {
 		name    string
@@ -82,23 +78,23 @@ func TestAIConfig_Validate(t *testing.T) {
 }
 
 func TestAIConfig_Validate_Symlinks(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "config-symlink-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	// Create a real directory
 	repoDir := filepath.Join(tempDir, "repo")
-	os.MkdirAll(repoDir, 0755)
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create an outside directory
 	outsideDir := filepath.Join(tempDir, "outside")
-	os.MkdirAll(outsideDir, 0755)
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a symlink inside repo pointing outside
 	linkPath := filepath.Join(repoDir, "bad-link")
-	err = os.Symlink(outsideDir, linkPath)
+	err := os.Symlink(outsideDir, linkPath)
 	if err != nil {
 		t.Skip("Symlinks not supported on this platform/user")
 	}

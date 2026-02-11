@@ -422,131 +422,116 @@ func isCodeExtension(ext string) bool {
 func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
 	r.logger.Info("generating multi-directory comparison summaries", "models", models, "paths", relPaths)
 
-	// Initialize results map and mutex
 	results := make(map[string]map[string]string)
 	resultsMu := &sync.RWMutex{}
 	for _, model := range models {
 		results[model] = make(map[string]string)
 	}
-	// Optimization: Pre-fetch LLM instances outside the directory loop
+
 	llmInstances := make(map[string]llms.Model)
 	for _, modelName := range models {
-		llm, err := r.getOrCreateLLM(modelName)
-		if err != nil {
+		if llm, err := r.getOrCreateLLM(modelName); err == nil {
+			llmInstances[modelName] = llm
+		} else {
 			r.logger.Warn("failed to pre-fetch LLM", "model", modelName, "error", err)
-			continue
 		}
-		llmInstances[modelName] = llm
 	}
 
-	// Use errgroup for parallel execution
 	g, ctx := errgroup.WithContext(ctx)
-	// Limit concurrency to avoid overloading the LLM provider or local system
-	// Using a buffer of 10 allows reasonable parallelism for network-bound LLM calls
 	sem := make(chan struct{}, 10)
-	// Safe to close because errgroup.Wait() ensures all goroutines complete
-	// before function returns. Closing prevents accidental reuse (Priority 4).
 	defer close(sem)
 
 	for _, relPath := range relPaths {
-		relPath := relPath // Capture loop variable for closure safety
 		g.Go(func() error {
-			// Acquire semaphore
-			select {
-			case sem <- struct{}{}:
-				// Release only if acquired
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			// Sec: Path validation to prevent traversal via relPath (Priority 2)
-			cleanRepo, err := filepath.Abs(repoPath)
-			if err != nil {
-				return fmt.Errorf("invalid repo path: %w", err)
-			}
-			path := filepath.Join(cleanRepo, relPath)
-			absPath, err := filepath.Abs(path)
-			if err != nil {
-				return fmt.Errorf("invalid join path: %w", err)
-			}
-
-			// Cross-platform check using Rel (Priority 2)
-			rel, err := filepath.Rel(cleanRepo, absPath)
-			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-				return fmt.Errorf("path traversal attempt detected: %s", relPath)
-			}
-
-			if relPath == "." || relPath == "" || relPath == "/" {
-				relPath = rootDir
-				path = cleanRepo
-			} else {
-				path = absPath
-			}
-
-			// scan dir on disk (fast, local)
-			info, _, err := r.scanDirectoryOnDisk(repoPath, path, relPath)
-			if err != nil {
-				r.logger.Warn("failed to scan directory for comparison", "path", relPath, "error", err)
-				return nil
-			}
-			if info == nil {
-				info = &DirectoryInfo{Path: relPath}
-			}
-
-			// Generate summary with each model
-			for _, modelName := range models {
-				// Check context before expensive operation
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-
-				r.logger.Info("generating summary", "model", modelName, "path", relPath)
-
-				llm := llmInstances[modelName]
-				if llm == nil {
-					resultsMu.Lock()
-					results[modelName][relPath] = "Error: LLM not initialized"
-					resultsMu.Unlock()
-					continue
-				}
-
-				promptData := ArchSummaryData{
-					Path:    info.Path,
-					Files:   strings.Join(info.Files, "\n"),
-					Symbols: "N/A (Comparison Mode)",
-					Imports: "N/A (Comparison Mode)",
-				}
-
-				modelForPrompt := ModelProvider(modelName)
-				// Note: ArchSummaryPrompt might need model-specific adjustment in future
-				prompt, err := r.promptMgr.Render(ArchSummaryPrompt, modelForPrompt, promptData)
-				if err != nil {
-					resultsMu.Lock()
-					results[modelName][relPath] = fmt.Sprintf("Error rendering prompt: %v", err)
-					resultsMu.Unlock()
-					continue
-				}
-
-				summary, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
-				if err != nil {
-					resultsMu.Lock()
-					results[modelName][relPath] = fmt.Sprintf("Generation Error: %v", err)
-					resultsMu.Unlock()
-					continue
-				}
-
-				resultsMu.Lock()
-				results[modelName][relPath] = summary
-				resultsMu.Unlock()
-			}
-			return nil
+			return r.processDirectorySummaries(ctx, models, llmInstances, repoPath, relPath, results, resultsMu, sem)
 		})
 	}
 
 	if err := g.Wait(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parallel summary generation failed: %w", err)
 	}
 
 	return results, nil
+}
+
+func (r *ragService) processDirectorySummaries(ctx context.Context, models []string, llmInstances map[string]llms.Model, repoPath, relPath string, results map[string]map[string]string, resultsMu *sync.RWMutex, sem chan struct{}) error {
+	// Acquire semaphore
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	path, err := r.validateAndJoinPath(repoPath, relPath)
+	if err != nil {
+		return err
+	}
+
+	info, _, err := r.scanDirectoryOnDisk(repoPath, path, relPath)
+	if err != nil {
+		r.logger.Warn("failed to scan directory for comparison", "path", relPath, "error", err)
+		return nil
+	}
+	if info == nil {
+		info = &DirectoryInfo{Path: relPath}
+	}
+
+	for _, modelName := range models {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		summary := r.generateSingleSummary(ctx, modelName, relPath, info, llmInstances[modelName])
+		resultsMu.Lock()
+		results[modelName][relPath] = summary
+		resultsMu.Unlock()
+	}
+	return nil
+}
+
+func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, error) {
+	cleanRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid repo path: %w", err)
+	}
+
+	if relPath == "." || relPath == "" || relPath == "/" {
+		return cleanRepo, nil
+	}
+
+	path := filepath.Join(cleanRepo, relPath)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid join path: %w", err)
+	}
+
+	rel, err := filepath.Rel(cleanRepo, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path traversal attempt detected: %s", relPath)
+	}
+	return absPath, nil
+}
+
+func (r *ragService) generateSingleSummary(ctx context.Context, modelName, relPath string, info *DirectoryInfo, llm llms.Model) string {
+	if llm == nil {
+		return "Error: LLM not initialized"
+	}
+
+	promptData := ArchSummaryData{
+		Path:    info.Path,
+		Files:   strings.Join(info.Files, "\n"),
+		Symbols: "N/A (Comparison Mode)",
+		Imports: "N/A (Comparison Mode)",
+	}
+
+	prompt, err := r.promptMgr.Render(ArchSummaryPrompt, ModelProvider(modelName), promptData)
+	if err != nil {
+		return fmt.Sprintf("Error rendering prompt: %v", err)
+	}
+
+	summary, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+	if err != nil {
+		return fmt.Sprintf("Generation Error: %v", err)
+	}
+	return summary
 }

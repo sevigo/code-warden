@@ -8,16 +8,11 @@ import (
 )
 
 func TestValidateRepoPath(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "scanner-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	// Create a real directory to test with
 	basePath := filepath.Join(tempDir, "repo")
-	err = os.MkdirAll(basePath, 0755)
-	if err != nil {
+	if err := os.MkdirAll(basePath, 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,11 +68,7 @@ func TestValidateRepoPath(t *testing.T) {
 }
 
 func TestValidateRepoPath_AdvancedSymlinks(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "scanner-symlink-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	basePath := filepath.Join(tempDir, "repo")
 	os.MkdirAll(basePath, 0755)

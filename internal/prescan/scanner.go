@@ -330,39 +330,21 @@ func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error
 		return "", fmt.Errorf("failed to get absolute base path: %w", err)
 	}
 
-	// If providedPath is already absolute, use it directly.
-	// Otherwise, join it with the base path.
-	absPath := providedPath
-	if !filepath.IsAbs(providedPath) {
-		absPath = filepath.Join(absBase, providedPath)
-	}
-
-	absPath, err = filepath.Abs(absPath)
+	absPath, err := s.resolveAbsolutePath(absBase, providedPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to get absolute path: %w", err)
+		return "", err
 	}
 
 	// Resolve symlinks - fail on ANY error that indicates security issue (Priority 2)
 	resolvedPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Path doesn't exist yet - validate the closest existing parent (Priority 2)
-			curr := absPath
-			for {
-				parent := filepath.Dir(curr)
-				if parent == curr || parent == "." || parent == "/" || parent == filepath.VolumeName(parent) {
-					break
-				}
-				if resolved, pErr := filepath.EvalSymlinks(parent); pErr == nil {
-					absPath = filepath.Join(resolved, filepath.Base(curr))
-					break
-				} else if !os.IsNotExist(pErr) {
-					return "", fmt.Errorf("parent path validation failed: %w", pErr)
-				}
-				curr = parent
-			}
-		} else {
+		if !os.IsNotExist(err) {
 			return "", fmt.Errorf("symlink resolution failed (possible traversal): %w", err)
+		}
+		// Path doesn't exist yet - validate the closest existing parent (Priority 2)
+		absPath, err = s.resolveMissingPathTarget(absPath)
+		if err != nil {
+			return "", err
 		}
 	} else {
 		absPath = resolvedPath
@@ -374,5 +356,34 @@ func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error
 		return "", fmt.Errorf("provided path %q is outside of the repository base path", providedPath)
 	}
 
+	return absPath, nil
+}
+
+func (s *Scanner) resolveAbsolutePath(absBase, providedPath string) (string, error) {
+	absPath := providedPath
+	if !filepath.IsAbs(providedPath) {
+		absPath = filepath.Join(absBase, providedPath)
+	}
+	res, err := filepath.Abs(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	return res, nil
+}
+
+func (s *Scanner) resolveMissingPathTarget(absPath string) (string, error) {
+	curr := absPath
+	for {
+		parent := filepath.Dir(curr)
+		if parent == curr || parent == "." || parent == "/" || parent == filepath.VolumeName(parent) {
+			break
+		}
+		if resolved, pErr := filepath.EvalSymlinks(parent); pErr == nil {
+			return filepath.Join(resolved, filepath.Base(curr)), nil
+		} else if !os.IsNotExist(pErr) {
+			return "", fmt.Errorf("parent path validation failed: %w", pErr)
+		}
+		curr = parent
+	}
 	return absPath, nil
 }

@@ -66,6 +66,13 @@ func (c *AIConfig) Validate() error {
 	if len(c.ComparisonModels) == 0 {
 		return nil
 	}
+	if err := c.validateModels(); err != nil {
+		return err
+	}
+	return c.validatePaths()
+}
+
+func (c *AIConfig) validateModels() error {
 	if len(c.ComparisonModels) > 10 {
 		return errors.New("comparison_models cannot exceed 10 to prevent timeout cascades")
 	}
@@ -73,8 +80,6 @@ func (c *AIConfig) Validate() error {
 		return errors.New("max_comparison_models cannot exceed 10")
 	}
 
-	// Deduplicate and validate comparison models (incl. basic model name validation)
-	validPrefixes := []string{"kimi-", "deepseek-", "gemini-", "qwen", "claude-", "gpt-", "llama"}
 	seenModels := make(map[string]bool)
 	for _, m := range c.ComparisonModels {
 		if strings.TrimSpace(m) == "" {
@@ -84,47 +89,53 @@ func (c *AIConfig) Validate() error {
 			return fmt.Errorf("duplicate model in comparison_models: %s", m)
 		}
 		seenModels[m] = true
+	}
+	return nil
+}
 
-		// Optional: Model availability prefix validation (Priority 3)
-		hasValidPrefix := false
-		lowerM := strings.ToLower(m)
-		for _, prefix := range validPrefixes {
-			if strings.HasPrefix(lowerM, prefix) {
-				hasValidPrefix = true
-				break
-			}
-		}
-		if !hasValidPrefix {
-			// Using fmt.Printf or similar for warnings if logger unavailable, but here we just return error or skip
-			// Review asked for warning: "unrecognized model name in comparison_models"
+func (c *AIConfig) validatePaths() error {
+	for _, p := range c.ComparisonPaths {
+		if err := validateComparisonPath(p); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	for _, p := range c.ComparisonPaths {
-		// Clean path first to normalize (Priority 2)
-		clean := filepath.Clean(p)
+func validateComparisonPath(p string) error {
+	clean := filepath.Clean(p)
 
-		if filepath.IsAbs(clean) {
-			return fmt.Errorf("comparison_paths must be relative: %s", p)
-		}
+	// Cross-platform absolute path check
+	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "\\") {
+		return fmt.Errorf("comparison_paths must be relative: %s", p)
+	}
 
-		// Check for traversal escaping base directory
-		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.HasPrefix(clean, "../") {
-			return fmt.Errorf("comparison_paths cannot contain traversal components: %s", p)
-		}
+	// Traversal check
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("comparison_paths cannot contain traversal components: %s", p)
+	}
 
-		// Sec: Symlink validation in config (Priority 3)
-		if info, err := os.Lstat(clean); err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				target, err := filepath.EvalSymlinks(clean)
-				if err != nil {
-					return fmt.Errorf("comparison_paths symlink resolution failed: %s", p)
-				}
-				if filepath.IsAbs(target) {
-					return fmt.Errorf("comparison_paths symlink points to absolute path: %s", p)
-				}
-			}
-		}
+	// Symlink validation
+	return validateSymlink(clean, p)
+}
+
+func validateSymlink(clean, original string) error {
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return nil // Path doesn't exist, which is fine for config validation
+	}
+
+	if info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+
+	target, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return fmt.Errorf("comparison_paths symlink resolution failed: %s", original)
+	}
+
+	if filepath.IsAbs(target) {
+		return fmt.Errorf("comparison_paths symlink points to absolute path: %s", original)
 	}
 	return nil
 }
