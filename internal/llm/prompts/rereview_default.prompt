@@ -6,8 +6,9 @@ A developer has received your previous code review and has pushed new changes to
 1.  Read the **Original Review** to understand the issues you previously raised.
 2.  Analyze the **New Code Changes (Diff)**.
 3.  Compare the new code against the original feedback.
-4.  Provide a concise summary of whether the issues were fixed.
-5.  If any issues remain or new ones were introduced, point them out clearly.
+4.  Provide a concise summary of whether the original issues were fixed.
+5.  **CRITICAL**: Do NOT report *new* issues unless they are Critical Security Vulnerabilities or Crashes. Focus ONLY on verifying the original feedback.
+6.  Ignore style, naming, or architectural preferences that were not mentioned in the original review.
 
 ---
 ## Original Review

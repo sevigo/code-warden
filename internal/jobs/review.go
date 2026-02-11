@@ -89,7 +89,57 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 // runReReview handles the `/rereview` command.
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🔄 Starting Re-Review", "repo", event.RepoFullName, "pr", event.PRNumber)
-	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
+	return j.executeReReviewWorkflow(ctx, event)
+}
+
+func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.GitHubEvent) error {
+	reviewEnv, err := j.setupReviewEnvironment(ctx, event, "Follow-up Review", "Re-analyzing PR...")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
+		}
+	}()
+
+	// 1. Fetch the latest review from the database
+	lastReview, err := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+	if err != nil {
+		j.logger.Warn("failed to fetch last review for re-review", "error", err)
+		// Fallback: If no previous review, run a full review instead
+		return j.executeReviewWorkflow(ctx, event, "Code Review (Fallback)", "No previous review found, running full review...")
+	}
+
+	// 2. Generate Re-Review using RAG service
+	reReviewContent, err := j.ragService.GenerateReReview(ctx, event, lastReview, reviewEnv.ghClient)
+	if err != nil {
+		return fmt.Errorf("failed to generate re-review: %w", err)
+	}
+
+	// 3. Post the result
+	structuredReview := &core.StructuredReview{
+		Summary: reReviewContent,
+		Verdict: "COMMENT", // Re-reviews usually don't change verdict unless specified, keeping it neutral
+	}
+
+	if err := reviewEnv.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
+		return fmt.Errorf("failed to post re-review comment: %w", err)
+	}
+
+	// 4. Save the re-review as a new review record?
+	// Yes, to maintain history.
+	dbReview := &core.Review{
+		RepoFullName:  event.RepoFullName,
+		PRNumber:      event.PRNumber,
+		HeadSHA:       event.HeadSHA,
+		ReviewContent: reReviewContent,
+	}
+	if err := j.store.SaveReview(ctx, dbReview); err != nil {
+		j.logger.Error("failed to save re-review to database", "error", err)
+	}
+
+	return reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID, "success", "Re-Review Complete", "Follow-up analysis finished.")
 }
 
 func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHubEvent, title, summary string) (err error) {
