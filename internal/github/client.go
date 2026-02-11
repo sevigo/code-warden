@@ -60,6 +60,8 @@ func NewPATClient(ctx context.Context, token string, logger *slog.Logger) Client
 	return &gitHubClient{client: client, logger: logger}
 }
 
+const diffSideRight = "RIGHT"
+
 // CreateReview creates a new pull request review with a summary and line-specific comments.
 func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error {
 	var ghComments []*github.DraftReviewComment
@@ -69,11 +71,14 @@ func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, num
 			Line: &c.Line,
 			Body: &c.Body,
 		}
+
 		if c.StartLine > 0 && c.StartLine != c.Line {
 			comment.StartLine = &c.StartLine
 			// StartSide must be provided for multi-line comments per GitHub API spec
-			startSide := "RIGHT"
-			comment.StartSide = &startSide
+			// Side is also required if StartLine is provided.
+			side := diffSideRight
+			comment.StartSide = &side
+			comment.Side = &side
 		}
 		ghComments = append(ghComments, comment)
 	}

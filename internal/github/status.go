@@ -79,6 +79,10 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 			// Enforce sane line ordering: startLine must be <= LineNumber
 			startLine := sug.StartLine
 			if startLine == 0 || startLine > sug.LineNumber {
+				// Log for observability if we are normalizing a weird range
+				if startLine > sug.LineNumber {
+					fmt.Printf("Warning: normalizing invalid range %s:%d-%d to single line %d\n", sug.FilePath, startLine, sug.LineNumber, sug.LineNumber)
+				}
 				startLine = sug.LineNumber // treat as single-line at sug.LineNumber
 			}
 			comments = append(comments, DraftReviewComment{
