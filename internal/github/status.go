@@ -76,10 +76,16 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 	for _, sug := range review.Suggestions {
 		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
 			formattedComment := formatInlineComment(sug)
+			// If StartLine is not provided, assume it's a single-line comment and use LineNumber
+			startLine := sug.StartLine
+			if startLine == 0 {
+				startLine = sug.LineNumber
+			}
 			comments = append(comments, DraftReviewComment{
-				Path: sug.FilePath,
-				Line: sug.LineNumber,
-				Body: formattedComment,
+				Path:      sug.FilePath,
+				Line:      sug.LineNumber,
+				StartLine: startLine,
+				Body:      formattedComment,
 			})
 		}
 	}
@@ -113,6 +119,13 @@ func formatReviewSummary(review *core.StructuredReview) string {
 
 	var sb strings.Builder
 	sb.WriteString("## 🔍 Code Review Summary\n\n")
+
+	// Add Verdict with Icon
+	if review.Verdict != "" {
+		icon := verdictIcon(review.Verdict)
+		sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
+	}
+
 	sb.WriteString(review.Summary)
 	sb.WriteString("\n\n")
 
@@ -136,6 +149,21 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	}
 
 	return sb.String()
+}
+
+// verdictIcon returns an icon for the given verdict.
+func verdictIcon(verdict string) string {
+	v := strings.ToUpper(verdict)
+	if strings.Contains(v, "APPROVE") {
+		return "✅"
+	}
+	if strings.Contains(v, "REQUEST_CHANGES") || strings.Contains(v, "REQUEST CHANGES") {
+		return "🚫"
+	}
+	if strings.Contains(v, "COMMENT") {
+		return "💬"
+	}
+	return "📝"
 }
 
 // severityEmoji returns an emoji for the given severity level.

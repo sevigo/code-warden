@@ -57,7 +57,7 @@ func TestParseSuggestionHeader_MaxLineLength_And_ReDoS(t *testing.T) {
 	// Test ReDoS resilience (time)
 	payload := "## Suggestion [" + strings.Repeat("a:", 1000) + "123]"
 	start := time.Now()
-	_, _, _ = parseSuggestionHeader(payload)
+	_, _, _, _ = parseSuggestionHeader(payload)
 	duration := time.Since(start)
 
 	if duration > 10*time.Millisecond {
@@ -66,7 +66,7 @@ func TestParseSuggestionHeader_MaxLineLength_And_ReDoS(t *testing.T) {
 
 	// Test MaxLineLength enforcement (DoS via allocation)
 	hugePayload := "## Suggestion [" + strings.Repeat("a", 5000) + ":123]"
-	_, _, ok := parseSuggestionHeader(hugePayload)
+	_, _, _, ok := parseSuggestionHeader(hugePayload)
 	if ok {
 		t.Errorf("Expected failure for huge payload > maxLineLength, got success")
 	}
@@ -74,16 +74,24 @@ func TestParseSuggestionHeader_MaxLineLength_And_ReDoS(t *testing.T) {
 
 func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 	tests := []struct {
-		input    string
-		matches  bool
-		filename string
-		line     int
+		input     string
+		matches   bool
+		filename  string
+		startLine int // 0 if single line
+		line      int // end line
 	}{
 		{
 			input:    "##  Suggestion  [internal/main.go:123]", // Double spaces
 			matches:  true,
 			filename: "internal/main.go",
 			line:     123,
+		},
+		{
+			input:     "## Suggestion [main.go:10-20]", // Range
+			matches:   true,
+			filename:  "main.go",
+			startLine: 10,
+			line:      20,
 		},
 		{
 			input:    "## SUGGESTION [C:\\path\\to\\file.go:123]",
@@ -98,8 +106,8 @@ func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 			line:     456,
 		},
 		{
-			input:    "## Suggestion [src/foo.bar: 456]", // Space after colon might be tricky if not handled
-			matches:  true,                               // Current implementation expects :123 without space? Let's check.
+			input:    "## Suggestion [src/foo.bar: 456]", // Space after colon
+			matches:  true,
 			filename: "src/foo.bar",
 			line:     456,
 		},
@@ -123,11 +131,11 @@ func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			file, line, ok := parseSuggestionHeader(tt.input)
+			file, start, end, ok := parseSuggestionHeader(tt.input)
 
 			if !tt.matches {
 				if ok {
-					t.Errorf("Expected no match, got %q:%d", file, line)
+					t.Errorf("Expected no match, got %q:%d-%d", file, start, end)
 				}
 				return
 			}
@@ -139,8 +147,11 @@ func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 			if file != tt.filename {
 				t.Errorf("Filename: got %q, want %q", file, tt.filename)
 			}
-			if line != tt.line {
-				t.Errorf("Line: got %d, want %d", line, tt.line)
+			if start != tt.startLine {
+				t.Errorf("StartLine: got %d, want %d", start, tt.startLine)
+			}
+			if end != tt.line {
+				t.Errorf("Line: got %d, want %d", end, tt.line)
 			}
 		})
 	}

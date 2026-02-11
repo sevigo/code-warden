@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,7 +41,7 @@ if x != nil {
   // ...
 }
 ` + "```",
-			wantSummary: "This is a good PR.\n\n**Verdict:** APPROVE",
+			wantSummary: "This is a good PR.",
 			wantCount:   1,
 			expectErr:   false,
 		},
@@ -73,7 +74,7 @@ Comment 2
 		{
 			name:        "Response Wrapped in Markdown Fence",
 			input:       "```markdown\n# REVIEW SUMMARY\nLooks good.\n\n# VERDICT\nAPPROVE\n```",
-			wantSummary: "Looks good.\n\n**Verdict:** APPROVE",
+			wantSummary: "Looks good.",
 			wantCount:   0,
 			expectErr:   false,
 		},
@@ -85,7 +86,7 @@ Clean code, no issues found.
 # VERDICT
 APPROVE
 `,
-			wantSummary: "Clean code, no issues found.\n\n**Verdict:** APPROVE",
+			wantSummary: "Clean code, no issues found.",
 			wantCount:   0,
 			expectErr:   false,
 		},
@@ -123,6 +124,22 @@ Issue here.
 			wantCount:   1,
 			expectErr:   false,
 		},
+		{
+			name: "Multiline Suggestion",
+			input: `# REVIEW SUMMARY
+Summary
+
+# SUGGESTIONS
+
+## Suggestion [main.go:10-20]
+**Severity:** Low
+### Comment
+Refactor this range.
+`,
+			wantSummary: "Summary",
+			wantCount:   1,
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -137,6 +154,11 @@ Issue here.
 			assert.Len(t, got.Suggestions, tt.wantCount)
 			if tt.wantCount > 0 {
 				assert.NotEmpty(t, got.Suggestions[0].FilePath)
+				// For multiline test, verify start/end
+				if strings.Contains(tt.name, "Multiline") {
+					assert.Equal(t, 10, got.Suggestions[0].StartLine)
+					assert.Equal(t, 20, got.Suggestions[0].LineNumber)
+				}
 			}
 		})
 	}
