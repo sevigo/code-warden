@@ -12,60 +12,64 @@ import (
 var (
 	// Matches: ## Suggestion [path/to/file.go:123] or ## Suggestion [path/to/file.go: 123]
 	// Uses greedy .+ to match until the LAST colon, so Windows paths like C:\src\main.go:123 work.
+
 	// suggestionHeaderRegex is removed in favor of manual parsing (parseSuggestionHeader)
 	// to prevent ReDoS and support Windows paths (which contain colons).
 	severityRegex = regexp.MustCompile(`(?i)\*\*Severity:?\*\*\s*(.*)`)
 	categoryRegex = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
 )
 
+const (
+	// maxLineLength limits the length of lines we parse to prevent DoS via large allocations.
+	maxLineLength = 4096
+)
+
 // parseSuggestionHeader extracts file path and line number from a suggestion header.
 // Format: "## Suggestion [path/to/file.go:123]"
 // Standardizes on manual parsing to be 1. ReDoS-proof (linear time) and 2. Windows-path friendly.
+// Also enforces maxLineLength to prevent DoS.
 func parseSuggestionHeader(line string) (string, int, bool) {
-	const prefix = "## Suggestion ["
-	if !strings.HasPrefix(line, prefix) && !strings.HasPrefix(line, "## SUGGESTION [") {
-		// Case-insensitive check for prefix is a bit trickier without regex, but LLMs generally match case.
-		// Let's do a quick Lower() check if exact match fails, or just strict prefix if we trust LLM constant output.
-		// The regex was (?i), so we should be case-insensitive.
-		if !strings.HasPrefix(strings.ToLower(line), strings.ToLower(prefix)) {
-			return "", 0, false
-		}
-	}
-
-	// Determine the actual casing of the prefix used, to slice correctly
-	// Actually, just find the first '[' and start from there?
-	// The prefix "## Suggestion [" len is 15.
-
-	lowerLine := strings.ToLower(line)
-	lowerPrefix := strings.ToLower(prefix)
-	if !strings.HasPrefix(lowerLine, lowerPrefix) {
+	if len(line) > maxLineLength {
 		return "", 0, false
 	}
 
-	// Find closing bracket
-	closingIdx := strings.LastIndex(line, "]")
-	if closingIdx == -1 || closingIdx <= len(prefix) {
+	// Use Fields to tolerate variable whitespace (e.g. "##  Suggestion")
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
 		return "", 0, false
 	}
 
-	// Handle potential whitespace after prefix if LLM adds it? strict prefix len might cut into content if spacing varies.
-	// Current implementation assumes single space.
-	// Regexp was `##\s+Suggestion\s+`.
-	// We should be robust.
+	// Case-insensitive check for generic parts
+	if !strings.EqualFold(fields[0], "##") || !strings.EqualFold(fields[1], "suggestion") {
+		return "", 0, false
+	}
 
-	// Robust finding of content start:
+	// Reconstruct the "content" part ([...]) because Fields split it if it had spaces (unlikely for paths, but possible in malformed input)
+	// Actually, we expect the format "## Suggestion [path:line]".
+	// "path:line" should not have spaces inside usually, but let's be robust.
+	// The path itself *could* have spaces, so splitting by Fields might have broken the path.
+	// e.g. "## Suggestion [path/to/my file.go:123]" -> fields: "##", "Suggestion", "[path/to/my", "file.go:123]"
+	// So we need to find where the bracketed content starts and ends in the ORIGINAL line, not from fields.
+
+	// We used Fields just to check the prefix robustly.
+	// Now let's find the content in the original line.
+
 	startIdx := strings.Index(line, "[")
 	if startIdx == -1 {
 		return "", 0, false
 	}
-	content := line[startIdx+1 : closingIdx]
 
+	closingIdx := strings.LastIndex(line, "]")
+	if closingIdx == -1 || closingIdx <= startIdx {
+		return "", 0, false
+	}
+
+	content := line[startIdx+1 : closingIdx]
 	if content == "" {
 		return "", 0, false
 	}
 
 	// Split on the *last* colon to get path and line.
-	// This works for Windows paths (C:\foo.go:123) because the drive colon is earlier.
 	lastColon := strings.LastIndex(content, ":")
 	if lastColon == -1 {
 		return "", 0, false
@@ -89,15 +93,12 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 
 // ParseError represents a failure to parse the LLM output into a structured format.
 type ParseError struct {
-	RawContent string
-	Err        error
+	Message string
 }
 
 func (e *ParseError) Error() string {
-	return fmt.Sprintf("failed to parse LLM output: %v", e.Err)
+	return e.Message
 }
-
-func (e *ParseError) Unwrap() error { return e.Err }
 
 // parseMarkdownReview extracts structured review data from the LLM's Markdown output.
 func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
@@ -267,10 +268,10 @@ func stripMarkdownFence(s string) string {
 		return s
 	}
 
-	// Find closing fence anywhere after first line (scanning backwards)
-	// This handles cases where LLMs add trailing text after the json/markdown block.
+	// Find first closing fence after the opening line (scanning forward)
+	// This prevents over-stripping if the LLM output contains multiple fenced blocks or trailing text.
 	closeIdx := -1
-	for i := len(lines) - 1; i > 0; i-- {
+	for i := 1; i < len(lines); i++ {
 		if strings.TrimSpace(lines[i]) == "```" {
 			closeIdx = i
 			break

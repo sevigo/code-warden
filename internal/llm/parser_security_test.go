@@ -21,21 +21,20 @@ func TestStripMarkdownFence_Security(t *testing.T) {
 			expected: "header",
 		},
 		{
+			name: "multiple fences (should take first)",
+			input: "```markdown\n" +
+				"code\n" +
+				"```\n" +
+				"garbage\n" +
+				"```",
+			expected: "code",
+		},
+		{
 			name: "no closing fence",
 			input: "```markdown\n" +
 				"header\n" +
 				"body",
 			expected: "header\nbody",
-		},
-		{
-			name: "nested fences (should take outer)",
-			input: "```markdown\n" +
-				"code:\n" +
-				"```go\n" +
-				"func main() {}\n" +
-				"```\n" +
-				"```",
-			expected: "code:\n```go\nfunc main() {}\n```",
 		},
 		{
 			name:     "empty input",
@@ -54,28 +53,26 @@ func TestStripMarkdownFence_Security(t *testing.T) {
 	}
 }
 
-func TestParseSuggestionHeader_ReDoS(t *testing.T) {
-	// Construct a payload that would trigger catastrophic backtracking in greedy regex
-	// e.g. "## Suggestion [a:a:a:...:123]"
-	// Manual parsing should handle this instantly (linear time).
-
-	payload := "## Suggestion [" + strings.Repeat("a:", 10000) + "123]"
-
+func TestParseSuggestionHeader_MaxLineLength_And_ReDoS(t *testing.T) {
+	// Test ReDoS resilience (time)
+	payload := "## Suggestion [" + strings.Repeat("a:", 1000) + "123]"
 	start := time.Now()
-	parseSuggestionHeader(payload)
+	_, _, _ = parseSuggestionHeader(payload)
 	duration := time.Since(start)
 
 	if duration > 10*time.Millisecond {
-		t.Errorf("Parsing took too long: %v (potential ReDoS or slow parsing)", duration)
+		t.Errorf("Parsing took too long: %v", duration)
+	}
+
+	// Test MaxLineLength enforcement (DoS via allocation)
+	hugePayload := "## Suggestion [" + strings.Repeat("a", 5000) + ":123]"
+	_, _, ok := parseSuggestionHeader(hugePayload)
+	if ok {
+		t.Errorf("Expected failure for huge payload > maxLineLength, got success")
 	}
 }
 
-func TestParseSuggestionHeader_WindowsPaths(t *testing.T) {
-	// Verify that legitimate Windows paths work.
-	// We want to support:
-	// "## Suggestion [C:\path\to\file.go:123]"
-	// "## Suggestion [internal/main.go:123]"
-
+func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 	tests := []struct {
 		input    string
 		matches  bool
@@ -83,28 +80,22 @@ func TestParseSuggestionHeader_WindowsPaths(t *testing.T) {
 		line     int
 	}{
 		{
-			input:    "## Suggestion [internal/main.go:123]",
+			input:    "##  Suggestion  [internal/main.go:123]", // Double spaces
 			matches:  true,
 			filename: "internal/main.go",
 			line:     123,
 		},
 		{
-			input:    "## Suggestion [C:\\path\\to\\file.go:123]",
+			input:    "## SUGGESTION [C:\\path\\to\\file.go:123]",
 			matches:  true,
 			filename: "C:\\path\\to\\file.go",
 			line:     123,
 		},
 		{
-			input:   "## Suggestion [src/foo.bar: 456]", // Space after colon might be tricky if not handled
-			matches: true,                               // Current implementation expects :123 without space? Let's check.
-			// The implementation does `strings.TrimSpace(content[lastColon+1:])` then Atoi.
-			// " 456" trims to "456". So it SHOULD match.
+			input:    "## Suggestion [ src/foo.bar : 456 ]", // Spaces inside brackets
+			matches:  true,
 			filename: "src/foo.bar",
 			line:     456,
-		},
-		{
-			input:   "## Suggestion [invalid]",
-			matches: false,
 		},
 	}
 

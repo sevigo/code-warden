@@ -511,32 +511,40 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 		return "", fmt.Errorf("invalid join path: %w", err)
 	}
 
-	// Simple symlink resolution:
-	// If the path exists, resolve it fully.
-	// If it doesn't exist, we can't resolve it, so we fallback to Clean()
-	// and rely on the subsequent containment check to ensure the logical path is safe.
-	// This avoids the complex parent-walking loop which caused truncation bugs.
-	resolvedPath, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Path doesn't exist, use the cleaned absolute path
-			absPath = filepath.Clean(absPath)
-		} else {
-			return "", fmt.Errorf("symlink resolution failed: %w", err)
-		}
-	} else {
-		absPath = resolvedPath
-	}
-
+	// CRITICAL: Ensure absPath is contained in cleanRepo *before* symlink resolution.
+	// This prevents attacks where a non-existent path with ".." components is "cleaned"
+	// by filepath.Clean (in the fallback below), effectively cancelling the ".." and
+	// bypassing the check if we only checked specific paths.
 	rel, err := filepath.Rel(cleanRepo, absPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to get relative path: %w", err)
 	}
-	// Check for traversal
 	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("path traversal attempt detected: %s", relPath)
 	}
-	return absPath, nil
+
+	// Resolve symlinks to detect if the path *logically* points outside the repo.
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Path doesn't exist, but we already confirmed the unresolved path is contained.
+			// Since it doesn't exist, it can't differ from the unresolved path (no symlinks to follow).
+			// So it's safe to return the unresolved absolute path.
+			return absPath, nil
+		}
+		return "", fmt.Errorf("symlink resolution failed: %w", err)
+	}
+
+	// Re-check containment after resolution (catches symlink pointing out)
+	rel2, err := filepath.Rel(cleanRepo, resolvedPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get relative path after resolution: %w", err)
+	}
+	if strings.HasPrefix(rel2, "..") || filepath.IsAbs(rel2) {
+		return "", fmt.Errorf("path traversal via symlink detected: %s", relPath)
+	}
+
+	return resolvedPath, nil
 }
 
 func (r *ragService) generateSingleSummary(ctx context.Context, modelName, _ string, info *DirectoryInfo, llm llms.Model) string {
