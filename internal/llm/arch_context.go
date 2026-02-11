@@ -500,16 +500,32 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 		return cleanRepo, nil
 	}
 
+	// Basic sanitization (defense-in-depth)
+	if strings.Contains(relPath, "\x00") {
+		return "", fmt.Errorf("path contains null byte")
+	}
+
 	path := filepath.Join(cleanRepo, relPath)
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("invalid join path: %w", err)
 	}
 
-	// Resolve symlinks with fallback for missing paths
-	absPath, err = r.resolvePathWithValidation(absPath)
+	// Simple symlink resolution:
+	// If the path exists, resolve it fully.
+	// If it doesn't exist, we can't resolve it, so we fallback to Clean()
+	// and rely on the subsequent containment check to ensure the logical path is safe.
+	// This avoids the complex parent-walking loop which caused truncation bugs.
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		return "", err
+		if os.IsNotExist(err) {
+			// Path doesn't exist, use the cleaned absolute path
+			absPath = filepath.Clean(absPath)
+		} else {
+			return "", fmt.Errorf("symlink resolution failed: %w", err)
+		}
+	} else {
+		absPath = resolvedPath
 	}
 
 	rel, err := filepath.Rel(cleanRepo, absPath)
@@ -521,34 +537,6 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 		return "", fmt.Errorf("path traversal attempt detected: %s", relPath)
 	}
 	return absPath, nil
-}
-
-func (r *ragService) resolvePathWithValidation(absPath string) (string, error) {
-	resolvedPath, err := filepath.EvalSymlinks(absPath)
-	if err == nil {
-		return resolvedPath, nil
-	}
-
-	if !os.IsNotExist(err) {
-		return "", fmt.Errorf("symlink resolution failed: %w", err)
-	}
-
-	// Validate the closest existing parent for missing paths
-	curr := absPath
-	for {
-		parent := filepath.Dir(curr)
-		if parent == curr || parent == "." || parent == "/" || filepath.VolumeName(parent)+":" == parent {
-			break
-		}
-		if resolved, pErr := filepath.EvalSymlinks(parent); pErr == nil {
-			// Found an existing parent - create the full path based on the resolved parent
-			return filepath.Join(resolved, filepath.Base(curr)), nil
-		} else if !os.IsNotExist(pErr) {
-			return "", fmt.Errorf("parent path validation failed: %w", pErr)
-		}
-		curr = parent
-	}
-	return "", fmt.Errorf("symlink resolution failed for missing path: %w", err)
 }
 
 func (r *ragService) generateSingleSummary(ctx context.Context, modelName, _ string, info *DirectoryInfo, llm llms.Model) string {

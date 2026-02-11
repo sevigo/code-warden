@@ -54,93 +54,86 @@ func TestStripMarkdownFence_Security(t *testing.T) {
 	}
 }
 
-func TestSuggestionHeaderRegex_ReDoS(t *testing.T) {
+func TestParseSuggestionHeader_ReDoS(t *testing.T) {
 	// Construct a payload that would trigger catastrophic backtracking in greedy regex
 	// e.g. "## Suggestion [a:a:a:...:123]"
-	// The new regex uses [^\]:]+ which shouldn't backtrack on colons.
+	// Manual parsing should handle this instantly (linear time).
 
 	payload := "## Suggestion [" + strings.Repeat("a:", 10000) + "123]"
 
 	start := time.Now()
-	matches := suggestionHeaderRegex.FindStringSubmatch(payload)
+	_, _, ok := parseSuggestionHeader(payload)
 	duration := time.Since(start)
 
-	if duration > 100*time.Millisecond {
-		t.Errorf("Regex took too long: %v (potential ReDoS)", duration)
+	if duration > 10*time.Millisecond {
+		t.Errorf("Parsing took too long: %v (potential ReDoS or slow parsing)", duration)
 	}
 
-	if len(matches) != 0 {
-		// It shouldn't match because the part before the last colon contains colons,
-		// and our new regex `[^\]:]+` forbids colons in the filename part.
-		// Wait, actually, the regex `([^\]:]+):\s*(\d+)` expects NO colons in the first group.
-		// So `a:a:123` should fail to match "a:a" as filename.
-		// This is the desired security behavior: filenames in suggestions shouldn't have colons
-		// (except drive letters on Windows? Wait, the review said "Windows paths like C:\src\main.go:123" worked with greedy)
-		// Let's re-read the review and my fix.
-		t.Logf("Payload matched: %v", matches)
+	if ok {
+		// It might be valid if "a:a:...:a" is considered a filename.
+		// Our parser allows it (it just splits on last colon).
+		// That's fine, as long as it's fast.
 	}
 }
 
-func TestSuggestionHeaderRegex_WindowsPaths(t *testing.T) {
-	// Verify that legitimate Windows paths still work or fail gracefully.
-	// Current regex: `(?i)##\s+Suggestion\s+\[([^\]:]+):\s*(\d+)\]`
-	// This regex explicitly DISALLOWS colons in the filename.
-	// So "C:\path\file.go:123" will FAIL.
-	// This might be a regression if we support Windows paths with drive letters.
-
-	// Let's check what the previous regex supported.
-	// Previous: `(.+):(\d+)` -> matched "C:\path\file.go" as group 1.
-
-	// New regex: `([^\]:]+)` -> stops at the first colon.
-	// So "C:\path\file.go:123" -> matches "C" as filename, then expects ":123".
-	// It sees ":\path..." which doesn't match `:\s*(\d+)`.
-
-	// This confirms the fix breaks absolute Windows paths in suggestions.
-	// However, suggestions usually use RELATIVE paths (e.g. "internal/main.go").
-	// Relative paths don't have colons.
+func TestParseSuggestionHeader_WindowsPaths(t *testing.T) {
+	// Verify that legitimate Windows paths work.
+	// We want to support:
+	// "## Suggestion [C:\path\to\file.go:123]"
+	// "## Suggestion [internal/main.go:123]"
 
 	tests := []struct {
 		input    string
 		matches  bool
 		filename string
-		line     string
+		line     int
 	}{
 		{
 			input:    "## Suggestion [internal/main.go:123]",
 			matches:  true,
 			filename: "internal/main.go",
-			line:     "123",
+			line:     123,
 		},
 		{
-			input:    "## Suggestion [src/foo.bar: 456]",
+			input:    "## Suggestion [C:\\path\\to\\file.go:123]",
 			matches:  true,
-			filename: "src/foo.bar",
-			line:     "456",
+			filename: "C:\\path\\to\\file.go",
+			line:     123,
 		},
-		// This is the trade-off. Relative paths are standard in PR reviews.
-		// Absolute paths are dangerous anyway (path traversal).
+		{
+			input:   "## Suggestion [src/foo.bar: 456]", // Space after colon might be tricky if not handled
+			matches: true,                               // Current implementation expects :123 without space? Let's check.
+			// The implementation does `strings.TrimSpace(content[lastColon+1:])` then Atoi.
+			// " 456" trims to "456". So it SHOULD match.
+			filename: "src/foo.bar",
+			line:     456,
+		},
+		{
+			input:   "## Suggestion [invalid]",
+			matches: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			m := suggestionHeaderRegex.FindStringSubmatch(tt.input)
+			file, line, ok := parseSuggestionHeader(tt.input)
 
 			if !tt.matches {
-				if len(m) != 0 {
-					t.Errorf("Expected no match, got %v", m)
+				if ok {
+					t.Errorf("Expected no match, got %q:%d", file, line)
 				}
 				return
 			}
 
-			if len(m) != 3 {
+			if !ok {
 				t.Errorf("Expected match, got none")
 				return
 			}
-			if m[1] != tt.filename {
-				t.Errorf("Filename: got %q, want %q", m[1], tt.filename)
+			if file != tt.filename {
+				t.Errorf("Filename: got %q, want %q", file, tt.filename)
 			}
-			if m[2] != tt.line {
-				t.Errorf("Line: got %q, want %q", m[2], tt.line)
+			if line != tt.line {
+				t.Errorf("Line: got %d, want %d", line, tt.line)
 			}
 		})
 	}

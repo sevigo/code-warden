@@ -12,11 +12,81 @@ import (
 var (
 	// Matches: ## Suggestion [path/to/file.go:123] or ## Suggestion [path/to/file.go: 123]
 	// Uses greedy .+ to match until the LAST colon, so Windows paths like C:\src\main.go:123 work.
-	// Uses non-greedy capture and excludes colons to prevent ReDoS (Fixes Critical Security Issue)
-	suggestionHeaderRegex = regexp.MustCompile(`(?i)##\s+Suggestion\s+\[([^\]:]+):\s*(\d+)\]`)
-	severityRegex         = regexp.MustCompile(`(?i)\*\*Severity:?\*\*\s*(.*)`)
-	categoryRegex         = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
+	// suggestionHeaderRegex is removed in favor of manual parsing (parseSuggestionHeader)
+	// to prevent ReDoS and support Windows paths (which contain colons).
+	severityRegex = regexp.MustCompile(`(?i)\*\*Severity:?\*\*\s*(.*)`)
+	categoryRegex = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
 )
+
+// parseSuggestionHeader extracts file path and line number from a suggestion header.
+// Format: "## Suggestion [path/to/file.go:123]"
+// Standardizes on manual parsing to be 1. ReDoS-proof (linear time) and 2. Windows-path friendly.
+func parseSuggestionHeader(line string) (string, int, bool) {
+	const prefix = "## Suggestion ["
+	if !strings.HasPrefix(line, prefix) && !strings.HasPrefix(line, "## SUGGESTION [") {
+		// Case-insensitive check for prefix is a bit trickier without regex, but LLMs generally match case.
+		// Let's do a quick Lower() check if exact match fails, or just strict prefix if we trust LLM constant output.
+		// The regex was (?i), so we should be case-insensitive.
+		if !strings.HasPrefix(strings.ToLower(line), strings.ToLower(prefix)) {
+			return "", 0, false
+		}
+	}
+
+	// Determine the actual casing of the prefix used, to slice correctly
+	// Actually, just find the first '[' and start from there?
+	// The prefix "## Suggestion [" len is 15.
+
+	lowerLine := strings.ToLower(line)
+	lowerPrefix := strings.ToLower(prefix)
+	if !strings.HasPrefix(lowerLine, lowerPrefix) {
+		return "", 0, false
+	}
+
+	// Find closing bracket
+	closingIdx := strings.LastIndex(line, "]")
+	if closingIdx == -1 || closingIdx <= len(prefix) {
+		return "", 0, false
+	}
+
+	content := line[len(prefix):closingIdx]
+	// Handle potential whitespace after prefix if LLM adds it? strict prefix len might cut into content if spacing varies.
+	// Current implementation assumes single space.
+	// Regexp was `##\s+Suggestion\s+`.
+	// We should be robust.
+
+	// Robust finding of content start:
+	startIdx := strings.Index(line, "[")
+	if startIdx == -1 {
+		return "", 0, false
+	}
+	content = line[startIdx+1 : closingIdx]
+
+	if content == "" {
+		return "", 0, false
+	}
+
+	// Split on the *last* colon to get path and line.
+	// This works for Windows paths (C:\foo.go:123) because the drive colon is earlier.
+	lastColon := strings.LastIndex(content, ":")
+	if lastColon == -1 {
+		return "", 0, false
+	}
+
+	filePath := strings.TrimSpace(content[:lastColon])
+	lineStr := strings.TrimSpace(content[lastColon+1:])
+
+	lineNum, err := strconv.Atoi(lineStr)
+	if err != nil {
+		return "", 0, false
+	}
+
+	// Basic sanitization
+	if strings.ContainsAny(filePath, "\x00\r\n") {
+		return "", 0, false
+	}
+
+	return filePath, lineNum, true
+}
 
 // ParseError represents a failure to parse the LLM output into a structured format.
 type ParseError struct {
@@ -72,12 +142,11 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 			// Flush previous suggestion
 			flushSuggestion(review, currentSuggestion, &commentBuilder)
 
-			// Parse new suggestion header
-			matches := suggestionHeaderRegex.FindStringSubmatch(line)
-			if len(matches) == 3 {
-				lineNum, _ := strconv.Atoi(matches[2])
+			// Parse new suggestion header manually
+			filePath, lineNum, ok := parseSuggestionHeader(line)
+			if ok {
 				currentSuggestion = &core.Suggestion{
-					FilePath:   strings.TrimSpace(matches[1]),
+					FilePath:   filePath,
 					LineNumber: lineNum,
 				}
 			} else {
