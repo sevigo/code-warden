@@ -114,6 +114,7 @@ Respond ONLY with a valid Markdown document.
 # SUGGESTIONS
 
 ## Suggestion [relative/path/to/file:123]
+**(Do NOT wrap path in backticks! Use standard hyphens for ranges `10-20`)**
 **Severity:** [Critical|High|Medium|Low]
 **Category:** [Logic|Performance|Security|Architecture|Readability]
 

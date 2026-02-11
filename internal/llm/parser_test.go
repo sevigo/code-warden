@@ -206,10 +206,13 @@ Fix file wrapped in backticks.
 			if tt.wantCount > 0 {
 				assert.NotEmpty(t, got.Suggestions[0].FilePath)
 				// For multiline test, verify start/end
-				if strings.Contains(tt.name, "Multiline") || strings.Contains(tt.name, "En Dash") {
+				isMultiline := strings.Contains(tt.name, "Multiline") || strings.Contains(tt.name, "En Dash")
+				isBackticks := strings.Contains(tt.name, "Backticks")
+
+				if isMultiline {
 					assert.Equal(t, 10, got.Suggestions[0].StartLine)
 					assert.Equal(t, 20, got.Suggestions[0].LineNumber)
-				} else if strings.Contains(tt.name, "Backticks") {
+				} else if isBackticks {
 					assert.Equal(t, 15, got.Suggestions[0].LineNumber)
 					assert.Equal(t, 15, got.Suggestions[0].StartLine)
 				} else {
