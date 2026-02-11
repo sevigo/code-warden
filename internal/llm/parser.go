@@ -48,7 +48,6 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 		return "", 0, false
 	}
 
-	content := line[len(prefix):closingIdx]
 	// Handle potential whitespace after prefix if LLM adds it? strict prefix len might cut into content if spacing varies.
 	// Current implementation assumes single space.
 	// Regexp was `##\s+Suggestion\s+`.
@@ -59,7 +58,7 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 	if startIdx == -1 {
 		return "", 0, false
 	}
-	content = line[startIdx+1 : closingIdx]
+	content := line[startIdx+1 : closingIdx]
 
 	if content == "" {
 		return "", 0, false

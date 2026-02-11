@@ -62,17 +62,11 @@ func TestParseSuggestionHeader_ReDoS(t *testing.T) {
 	payload := "## Suggestion [" + strings.Repeat("a:", 10000) + "123]"
 
 	start := time.Now()
-	_, _, ok := parseSuggestionHeader(payload)
+	parseSuggestionHeader(payload)
 	duration := time.Since(start)
 
 	if duration > 10*time.Millisecond {
 		t.Errorf("Parsing took too long: %v (potential ReDoS or slow parsing)", duration)
-	}
-
-	if ok {
-		// It might be valid if "a:a:...:a" is considered a filename.
-		// Our parser allows it (it just splits on last colon).
-		// That's fine, as long as it's fast.
 	}
 }
 
