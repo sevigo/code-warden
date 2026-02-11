@@ -33,36 +33,29 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 		return "", 0, false
 	}
 
-	// Implementation handles both "## Suggestion ..." and "## path:line"
-	// so we don't enforce strict field count or "Suggestion" keyword here anymore.
-
-	// Reconstruct the "content" part ([...]) because Fields split it if it had spaces (unlikely for paths, but possible in malformed input)
-	// "path:line" should not have spaces inside usually, but let's be robust.
-	// The path itself *could* have spaces, so splitting by Fields might have broken the path.
-	// e.g. "## Suggestion [path/to/my file.go:123]" -> fields: "##", "Suggestion", "[path/to/my", "file.go:123]"
-	// So we need to find where the bracketed content starts and ends in the ORIGINAL line, not from fields.
-
 	// Clean up the header line
 	header := strings.TrimSpace(line)
 	header = strings.TrimPrefix(header, "##")
 	header = strings.TrimSpace(header)
 
-	// Try standard format: "Suggestion [path:line]"
-	// We use a regex or detailed parsing? The original used strings.Fields.
-	// Let's implement a robust multi-strategy approach.
-
-	// Strategy 1: Check for "Suggestion" prefix
+	// Strategy 1: "Suggestion [path:line]" or "Suggestion path:line"
+	// Check case-insensitive prefix
 	if strings.HasPrefix(strings.ToLower(header), "suggestion") {
-		parts := strings.Fields(header)
-		if len(parts) >= 2 {
-			// Expected: Suggestion [path:line]
-			locationPart := parts[1]
-			locationPart = strings.TrimPrefix(locationPart, "[")
-			locationPart = strings.TrimSuffix(locationPart, "]")
-			if path, line, ok := parsePathAndLine(locationPart); ok {
-				return path, line, true
-			}
+		// Strip "Suggestion"
+		rest := header[len("suggestion"):]
+		rest = strings.TrimSpace(rest)
+		// Strip outer brackets if present
+		rest = strings.TrimPrefix(rest, "[")
+		rest = strings.TrimSuffix(rest, "]")
+		rest = strings.TrimSpace(rest)
+
+		if path, line, ok := parsePathAndLine(rest); ok {
+			return path, line, true
 		}
+		// If it started with "Suggestion" but failed to parse, it's likely a malformed suggestion header.
+		// However, we should double check if "Suggestion" is actually part of the filename?
+		// Unlikely. We return false here to avoid false positives in Strategy 2.
+		return "", 0, false
 	}
 
 	// Strategy 2: Direct "path:line" format (e.g. "internal/storage/database.go:250")
