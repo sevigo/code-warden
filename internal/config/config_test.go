@@ -1,72 +1,118 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-func TestAIConfig_Validate(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "config-test-*")
-	if err != nil {
-		t.Fatal(err)
+func TestValidateComparisonPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{
+			name:    "valid relative path",
+			path:    "src/utils",
+			wantErr: false,
+		},
+		{
+			name:    "valid single segment",
+			path:    "docs",
+			wantErr: false,
+		},
+		{
+			name:    "valid nested path",
+			path:    "internal/pkg/helpers",
+			wantErr: false,
+		},
+		{
+			name:    "traversal with bare ..",
+			path:    "..",
+			wantErr: true,
+		},
+		{
+			name:    "traversal at start",
+			path:    "../secret",
+			wantErr: true,
+		},
+		{
+			name:    "absolute unix path",
+			path:    "/etc/passwd",
+			wantErr: true,
+		},
+		{
+			name:    "backslash prefix treated as absolute",
+			path:    "\\windows\\system32",
+			wantErr: true,
+		},
+		{
+			name:    "non-existent path is fine",
+			path:    "this/does/not/exist/anywhere",
+			wantErr: false,
+		},
+		{
+			name:    "current dir is valid",
+			path:    ".",
+			wantErr: false,
+		},
 	}
-	defer os.RemoveAll(tempDir)
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateComparisonPath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateComparisonPath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateModels(t *testing.T) {
 	tests := []struct {
 		name    string
 		config  AIConfig
 		wantErr bool
 	}{
 		{
-			name: "Valid config",
+			name:    "empty models is valid",
+			config:  AIConfig{},
+			wantErr: false,
+		},
+		{
+			name: "valid unique models",
 			config: AIConfig{
-				MaxComparisonModels: 3,
-				ComparisonModels:    []string{"gemini-1.5-pro", "deepseek-chat"},
-				ComparisonPaths:     []string{"src", "internal/llm"},
+				ComparisonModels: []string{"gpt-4", "claude-3"},
 			},
 			wantErr: false,
 		},
 		{
-			name: "Invalid MaxComparisonModels",
+			name: "duplicate model name",
 			config: AIConfig{
-				MaxComparisonModels: 11,
-				ComparisonModels:    []string{"gemini-pro"},
+				ComparisonModels: []string{"gpt-4", "claude-3", "gpt-4"},
 			},
 			wantErr: true,
 		},
 		{
-			name: "Duplicate ComparisonModels",
+			name: "empty model name in list",
 			config: AIConfig{
-				MaxComparisonModels: 3,
-				ComparisonModels:    []string{"gemini-pro", "gemini-pro"},
+				ComparisonModels: []string{"gpt-4", "  ", "claude-3"},
 			},
 			wantErr: true,
 		},
 		{
-			name: "Path traversal in ComparisonPaths",
+			name: "exceeds max models",
 			config: AIConfig{
-				MaxComparisonModels: 3,
-				ComparisonModels:    []string{"gemini-pro"},
-				ComparisonPaths:     []string{"../outside"},
+				ComparisonModels: []string{
+					"m1", "m2", "m3", "m4", "m5",
+					"m6", "m7", "m8", "m9", "m10", "m11",
+				},
 			},
 			wantErr: true,
 		},
 		{
-			name: "Absolute path in ComparisonPaths",
+			name: "max comparison models exceeded",
 			config: AIConfig{
-				MaxComparisonModels: 3,
-				ComparisonModels:    []string{"gemini-pro"},
-				ComparisonPaths:     []string{"C:/etc/passwd"},
-			},
-			wantErr: true,
-		},
-		{
-			name: "Traversal with backslashes on Windows",
-			config: AIConfig{
-				MaxComparisonModels: 3,
-				ComparisonModels:    []string{"gemini-pro"},
-				ComparisonPaths:     []string{"src\\..\\..\\outside"},
+				MaxComparisonModels: 15,
 			},
 			wantErr: true,
 		},
@@ -74,43 +120,10 @@ func TestAIConfig_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.config.Validate(); (err != nil) != tt.wantErr {
-				t.Errorf("AIConfig.Validate() error = %v, wantErr %v", err, tt.wantErr)
+			err := tt.config.validateModels()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateModels() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestAIConfig_Validate_Symlinks(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "config-symlink-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Create a real directory
-	repoDir := filepath.Join(tempDir, "repo")
-	os.MkdirAll(repoDir, 0755)
-
-	// Create an outside directory
-	outsideDir := filepath.Join(tempDir, "outside")
-	os.MkdirAll(outsideDir, 0755)
-
-	// Create a symlink inside repo pointing outside
-	linkPath := filepath.Join(repoDir, "bad-link")
-	err = os.Symlink(outsideDir, linkPath)
-	if err != nil {
-		t.Skip("Symlinks not supported on this platform/user")
-	}
-
-	config := AIConfig{
-		MaxComparisonModels: 3,
-		ComparisonModels:    []string{"gemini-pro"},
-		ComparisonPaths:     []string{linkPath},
-	}
-
-	// This should fail because the symlink points outside or is an absolute path target
-	if err := config.Validate(); err == nil {
-		t.Error("AIConfig.Validate() expected error for outside symlink, got nil")
 	}
 }

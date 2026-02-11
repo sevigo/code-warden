@@ -91,7 +91,6 @@ func (t *stepTimer) infof(format string, args ...any) {
 	}
 }
 
-//nolint:gocognit,nestif // High-level CLI command orchestration
 func runReview(_ *cobra.Command, args []string) error {
 	ctx := context.Background()
 	prURL := args[0]
@@ -147,20 +146,29 @@ func runReview(_ *cobra.Command, args []string) error {
 	timer.step("Generating review")
 
 	var review *core.StructuredReview
+
+	// Fetch diff and changed files once for both review paths
+	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR diff: %w", err)
+	}
+	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get changed files: %w", err)
+	}
+
 	if numModels := len(appInstance.Cfg.AI.ComparisonModels); numModels > 0 {
 		if numModels < 2 {
 			return fmt.Errorf("consensus review requires at least 2 models, got %d", numModels)
 		}
 
 		timer.infof("Running consensus review with %d models...", numModels)
-		// In consensus mode, we get a single synthesized review
-		review, err = appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, ghClient, appInstance.Cfg.AI.ComparisonModels)
+		review, _, err = appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, appInstance.Cfg.AI.ComparisonModels, diff, changedFiles)
 		if err != nil {
 			return fmt.Errorf("consensus review failed: %w", err)
 		}
 	} else {
-		// Standard single-model review
-		review, err = generateReview(ctx, appInstance, repo, event, ghClient, timer)
+		review, err = generateReview(ctx, appInstance, repo, event, diff, changedFiles, timer)
 		if err != nil {
 			return err
 		}
@@ -243,8 +251,8 @@ func syncRepository(ctx context.Context, appInstance *app.App, event *core.GitHu
 	return syncResult, repo, nil
 }
 
-func generateReview(ctx context.Context, appInstance *app.App, repo *storage.Repository, event *core.GitHubEvent, ghClient github.Client, timer *stepTimer) (*core.StructuredReview, error) {
-	review, _, err := appInstance.RAGService.GenerateReview(ctx, nil, repo, event, ghClient)
+func generateReview(ctx context.Context, appInstance *app.App, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile, timer *stepTimer) (*core.StructuredReview, error) {
+	review, _, err := appInstance.RAGService.GenerateReview(ctx, nil, repo, event, diff, changedFiles)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate review: %w\n\nTip: Check that the LLM service is running", err)
 	}

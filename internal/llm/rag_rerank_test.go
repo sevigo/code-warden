@@ -6,13 +6,14 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/sevigo/code-warden/internal/config"
-	internalgithub "github.com/sevigo/code-warden/internal/github"
-	"github.com/sevigo/code-warden/mocks"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
+
+	"github.com/sevigo/code-warden/internal/config"
+	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/mocks"
 )
 
 func TestSearchHyDEBatch_Reranking(t *testing.T) {

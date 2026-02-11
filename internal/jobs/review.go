@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/sevigo/code-warden/internal/config"
@@ -86,9 +87,6 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 }
 
 // runReReview handles the `/rereview` command.
-// It reuses the same robust workflow as full review, ensuring repository state is consistent
-// before generating the review. Since indexing is incremental, this is efficient even if
-// run repeatedly.
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🔄 Starting Re-Review", "repo", event.RepoFullName, "pr", event.PRNumber)
 	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
@@ -104,6 +102,20 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
 		}
 	}()
+
+	// Skip if this exact commit was already reviewed (prevents duplicate work on rapid webhook delivery).
+	// Only for full reviews — re-reviews intentionally re-analyze the same SHA.
+	if event.Type == core.FullReview {
+		existing, _ := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+		if existing != nil && existing.HeadSHA == event.HeadSHA {
+			j.logger.Info("Skipping review — same SHA already reviewed",
+				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
+			// Mark check run as completed so the PR status doesn't stay pending
+			_ = reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID,
+				"success", "Review Already Exists", "This commit was already reviewed.")
+			return nil
+		}
+	}
 
 	structuredReview, rawReview, validFiles, err := j.processRepository(ctx, event, reviewEnv)
 	if err != nil {
@@ -156,46 +168,51 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 }
 
 // processRepository handles vector store updates and the actual review generation.
-func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]struct{}, error) {
+func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]map[int]struct{}, error) {
 	if err := j.updateVectorStoreAndSHA(ctx, env.repoConfig, env.repo, env.updateResult); err != nil {
 		return nil, "", nil, err
 	}
 
-	// Fetch changed files again or reuse? `GenerateReview` fetches them internally.
-	// To enable validation, we need the list of changed files HERE.
-	// Optimization: Fetch them here and pass to GenerateReview?
-	// `GenerateReview` signature: func (r *ragService) GenerateReview(..., preFetchedDiff string, preFetchedFiles []ChangedFile)
-	// It supports optional pre-fetched data!
+	// Fetch diff and changed files once — used for both validation and review generation
+	diff, err := env.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to get PR diff: %w", err)
+	}
 
-	// Let's call GetChangedFiles here.
 	changedFiles, err := env.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to get changed files for validation: %w", err)
 	}
 
-	validFiles := make(map[string]struct{})
+	validLineMaps := make(map[string]map[int]struct{})
 	for _, f := range changedFiles {
-		validFiles[f.Filename] = struct{}{}
+		validLineMaps[f.Filename] = github.ParseValidLinesFromPatch(f.Patch, j.logger)
 	}
 
-	// Pass pre-fetched files to GenerateReview to avoid double API call would require changing GenerateReview signature in ReviewJob call?
-	// `GenerateReview` in `rag.go` takes `(..., ghClient)`. It internally calls `GetChangedFiles`.
-	// Wait, `rag.go` implementation I saw earlier:
-	// func (r *ragService) GenerateReview(...) {
-	//    ...
-	//    changedFiles, err = ghClient.GetChangedFiles(...)
-	// }
-	// It does NOT accepted pre-fetched files in the signature I recall.
-	// ERROR CHECK: `rag.go` line 578: `GenerateComparisonReviews` accepts preFetched. `GenerateReview` likely does NOT.
-	// Let's check `rag.go` again to be sure.
+	var structuredReview *core.StructuredReview
+	var rawReview string
 
-	structuredReview, rawReview, err := j.ragService.GenerateReview(
-		ctx,
-		env.repoConfig,
-		env.repo,
-		event,
-		env.ghClient,
-	)
+	if len(j.cfg.AI.ComparisonModels) > 0 {
+		j.logger.Info("Starting consensus review", "models", j.cfg.AI.ComparisonModels)
+		structuredReview, rawReview, err = j.ragService.GenerateConsensusReview(
+			ctx,
+			env.repoConfig,
+			env.repo,
+			event,
+			j.cfg.AI.ComparisonModels,
+			diff,
+			changedFiles,
+		)
+	} else {
+		structuredReview, rawReview, err = j.ragService.GenerateReview(
+			ctx,
+			env.repoConfig,
+			env.repo,
+			event,
+			diff,
+			changedFiles,
+		)
+	}
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to generate review: %w", err)
 	}
@@ -205,16 +222,28 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		return nil, "", nil, errors.New("generated review is empty or invalid")
 	}
 
-	return structuredReview, rawReview, validFiles, nil
+	return structuredReview, rawReview, validLineMaps, nil
 }
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
-func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validFiles map[string]struct{}) error {
-	// No need to unmarshal anymore, we have the structured object directly
-
+func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validLineMaps map[string]map[int]struct{}) error {
 	// Validate and filter suggestions to prevent 422 errors
-	validSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validFiles)
-	structuredReview.Suggestions = validSuggestions
+	inlineSuggestions, offDiffSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validLineMaps)
+	structuredReview.Suggestions = inlineSuggestions
+
+	// If there are off-diff suggestions, append them to the summary as "General Findings"
+	if len(offDiffSuggestions) > 0 {
+		var offDiffBuilder strings.Builder
+		offDiffBuilder.WriteString(structuredReview.Summary)
+		offDiffBuilder.WriteString("\n\n---\n### 💡 General Findings (Outside Modified Lines)\n\n")
+		offDiffBuilder.WriteString("The following issues were identified in parts of the code not directly modified in this PR:\n\n")
+		for _, s := range offDiffSuggestions {
+			offDiffBuilder.WriteString(fmt.Sprintf("*   **File:** `%s` (Line %d)\n", s.FilePath, s.LineNumber))
+			offDiffBuilder.WriteString(fmt.Sprintf("    **Severity:** %s\n", s.Severity))
+			offDiffBuilder.WriteString(fmt.Sprintf("    **Issue:** %s\n\n", s.Comment))
+		}
+		structuredReview.Summary = offDiffBuilder.String()
+	}
 
 	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
 		return fmt.Errorf("failed to post review comment to GitHub: %w", err)

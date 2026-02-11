@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,13 +44,13 @@ type ComparisonResult struct {
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
-	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
+	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
-	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error)
-	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error)
+	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error)
+	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 }
 
 type ragService struct {
@@ -512,30 +511,20 @@ func isTestFile(path string) bool {
 	return false
 }
 
-// GenerateReview now focuses on data preparation and delegates to the helper.
-func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error) {
+// GenerateReview builds the review using pre-fetched diff and changed files.
+func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
 	r.logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber, "embedder", repo.EmbedderModelName)
-	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get PR diff: %w", err)
-	}
 	if diff == "" {
 		r.logger.Info("no code changes in pull request", "pr", event.PRNumber)
 		noChangesReview := &core.StructuredReview{
 			Summary:     "This pull request contains no code changes. Looks good to me!",
 			Suggestions: []core.Suggestion{},
 		}
-		rawJSON, _ := json.Marshal(noChangesReview)
-		return noChangesReview, string(rawJSON), nil
-	}
-
-	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get changed files: %w", err)
+		return noChangesReview, noChangesReview.Summary, nil
 	}
 
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
@@ -555,27 +544,26 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		return nil, err.Error(), err
 	}
 
-	// Parse the Markdown string into the structured format
-	// Use robust Markdown parser
+	// Parse Markdown Review
 	structuredReview, err := parseMarkdownReview(rawReview)
 	if err != nil {
-		r.logger.Error("failed to parse Markdown review from LLM", "error", err, "raw_response", rawReview)
-		// Fallback: Try to treat the entire response as a summary if parsing fails?
-		// For now, return error as we want to enforce the format.
-		return nil, "", fmt.Errorf("failed to parse LLM's Markdown response: %w", err)
+		r.logger.Warn("failed to parse markdown review, using raw output as fallback", "error", err)
+		// Fallback: Use raw output as summary
+		structuredReview = &core.StructuredReview{
+			Summary: rawReview,
+		}
 	}
 
 	if structuredReview.Verdict == "" {
 		structuredReview.Verdict = "COMMENT" // Default if missing
 	}
-
 	return structuredReview, rawReview, nil
 }
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
 //
 //nolint:gocognit,funlen // Complex logic with parallel execution and error aggregation
-func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error) {
+func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -602,7 +590,10 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 		}
 	}
 
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	contextString := preComputedContext
+	if contextString == "" {
+		contextString = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	}
 
 	// Reuse repoConfig logic
 	if repoConfig == nil {
@@ -630,7 +621,6 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	// No defer close(sem) - channel will be GC'd or we can close after Wait()
 
 	for _, modelName := range models {
-		modelName := modelName // Capture for closure safety
 		g.Go(func() error {
 			// Acquire semaphore
 			select {
@@ -742,117 +732,77 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
 //
-//nolint:funlen // High-level orchestration function with error handling and artifact saving
-func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
+
+func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	if err := r.validateConsensusParams(repo, event, models); err != nil {
+		return nil, "", err
+	}
+
+	// 1. Get independent reviews from all models (The "Committee")
+	if len(models) < 1 {
+		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
+	}
+
+	// 3. Centralized Context Building (The "Context Foundation")
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, nil, models, diff, changedFiles, contextString)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
+	}
+
+	// 4. Synthesize the final review
+	rawConsensus, validReviews, err := r.synthesizeConsensus(ctx, repoConfig, event, comparisonResults, contextString, changedFiles)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// 5. Parse and Add Disclaimer
+	structuredReview, err := parseMarkdownReview(rawConsensus)
+	if err != nil {
+		r.logger.Warn("failed to parse consensus review, using raw output as fallback", "error", err)
+		structuredReview = &core.StructuredReview{Summary: rawConsensus}
+	}
+
+	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by synthesizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(validReviews, ", "))
+	structuredReview.Summary += disclaimer
+
+	return structuredReview, rawConsensus, nil
+}
+
+func (r *ragService) validateConsensusParams(repo *storage.Repository, event *core.GitHubEvent, models []string) error {
 	if repo == nil {
-		return nil, errors.New("repo cannot be nil")
+		return errors.New("repo cannot be nil")
 	}
 	if event == nil {
-		return nil, errors.New("event cannot be nil")
-	}
-	if ghClient == nil {
-		return nil, errors.New("ghClient cannot be nil")
+		return errors.New("event cannot be nil")
 	}
 	if len(models) == 0 {
-		return nil, fmt.Errorf("consensus review requires at least one model")
+		return fmt.Errorf("consensus review requires at least one model")
 	}
+	return nil
+}
 
-	// 1. Prepare data (once for all reviews)
-	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
-	}
-
-	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get diff for consensus: %w", err)
-	}
-
-	// 2. Get independent reviews from all models (The "Committee")
-	// Deduplicate generator model from comparison to avoid bias (Priority 2)
-	validModels := r.filterComparisonModels(models)
-
-	// Ensure we still have enough models
-	if len(validModels) < 2 {
-		return nil, fmt.Errorf("need at least 2 comparison models after deduplication, got %d", len(validModels))
-	}
-
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, validModels, diff, changedFiles)
-	if err != nil {
-		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
-	}
-
-	// 3. Prepare the consensus prompt data & Save Artifacts
+func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.RepoConfig, event *core.GitHubEvent, results []ComparisonResult, context string, changedFiles []internalgithub.ChangedFile) (string, []string, error) {
 	var validReviews []string
 	var reviewsBuilder strings.Builder
-	// Rob: Nanosecond precision to prevent collisions in fast CI
 	timestamp := time.Now().Format("20060102_150405_000000000")
 	reviewsDir := "reviews"
 
-	// Security: Verify reviewsDir and resolve symlinks fully (Priority 1)
-	absReviewsDir, err := filepath.Abs(reviewsDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve reviews dir: %w", err)
+	// Resolve artifacts directory safely
+	if err := r.ensureReviewsDir(reviewsDir); err != nil {
+		return "", nil, err
 	}
 
-	// Resolve all symlinks in path
-	resolvedDir, err := filepath.EvalSymlinks(absReviewsDir)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to check reviews directory: %w", err)
-	}
-
-	// Get current working directory to validate containment
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get working directory: %w", err)
-	}
-	absCwd, _ := filepath.Abs(cwd)
-
-	// Verify resolved path is within expected base directory (CWD)
-	if resolvedDir != "" {
-		rel, err := filepath.Rel(absCwd, resolvedDir)
-		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			return nil, fmt.Errorf("reviews directory resolved outside base path")
-		}
-	}
-
-	// Now safe to create and use
-	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
-		r.logger.Warn("failed to create reviews directory", "error", err)
-	}
-
-	// Deterministic ordering: Sort results by Model name
-	sort.Slice(comparisonResults, func(i, j int) bool {
-		return comparisonResults[i].Model < comparisonResults[j].Model
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Model < results[j].Model
 	})
 
-	for _, res := range comparisonResults {
-		// potential path traversal: strictly replace invalid chars
-		sanitizedModel := SanitizeModelForFilename(res.Model)
-
-		if res.Error != nil {
-			r.logger.Warn("skipping model due to failure", "model", res.Model, "error", res.Error)
-			// Save error artifact for debugging
-			errFilename := filepath.Join(reviewsDir, fmt.Sprintf("error_%s_%s.txt", sanitizedModel, timestamp))
-			_ = os.WriteFile(errFilename, []byte(res.Error.Error()), 0600) // Security: 0600
+	for _, res := range results {
+		if res.Error != nil || strings.TrimSpace(res.Review) == "" {
 			continue
 		}
-
-		if strings.TrimSpace(res.Review) == "" {
-			continue
-		}
-
-		// Save individual review artifact
-		filename := filepath.Join(reviewsDir, fmt.Sprintf("review_%s_%s.md", sanitizedModel, timestamp))
-		header := fmt.Sprintf("# Code Review by %s\n\n**Date:** %s\n**PR:** %s/%s #%d\n\n", res.Model, time.Now().Format(time.RFC3339), event.RepoOwner, event.RepoName, event.PRNumber)
-
-		// Security: 0600 permissions
-		if err := os.WriteFile(filename, []byte(header+res.Review), 0600); err != nil {
-			r.logger.Warn("failed to save review artifact", "model", res.Model, "error", err)
-		} else {
-			r.logger.Info("saved review artifact", "path", filename)
-		}
-
+		r.saveReviewArtifact(reviewsDir, res, event, timestamp)
 		reviewsBuilder.WriteString(fmt.Sprintf("\n--- Review from %s ---\n", res.Model))
 		reviewsBuilder.WriteString(res.Review)
 		reviewsBuilder.WriteString("\n")
@@ -860,83 +810,69 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	if len(validReviews) == 0 {
-		return nil, fmt.Errorf("all models failed to generate valid reviews")
+		return "", nil, fmt.Errorf("all models failed to generate valid reviews")
 	}
-
-	// Use the same repo configuration as the individual reviews to ensure consistency.
-	// While we fetch the changed files again here, this ensures the consensus phase operates
-	// on the latest state of the PR.
-
-	if repoConfig == nil {
-		repoConfig = core.DefaultRepoConfig()
-	}
-
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
 	promptData := map[string]string{
 		"Reviews":            reviewsBuilder.String(),
-		"Context":            contextString,
+		"Context":            context,
 		"ChangedFiles":       r.formatChangedFiles(changedFiles),
 		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 	}
 
-	// 3. Synthesize the final review using the default generator (The "chairperson")
-	r.logger.Info("synthesizing consensus review", "models", validReviews)
 	rawConsensus, err := r.generateResponseWithPrompt(ctx, event, ConsensusReviewPrompt, promptData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate consensus: %w", err)
+		return "", nil, fmt.Errorf("failed to generate consensus: %w", err)
 	}
 
-	// Save consensus raw artifact
-	consensusFilename := filepath.Join(reviewsDir, fmt.Sprintf("review_consensus_%s.md", timestamp))
-	if err := os.WriteFile(consensusFilename, []byte(rawConsensus), 0600); err != nil {
-		r.logger.Warn("failed to save consensus artifact", "error", err)
-	} else {
-		r.logger.Info("saved consensus artifact", "path", consensusFilename)
-	}
-
-	// 4. Parse Markdown Consensus
-	structuredReview, err := parseMarkdownReview(rawConsensus)
-	if err != nil {
-		return nil, err
-	}
-
-	// 5. Add Disclaimer
-	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by synthesizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(validReviews, ", "))
-	structuredReview.Summary += disclaimer
-
-	return structuredReview, nil
-	// Wait, GenerateComparisonReviews return signature is ([]ComparisonResult, error)
-	// The original code returned &structuredReview?
-	// Let me check the original code return again.
-	// It returns ([]ComparisonResult, error).
-	// The logic I saw at 916 was `return &structuredReview, nil`.
-	// This implies GenerateComparisonReviews signature MIGHT have changed or I am misreading.
-	// Let's check the signature at line 579.
-	// func (r *ragService) GenerateComparisonReviews(...) ([]ComparisonResult, error)
-
-	// But the code at 916 returns `&structuredReview, nil` which is `(*core.StructuredReview, error)`.
-	// This suggests that `GenerateComparisonReviews` implementation I saw implies it returns `*StructuredReview`.
-	// But the loop at 829 builds `comparisonResults`.
-
-	// Ah, I might be looking at `GenerateConsensusReview` implementation inside `rag.go` but confusing it with `GenerateComparisonReviews`.
-	// Let's check `rag.go` around line 860-920 again.
-
+	r.saveConsensusArtifact(reviewsDir, rawConsensus, timestamp)
+	return rawConsensus, validReviews, nil
 }
 
-// SanitizeModelForFilename cleans model names for safe use as filenames.
-// It handles Windows reserved names and includes a short hash to prevent collisions.
-func (r *ragService) filterComparisonModels(models []string) []string {
-	generatorModel := r.cfg.AI.GeneratorModel
-	var validModels []string
-	for _, m := range models {
-		if m != generatorModel {
-			validModels = append(validModels, m)
-		} else {
-			r.logger.Info("excluding generator model from comparison (used for synthesis)", "model", m)
+func (r *ragService) ensureReviewsDir(reviewsDir string) error {
+	absReviewsDir, err := filepath.Abs(reviewsDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve reviews dir: %w", err)
+	}
+
+	resolvedDir, err := filepath.EvalSymlinks(absReviewsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to check reviews directory: %w", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+	absCwd, _ := filepath.Abs(cwd)
+
+	if resolvedDir != "" {
+		rel, err := filepath.Rel(absCwd, resolvedDir)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			return fmt.Errorf("reviews directory resolved outside base path")
 		}
 	}
-	return validModels
+
+	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
+		r.logger.Warn("failed to create reviews directory", "error", err)
+	}
+	return nil
+}
+
+func (r *ragService) saveReviewArtifact(dir string, res ComparisonResult, event *core.GitHubEvent, ts string) {
+	sanitizedModel := SanitizeModelForFilename(res.Model)
+	filename := filepath.Join(dir, fmt.Sprintf("review_%s_%s.md", sanitizedModel, ts))
+	header := fmt.Sprintf("# Code Review by %s\n\n**Date:** %s\n**PR:** %s/%s #%d\n\n", res.Model, time.Now().Format(time.RFC3339), event.RepoOwner, event.RepoName, event.PRNumber)
+	if err := os.WriteFile(filename, []byte(header+res.Review), 0600); err != nil {
+		r.logger.Warn("failed to save review artifact", "model", res.Model, "error", err)
+	}
+}
+
+func (r *ragService) saveConsensusArtifact(dir, raw, ts string) {
+	filename := filepath.Join(dir, fmt.Sprintf("review_consensus_%s.md", ts))
+	if err := os.WriteFile(filename, []byte(raw), 0600); err != nil {
+		r.logger.Warn("failed to save consensus artifact", "error", err)
+	}
 }
 
 func SanitizeModelForFilename(modelName string) string {
@@ -1257,7 +1193,6 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	// Run context gathering in parallel for lower latency
 	var wg sync.WaitGroup
 	var archContext, impactContext string
-	var hydeMap map[int]string
 	var hydeResults [][]schema.Document
 	var indices []int
 
@@ -1265,23 +1200,15 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		r.logger.Info("stage started", "name", "ArchitecturalContext")
-		// Sec: Passing seenDocsMu to protect seenDocs map if getArchContext ever writes to it
-		if ac := r.getArchContext(ctx, scopedStore, changedFiles); ac != "" {
-			archContext = ac
-		}
-		r.logger.Info("stage completed", "name", "ArchitecturalContext")
+		archContext = r.gatherArchContext(ctx, scopedStore, changedFiles)
 	}()
 
-	// 2. HyDE Snippets (Optional: High Latency, High Recall)
+	// 2. HyDE Snippets
 	if r.cfg.AI.EnableHyDE {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.logger.Info("stage started", "name", "HyDE")
-			hydeMap = r.generateHyDESnippets(ctx, changedFiles)
-			hydeResults, indices = r.searchHyDEBatch(ctx, collectionName, embedderModelName, changedFiles, hydeMap)
-			r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
+			hydeResults, indices = r.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
 		}()
 	} else {
 		r.logger.Info("stage skipped", "name", "HyDE", "reason", "disabled_in_config")
@@ -1291,68 +1218,95 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		r.logger.Info("stage started", "name", "ImpactAnalysis")
-		// Sec: Pass the shared seenDocs and its mutex to avoid cross-stage duplicates safely
-		if ic := r.getImpactContext(ctx, scopedStore, changedFiles, seenDocs, &seenDocsMu); ic != "" {
-			impactContext = ic
-		}
-		r.logger.Info("stage completed", "name", "ImpactAnalysis")
+		impactContext = r.gatherImpactContext(ctx, scopedStore, changedFiles, seenDocs, &seenDocsMu)
 	}()
 
 	wg.Wait()
 
-	var contextBuilder strings.Builder
-
-	// Assemble Architectural Context
-	if archContext != "" {
-		contextBuilder.WriteString("# Architectural Context\n\n")
-		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
-		contextBuilder.WriteString(archContext)
-		contextBuilder.WriteString("\n---\n\n")
-	}
-
-	// Assemble Impact Context
-	if impactContext != "" {
-		r.logger.Info("impact analysis identified potential ripple effects", "context_length", len(impactContext))
-		contextBuilder.WriteString("# Potential Impacted Callers & Usages\n\n")
-		contextBuilder.WriteString("The following code snippets may be affected by the changes in modified symbols:\n\n")
-		contextBuilder.WriteString(impactContext)
-		contextBuilder.WriteString("\n---\n\n")
-	}
-
-	// Assemble Related Snippets (minor overlap with Impact is acceptable for speed)
-	seenDocsMu.RLock()
-	relatedSnippets := r.formatRelatedSnippets(hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
-	seenDocsMu.RUnlock()
-	if relatedSnippets != "" {
-		contextBuilder.WriteString("# Related Code Snippets\n\n")
-		contextBuilder.WriteString(relatedSnippets)
-	}
-
-	r.logger.Info("relevant context built",
-		"changed_files", len(changedFiles),
-		"hyde_snippets", len(hydeMap),
-		"arch_len", len(archContext),
-	)
-
-	return contextBuilder.String()
+	return r.assembleContext(archContext, impactContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
 }
 
-func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indices []int, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenMu *sync.RWMutex) string {
-	var builder strings.Builder
-	var topFiles []string
+func (r *ragService) gatherArchContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+	r.logger.Info("stage started", "name", "ArchitecturalContext")
+	ac := r.getArchContext(ctx, store, files)
+	r.logger.Info("stage completed", "name", "ArchitecturalContext")
+	return ac
+}
 
-	for i, docs := range hydeResults {
-		originalFile := changedFiles[indices[i]]
-		for j, doc := range docs {
-			topFiles = r.processRelatedSnippet(doc, originalFile, j, seenDocs, seenMu, topFiles, &builder)
+func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder string, files []internalgithub.ChangedFile) ([][]schema.Document, []int) {
+	r.logger.Info("stage started", "name", "HyDE")
+	hydeMap := r.generateHyDESnippets(ctx, files)
+	res, idx := r.searchHyDEBatch(ctx, collection, embedder, files, hydeMap)
+	r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
+	return res, idx
+}
+
+func (r *ragService) gatherImpactContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+	r.logger.Info("stage started", "name", "ImpactAnalysis")
+	ic := r.getImpactContext(ctx, store, files, seen, mu)
+	r.logger.Info("stage completed", "name", "ImpactAnalysis")
+	return ic
+}
+
+func (r *ragService) assembleContext(arch, impact string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+	var contextBuilder strings.Builder
+
+	if arch != "" {
+		contextBuilder.WriteString("# Architectural Context\n\n")
+		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
+		contextBuilder.WriteString(arch)
+		contextBuilder.WriteString("\n---\n\n")
+	}
+
+	if impact != "" {
+		r.logger.Info("impact analysis identified potential ripple effects", "context_length", len(impact))
+		contextBuilder.WriteString("# Potential Impacted Callers & Usages\n\n")
+		contextBuilder.WriteString("The following code snippets may be affected by the changes in modified symbols:\n\n")
+		contextBuilder.WriteString(impact)
+		contextBuilder.WriteString("\n---\n\n")
+	}
+
+	if len(hyde) > 0 {
+		contextBuilder.WriteString("# Related Code Snippets\n\n")
+		contextBuilder.WriteString("The following code snippets might be relevant to the changes being reviewed:\n\n")
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		for i, docs := range hyde {
+			if i >= len(indices) { // Safety check
+				continue
+			}
+			originalIdx := indices[i]
+			if originalIdx >= len(files) { // Safety check
+				continue
+			}
+			filePath := files[originalIdx].Filename
+			for _, doc := range docs {
+				// Use a content hash for deduplication to avoid adding the same snippet multiple times
+				// even if it comes from different HyDE queries.
+				contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(doc.PageContent)))
+				if _, exists := seen[contentHash]; exists {
+					continue
+				}
+				seen[contentHash] = struct{}{}
+
+				contextBuilder.WriteString(fmt.Sprintf("## Related to: %s\n", filePath))
+				contextBuilder.WriteString("```\n")
+				contextBuilder.WriteString(doc.PageContent)
+				contextBuilder.WriteString("\n```\n\n")
+			}
 		}
 	}
 
-	if len(topFiles) > 0 {
-		r.logger.Info("HyDE search results", "top_files", topFiles)
-	}
-	return builder.String()
+	r.logger.Info("relevant context built",
+		"changed_files", len(files),
+		"arch_len", len(arch),
+		"impact_len", len(impact),
+		"hyde_results_count", len(hyde),
+	)
+
+	return contextBuilder.String()
 }
 
 func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {

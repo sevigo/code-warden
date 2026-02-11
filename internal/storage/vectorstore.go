@@ -8,12 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/goframe/embeddings"
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
+
+	"github.com/sevigo/code-warden/internal/config"
 )
 
 // VectorStore interface updated for multi-model support

@@ -35,28 +35,38 @@ Here are the individual reviews:
 6. **Tone & Quality**:  
    - Write as a Senior Staff Engineer: precise, constructive, firm but collaborative.  
    - Fix suggestions must be *concrete, minimal, and syntactically correct*.
+   - **CRITICAL**: You MUST preserve the exact file path and line number for every suggestion. Do not hallucinate line numbers. If a model provided a line number, use it.
+   - **CRITICAL**: You MUST use actual line numbers from the provided reviews that correspond to the technical code being discussed. Do not use placeholders like 1, 2, or 3 if they are not the true line numbers. If a reviewer provided an incorrect line number, but the finding is valid, use your best architectural judgment to either find the correct line or move the finding to the summary.
+   - **IMPORTANT**: Only suggestions with valid line numbers will be displayed as inline comments.
 
 ---
 
 ### Output Format:
 
-**IMPORTANT**: Respond ONLY with a valid Markdown document using the exact structure below. Do NOT use JSON.
+**IMPORTANT**: Respond ONLY with a valid Markdown document. Do not wrap in JSON.
 
 ```markdown
 # REVIEW SUMMARY
-[High-level summary of consensus. Highlight key strengths and critical weaknesses.]
+[High-level summary of the consensus opinion. Highlight key strengths and critical weaknesses. End with a clear recommendation.]
 
 # VERDICT
-[APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES]
+[APPROVE | REQUEST_CHANGES | COMMENT]
 
 # SUGGESTIONS
 
-## Suggestion [file_path]:[line_number]
+## Suggestion [path/to/file.go:123]
 **Severity:** [Critical|High|Medium|Low]
 **Category:** [Security|Logic|Performance|Architecture|Readability]
 
 ### Comment
-[Description of the issue and consensus context.]
+[Description of the issue...]
 
-[Code block with fix if applicable]
+### Rationale
+[Why this is important...]
+
+### Fix
+```go
+// Minimal, correct fix
+...
+```
 ```

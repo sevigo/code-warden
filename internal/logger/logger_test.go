@@ -6,8 +6,9 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/sevigo/code-warden/internal/logger"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/sevigo/code-warden/internal/logger"
 )
 
 func TestNewLogger(t *testing.T) {

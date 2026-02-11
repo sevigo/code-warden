@@ -102,37 +102,33 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
 - **Low**: Minor improvements, style suggestions (ONLY include if highly valuable)
 
 ## OUTPUT FORMAT
-Respond ONLY with a valid Markdown document using the exact structure below.
-Do NOT use JSON.
+Respond ONLY with a valid Markdown document.
 
 ```markdown
 # REVIEW SUMMARY
-[High-level assessment: overall health, architectural integration.]
+[High-level technical assessment: overall health, architectural integration. End with verdict.]
 
 # VERDICT
-[APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES]
+[APPROVE | REQUEST_CHANGES | COMMENT]
 
 # SUGGESTIONS
 
-## Suggestion [file_path]:[line_number]
+## Suggestion [relative/path/to/file:123]
 **Severity:** [Critical|High|Medium|Low]
-**Category:** [Logic|Performance|Security|Architecture|Readability|Testing]
+**Category:** [Logic|Performance|Security|Architecture|Readability]
 
 ### Comment
-[Concise problem statement and rationale.]
+[Concise problem statement]
 
-[Code block with fix if applicable]
+### Rationale
+[Why this is a risk. What breaks? Impact?]
+
+### Fix
+```{{.Language}}
+// Corrected implementation
+```
 ```
 
-If no issues:
-```markdown
-# REVIEW SUMMARY
-Well-structured, follows best practices.
-
-# VERDICT
-APPROVE
-
-# SUGGESTIONS
-```
+If no issues found, omit the `# SUGGESTIONS` section entirely and set the verdict to `APPROVE`.
 
 Now analyze the PR:
