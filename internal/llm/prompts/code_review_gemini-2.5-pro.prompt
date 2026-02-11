@@ -45,26 +45,25 @@ Please adhere to the following special instructions for this repository:
 
 ---
 
-## Final Instruction: Your Review Output
-Your entire response MUST be a single, valid JSON object enclosed in a ```json code block. Do not include any other text, notes, or explanations before or after the code block.
+## OUTPUT FORMAT
+Respond ONLY with a valid Markdown document using the exact structure below.
 
-The JSON schema you must adhere to is:
-```json
-{
-  "summary": "A brief, one-paragraph overview of the changes, your overall assessment, and your final recommendation. The recommendation must be one of: '✅ Approve', '⚠️ Approve with Suggestions', or '❌ Request Changes'.",
-  "suggestions": [
-    {
-      "file_path": "The full path to the file, relative to the repository root.",
-      "line_number": "The specific line number in the diff that the comment pertains to.",
-      "severity": "The assessed severity: 'Critical', 'High', 'Medium', or 'Low'.",
-      "category": "The category of the issue: 'Bug', 'Security', 'Performance', 'Maintainability', or 'Best Practice'.",
-      "comment": "A clear and concise description of the issue and your actionable recommendation. If a code example helps clarify the issue, include it within this string using markdown for code blocks (e.g., ```go ... ``` or ```diff ... ```)."
-    }
-  ]
-}
+```markdown
+# REVIEW SUMMARY
+[Summary...]
+
+# VERDICT
+[APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES]
+
+# SUGGESTIONS
+
+## Suggestion [file_path]:[line_number]
+**Severity:** [Critical|High|Medium|Low]
+**Category:** [Logic|Performance|Security|Architecture|Readability|Testing]
+
+### Comment
+[Issue detailed description]
 ```
-
-If you find no issues, the `summary` should reflect that, the `suggestions` array should be empty, and the recommendation should be '✅ Approve'.
 
 Now, provide your analysis of the above pull request in the required JSON format.
 ```

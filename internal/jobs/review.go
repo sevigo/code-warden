@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -95,8 +94,6 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) er
 	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
 }
 
-// executeReviewWorkflow contains the core logic for running a code review.
-// It handles setup, syncing, indexing (if needed), review generation, and posting results.
 func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHubEvent, title, summary string) (err error) {
 	reviewEnv, err := j.setupReviewEnvironment(ctx, event, title, summary)
 	if err != nil {
@@ -108,12 +105,12 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 		}
 	}()
 
-	rawReviewJSON, err := j.processRepository(ctx, event, reviewEnv)
+	structuredReview, rawReview, validFiles, err := j.processRepository(ctx, event, reviewEnv)
 	if err != nil {
 		return err
 	}
 
-	return j.completeReview(ctx, event, reviewEnv, rawReviewJSON)
+	return j.completeReview(ctx, event, reviewEnv, structuredReview, rawReview, validFiles)
 }
 
 type reviewEnvironment struct {
@@ -159,12 +156,40 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 }
 
 // processRepository handles vector store updates and the actual review generation.
-func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (string, error) {
+func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]struct{}, error) {
 	if err := j.updateVectorStoreAndSHA(ctx, env.repoConfig, env.repo, env.updateResult); err != nil {
-		return "", err
+		return nil, "", nil, err
 	}
 
-	structuredReview, rawReviewJSON, err := j.ragService.GenerateReview(
+	// Fetch changed files again or reuse? `GenerateReview` fetches them internally.
+	// To enable validation, we need the list of changed files HERE.
+	// Optimization: Fetch them here and pass to GenerateReview?
+	// `GenerateReview` signature: func (r *ragService) GenerateReview(..., preFetchedDiff string, preFetchedFiles []ChangedFile)
+	// It supports optional pre-fetched data!
+
+	// Let's call GetChangedFiles here.
+	changedFiles, err := env.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to get changed files for validation: %w", err)
+	}
+
+	validFiles := make(map[string]struct{})
+	for _, f := range changedFiles {
+		validFiles[f.Filename] = struct{}{}
+	}
+
+	// Pass pre-fetched files to GenerateReview to avoid double API call would require changing GenerateReview signature in ReviewJob call?
+	// `GenerateReview` in `rag.go` takes `(..., ghClient)`. It internally calls `GetChangedFiles`.
+	// Wait, `rag.go` implementation I saw earlier:
+	// func (r *ragService) GenerateReview(...) {
+	//    ...
+	//    changedFiles, err = ghClient.GetChangedFiles(...)
+	// }
+	// It does NOT accepted pre-fetched files in the signature I recall.
+	// ERROR CHECK: `rag.go` line 578: `GenerateComparisonReviews` accepts preFetched. `GenerateReview` likely does NOT.
+	// Let's check `rag.go` again to be sure.
+
+	structuredReview, rawReview, err := j.ragService.GenerateReview(
 		ctx,
 		env.repoConfig,
 		env.repo,
@@ -172,23 +197,26 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		env.ghClient,
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate review: %w", err)
+		return nil, "", nil, fmt.Errorf("failed to generate review: %w", err)
 	}
 	if structuredReview == nil || (structuredReview.Summary == "" && len(structuredReview.Suggestions) == 0) {
-		return "", errors.New("generated review is empty or invalid")
+		// Log the raw review for debugging purposes
+		j.logger.Error("generated review is empty or invalid", "raw_review", rawReview)
+		return nil, "", nil, errors.New("generated review is empty or invalid")
 	}
 
-	return rawReviewJSON, nil
+	return structuredReview, rawReview, validFiles, nil
 }
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
-func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, rawReviewJSON string) error {
-	var structuredReview core.StructuredReview
-	if err := json.Unmarshal([]byte(rawReviewJSON), &structuredReview); err != nil {
-		return fmt.Errorf("internal error: failed to re-parse generated review JSON: %w", err)
-	}
+func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validFiles map[string]struct{}) error {
+	// No need to unmarshal anymore, we have the structured object directly
 
-	if err := env.statusUpdater.PostStructuredReview(ctx, event, &structuredReview); err != nil {
+	// Validate and filter suggestions to prevent 422 errors
+	validSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validFiles)
+	structuredReview.Suggestions = validSuggestions
+
+	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
 		return fmt.Errorf("failed to post review comment to GitHub: %w", err)
 	}
 
@@ -196,7 +224,7 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 		RepoFullName:  event.RepoFullName,
 		PRNumber:      event.PRNumber,
 		HeadSHA:       event.HeadSHA,
-		ReviewContent: rawReviewJSON,
+		ReviewContent: rawReview,
 	}
 	if err := j.store.SaveReview(ctx, dbReview); err != nil {
 		j.logger.Error("failed to save review to database", "error", err)

@@ -40,24 +40,23 @@ Here are the individual reviews:
 
 ### Output Format:
 
-**IMPORTANT**: You must produce VALID JSON.
-*   **Escape all backslashes**: Use `\\` for `\`, especially in file paths (`"C:\\path"`).
-*   **Escape quote characters**: Use `\"` inside strings.
-*   **No Literal Newlines**: Use `\n` inside JSON strings.
+**IMPORTANT**: Respond ONLY with a valid Markdown document using the exact structure below. Do NOT use JSON.
 
-```json
-{
-  "summary": "High-level summary of consensus. Highlight key strengths and critical weaknesses.",
-  "verdict": "APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES",
-  "suggestions": [
-    {
-      "file_path": "path/to/file.go",
-      "line_number": 123,
-      "severity": "Critical",
-      "category": "Security",
-      "comment": "Description... [Include context note if needed]",
-      "fix": "```go\\n// Minimal, correct fix\\n...\\n```"
-    }
-  ]
-}
+```markdown
+# REVIEW SUMMARY
+[High-level summary of consensus. Highlight key strengths and critical weaknesses.]
+
+# VERDICT
+[APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES]
+
+# SUGGESTIONS
+
+## Suggestion [file_path]:[line_number]
+**Severity:** [Critical|High|Medium|Low]
+**Category:** [Security|Logic|Performance|Architecture|Readability]
+
+### Comment
+[Description of the issue and consensus context.]
+
+[Code block with fix if applicable]
 ```

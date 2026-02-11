@@ -102,28 +102,37 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
 - **Low**: Minor improvements, style suggestions (ONLY include if highly valuable)
 
 ## OUTPUT FORMAT
-Respond ONLY with valid JSON inside a ```json code block.
-**CRITICAL JSON RULES**:
-- **Escape ALL backslashes**: Use `\\` for `\`, especially in Windows paths (e.g., `"C:\\Users"`).
-- **Escape quotes**: Use `\"` for quotes inside strings.
-- **Newlines**: Use `\n` for newlines in code blocks/comments. Do NOT use literal newlines inside strings.
+Respond ONLY with a valid Markdown document using the exact structure below.
+Do NOT use JSON.
 
-```json
-{
-  "summary": "High-level assessment: overall health, architectural integration.",
-  "verdict": "APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES",
-  "suggestions": [
-    {
-      "file_path": "internal/foo/bar.go",
-      "line_number": 123,
-      "severity": "Critical|High|Medium|Low",
-      "category": "Logic|Performance|Security|Architecture|Readability|Testing",
-      "comment": "### Issue\nConcise problem statement.\n\n### Rationale\nWhy this is a risk.\n\n### Fix\n```{{.Language}}\n// Corrected implementation\n```"
-    }
-  ]
-}
+```markdown
+# REVIEW SUMMARY
+[High-level assessment: overall health, architectural integration.]
+
+# VERDICT
+[APPROVE | APPROVE_WITH_SUGGESTIONS | REQUEST_CHANGES]
+
+# SUGGESTIONS
+
+## Suggestion [file_path]:[line_number]
+**Severity:** [Critical|High|Medium|Low]
+**Category:** [Logic|Performance|Security|Architecture|Readability|Testing]
+
+### Comment
+[Concise problem statement and rationale.]
+
+[Code block with fix if applicable]
 ```
 
-If no issues: `{"summary": "Well-structured, follows best practices.", "verdict": "APPROVE", "suggestions": []}`
+If no issues:
+```markdown
+# REVIEW SUMMARY
+Well-structured, follows best practices.
+
+# VERDICT
+APPROVE
+
+# SUGGESTIONS
+```
 
 Now analyze the PR:

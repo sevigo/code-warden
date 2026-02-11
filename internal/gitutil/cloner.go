@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -70,20 +71,42 @@ func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...s
 	args := []string{"-c", "core.longpaths=true", "fetch", "origin", "--force"}
 	args = append(args, refSpecs...)
 
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = path
-	// Inject token into URL if needed, but since we cloned with token in URL,
-	// origin should already have it. However, if origin URL doesn't have token,
-	// we might need to handle auth.
-	// For simplicity, assuming the clone URL (with token) is persisted in .git/config
-	// or we rely on git credential helpers.
-	// But wait, we used getAuthenticatedURL for clone. So origin remote url has the token.
+	// Retry logic for transient errors (e.g. 500 Internal Server Error)
+	const maxRetries = 3
+	const baseDelay = 2 * time.Second
 
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git fetch failed: %s: %w", string(out), err)
+	var err error
+	for i := 0; i <= maxRetries; i++ {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = path
+
+		// If this is not the first attempt, log a warning and wait
+		if i > 0 {
+			delay := baseDelay * time.Duration(1<<(i-1))
+			c.Logger.WarnContext(ctx, "git fetch failed, retrying",
+				"attempt", i,
+				"max_retries", maxRetries,
+				"delay", delay,
+				"error", err,
+			)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
+			err = fmt.Errorf("git fetch failed: %s: %w", string(out), cmdErr)
+			continue
+		}
+
+		// Success
+		c.Logger.InfoContext(ctx, "fetch complete")
+		return nil
 	}
-	c.Logger.InfoContext(ctx, "fetch complete")
-	return nil
+
+	return err
 }
 
 // Checkout switches the repository's worktree to a specific commit.
