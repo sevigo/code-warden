@@ -280,7 +280,7 @@ func (q *qdrantVectorStore) DeleteCollection(ctx context.Context, collectionName
 	client, ok := q.clients[collectionName]
 	if !ok {
 		q.mu.Unlock()
-		return fmt.Errorf("no active client for collection %s", collectionName)
+		return fmt.Errorf("no active client for collection %s, cannot delete", collectionName)
 	}
 	// Don't delete from cache yet - delete first, then remove from cache
 	q.mu.Unlock()
