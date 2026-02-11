@@ -44,13 +44,13 @@ type ComparisonResult struct {
 type RAGService interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
-	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error)
+	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error)
-	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, string, error)
+	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 }
 
 type ragService struct {
@@ -511,17 +511,13 @@ func isTestFile(path string) bool {
 	return false
 }
 
-// GenerateReview now focuses on data preparation and delegates to the helper.
-func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client) (*core.StructuredReview, string, error) {
+// GenerateReview builds the review using pre-fetched diff and changed files.
+func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
 	r.logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber, "embedder", repo.EmbedderModelName)
-	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get PR diff: %w", err)
-	}
 	if diff == "" {
 		r.logger.Info("no code changes in pull request", "pr", event.PRNumber)
 		noChangesReview := &core.StructuredReview{
@@ -529,11 +525,6 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 			Suggestions: []core.Suggestion{},
 		}
 		return noChangesReview, noChangesReview.Summary, nil
-	}
-
-	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get changed files: %w", err)
 	}
 
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
@@ -742,18 +733,12 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
 //
 
-func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, string, error) {
-	if err := r.validateConsensusParams(repo, event, ghClient, models); err != nil {
+func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	if err := r.validateConsensusParams(repo, event, models); err != nil {
 		return nil, "", err
 	}
 
-	// 1. Prepare data (once for all reviews)
-	changedFiles, diff, err := r.getConsensusData(ctx, event, ghClient)
-	if err != nil {
-		return nil, "", err
-	}
-
-	// 2. Get independent reviews from all models (The "Committee")
+	// 1. Get independent reviews from all models (The "Committee")
 	if len(models) < 1 {
 		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
@@ -761,7 +746,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	// 3. Centralized Context Building (The "Context Foundation")
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models, diff, changedFiles, contextString)
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, nil, models, diff, changedFiles, contextString)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
@@ -785,33 +770,17 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	return structuredReview, rawConsensus, nil
 }
 
-func (r *ragService) validateConsensusParams(repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) error {
+func (r *ragService) validateConsensusParams(repo *storage.Repository, event *core.GitHubEvent, models []string) error {
 	if repo == nil {
 		return errors.New("repo cannot be nil")
 	}
 	if event == nil {
 		return errors.New("event cannot be nil")
 	}
-	if ghClient == nil {
-		return errors.New("ghClient cannot be nil")
-	}
 	if len(models) == 0 {
 		return fmt.Errorf("consensus review requires at least one model")
 	}
 	return nil
-}
-
-func (r *ragService) getConsensusData(ctx context.Context, event *core.GitHubEvent, ghClient internalgithub.Client) ([]internalgithub.ChangedFile, string, error) {
-	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get changed files for consensus: %w", err)
-	}
-
-	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get diff for consensus: %w", err)
-	}
-	return changedFiles, diff, nil
 }
 
 func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.RepoConfig, event *core.GitHubEvent, results []ComparisonResult, context string, changedFiles []internalgithub.ChangedFile) (string, []string, error) {

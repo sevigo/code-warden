@@ -159,7 +159,12 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		return nil, "", nil, err
 	}
 
-	// Fetch changed files for validation (to prevent 422 errors on invalid paths)
+	// Fetch diff and changed files once — used for both validation and review generation
+	diff, err := env.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to get PR diff: %w", err)
+	}
+
 	changedFiles, err := env.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to get changed files for validation: %w", err)
@@ -180,8 +185,9 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 			env.repoConfig,
 			env.repo,
 			event,
-			env.ghClient,
 			j.cfg.AI.ComparisonModels,
+			diff,
+			changedFiles,
 		)
 	} else {
 		structuredReview, rawReview, err = j.ragService.GenerateReview(
@@ -189,7 +195,8 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 			env.repoConfig,
 			env.repo,
 			event,
-			env.ghClient,
+			diff,
+			changedFiles,
 		)
 	}
 	if err != nil {
