@@ -49,7 +49,7 @@ type RAGService interface {
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
-	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error)
+	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, string, error)
 }
 
@@ -572,7 +572,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
 //
 //nolint:gocognit,funlen // Complex logic with parallel execution and error aggregation
-func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error) {
+func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -599,7 +599,10 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 		}
 	}
 
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	contextString := preComputedContext
+	if contextString == "" {
+		contextString = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	}
 
 	// Reuse repoConfig logic
 	if repoConfig == nil {
@@ -774,7 +777,11 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, "", fmt.Errorf("need at least 2 comparison models after deduplication, got %d", len(validModels))
 	}
 
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, validModels, diff, changedFiles)
+	// 3. Centralized Context Building (The "Context Foundation")
+	// Pre-compute context once and share it with all comparison models and final synthesis
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, validModels, diff, changedFiles, contextString)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
@@ -860,12 +867,8 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, "", fmt.Errorf("all models failed to generate valid reviews")
 	}
 
-	// Use the same repo configuration as the individual reviews to ensure consistency.
-	if repoConfig == nil {
-		repoConfig = core.DefaultRepoConfig()
-	}
-
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	// 4. Prepare the consensus prompt data & Save Artifacts
+	// contextString is already pre-computed above
 
 	promptData := map[string]string{
 		"Reviews":            reviewsBuilder.String(),
