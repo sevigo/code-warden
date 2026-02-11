@@ -49,6 +49,8 @@ func parseSuggestionHeader(line string) (string, int, int, bool) {
 		// Strip outer brackets if present
 		rest = strings.TrimPrefix(rest, "[")
 		rest = strings.TrimSuffix(rest, "]")
+		// Strip backticks if present
+		rest = strings.Trim(rest, "`")
 		rest = strings.TrimSpace(rest)
 
 		if path, start, end, ok := parsePathAndLine(rest); ok {
@@ -64,6 +66,8 @@ func parseSuggestionHeader(line string) (string, int, int, bool) {
 	// Also handle if it's wrapped in brackets like "[path:line]"
 	cleanHeader := strings.TrimPrefix(header, "[")
 	cleanHeader = strings.TrimSuffix(cleanHeader, "]")
+	cleanHeader = strings.Trim(cleanHeader, "`")
+	cleanHeader = strings.TrimSpace(cleanHeader)
 
 	if path, start, end, ok := parsePathAndLine(cleanHeader); ok {
 		return path, start, end, true

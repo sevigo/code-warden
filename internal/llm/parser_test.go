@@ -166,6 +166,22 @@ Fix range with En Dash.
 			wantCount:   1,
 			expectErr:   false,
 		},
+		{
+			name: "Suggestion Wrapped in Backticks",
+			input: `# REVIEW SUMMARY
+Summary
+
+# SUGGESTIONS
+
+## Suggestion ` + "`main.go:15`" + `
+**Severity:** Medium
+### Comment
+Fix file wrapped in backticks.
+`,
+			wantSummary: "Summary",
+			wantCount:   1,
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,6 +209,9 @@ Fix range with En Dash.
 				if strings.Contains(tt.name, "Multiline") || strings.Contains(tt.name, "En Dash") {
 					assert.Equal(t, 10, got.Suggestions[0].StartLine)
 					assert.Equal(t, 20, got.Suggestions[0].LineNumber)
+				} else if strings.Contains(tt.name, "Backticks") {
+					assert.Equal(t, 15, got.Suggestions[0].LineNumber)
+					assert.Equal(t, 15, got.Suggestions[0].StartLine)
 				} else {
 					// For single line, StartLine MUST equal LineNumber
 					assert.Equal(t, got.Suggestions[0].LineNumber, got.Suggestions[0].StartLine, "Single line suggestion should have StartLine == LineNumber")
