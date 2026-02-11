@@ -10,13 +10,13 @@ Code-Warden is a GitHub App that uses a local Large Language Model (LLM) to perf
 -   **Context-Aware Reviews**: Uses Retrieval-Augmented Generation (RAG) to understand the entire codebase, leading to more relevant feedback.
 -   **Efficient Indexing**: Intelligently updates its context by performing incremental indexing based on file changes, avoiding full re-indexing of the entire repository on subsequent reviews.
 -   **Repository-Specific Configuration**: Customize review behavior, excluded files/directories, and custom instructions via a `.code-warden.yml` file in your repository root.
--   **Simple Trigger**: Just comment `/review` on any pull request to start the process, or `/rereview` for a follow-up analysis.
+-   **Simple Trigger**: Comment `/review` for a full review, or `/rereview` for a context-aware follow-up. Supports custom instructions like `/rereview check security`.
 -   **GitHub Integration**: Posts reviews directly as PR comments and updates the check status.
 -   **Enhanced Reporting**: Inline comments feature severity badges (🔴, 🟠, 🟡) and categories, while the review summary provides a clear statistical breakdown of issues.
 
 ## How It Works
 
-1.  A user comments `/review` or `/rereview` on a pull request.
+1.  A user comments `/review` or `/rereview <instructions>` on a pull request.
 2.  The Code-Warden server receives a webhook from GitHub.
 3.  A background job is dispatched to handle the review.
 4.  The job securely clones or updates the repository to the latest PR branch.
