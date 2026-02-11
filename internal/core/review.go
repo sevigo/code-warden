@@ -13,8 +13,11 @@ type Review struct {
 }
 
 // ReReviewData is a type-safe struct for rendering re-review prompts.
+// ReReviewData is a type-safe struct for rendering re-review prompts.
 type ReReviewData struct {
-	Language       string
-	OriginalReview string
-	NewDiff        string
+	Language         string
+	OriginalReview   string
+	NewDiff          string
+	UserInstructions string
+	Context          string
 }

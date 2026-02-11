@@ -111,23 +111,37 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 		return j.executeReviewWorkflow(ctx, event, "Code Review (Fallback)", "No previous review found, running full review...")
 	}
 
-	// 2. Generate Re-Review using RAG service
-	reReviewContent, err := j.ragService.GenerateReReview(ctx, event, lastReview, reviewEnv.ghClient)
+	// 2. Fetch changed files for context
+	changedFiles, err := reviewEnv.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get changed files for re-review context: %w", err)
+	}
+
+	// 3. Generate Re-Review using RAG service
+	reReviewContent, err := j.ragService.GenerateReReview(ctx, reviewEnv.repo, event, lastReview, reviewEnv.ghClient, changedFiles)
 	if err != nil {
 		return fmt.Errorf("failed to generate re-review: %w", err)
 	}
 
-	// 3. Post the result
+	// 4. Post the result
+	verdict := "COMMENT"
+	if strings.Contains(reReviewContent, "✅ All Issues Resolved") {
+		verdict = "APPROVE"
+	} else if strings.Contains(reReviewContent, "⚠️ Issues Still Remain") {
+		verdict = "REQUEST_CHANGES"
+	}
+
 	structuredReview := &core.StructuredReview{
+		Title:   "🔄 Follow-up Review Summary",
 		Summary: reReviewContent,
-		Verdict: "COMMENT", // Re-reviews usually don't change verdict unless specified, keeping it neutral
+		Verdict: verdict,
 	}
 
 	if err := reviewEnv.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
 		return fmt.Errorf("failed to post re-review comment: %w", err)
 	}
 
-	// 4. Save the re-review as a new review record?
+	// 5. Save the re-review as a new review record?
 	// Yes, to maintain history.
 	dbReview := &core.Review{
 		RepoFullName:  event.RepoFullName,

@@ -122,7 +122,11 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("## 🔍 Code Review Summary\n\n")
+	if review.Title != "" {
+		sb.WriteString(fmt.Sprintf("## %s\n\n", review.Title))
+	} else {
+		sb.WriteString("## 🔍 Code Review Summary\n\n")
+	}
 
 	// Add Verdict with Icon
 	if review.Verdict != "" {

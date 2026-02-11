@@ -45,7 +45,7 @@ type RAGService interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
-	GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error)
+	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
@@ -931,7 +931,7 @@ func SanitizeModelForFilename(modelName string) string {
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.
-func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client) (string, error) {
+func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (string, error) {
 	r.logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	newDiff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
@@ -943,10 +943,15 @@ func (r *ragService) GenerateReReview(ctx context.Context, event *core.GitHubEve
 		return "This pull request contains no new code changes to re-review.", nil
 	}
 
+	// Build context (Arch + Impact + HyDE) just like a full review
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+
 	promptData := core.ReReviewData{
-		Language:       event.Language,
-		OriginalReview: originalReview.ReviewContent,
-		NewDiff:        newDiff,
+		Language:         event.Language,
+		OriginalReview:   originalReview.ReviewContent,
+		NewDiff:          newDiff,
+		UserInstructions: event.UserInstructions,
+		Context:          contextString,
 	}
 
 	return r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)

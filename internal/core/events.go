@@ -33,6 +33,9 @@ type GitHubEvent struct {
 	HeadSHA  string
 	Type     ReviewType
 
+	// UserInstructions captures optional text provided with the command (e.g. "/rereview check security")
+	UserInstructions string
+
 	Commenter      string
 	InstallationID int64
 }
@@ -50,12 +53,16 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	commentBody := strings.TrimSpace(strings.ToLower(event.GetComment().GetBody()))
 	var reviewType ReviewType
 
-	switch commentBody {
-	case "/review":
+	var instructions string
+
+	if commentBody == "/review" {
 		reviewType = FullReview
-	case "/rereview":
+	} else if strings.HasPrefix(commentBody, "/rereview") {
 		reviewType = ReReview
-	default:
+		// Extract generic instructions if present
+		args := strings.TrimPrefix(commentBody, "/rereview")
+		instructions = strings.TrimSpace(args)
+	} else {
 		return nil, fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
 	}
 
@@ -78,16 +85,17 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	return &GitHubEvent{
-		Type:           reviewType,
-		RepoOwner:      repo.GetOwner().GetLogin(),
-		RepoName:       repo.GetName(),
-		RepoFullName:   repo.GetFullName(),
-		RepoCloneURL:   repo.GetCloneURL(),
-		Language:       repo.GetLanguage(),
-		InstallationID: event.GetInstallation().GetID(),
-		PRNumber:       prNumber,
-		PRTitle:        event.GetIssue().GetTitle(),
-		PRBody:         event.GetIssue().GetBody(),
-		Commenter:      event.GetComment().GetUser().GetLogin(),
+		Type:             reviewType,
+		RepoOwner:        repo.GetOwner().GetLogin(),
+		RepoName:         repo.GetName(),
+		RepoFullName:     repo.GetFullName(),
+		RepoCloneURL:     repo.GetCloneURL(),
+		Language:         repo.GetLanguage(),
+		InstallationID:   event.GetInstallation().GetID(),
+		PRNumber:         prNumber,
+		PRTitle:          event.GetIssue().GetTitle(),
+		PRBody:           event.GetIssue().GetBody(),
+		UserInstructions: instructions,
+		Commenter:        event.GetComment().GetUser().GetLogin(),
 	}, nil
 }

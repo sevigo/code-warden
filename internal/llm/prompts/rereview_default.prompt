@@ -10,6 +10,21 @@ A developer has received your previous code review and has pushed new changes to
 5.  **CRITICAL**: Do NOT report *new* issues unless they are Critical Security Vulnerabilities or Crashes. Focus ONLY on verifying the original feedback.
 6.  Ignore style, naming, or architectural preferences that were not mentioned in the original review.
 
+{{if .UserInstructions}}
+## User Instructions
+The user has provided specific instructions for this re-review:
+> {{.UserInstructions}}
+
+Please pay special attention to these instructions.
+{{end}}
+
+## context
+{{if .Context}}
+Here is some relevant code context from the repository to help you verify the changes:
+
+{{.Context}}
+{{end}}
+
 ---
 ## Original Review
 Here is the review you provided previously:
