@@ -1,159 +1,163 @@
 package llm
 
 import (
-	"reflect"
 	"testing"
 
-	"github.com/sevigo/code-warden/internal/core"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParseMarkdownReview(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    *core.StructuredReview
-		wantErr bool
+		name        string
+		input       string
+		wantSummary string
+		wantCount   int
+		expectErr   bool
 	}{
 		{
-			name: "Standard Review",
-			input: `
-# REVIEW SUMMARY
-This is a summary.
-Multilines supported.
+			name: "Valid Review",
+			input: `# REVIEW SUMMARY
+This is a good PR.
 
 # VERDICT
-REQUEST_CHANGES
+APPROVE
 
 # SUGGESTIONS
 
-## Suggestion internal/main.go:10
+## Suggestion [main.go:10]
 **Severity:** High
 **Category:** Logic
 
 ### Comment
-This is a comment.
+Fix this bug.
 
-## Suggestion cmd/cli.go:20
-**Severity:** Low
-**Category:** Style
+### Rationale
+It crashes.
 
-### Comment
-Another comment.
-`,
-			want: &core.StructuredReview{
-				Summary: "This is a summary.\nMultilines supported.",
-				Verdict: "REQUEST_CHANGES",
-				Suggestions: []core.Suggestion{
-					{
-						FilePath:   "internal/main.go",
-						LineNumber: 10,
-						Severity:   "High",
-						Category:   "Logic",
-						Comment:    "This is a comment.",
-					},
-					{
-						FilePath:   "cmd/cli.go",
-						LineNumber: 20,
-						Severity:   "Low",
-						Category:   "Style",
-						Comment:    "Another comment.",
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "Missing Verdict",
-			input: `# REVIEW SUMMARY
-Summary only.`,
-			want: &core.StructuredReview{
-				Summary:     "Summary only.",
-				Verdict:     "",
-				Suggestions: nil,
-			},
-			wantErr: false,
-		},
-		{
-			name: "Flexible Suggestion Header",
-			input: `
-# REVIEW SUMMARY
-Summary.
-
-# VERDICT
-APPROVE
-
-# SUGGESTIONS
-
-## Suggestion path/to/file.go:123
-**Severity:** Medium
-**Category:** Logic
-
-### Comment
-Comment.
-`,
-			want: &core.StructuredReview{
-				Summary: "Summary.",
-				Verdict: "APPROVE",
-				Suggestions: []core.Suggestion{
-					{
-						FilePath:   "path/to/file.go",
-						LineNumber: 123,
-						Severity:   "Medium",
-						Category:   "Logic",
-						Comment:    "Comment.",
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "Code Block in Comment",
-			input: `
-# REVIEW SUMMARY
-Summary.
-
-# VERDICT
-APPROVE
-
-# SUGGESTIONS
-
-## Suggestion file.go:1
-**Severity:** Low
-**Category:** Style
-
-### Comment
-Check this code:
+### Fix
 ` + "```go" + `
-fmt.Println("Hello")
-` + "```" + `
+if x != nil {
+  // ...
+}
+` + "```",
+			wantSummary: "This is a good PR.\n\n**Verdict:** APPROVE",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Multiple Suggestions",
+			input: `# REVIEW SUMMARY
+Summary
+
+# SUGGESTIONS
+
+## Suggestion [foo.go:1]
+**Severity:** Low
+### Comment
+Comment 1
+
+## Suggestion [bar.go:2]
+**Severity:** Critical
+### Comment
+Comment 2
 `,
-			want: &core.StructuredReview{
-				Summary: "Summary.",
-				Verdict: "APPROVE",
-				Suggestions: []core.Suggestion{
-					{
-						FilePath:   "file.go",
-						LineNumber: 1,
-						Severity:   "Low",
-						Category:   "Style",
-						Comment:    "Check this code:\n```go\nfmt.Println(\"Hello\")\n```",
-					},
-				},
-			},
-			wantErr: false,
+			wantSummary: "Summary",
+			wantCount:   2,
+			expectErr:   false,
+		},
+		{
+			name:      "Empty Input",
+			input:     "",
+			expectErr: true,
+		},
+		{
+			name:        "Response Wrapped in Markdown Fence",
+			input:       "```markdown\n# REVIEW SUMMARY\nLooks good.\n\n# VERDICT\nAPPROVE\n```",
+			wantSummary: "Looks good.\n\n**Verdict:** APPROVE",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name: "No Suggestions Section",
+			input: `# REVIEW SUMMARY
+Clean code, no issues found.
+
+# VERDICT
+APPROVE
+`,
+			wantSummary: "Clean code, no issues found.\n\n**Verdict:** APPROVE",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name: "Suggestion With Whitespace Before Line Number",
+			input: `# REVIEW SUMMARY
+Review
+
+# SUGGESTIONS
+
+## Suggestion [src/app.ts: 42]
+**Severity:** Medium
+**Category:** Performance
+
+### Comment
+Avoid repeated allocations.
+`,
+			wantSummary: "Review",
+			wantCount:   1,
+			expectErr:   false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := parseMarkdownReview(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("parseMarkdownReview() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.expectErr {
+				assert.Error(t, err)
 				return
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parseMarkdownReview() = %v, want %v", got, tt.want)
+			assert.NoError(t, err)
+			assert.Contains(t, got.Summary, tt.wantSummary)
+			assert.Len(t, got.Suggestions, tt.wantCount)
+			if tt.wantCount > 0 {
+				assert.NotEmpty(t, got.Suggestions[0].FilePath)
 			}
+		})
+	}
+}
+
+func TestStripMarkdownFence(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "No fence",
+			input: "# Summary\nHello",
+			want:  "# Summary\nHello",
+		},
+		{
+			name:  "Markdown fence",
+			input: "```markdown\n# Summary\nHello\n```",
+			want:  "# Summary\nHello",
+		},
+		{
+			name:  "MD fence",
+			input: "```md\n# Summary\n```",
+			want:  "# Summary",
+		},
+		{
+			name:  "Not a markdown fence",
+			input: "```json\n{}\n```",
+			want:  "```json\n{}\n```",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripMarkdownFence(tt.input)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

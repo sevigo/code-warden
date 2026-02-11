@@ -86,9 +86,6 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 }
 
 // runReReview handles the `/rereview` command.
-// It reuses the same robust workflow as full review, ensuring repository state is consistent
-// before generating the review. Since indexing is incremental, this is efficient even if
-// run repeatedly.
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🔄 Starting Re-Review", "repo", event.RepoFullName, "pr", event.PRNumber)
 	return j.executeReviewWorkflow(ctx, event, "Follow-up Review", "Re-analyzing PR...")
@@ -161,13 +158,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		return nil, "", nil, err
 	}
 
-	// Fetch changed files again or reuse? `GenerateReview` fetches them internally.
-	// To enable validation, we need the list of changed files HERE.
-	// Optimization: Fetch them here and pass to GenerateReview?
-	// `GenerateReview` signature: func (r *ragService) GenerateReview(..., preFetchedDiff string, preFetchedFiles []ChangedFile)
-	// It supports optional pre-fetched data!
-
-	// Let's call GetChangedFiles here.
+	// Fetch changed files for validation (to prevent 422 errors on invalid paths)
 	changedFiles, err := env.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to get changed files for validation: %w", err)
@@ -178,24 +169,28 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		validFiles[f.Filename] = struct{}{}
 	}
 
-	// Pass pre-fetched files to GenerateReview to avoid double API call would require changing GenerateReview signature in ReviewJob call?
-	// `GenerateReview` in `rag.go` takes `(..., ghClient)`. It internally calls `GetChangedFiles`.
-	// Wait, `rag.go` implementation I saw earlier:
-	// func (r *ragService) GenerateReview(...) {
-	//    ...
-	//    changedFiles, err = ghClient.GetChangedFiles(...)
-	// }
-	// It does NOT accepted pre-fetched files in the signature I recall.
-	// ERROR CHECK: `rag.go` line 578: `GenerateComparisonReviews` accepts preFetched. `GenerateReview` likely does NOT.
-	// Let's check `rag.go` again to be sure.
+	var structuredReview *core.StructuredReview
+	var rawReview string
 
-	structuredReview, rawReview, err := j.ragService.GenerateReview(
-		ctx,
-		env.repoConfig,
-		env.repo,
-		event,
-		env.ghClient,
-	)
+	if len(j.cfg.AI.ComparisonModels) > 0 {
+		j.logger.Info("Starting consensus review", "models", j.cfg.AI.ComparisonModels)
+		structuredReview, rawReview, err = j.ragService.GenerateConsensusReview(
+			ctx,
+			env.repoConfig,
+			env.repo,
+			event,
+			env.ghClient,
+			j.cfg.AI.ComparisonModels,
+		)
+	} else {
+		structuredReview, rawReview, err = j.ragService.GenerateReview(
+			ctx,
+			env.repoConfig,
+			env.repo,
+			event,
+			env.ghClient,
+		)
+	}
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to generate review: %w", err)
 	}
@@ -210,8 +205,6 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
 func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validFiles map[string]struct{}) error {
-	// No need to unmarshal anymore, we have the structured object directly
-
 	// Validate and filter suggestions to prevent 422 errors
 	validSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validFiles)
 	structuredReview.Suggestions = validSuggestions

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -51,7 +50,7 @@ type RAGService interface {
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile) ([]ComparisonResult, error)
-	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error)
+	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, string, error)
 }
 
 type ragService struct {
@@ -529,8 +528,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 			Summary:     "This pull request contains no code changes. Looks good to me!",
 			Suggestions: []core.Suggestion{},
 		}
-		rawJSON, _ := json.Marshal(noChangesReview)
-		return noChangesReview, string(rawJSON), nil
+		return noChangesReview, noChangesReview.Summary, nil
 	}
 
 	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
@@ -555,20 +553,19 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		return nil, err.Error(), err
 	}
 
-	// Parse the Markdown string into the structured format
-	// Use robust Markdown parser
+	// Parse Markdown Review
 	structuredReview, err := parseMarkdownReview(rawReview)
 	if err != nil {
-		r.logger.Error("failed to parse Markdown review from LLM", "error", err, "raw_response", rawReview)
-		// Fallback: Try to treat the entire response as a summary if parsing fails?
-		// For now, return error as we want to enforce the format.
-		return nil, "", fmt.Errorf("failed to parse LLM's Markdown response: %w", err)
+		r.logger.Warn("failed to parse markdown review, using raw output as fallback", "error", err)
+		// Fallback: Use raw output as summary
+		structuredReview = &core.StructuredReview{
+			Summary: rawReview,
+		}
 	}
 
 	if structuredReview.Verdict == "" {
 		structuredReview.Verdict = "COMMENT" // Default if missing
 	}
-
 	return structuredReview, rawReview, nil
 }
 
@@ -743,29 +740,29 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
 //
 //nolint:funlen // High-level orchestration function with error handling and artifact saving
-func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, error) {
+func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, string, error) {
 	if repo == nil {
-		return nil, errors.New("repo cannot be nil")
+		return nil, "", errors.New("repo cannot be nil")
 	}
 	if event == nil {
-		return nil, errors.New("event cannot be nil")
+		return nil, "", errors.New("event cannot be nil")
 	}
 	if ghClient == nil {
-		return nil, errors.New("ghClient cannot be nil")
+		return nil, "", errors.New("ghClient cannot be nil")
 	}
 	if len(models) == 0 {
-		return nil, fmt.Errorf("consensus review requires at least one model")
+		return nil, "", fmt.Errorf("consensus review requires at least one model")
 	}
 
 	// 1. Prepare data (once for all reviews)
 	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get changed files for consensus: %w", err)
+		return nil, "", fmt.Errorf("failed to get changed files for consensus: %w", err)
 	}
 
 	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get diff for consensus: %w", err)
+		return nil, "", fmt.Errorf("failed to get diff for consensus: %w", err)
 	}
 
 	// 2. Get independent reviews from all models (The "Committee")
@@ -774,12 +771,12 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	// Ensure we still have enough models
 	if len(validModels) < 2 {
-		return nil, fmt.Errorf("need at least 2 comparison models after deduplication, got %d", len(validModels))
+		return nil, "", fmt.Errorf("need at least 2 comparison models after deduplication, got %d", len(validModels))
 	}
 
 	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, validModels, diff, changedFiles)
 	if err != nil {
-		return nil, fmt.Errorf("failed to gather consensus reviews: %w", err)
+		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
 
 	// 3. Prepare the consensus prompt data & Save Artifacts
@@ -792,19 +789,19 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	// Security: Verify reviewsDir and resolve symlinks fully (Priority 1)
 	absReviewsDir, err := filepath.Abs(reviewsDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve reviews dir: %w", err)
+		return nil, "", fmt.Errorf("failed to resolve reviews dir: %w", err)
 	}
 
 	// Resolve all symlinks in path
 	resolvedDir, err := filepath.EvalSymlinks(absReviewsDir)
 	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to check reviews directory: %w", err)
+		return nil, "", fmt.Errorf("failed to check reviews directory: %w", err)
 	}
 
 	// Get current working directory to validate containment
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get working directory: %w", err)
+		return nil, "", fmt.Errorf("failed to get working directory: %w", err)
 	}
 	absCwd, _ := filepath.Abs(cwd)
 
@@ -812,7 +809,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	if resolvedDir != "" {
 		rel, err := filepath.Rel(absCwd, resolvedDir)
 		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			return nil, fmt.Errorf("reviews directory resolved outside base path")
+			return nil, "", fmt.Errorf("reviews directory resolved outside base path")
 		}
 	}
 
@@ -860,13 +857,10 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	if len(validReviews) == 0 {
-		return nil, fmt.Errorf("all models failed to generate valid reviews")
+		return nil, "", fmt.Errorf("all models failed to generate valid reviews")
 	}
 
 	// Use the same repo configuration as the individual reviews to ensure consistency.
-	// While we fetch the changed files again here, this ensures the consensus phase operates
-	// on the latest state of the PR.
-
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -884,7 +878,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	r.logger.Info("synthesizing consensus review", "models", validReviews)
 	rawConsensus, err := r.generateResponseWithPrompt(ctx, event, ConsensusReviewPrompt, promptData)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate consensus: %w", err)
+		return nil, "", fmt.Errorf("failed to generate consensus: %w", err)
 	}
 
 	// Save consensus raw artifact
@@ -898,30 +892,17 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	// 4. Parse Markdown Consensus
 	structuredReview, err := parseMarkdownReview(rawConsensus)
 	if err != nil {
-		return nil, err
+		r.logger.Warn("failed to parse consensus review, using raw output as fallback", "error", err)
+		structuredReview = &core.StructuredReview{
+			Summary: rawConsensus,
+		}
 	}
 
 	// 5. Add Disclaimer
 	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by synthesizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(validReviews, ", "))
 	structuredReview.Summary += disclaimer
 
-	return structuredReview, nil
-	// Wait, GenerateComparisonReviews return signature is ([]ComparisonResult, error)
-	// The original code returned &structuredReview?
-	// Let me check the original code return again.
-	// It returns ([]ComparisonResult, error).
-	// The logic I saw at 916 was `return &structuredReview, nil`.
-	// This implies GenerateComparisonReviews signature MIGHT have changed or I am misreading.
-	// Let's check the signature at line 579.
-	// func (r *ragService) GenerateComparisonReviews(...) ([]ComparisonResult, error)
-
-	// But the code at 916 returns `&structuredReview, nil` which is `(*core.StructuredReview, error)`.
-	// This suggests that `GenerateComparisonReviews` implementation I saw implies it returns `*StructuredReview`.
-	// But the loop at 829 builds `comparisonResults`.
-
-	// Ah, I might be looking at `GenerateConsensusReview` implementation inside `rag.go` but confusing it with `GenerateComparisonReviews`.
-	// Let's check `rag.go` around line 860-920 again.
-
+	return structuredReview, rawConsensus, nil
 }
 
 // SanitizeModelForFilename cleans model names for safe use as filenames.

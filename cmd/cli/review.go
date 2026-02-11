@@ -154,7 +154,8 @@ func runReview(_ *cobra.Command, args []string) error {
 
 		timer.infof("Running consensus review with %d models...", numModels)
 		// In consensus mode, we get a single synthesized review
-		review, err = appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, ghClient, appInstance.Cfg.AI.ComparisonModels)
+		// We discard the raw consensus string here as the CLI doesn't need it for display
+		review, _, err = appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, ghClient, appInstance.Cfg.AI.ComparisonModels)
 		if err != nil {
 			return fmt.Errorf("consensus review failed: %w", err)
 		}
