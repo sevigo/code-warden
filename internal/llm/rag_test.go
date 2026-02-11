@@ -1,13 +1,10 @@
 package llm
 
 import (
-	"io"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/sevigo/code-warden/internal/config"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/goframe/schema"
 )
@@ -65,7 +62,7 @@ func TestProcessRelatedSnippet_Concurrency(t *testing.T) {
 	file := internalgithub.ChangedFile{Filename: "file.go"}
 
 	// Launch many goroutines to try and trigger a race on seenDocs
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -77,27 +74,5 @@ func TestProcessRelatedSnippet_Concurrency(t *testing.T) {
 
 	if len(seenDocs) != 1 {
 		t.Errorf("expected 1 seen doc, got %d", len(seenDocs))
-	}
-}
-func TestFilterComparisonModels(t *testing.T) {
-	r := &ragService{
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		cfg: &config.Config{
-			AI: config.AIConfig{
-				GeneratorModel: "gemini-1.5-pro",
-			},
-		},
-	}
-
-	models := []string{"gemini-1.5-pro", "deepseek-chat", "kimi-k2.5"}
-	got := r.filterComparisonModels(models)
-
-	if len(got) != 2 {
-		t.Errorf("expected 2 models, got %d", len(got))
-	}
-	for _, m := range got {
-		if m == "gemini-1.5-pro" {
-			t.Error("generator model was not deduplicated")
-		}
 	}
 }

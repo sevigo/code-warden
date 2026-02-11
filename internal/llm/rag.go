@@ -754,15 +754,14 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 2. Get independent reviews from all models (The "Committee")
-	validModels := r.filterComparisonModels(models)
-	if len(validModels) < 1 {
-		return nil, "", fmt.Errorf("need at least 1 comparison model after deduplication, got %d", len(validModels))
+	if len(models) < 1 {
+		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
 
 	// 3. Centralized Context Building (The "Context Foundation")
 	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
 
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, validModels, diff, changedFiles, contextString)
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, ghClient, models, diff, changedFiles, contextString)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
@@ -905,21 +904,6 @@ func (r *ragService) saveConsensusArtifact(dir, raw, ts string) {
 	if err := os.WriteFile(filename, []byte(raw), 0600); err != nil {
 		r.logger.Warn("failed to save consensus artifact", "error", err)
 	}
-}
-
-// SanitizeModelForFilename cleans model names for safe use as filenames.
-// It handles Windows reserved names and includes a short hash to prevent collisions.
-func (r *ragService) filterComparisonModels(models []string) []string {
-	generatorModel := r.cfg.AI.GeneratorModel
-	var validModels []string
-	for _, m := range models {
-		if m != generatorModel {
-			validModels = append(validModels, m)
-		} else {
-			r.logger.Info("excluding generator model from comparison (used for synthesis)", "model", m)
-		}
-	}
-	return validModels
 }
 
 func SanitizeModelForFilename(modelName string) string {
