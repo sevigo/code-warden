@@ -124,6 +124,7 @@ func (m *manager) cloneAndIndex(
 	return &core.UpdateResult{
 		FilesToAddOrUpdate: files,
 		RepoPath:           clonePath,
+		HeadSHA:            ev.HeadSHA,
 		IsInitialClone:     true,
 	}, nil
 }
@@ -171,6 +172,7 @@ func (m *manager) incrementalUpdate(
 		return &core.UpdateResult{
 			FilesToAddOrUpdate: files,
 			RepoPath:           rec.ClonePath,
+			HeadSHA:            ev.HeadSHA,
 			IsInitialClone:     true, // Treat as initial for indexing purposes
 		}, nil
 	}
