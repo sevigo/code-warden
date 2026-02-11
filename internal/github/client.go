@@ -18,9 +18,10 @@ type ChangedFile struct {
 
 // DraftReviewComment represents a single comment to be posted as part of a review.
 type DraftReviewComment struct {
-	Path string
-	Line int
-	Body string
+	Path      string
+	Line      int
+	StartLine int // Optional, for multi-line comments
+	Body      string
 }
 
 // Client defines a set of operations for interacting with the GitHub API,
@@ -59,15 +60,27 @@ func NewPATClient(ctx context.Context, token string, logger *slog.Logger) Client
 	return &gitHubClient{client: client, logger: logger}
 }
 
+const diffSideRight = "RIGHT"
+
 // CreateReview creates a new pull request review with a summary and line-specific comments.
 func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error {
 	var ghComments []*github.DraftReviewComment
 	for _, c := range comments {
-		ghComments = append(ghComments, &github.DraftReviewComment{
+		comment := &github.DraftReviewComment{
 			Path: &c.Path,
 			Line: &c.Line,
 			Body: &c.Body,
-		})
+		}
+
+		if c.StartLine > 0 && c.StartLine != c.Line {
+			comment.StartLine = &c.StartLine
+			// StartSide must be provided for multi-line comments per GitHub API spec
+			// Side is also required if StartLine is provided.
+			side := diffSideRight
+			comment.StartSide = &side
+			comment.Side = &side
+		}
+		ghComments = append(ghComments, comment)
 	}
 
 	reviewRequest := &github.PullRequestReviewRequest{

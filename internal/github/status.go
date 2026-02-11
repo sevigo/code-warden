@@ -76,10 +76,20 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 	for _, sug := range review.Suggestions {
 		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
 			formattedComment := formatInlineComment(sug)
+			// Enforce sane line ordering: startLine must be <= LineNumber
+			startLine := sug.StartLine
+			if startLine == 0 || startLine > sug.LineNumber {
+				// Log for observability if we are normalizing a weird range
+				if startLine > sug.LineNumber {
+					fmt.Printf("Warning: normalizing invalid range %s:%d-%d to single line %d\n", sug.FilePath, startLine, sug.LineNumber, sug.LineNumber)
+				}
+				startLine = sug.LineNumber // treat as single-line at sug.LineNumber
+			}
 			comments = append(comments, DraftReviewComment{
-				Path: sug.FilePath,
-				Line: sug.LineNumber,
-				Body: formattedComment,
+				Path:      sug.FilePath,
+				Line:      sug.LineNumber,
+				StartLine: startLine,
+				Body:      formattedComment,
 			})
 		}
 	}
@@ -113,6 +123,13 @@ func formatReviewSummary(review *core.StructuredReview) string {
 
 	var sb strings.Builder
 	sb.WriteString("## 🔍 Code Review Summary\n\n")
+
+	// Add Verdict with Icon
+	if review.Verdict != "" {
+		icon := verdictIcon(review.Verdict)
+		sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
+	}
+
 	sb.WriteString(review.Summary)
 	sb.WriteString("\n\n")
 
@@ -136,6 +153,21 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	}
 
 	return sb.String()
+}
+
+// verdictIcon returns an icon for the given verdict using normalized exact matching.
+func verdictIcon(verdict string) string {
+	v := strings.ToUpper(strings.TrimSpace(verdict))
+	switch v {
+	case "APPROVE":
+		return "✅"
+	case "REQUEST_CHANGES", "REQUEST CHANGES":
+		return "🚫"
+	case "COMMENT":
+		return "💬"
+	default:
+		return "📝"
+	}
 }
 
 // severityEmoji returns an emoji for the given severity level.

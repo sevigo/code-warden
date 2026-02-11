@@ -38,6 +38,7 @@ Here are the individual reviews:
    - **CRITICAL**: You MUST preserve the exact file path and line number for every suggestion. Do not hallucinate line numbers. If a model provided a line number, use it.
    - **CRITICAL**: You MUST use actual line numbers from the provided reviews that correspond to the technical code being discussed. Do not use placeholders like 1, 2, or 3 if they are not the true line numbers. If a reviewer provided an incorrect line number, but the finding is valid, use your best architectural judgment to either find the correct line or move the finding to the summary.
    - **IMPORTANT**: Only suggestions with valid line numbers will be displayed as inline comments.
+   - **FORMAT**: Use `## Suggestion [path/to/file.go:10-20]`. Do NOT wrap the path in backticks. Use standard hyphens `-` for ranges, not dashes `–`.
 
 ---
 

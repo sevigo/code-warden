@@ -27,10 +27,12 @@ const (
 // parseSuggestionHeader extracts file path and line number from a suggestion header.
 // Format: "## Suggestion [path/to/file.go:123]"
 // Standardizes on manual parsing to be 1. ReDoS-proof (linear time) and 2. Windows-path friendly.
-// Also enforces maxLineLength to prevent DoS.
-func parseSuggestionHeader(line string) (string, int, bool) {
+// parseSuggestionHeader parses a line starting with "## Suggestion".
+// Returns filePath, startLine, endLine, success.
+// If valid, startLine is 0 for single-line suggestions, or >0 for ranges.
+func parseSuggestionHeader(line string) (string, int, int, bool) {
 	if len(line) > maxLineLength {
-		return "", 0, false
+		return "", 0, 0, false
 	}
 
 	// Clean up the header line
@@ -47,54 +49,75 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 		// Strip outer brackets if present
 		rest = strings.TrimPrefix(rest, "[")
 		rest = strings.TrimSuffix(rest, "]")
+		// Strip backticks if present
+		rest = strings.Trim(rest, "`")
 		rest = strings.TrimSpace(rest)
 
-		if path, line, ok := parsePathAndLine(rest); ok {
-			return path, line, true
+		if path, start, end, ok := parsePathAndLine(rest); ok {
+			return path, start, end, true
 		}
 		// If it started with "Suggestion" but failed to parse, it's likely a malformed suggestion header.
 		// However, we should double check if "Suggestion" is actually part of the filename?
 		// Unlikely. We return false here to avoid false positives in Strategy 2.
-		return "", 0, false
+		return "", 0, 0, false
 	}
 
 	// Strategy 2: Direct "path:line" format (e.g. "internal/storage/database.go:250")
 	// Also handle if it's wrapped in brackets like "[path:line]"
 	cleanHeader := strings.TrimPrefix(header, "[")
 	cleanHeader = strings.TrimSuffix(cleanHeader, "]")
+	cleanHeader = strings.Trim(cleanHeader, "`")
+	cleanHeader = strings.TrimSpace(cleanHeader)
 
-	if path, line, ok := parsePathAndLine(cleanHeader); ok {
-		return path, line, true
+	if path, start, end, ok := parsePathAndLine(cleanHeader); ok {
+		return path, start, end, true
 	}
 
-	return "", 0, false
+	return "", 0, 0, false
 }
 
-// parsePathAndLine helper handles "path:line" strings
-func parsePathAndLine(s string) (string, int, bool) {
+// parsePathAndLine helper handles "path:line" or "path:start-end" strings
+func parsePathAndLine(s string) (string, int, int, bool) {
 	lastColon := strings.LastIndex(s, ":")
 	if lastColon == -1 {
-		return "", 0, false
+		return "", 0, 0, false
 	}
 
 	pathPart := strings.TrimSpace(s[:lastColon])
 	linePart := strings.TrimSpace(s[lastColon+1:])
 
+	// Normalize dashes (En Dash, Em Dash) to standard hyphen
+	linePart = strings.ReplaceAll(linePart, "–", "-") // En Dash
+	linePart = strings.ReplaceAll(linePart, "—", "-") // Em Dash
+
 	// Validate path is not empty and not just "Suggestion"
 	if pathPart == "" || strings.EqualFold(pathPart, "suggestion") {
-		return "", 0, false
+		return "", 0, 0, false
 	}
 	// Basic sanitization
 	if strings.ContainsAny(pathPart, "\x00\r\n") {
-		return "", 0, false
+		return "", 0, 0, false
 	}
 
+	// Check for range (start-end)
+	if strings.Contains(linePart, "-") {
+		parts := strings.Split(linePart, "-")
+		if len(parts) == 2 {
+			start, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+			end, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err1 == nil && err2 == nil && start > 0 && end > 0 && start <= end {
+				return pathPart, start, end, true
+			}
+		}
+	}
+
+	// Single line: use same value for start and end (non-zero)
 	lineNum, err := strconv.Atoi(linePart)
 	if err != nil || lineNum <= 0 {
-		return "", 0, false
+		return "", 0, 0, false
 	}
 
-	return pathPart, lineNum, true
+	return pathPart, lineNum, lineNum, true // StartLine must equal LineNumber for single-line consistency
 }
 
 // ParseError represents a failure to parse the LLM output into a structured format.
@@ -136,13 +159,14 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 		upperLine := strings.ToUpper(line)
 
 		// Check for suggestion header (generic or specific)
-		if filePath, lineNum, ok := parseSuggestionHeader(line); ok {
+		if filePath, startLine, endLine, ok := parseSuggestionHeader(line); ok {
 			// Flush previous suggestion
 			flushSuggestion(review, currentSuggestion, &commentBuilder)
 
 			currentSuggestion = &core.Suggestion{
 				FilePath:   filePath,
-				LineNumber: lineNum,
+				StartLine:  startLine,
+				LineNumber: endLine,
 			}
 			currentSection = "SUGGESTION_CONTENT"
 			continue
@@ -201,15 +225,10 @@ func processSummaryLine(line string, builder *strings.Builder) {
 	}
 }
 
-func processVerdictLine(line string, review *core.StructuredReview, builder *strings.Builder) {
+func processVerdictLine(line string, review *core.StructuredReview, _ *strings.Builder) {
 	if line != "" && !strings.HasPrefix(line, "#") {
 		review.Verdict = line // Critical: preserve structured field
-		verdictPrefix := "**Verdict:** " + line
-		if builder.Len() > 0 {
-			review.Summary = builder.String() + "\n\n" + verdictPrefix
-		} else {
-			review.Summary = verdictPrefix
-		}
+		// Do not append to Summary here. Status updater will handle formatting.
 	}
 }
 
