@@ -97,6 +97,28 @@ func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 			filename: "src/foo.bar",
 			line:     456,
 		},
+		{
+			input:    "## Suggestion [src/foo.bar: 456]", // Space after colon might be tricky if not handled
+			matches:  true,                               // Current implementation expects :123 without space? Let's check.
+			filename: "src/foo.bar",
+			line:     456,
+		},
+		{
+			input:   "## Suggestion [invalid]",
+			matches: false,
+		},
+		{
+			input:   "## Suggestion [:123]", // Empty path
+			matches: false,
+		},
+		{
+			input:   "## Suggestion [file.go:-5]", // Negative line
+			matches: false,
+		},
+		{
+			input:   "## Suggestion [file.go:0]", // Zero line
+			matches: false,
+		},
 	}
 
 	for _, tt := range tests {

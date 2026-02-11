@@ -78,8 +78,16 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 	filePath := strings.TrimSpace(content[:lastColon])
 	lineStr := strings.TrimSpace(content[lastColon+1:])
 
+	if filePath == "" {
+		return "", 0, false
+	}
+
 	lineNum, err := strconv.Atoi(lineStr)
 	if err != nil {
+		return "", 0, false
+	}
+
+	if lineNum <= 0 {
 		return "", 0, false
 	}
 
@@ -94,10 +102,18 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 // ParseError represents a failure to parse the LLM output into a structured format.
 type ParseError struct {
 	Message string
+	Err     error
 }
 
 func (e *ParseError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Err)
+	}
 	return e.Message
+}
+
+func (e *ParseError) Unwrap() error {
+	return e.Err
 }
 
 // parseMarkdownReview extracts structured review data from the LLM's Markdown output.
