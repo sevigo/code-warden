@@ -773,8 +773,9 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	validModels := r.filterComparisonModels(models)
 
 	// Ensure we still have enough models
-	if len(validModels) < 2 {
-		return nil, "", fmt.Errorf("need at least 2 comparison models after deduplication, got %d", len(validModels))
+	// Relaxed to 1 to allow small-scale testing (1 comparison + 1 synthesis)
+	if len(validModels) < 1 {
+		return nil, "", fmt.Errorf("need at least 1 comparison model after deduplication, got %d", len(validModels))
 	}
 
 	// 3. Centralized Context Building (The "Context Foundation")
