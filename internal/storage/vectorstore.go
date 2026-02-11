@@ -54,8 +54,8 @@ var _ VectorStore = (*qdrantVectorStore)(nil)
 type qdrantVectorStore struct {
 	qdrantHost  string
 	logger      *slog.Logger
-	mu          sync.Mutex   // for clients
-	embedderMu  sync.RWMutex // for embedders
+	mu          sync.Mutex
+	embedderMu  sync.RWMutex
 	clients     map[string]vectorstores.VectorStore
 	embedders   map[string]embeddings.Embedder
 	batchConfig *qdrant.BatchConfig
@@ -278,17 +278,21 @@ func (q *qdrantVectorStore) SearchCollectionBatch(ctx context.Context, collectio
 func (q *qdrantVectorStore) DeleteCollection(ctx context.Context, collectionName string) error {
 	q.mu.Lock()
 	client, ok := q.clients[collectionName]
-	delete(q.clients, collectionName)
-	q.mu.Unlock()
-
 	if !ok {
+		q.mu.Unlock()
 		return fmt.Errorf("no active client for collection %s, cannot delete", collectionName)
 	}
+	// Don't delete from cache yet - delete first, then remove from cache
+	q.mu.Unlock()
 
 	if err := client.DeleteCollection(ctx, collectionName); err != nil {
 		return fmt.Errorf("failed to delete collection %s: %w", collectionName, err)
 	}
 
+	// Now safe to remove
+	q.mu.Lock()
+	delete(q.clients, collectionName)
+	q.mu.Unlock()
 	return nil
 }
 
@@ -497,10 +501,6 @@ func (s *scopedVectorStore) DeleteDocumentsByFilter(ctx context.Context, filters
 
 // DeleteCollection deletes the scoped collection safely, ensuring the client exists first.
 func (s *scopedVectorStore) DeleteCollection(ctx context.Context, _ string) error {
-	// Ensure the client is initialized/cached so parent.DeleteCollection can find it
-	if _, err := s.parent.getStoreForCollection(s.collectionName, s.embedderModel); err != nil {
-		return fmt.Errorf("failed to initialize client for deletion: %w", err)
-	}
 	return s.parent.DeleteCollection(ctx, s.collectionName)
 }
 
