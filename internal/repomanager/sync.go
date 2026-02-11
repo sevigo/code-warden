@@ -97,7 +97,6 @@ func (m *manager) cloneAndIndex(
 	}
 
 	// Check if record exists (it might if we are recovering from missing disk files)
-	// Check if record exists (it might if we are recovering from missing disk files)
 	existing, err := m.store.GetRepositoryByFullName(ctx, ev.RepoFullName)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		m.cleanupRepoDir(clonePath)

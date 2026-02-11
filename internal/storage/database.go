@@ -151,7 +151,6 @@ WHERE full_name = $1`
 
 // UpdateRepository updates an existing repository record in the database.
 func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) error {
-	// repo.UpdatedAt is handled by DB NOW()
 	query := `
 		UPDATE repositories 
 		SET 
@@ -238,13 +237,20 @@ func (s *postgresStore) GetFilesForRepo(ctx context.Context, repoID int64) (map[
 		}
 		var record FileRecord
 		if err := rows.StructScan(&record); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan file record: %w", err)
 		}
 		files[record.FilePath] = record
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed iterating file records for repo %d: %w", repoID, err)
+	}
+
+	if err := rows.Close(); err != nil {
+		// Only log if context wasn't already canceled to avoid masking cancellation
+		if ctx.Err() == nil {
+			slog.ErrorContext(ctx, "failed to close rows in GetFilesForRepo", "error", err)
+		}
 	}
 
 	return files, nil
