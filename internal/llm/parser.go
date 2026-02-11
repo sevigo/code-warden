@@ -12,7 +12,8 @@ import (
 var (
 	// Matches: ## Suggestion [path/to/file.go:123] or ## Suggestion [path/to/file.go: 123]
 	// Uses greedy .+ to match until the LAST colon, so Windows paths like C:\src\main.go:123 work.
-	suggestionHeaderRegex = regexp.MustCompile(`(?i)##\s+Suggestion\s+\[(.+):\s*(\d+)\]`)
+	// Uses non-greedy capture and excludes colons to prevent ReDoS (Fixes Critical Security Issue)
+	suggestionHeaderRegex = regexp.MustCompile(`(?i)##\s+Suggestion\s+\[([^\]:]+):\s*(\d+)\]`)
 	severityRegex         = regexp.MustCompile(`(?i)\*\*Severity:?\*\*\s*(.*)`)
 	categoryRegex         = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
 )
@@ -198,10 +199,18 @@ func stripMarkdownFence(s string) string {
 		return s
 	}
 
-	// Check for closing fence on the last line
-	lastIdx := len(lines) - 1
-	if strings.TrimSpace(lines[lastIdx]) == "```" {
-		return strings.TrimSpace(strings.Join(lines[1:lastIdx], "\n"))
+	// Find closing fence anywhere after first line (scanning backwards)
+	// This handles cases where LLMs add trailing text after the json/markdown block.
+	closeIdx := -1
+	for i := len(lines) - 1; i > 0; i-- {
+		if strings.TrimSpace(lines[i]) == "```" {
+			closeIdx = i
+			break
+		}
+	}
+
+	if closeIdx > 0 {
+		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
 	}
 
 	// Fallback: If closing fence is missing (truncation), return everything after the opening fence

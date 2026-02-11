@@ -734,6 +734,9 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 //
 
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
 	if err := r.validateConsensusParams(repo, event, models); err != nil {
 		return nil, "", err
 	}
