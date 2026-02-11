@@ -103,6 +103,20 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 		}
 	}()
 
+	// Skip if this exact commit was already reviewed (prevents duplicate work on rapid webhook delivery).
+	// Only for full reviews — re-reviews intentionally re-analyze the same SHA.
+	if event.Type == core.FullReview {
+		existing, _ := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+		if existing != nil && existing.HeadSHA == event.HeadSHA {
+			j.logger.Info("Skipping review — same SHA already reviewed",
+				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
+			// Mark check run as completed so the PR status doesn't stay pending
+			_ = reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID,
+				"success", "Review Already Exists", "This commit was already reviewed.")
+			return nil
+		}
+	}
+
 	structuredReview, rawReview, validFiles, err := j.processRepository(ctx, event, reviewEnv)
 	if err != nil {
 		return err
