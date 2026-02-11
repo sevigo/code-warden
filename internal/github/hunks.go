@@ -1,6 +1,7 @@
 package github
 
 import (
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strconv"
@@ -19,19 +20,15 @@ func ParseValidLinesFromPatch(patch string, logger *slog.Logger) map[int]struct{
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, "@@") {
-			matches := hunkHeaderRegex.FindStringSubmatch(line)
-			if len(matches) >= 2 {
-				start, err := strconv.Atoi(matches[1])
-				if err != nil {
-					// Skip malformed hunk; don't use corrupted line numbers
-					if logger != nil {
-						logger.Warn("skipped malformed hunk header", "line", line, "error", err)
-					}
-					currentLine = -1
-					continue
+			start, err := parseHunkHeader(line)
+			if err != nil {
+				if logger != nil && !strings.Contains(err.Error(), "no match") {
+					logger.Warn("skipped malformed hunk header", "line", line, "error", err)
 				}
-				currentLine = start
+				currentLine = -1
+				continue
 			}
+			currentLine = start
 			continue
 		}
 
@@ -57,4 +54,12 @@ func ParseValidLinesFromPatch(patch string, logger *slog.Logger) map[int]struct{
 	}
 
 	return validLines
+}
+
+func parseHunkHeader(line string) (int, error) {
+	matches := hunkHeaderRegex.FindStringSubmatch(line)
+	if len(matches) < 2 {
+		return -1, fmt.Errorf("no match")
+	}
+	return strconv.Atoi(matches[1])
 }

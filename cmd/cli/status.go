@@ -9,8 +9,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/sevigo/code-warden/internal/wire"
 	"github.com/spf13/cobra"
+
+	"github.com/sevigo/code-warden/internal/wire"
 )
 
 var outputJSON bool

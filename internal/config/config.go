@@ -9,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sevigo/code-warden/internal/logger"
 	"github.com/spf13/viper"
+
+	"github.com/sevigo/code-warden/internal/logger"
 )
 
 const (

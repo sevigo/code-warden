@@ -13,11 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 const rootDir = "root"
@@ -418,7 +419,7 @@ func isCodeExtension(ext string) bool {
 // GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
 // It uses parallel execution to speed up the process, with a semaphore to limit concurrency.
 //
-//nolint:gocognit // Complex parallel logic with error handling
+
 func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
 	r.logger.Info("generating multi-directory comparison summaries", "models", models, "paths", relPaths)
 
@@ -512,7 +513,7 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 	return absPath, nil
 }
 
-func (r *ragService) generateSingleSummary(ctx context.Context, modelName, relPath string, info *DirectoryInfo, llm llms.Model) string {
+func (r *ragService) generateSingleSummary(ctx context.Context, modelName, _ string, info *DirectoryInfo, llm llms.Model) string {
 	if llm == nil {
 		return "Error: LLM not initialized"
 	}

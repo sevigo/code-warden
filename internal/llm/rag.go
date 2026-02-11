@@ -741,7 +741,7 @@ func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, pr
 
 // GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
 //
-//nolint:funlen // High-level orchestration function with error handling and artifact saving
+
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string) (*core.StructuredReview, string, error) {
 	if err := r.validateConsensusParams(repo, event, ghClient, models); err != nil {
 		return nil, "", err

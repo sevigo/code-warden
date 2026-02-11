@@ -5,8 +5,9 @@ import (
 	"sync"
 	"testing"
 
-	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/goframe/schema"
+
+	internalgithub "github.com/sevigo/code-warden/internal/github"
 )
 
 func TestSanitizeModelForFilename(t *testing.T) {

@@ -91,7 +91,6 @@ func (t *stepTimer) infof(format string, args ...any) {
 	}
 }
 
-//nolint:gocognit,nestif // High-level CLI command orchestration
 func runReview(_ *cobra.Command, args []string) error {
 	ctx := context.Background()
 	prURL := args[0]

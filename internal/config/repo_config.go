@@ -6,8 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sevigo/code-warden/internal/core"
 	"gopkg.in/yaml.v3"
+
+	"github.com/sevigo/code-warden/internal/core"
 )
 
 var (
