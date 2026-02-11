@@ -1356,23 +1356,6 @@ func (r *ragService) assembleContext(arch, impact string, hyde [][]schema.Docume
 	return contextBuilder.String()
 }
 
-func (r *ragService) formatRelatedSnippets(hydeResults [][]schema.Document, indices []int, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenMu *sync.RWMutex) string {
-	var builder strings.Builder
-	var topFiles []string
-
-	for i, docs := range hydeResults {
-		originalFile := changedFiles[indices[i]]
-		for j, doc := range docs {
-			topFiles = r.processRelatedSnippet(doc, originalFile, j, seenDocs, seenMu, topFiles, &builder)
-		}
-	}
-
-	if len(topFiles) > 0 {
-		r.logger.Info("HyDE search results", "top_files", topFiles)
-	}
-	return builder.String()
-}
-
 func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {
 	source, _ := doc.Metadata["source"].(string)
 	if source == "" || r.isArchDocument(doc) {

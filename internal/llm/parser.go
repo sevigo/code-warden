@@ -11,8 +11,8 @@ import (
 
 var (
 	// Matches: ## Suggestion [path/to/file.go:123] or ## Suggestion [path/to/file.go: 123]
-	// Also handles Windows paths like C:\path\to\file.go by using a greedy match up to the last colon.
-	suggestionHeaderRegex = regexp.MustCompile(`(?i)##\s+Suggestion\s+\[(.*?):\s*(\d+)\]`)
+	// Uses greedy .+ to match until the LAST colon, so Windows paths like C:\src\main.go:123 work.
+	suggestionHeaderRegex = regexp.MustCompile(`(?i)##\s+Suggestion\s+\[(.+):\s*(\d+)\]`)
 	severityRegex         = regexp.MustCompile(`(?i)\*\*Severity:?\*\*\s*(.*)`)
 	categoryRegex         = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
 )
@@ -26,6 +26,8 @@ type ParseError struct {
 func (e *ParseError) Error() string {
 	return fmt.Sprintf("failed to parse LLM output: %v", e.Err)
 }
+
+func (e *ParseError) Unwrap() error { return e.Err }
 
 // parseMarkdownReview extracts structured review data from the LLM's Markdown output.
 func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {

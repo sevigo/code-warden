@@ -122,7 +122,7 @@ func validateComparisonPath(p string) error {
 func validateSymlink(clean, original string) error {
 	info, err := os.Lstat(clean)
 	if err != nil {
-		return nil // Path doesn't exist, which is fine for config validation
+		return nil //nolint:nilerr // Path doesn't exist, which is fine for config validation
 	}
 
 	if info.Mode()&os.ModeSymlink == 0 {
