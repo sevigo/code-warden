@@ -71,7 +71,9 @@ func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, num
 		}
 		if c.StartLine > 0 && c.StartLine != c.Line {
 			comment.StartLine = &c.StartLine
-			// GitHub API might require StartSide or Side "RIGHT" explicitly, though "RIGHT" is default
+			// StartSide must be provided for multi-line comments per GitHub API spec
+			startSide := "RIGHT"
+			comment.StartSide = &startSide
 		}
 		ghComments = append(ghComments, comment)
 	}

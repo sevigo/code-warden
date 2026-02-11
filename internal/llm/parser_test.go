@@ -140,6 +140,32 @@ Refactor this range.
 			wantCount:   1,
 			expectErr:   false,
 		},
+		{
+			name: "Verdict does not leak into Summary",
+			input: `# REVIEW SUMMARY
+Good code.
+# VERDICT
+APPROVE`,
+			wantSummary: "Good code.",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name: "Suggestion With En Dash Range",
+			input: `# REVIEW SUMMARY
+Summary
+
+# SUGGESTIONS
+
+## Suggestion [main.go:10–20]
+**Severity:** Critical
+### Comment
+Fix range with En Dash.
+`,
+			wantSummary: "Summary",
+			wantCount:   1,
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -151,13 +177,25 @@ Refactor this range.
 			}
 			assert.NoError(t, err)
 			assert.Contains(t, got.Summary, tt.wantSummary)
+			// Verdict should not be part of summary (checked by Contains above via wantSummary not having it)
+			// But we can also check explicit exclusion if needed.
+			if strings.Contains(tt.input, "# VERDICT") {
+				// The input has verdict, check if parsed into field
+				// We don't have expected verdict field in struct yet, but can check it's not in summary.
+				assert.NotContains(t, got.Summary, "APPROVE")
+				assert.NotEmpty(t, got.Verdict)
+			}
+
 			assert.Len(t, got.Suggestions, tt.wantCount)
 			if tt.wantCount > 0 {
 				assert.NotEmpty(t, got.Suggestions[0].FilePath)
 				// For multiline test, verify start/end
-				if strings.Contains(tt.name, "Multiline") {
+				if strings.Contains(tt.name, "Multiline") || strings.Contains(tt.name, "En Dash") {
 					assert.Equal(t, 10, got.Suggestions[0].StartLine)
 					assert.Equal(t, 20, got.Suggestions[0].LineNumber)
+				} else {
+					// For single line, StartLine MUST equal LineNumber
+					assert.Equal(t, got.Suggestions[0].LineNumber, got.Suggestions[0].StartLine, "Single line suggestion should have StartLine == LineNumber")
 				}
 			}
 		})

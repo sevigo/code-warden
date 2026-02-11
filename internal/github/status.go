@@ -76,10 +76,10 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 	for _, sug := range review.Suggestions {
 		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
 			formattedComment := formatInlineComment(sug)
-			// If StartLine is not provided, assume it's a single-line comment and use LineNumber
+			// Enforce sane line ordering: startLine must be <= LineNumber
 			startLine := sug.StartLine
-			if startLine == 0 {
-				startLine = sug.LineNumber
+			if startLine == 0 || startLine > sug.LineNumber {
+				startLine = sug.LineNumber // treat as single-line at sug.LineNumber
 			}
 			comments = append(comments, DraftReviewComment{
 				Path:      sug.FilePath,
@@ -151,19 +151,19 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	return sb.String()
 }
 
-// verdictIcon returns an icon for the given verdict.
+// verdictIcon returns an icon for the given verdict using normalized exact matching.
 func verdictIcon(verdict string) string {
-	v := strings.ToUpper(verdict)
-	if strings.Contains(v, "APPROVE") {
+	v := strings.ToUpper(strings.TrimSpace(verdict))
+	switch v {
+	case "APPROVE":
 		return "✅"
-	}
-	if strings.Contains(v, "REQUEST_CHANGES") || strings.Contains(v, "REQUEST CHANGES") {
+	case "REQUEST_CHANGES", "REQUEST CHANGES":
 		return "🚫"
-	}
-	if strings.Contains(v, "COMMENT") {
+	case "COMMENT":
 		return "💬"
+	default:
+		return "📝"
 	}
-	return "📝"
 }
 
 // severityEmoji returns an emoji for the given severity level.

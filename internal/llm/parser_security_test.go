@@ -81,10 +81,11 @@ func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 		line      int // end line
 	}{
 		{
-			input:    "##  Suggestion  [internal/main.go:123]", // Double spaces
-			matches:  true,
-			filename: "internal/main.go",
-			line:     123,
+			input:     "##  Suggestion  [internal/main.go:123]", // Double spaces
+			matches:   true,
+			filename:  "internal/main.go",
+			startLine: 123,
+			line:      123,
 		},
 		{
 			input:     "## Suggestion [main.go:10-20]", // Range
@@ -94,22 +95,25 @@ func TestParseSuggestionHeader_FlexibleWhitespace(t *testing.T) {
 			line:      20,
 		},
 		{
-			input:    "## SUGGESTION [C:\\path\\to\\file.go:123]",
-			matches:  true,
-			filename: "C:\\path\\to\\file.go",
-			line:     123,
+			input:     "## SUGGESTION [C:\\path\\to\\file.go:123]",
+			matches:   true,
+			filename:  "C:\\path\\to\\file.go",
+			startLine: 123,
+			line:      123,
 		},
 		{
-			input:    "## Suggestion [ src/foo.bar : 456 ]", // Spaces inside brackets
-			matches:  true,
-			filename: "src/foo.bar",
-			line:     456,
+			input:     "## Suggestion [ src/foo.bar : 456 ]", // Spaces inside brackets
+			matches:   true,
+			filename:  "src/foo.bar",
+			startLine: 456,
+			line:      456,
 		},
 		{
-			input:    "## Suggestion [src/foo.bar: 456]", // Space after colon
-			matches:  true,
-			filename: "src/foo.bar",
-			line:     456,
+			input:     "## Suggestion [src/foo.bar: 456]", // Space after colon
+			matches:   true,
+			filename:  "src/foo.bar",
+			startLine: 456,
+			line:      456,
 		},
 		{
 			input:   "## Suggestion [invalid]",

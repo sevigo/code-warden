@@ -82,6 +82,10 @@ func parsePathAndLine(s string) (string, int, int, bool) {
 	pathPart := strings.TrimSpace(s[:lastColon])
 	linePart := strings.TrimSpace(s[lastColon+1:])
 
+	// Normalize dashes (En Dash, Em Dash) to standard hyphen
+	linePart = strings.ReplaceAll(linePart, "–", "-") // En Dash
+	linePart = strings.ReplaceAll(linePart, "—", "-") // Em Dash
+
 	// Validate path is not empty and not just "Suggestion"
 	if pathPart == "" || strings.EqualFold(pathPart, "suggestion") {
 		return "", 0, 0, false
@@ -103,13 +107,13 @@ func parsePathAndLine(s string) (string, int, int, bool) {
 		}
 	}
 
-	// Single line
+	// Single line: use same value for start and end (non-zero)
 	lineNum, err := strconv.Atoi(linePart)
 	if err != nil || lineNum <= 0 {
 		return "", 0, 0, false
 	}
 
-	return pathPart, 0, lineNum, true
+	return pathPart, lineNum, lineNum, true // StartLine must equal LineNumber for single-line consistency
 }
 
 // ParseError represents a failure to parse the LLM output into a structured format.
