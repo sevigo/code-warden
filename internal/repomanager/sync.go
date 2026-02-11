@@ -187,6 +187,7 @@ func (m *manager) incrementalUpdate(
 		FilesToAddOrUpdate: append(added, modified...),
 		FilesToDelete:      deleted,
 		RepoPath:           rec.ClonePath,
+		HeadSHA:            ev.HeadSHA,
 		IsInitialClone:     false,
 	}, nil
 }
