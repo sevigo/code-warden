@@ -19,8 +19,11 @@ const cloneTimeout = 5 * time.Minute
 // syncRepo decides whether we need a fresh clone or an incremental update.
 func (m *manager) syncRepo(ctx context.Context, ev *core.GitHubEvent, token string) (*core.UpdateResult, error) {
 	repoRec, err := m.store.GetRepositoryByFullName(ctx, ev.RepoFullName)
-	if err != nil {
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return nil, fmt.Errorf("query repository state: %w", err)
+	}
+	if errors.Is(err, storage.ErrNotFound) {
+		repoRec = nil // Explicitly set to nil for clarity
 	}
 
 	// A model‑change forces a full re‑index.
@@ -94,8 +97,9 @@ func (m *manager) cloneAndIndex(
 	}
 
 	// Check if record exists (it might if we are recovering from missing disk files)
+	// Check if record exists (it might if we are recovering from missing disk files)
 	existing, err := m.store.GetRepositoryByFullName(ctx, ev.RepoFullName)
-	if err != nil {
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		m.cleanupRepoDir(clonePath)
 		return nil, fmt.Errorf("check existing repo: %w", err)
 	}

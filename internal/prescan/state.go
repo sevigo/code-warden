@@ -3,6 +3,7 @@ package prescan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -40,6 +41,9 @@ func NewStateManager(store storage.Store, repoID int64) *StateManager {
 func (sm *StateManager) LoadState(ctx context.Context) (*storage.ScanState, *Progress, error) {
 	state, err := sm.store.GetScanState(ctx, sm.repoID)
 	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, nil, nil
+		}
 		return nil, nil, fmt.Errorf("failed to load scan state: %w", err)
 	}
 	if state == nil {
