@@ -2,6 +2,7 @@ package repomanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/go-git/go-git/v5"
@@ -114,8 +115,11 @@ func (m *manager) incrementalLocalScan(
 
 func (m *manager) ensureRepoRecord(ctx context.Context, fullName, clonePath string) error {
 	rec, err := m.store.GetRepositoryByFullName(ctx, fullName)
-	if err != nil {
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return fmt.Errorf("lookup repo before scan: %w", err)
+	}
+	if errors.Is(err, storage.ErrNotFound) {
+		rec = nil
 	}
 	if rec == nil {
 		// Determine embedder model (could be passed as arg or default)

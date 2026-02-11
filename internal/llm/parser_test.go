@@ -107,6 +107,22 @@ Avoid repeated allocations.
 			wantCount:   1,
 			expectErr:   false,
 		},
+		{
+			name: "Direct Header Format",
+			input: `# REVIEW SUMMARY
+Summary
+
+# SUGGESTIONS
+
+## pkg/file.go:55
+**Severity:** Medium
+### Comment
+Issue here.
+`,
+			wantSummary: "Summary",
+			wantCount:   1,
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {

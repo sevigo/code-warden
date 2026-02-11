@@ -15,6 +15,11 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 )
 
+var (
+	// ErrNotFound is returned when a requested record is not found in the database.
+	ErrNotFound = errors.New("record not found")
+)
+
 // Repository represents a stored Git repository.
 type Repository struct {
 	ID                   int64     `json:"id" db:"id"`
@@ -106,7 +111,7 @@ func (s *postgresStore) GetLatestReviewForPR(ctx context.Context, repoFullName s
 	err := row.Scan(&r.ID, &r.RepoFullName, &r.PRNumber, &r.HeadSHA, &r.ReviewContent, &r.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("no previous review found for PR %s#%d", repoFullName, prNumber)
+			return nil, ErrNotFound
 		}
 		return nil, err
 	}
@@ -137,7 +142,7 @@ WHERE full_name = $1`
 	err := s.db.GetContext(ctx, &repo, query, fullName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to get repository by full name %s: %w", fullName, err)
 	}
@@ -146,7 +151,6 @@ WHERE full_name = $1`
 
 // UpdateRepository updates an existing repository record in the database.
 func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) error {
-	repo.UpdatedAt = time.Now()
 	query := `
 		UPDATE repositories 
 		SET 
@@ -154,7 +158,7 @@ func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) 
 			qdrant_collection_name = :qdrant_collection_name, 
 			embedder_model_name = :embedder_model_name,
 			last_indexed_sha = :last_indexed_sha, 
-			updated_at = :updated_at 
+			updated_at = NOW() 
 		WHERE id = :id`
 
 	_, err := s.db.NamedExecContext(ctx, query, repo)
@@ -175,14 +179,8 @@ func (s *postgresStore) GetAllReviewsForPR(ctx context.Context, repoFullName str
 	var reviews []*core.Review
 	err := s.db.SelectContext(ctx, &reviews, query, repoFullName, prNumber)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to retrieve all reviews for PR",
-			"repo_full_name", repoFullName,
-			"pr_number", prNumber,
-			"error", err,
-		)
 		return nil, fmt.Errorf("failed to retrieve all reviews for %q PR %d: %w", repoFullName, prNumber, err)
 	}
-
 	return reviews, nil
 }
 
@@ -195,7 +193,7 @@ func (s *postgresStore) GetAllRepositories(ctx context.Context) ([]*Repository, 
 
 	var repos []*Repository
 	err := s.db.SelectContext(ctx, &repos, query)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve all repositories: %w", err)
 	}
 	return repos, nil
@@ -212,7 +210,7 @@ func (s *postgresStore) GetRepositoryByClonePath(ctx context.Context, clonePath 
 	err := s.db.GetContext(ctx, &repo, query, clonePath)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to get repository by clone path %s: %w", clonePath, err)
 	}
@@ -226,19 +224,33 @@ func (s *postgresStore) GetFilesForRepo(ctx context.Context, repoID int64) (map[
 	if err != nil {
 		return nil, fmt.Errorf("failed to list files for repo %d: %w", repoID, err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.ErrorContext(ctx, "failed to close rows in GetFilesForRepo", "error", err)
+		}
+	}()
 
 	files := make(map[string]FileRecord)
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var record FileRecord
 		if err := rows.StructScan(&record); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan file record: %w", err)
 		}
 		files[record.FilePath] = record
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed iterating file records for repo %d: %w", repoID, err)
+	}
+
+	if err := rows.Close(); err != nil {
+		// Only log if context wasn't already canceled to avoid masking cancellation
+		if ctx.Err() == nil {
+			slog.ErrorContext(ctx, "failed to close rows in GetFilesForRepo", "error", err)
+		}
 	}
 
 	return files, nil
@@ -251,13 +263,31 @@ func (s *postgresStore) UpsertFiles(ctx context.Context, repoID int64, files []F
 	}
 
 	// Use a transaction for bulk insert
+	const batchSize = 1000
+	for i := 0; i < len(files); i += batchSize {
+		end := i + batchSize
+		if end > len(files) {
+			end = len(files)
+		}
+		batch := files[i:end]
+
+		if err := s.upsertFilesBatch(ctx, repoID, batch); err != nil {
+			return fmt.Errorf("failed to upsert batch %d-%d: %w", i, end, err)
+		}
+	}
+
+	return nil
+}
+
+func (s *postgresStore) upsertFilesBatch(ctx context.Context, repoID int64, files []FileRecord) error {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	// internal/storage/database.go:238: Error return value of `tx.Rollback` is not checked
 	defer func() {
-		_ = tx.Rollback()
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			slog.ErrorContext(ctx, "transaction rollback failed in UpsertFiles", "error", err)
+		}
 	}()
 
 	// Prepare statement for bulk upsert
@@ -287,15 +317,24 @@ func (s *postgresStore) DeleteFiles(ctx context.Context, repoID int64, paths []s
 		return nil
 	}
 
-	query, args, err := sqlx.In("DELETE FROM repository_files WHERE repository_id = ? AND file_path IN (?)", repoID, paths)
-	if err != nil {
-		return err
-	}
-	query = s.db.Rebind(query)
+	const batchSize = 1000
+	for i := 0; i < len(paths); i += batchSize {
+		end := i + batchSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		batch := paths[i:end]
 
-	_, err = s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to delete files for repo %d: %w", repoID, err)
+		query, args, err := sqlx.In("DELETE FROM repository_files WHERE repository_id = ? AND file_path IN (?)", repoID, batch)
+		if err != nil {
+			return fmt.Errorf("failed to build delete query: %w", err)
+		}
+		query = s.db.Rebind(query)
+
+		_, err = s.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to delete files batch for repo %d: %w", repoID, err)
+		}
 	}
 	return nil
 }
@@ -307,7 +346,7 @@ func (s *postgresStore) GetScanState(ctx context.Context, repoID int64) (*ScanSt
 	err := s.db.GetContext(ctx, &state, query, repoID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to get scan state for repo %d: %w", repoID, err)
 	}

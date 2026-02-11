@@ -238,8 +238,11 @@ func (s *Scanner) updateRepoIndexVersion(ctx context.Context, localPath string, 
 
 func (s *Scanner) ensureRepoRecord(ctx context.Context, fullName, path string) (*storage.Repository, error) {
 	rec, err := s.Manager.store.GetRepositoryByFullName(ctx, fullName)
-	if err != nil {
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return nil, err
+	}
+	if errors.Is(err, storage.ErrNotFound) {
+		rec = nil
 	}
 	if rec == nil {
 		newRec := &storage.Repository{

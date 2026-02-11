@@ -33,70 +33,68 @@ func parseSuggestionHeader(line string) (string, int, bool) {
 		return "", 0, false
 	}
 
-	// Use Fields to tolerate variable whitespace (e.g. "##  Suggestion")
-	fields := strings.Fields(line)
-	if len(fields) < 3 {
+	// Clean up the header line
+	header := strings.TrimSpace(line)
+	header = strings.TrimPrefix(header, "##")
+	header = strings.TrimSpace(header)
+
+	// Strategy 1: "Suggestion [path:line]" or "Suggestion path:line"
+	// Check case-insensitive prefix
+	if strings.HasPrefix(strings.ToLower(header), "suggestion") {
+		// Strip "Suggestion"
+		rest := header[len("suggestion"):]
+		rest = strings.TrimSpace(rest)
+		// Strip outer brackets if present
+		rest = strings.TrimPrefix(rest, "[")
+		rest = strings.TrimSuffix(rest, "]")
+		rest = strings.TrimSpace(rest)
+
+		if path, line, ok := parsePathAndLine(rest); ok {
+			return path, line, true
+		}
+		// If it started with "Suggestion" but failed to parse, it's likely a malformed suggestion header.
+		// However, we should double check if "Suggestion" is actually part of the filename?
+		// Unlikely. We return false here to avoid false positives in Strategy 2.
 		return "", 0, false
 	}
 
-	// Case-insensitive check for generic parts
-	if !strings.EqualFold(fields[0], "##") || !strings.EqualFold(fields[1], "suggestion") {
-		return "", 0, false
+	// Strategy 2: Direct "path:line" format (e.g. "internal/storage/database.go:250")
+	// Also handle if it's wrapped in brackets like "[path:line]"
+	cleanHeader := strings.TrimPrefix(header, "[")
+	cleanHeader = strings.TrimSuffix(cleanHeader, "]")
+
+	if path, line, ok := parsePathAndLine(cleanHeader); ok {
+		return path, line, true
 	}
 
-	// Reconstruct the "content" part ([...]) because Fields split it if it had spaces (unlikely for paths, but possible in malformed input)
-	// Actually, we expect the format "## Suggestion [path:line]".
-	// "path:line" should not have spaces inside usually, but let's be robust.
-	// The path itself *could* have spaces, so splitting by Fields might have broken the path.
-	// e.g. "## Suggestion [path/to/my file.go:123]" -> fields: "##", "Suggestion", "[path/to/my", "file.go:123]"
-	// So we need to find where the bracketed content starts and ends in the ORIGINAL line, not from fields.
+	return "", 0, false
+}
 
-	// We used Fields just to check the prefix robustly.
-	// Now let's find the content in the original line.
-
-	startIdx := strings.Index(line, "[")
-	if startIdx == -1 {
-		return "", 0, false
-	}
-
-	closingIdx := strings.LastIndex(line, "]")
-	if closingIdx == -1 || closingIdx <= startIdx {
-		return "", 0, false
-	}
-
-	content := line[startIdx+1 : closingIdx]
-	if content == "" {
-		return "", 0, false
-	}
-
-	// Split on the *last* colon to get path and line.
-	lastColon := strings.LastIndex(content, ":")
+// parsePathAndLine helper handles "path:line" strings
+func parsePathAndLine(s string) (string, int, bool) {
+	lastColon := strings.LastIndex(s, ":")
 	if lastColon == -1 {
 		return "", 0, false
 	}
 
-	filePath := strings.TrimSpace(content[:lastColon])
-	lineStr := strings.TrimSpace(content[lastColon+1:])
+	pathPart := strings.TrimSpace(s[:lastColon])
+	linePart := strings.TrimSpace(s[lastColon+1:])
 
-	if filePath == "" {
+	// Validate path is not empty and not just "Suggestion"
+	if pathPart == "" || strings.EqualFold(pathPart, "suggestion") {
 		return "", 0, false
 	}
-
-	lineNum, err := strconv.Atoi(lineStr)
-	if err != nil {
-		return "", 0, false
-	}
-
-	if lineNum <= 0 {
-		return "", 0, false
-	}
-
 	// Basic sanitization
-	if strings.ContainsAny(filePath, "\x00\r\n") {
+	if strings.ContainsAny(pathPart, "\x00\r\n") {
 		return "", 0, false
 	}
 
-	return filePath, lineNum, true
+	lineNum, err := strconv.Atoi(linePart)
+	if err != nil || lineNum <= 0 {
+		return "", 0, false
+	}
+
+	return pathPart, lineNum, true
 }
 
 // ParseError represents a failure to parse the LLM output into a structured format.
@@ -137,6 +135,19 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 		line := strings.TrimSpace(rawLine)
 		upperLine := strings.ToUpper(line)
 
+		// Check for suggestion header (generic or specific)
+		if filePath, lineNum, ok := parseSuggestionHeader(line); ok {
+			// Flush previous suggestion
+			flushSuggestion(review, currentSuggestion, &commentBuilder)
+
+			currentSuggestion = &core.Suggestion{
+				FilePath:   filePath,
+				LineNumber: lineNum,
+			}
+			currentSection = "SUGGESTION_CONTENT"
+			continue
+		}
+
 		// Top-level section headers (Fixes ifElseChain linter error by using switch)
 		switch {
 		case strings.HasPrefix(upperLine, "# REVIEW SUMMARY"):
@@ -153,22 +164,6 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 			flushSuggestion(review, currentSuggestion, &commentBuilder)
 			currentSuggestion = nil
 			currentSection = "SUGGESTIONS"
-			continue
-		case strings.HasPrefix(upperLine, "## SUGGESTION"):
-			// Flush previous suggestion
-			flushSuggestion(review, currentSuggestion, &commentBuilder)
-
-			// Parse new suggestion header manually
-			filePath, lineNum, ok := parseSuggestionHeader(line)
-			if ok {
-				currentSuggestion = &core.Suggestion{
-					FilePath:   filePath,
-					LineNumber: lineNum,
-				}
-			} else {
-				currentSuggestion = &core.Suggestion{FilePath: "unknown"}
-			}
-			currentSection = "SUGGESTION_CONTENT"
 			continue
 		}
 
