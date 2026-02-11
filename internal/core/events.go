@@ -55,14 +55,15 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 
 	var instructions string
 
-	if commentBody == "/review" {
+	switch {
+	case commentBody == "/review":
 		reviewType = FullReview
-	} else if strings.HasPrefix(commentBody, "/rereview") {
+	case strings.HasPrefix(commentBody, "/rereview"):
 		reviewType = ReReview
 		// Extract generic instructions if present
 		args := strings.TrimPrefix(commentBody, "/rereview")
 		instructions = strings.TrimSpace(args)
-	} else {
+	default:
 		return nil, fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
 	}
 
