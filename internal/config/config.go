@@ -61,11 +61,15 @@ type AIConfig struct {
 	ComparisonPaths      []string `mapstructure:"comparison_paths"`
 	MaxConcurrentReviews int      `mapstructure:"max_concurrent_reviews"`
 	MaxComparisonModels  int      `mapstructure:"max_comparison_models"`
+	HyDEConcurrency      int      `mapstructure:"hyde_concurrency"`
 }
 
 func (c *AIConfig) Validate() error {
 	if len(c.ComparisonModels) == 0 {
 		return nil
+	}
+	if c.HyDEConcurrency < 1 {
+		return errors.New("ai.hyde_concurrency must be >= 1")
 	}
 	if err := c.validateModels(); err != nil {
 		return err
@@ -226,6 +230,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.enable_hybrid_search", true)
 	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
 	v.SetDefault("ai.enable_hyde", false) // Default to false for performance
+	v.SetDefault("ai.hyde_concurrency", 5)
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")

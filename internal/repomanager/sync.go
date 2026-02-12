@@ -148,21 +148,8 @@ func (m *manager) incrementalUpdate(
 		return nil, err
 	}
 
-	// Fetch PR specific reference to ensure we have the commit (handling forks)
-	// Fetch PR specific reference only if it's a PR event
-	if ev.PRNumber > 0 {
-		prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
-		if err = m.gitClient.Fetch(ctx, rec.ClonePath, token, prRefSpec); err != nil {
-			return nil, fmt.Errorf("git fetch pr: %w", err)
-		}
-	} else {
-		// Just fetch origin (standard fetch)
-		// Fix: Pass token to prevent hanging on private repos (caught by AI review)
-		if err = m.gitClient.Fetch(ctx, rec.ClonePath, token); err != nil {
-			return nil, fmt.Errorf("git fetch: %w", err)
-		}
-	}
-	if err = m.gitClient.Checkout(ctx, rec.ClonePath, ev.HeadSHA); err != nil {
+	// 1. Check if we are already at the target SHA (Bottleneck #3: Excessive Fetching)
+	if err := m.ensureTargetSHA(ctx, ev, token, rec.ClonePath); err != nil {
 		return nil, err
 	}
 
@@ -210,4 +197,28 @@ func (m *manager) cleanupRepoDir(path string) {
 	if err := os.RemoveAll(path); err != nil {
 		m.logger.Warn("cleanup failed", "path", path, "err", err)
 	}
+}
+
+func (m *manager) ensureTargetSHA(ctx context.Context, ev *core.GitHubEvent, token, clonePath string) error {
+	currentSHA, err := m.gitClient.GetHeadSHA(ctx, clonePath)
+	if err == nil && currentSHA == ev.HeadSHA {
+		m.logger.Info("repository already at target SHA, skipping git fetch", "repo", ev.RepoFullName, "sha", ev.HeadSHA)
+		return nil
+	}
+
+	if ev.PRNumber > 0 {
+		prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
+		if err = m.gitClient.Fetch(ctx, clonePath, token, prRefSpec); err != nil {
+			return fmt.Errorf("git fetch pr: %w", err)
+		}
+	} else {
+		if err = m.gitClient.Fetch(ctx, clonePath, token); err != nil {
+			return fmt.Errorf("git fetch: %w", err)
+		}
+	}
+
+	if err = m.gitClient.Checkout(ctx, clonePath, ev.HeadSHA); err != nil {
+		return err
+	}
+	return nil
 }

@@ -17,8 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
@@ -224,7 +222,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 
 	// Generate architectural summaries for directories (post-processing)
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath); err != nil {
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, nil); err != nil {
 		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
 	}
 
@@ -349,8 +347,8 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		}
 	}
 
-	// Trigger arch summary re-generation for the repository
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath); err != nil {
+	// Trigger targeted arch summary re-generation
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, append(filesToProcess, filesToDelete...)); err != nil {
 		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
 	}
 
@@ -561,8 +559,6 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 }
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
-//
-//nolint:gocognit,funlen // Complex logic with parallel execution and error aggregation
 func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -610,95 +606,111 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 		"Diff":               diff,
 	}
 
-	results := make([]ComparisonResult, 0, len(models))
-	var mu sync.Mutex
+	resultsChan := make(chan ComparisonResult, len(models))
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	g, ctx := errgroup.WithContext(ctx)
 	// Limit concurrency to avoid rate limits
-	// Review feedback: 3 is arbitrary. Bumping to 5 for now.
 	const maxConcurrentModels = 5
 	sem := make(chan struct{}, maxConcurrentModels)
-	// No defer close(sem) - channel will be GC'd or we can close after Wait()
 
 	for _, modelName := range models {
-		g.Go(func() error {
-			// Acquire semaphore
-			select {
-			case sem <- struct{}{}:
-				// Release only if acquired
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			// Check context again before starting work
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			r.logger.Info("generating review summary", "model", modelName)
-
-			// Con: Create local copy of promptData to ensure goroutine isolation (Priority 4)
-			// Maps are passed by reference; defensive copy prevents race conditions
-			// if caller modifies the original map during parallel execution.
-			localPromptData := make(map[string]string, len(promptData))
-			for k, v := range promptData {
-				localPromptData[k] = v
-			}
-
-			llmModel, err := r.getOrCreateLLM(modelName)
-			if err != nil {
-				mu.Lock()
-				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to create LLM: %w", err)})
-				mu.Unlock()
-				return nil
-			}
-
-			modelForPrompt := ModelProvider(modelName)
-			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
-			if err != nil {
-				mu.Lock()
-				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to render prompt: %w", err)})
-				mu.Unlock()
-				return nil
-			}
-
-			// Check context before expensive LLM call
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			// Use generateWithTimeout to ensure we respect cancellation even if the LLM client hangs
-			// Increased to 5m based on logs showing deepseek/kimi taking >2m
-			response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
-			if err != nil {
-				mu.Lock()
-				// Check if it was a timeout
-				if errors.Is(err, context.DeadlineExceeded) {
-					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("generation timed out: %w", err)})
-				} else {
-					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("LLM call failed: %w", err)})
-				}
-				mu.Unlock()
-				return nil
-			}
-
-			// Check context before saving result
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			mu.Lock()
-			results = append(results, ComparisonResult{Model: modelName, Review: response})
-			mu.Unlock()
-			return nil
-		})
+		r.spawnReviewWorker(workerCtx, modelName, promptData, sem, resultsChan)
 	}
 
-	if err := g.Wait(); err != nil {
+	results, err := r.waitForQuorumResults(ctx, models, resultsChan)
+	if err != nil {
 		return nil, err
 	}
 
+	return results, nil
+}
+
+func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData map[string]string, sem chan struct{}, resultsChan chan<- ComparisonResult) {
+	go func() {
+		result := ComparisonResult{Model: m}
+		sent := false
+		defer func() {
+			if !sent {
+				select {
+				case resultsChan <- result:
+				case <-time.After(100 * time.Millisecond):
+					// Prevent indefinite block if collector already exited (though unlikely given the design)
+				}
+			}
+		}()
+
+		select {
+		case <-ctx.Done():
+			result.Error = ctx.Err()
+			return
+		default:
+		}
+
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-ctx.Done():
+			result.Error = ctx.Err()
+			return
+		}
+
+		localPromptData := make(map[string]string, len(promptData))
+		for k, v := range promptData {
+			localPromptData[k] = v
+		}
+
+		llmModel, err := r.getOrCreateLLM(m)
+		if err != nil {
+			result.Error = fmt.Errorf("failed to create LLM: %w", err)
+			return
+		}
+
+		modelForPrompt := ModelProvider(m)
+		prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
+		if err != nil {
+			result.Error = fmt.Errorf("failed to render prompt: %w", err)
+			return
+		}
+
+		response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
+		if err != nil {
+			result.Error = fmt.Errorf("generation failed: %w", err)
+			return
+		}
+
+		result.Review = response
+		sent = true
+		resultsChan <- result
+	}()
+}
+
+func (r *ragService) waitForQuorumResults(ctx context.Context, models []string, resultsChan <-chan ComparisonResult) ([]ComparisonResult, error) {
+	results := make([]ComparisonResult, 0, len(models))
+	quorumThreshold := (len(models) * 2) / 3
+	if quorumThreshold < 1 {
+		quorumThreshold = 1
+	}
+
+	quorumTimer := time.NewTimer(24 * time.Hour)
+	quorumTimer.Stop()
+	quorumTimerStarted := false
+
+	for range models {
+		select {
+		case res := <-resultsChan:
+			results = append(results, res)
+			if len(results) >= quorumThreshold && !quorumTimerStarted && len(results) < len(models) {
+				const stragglerTimeout = 30 * time.Second
+				quorumTimer.Reset(stragglerTimeout)
+				quorumTimerStarted = true
+			}
+		case <-quorumTimer.C:
+			return results, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return results, nil
 }
 
@@ -1248,12 +1260,199 @@ func (r *ragService) gatherArchContext(ctx context.Context, store storage.Scoped
 	return ac
 }
 
+const hydeBaseQueryPrompt = "To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s"
+
 func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder string, files []internalgithub.ChangedFile) ([][]schema.Document, []int) {
 	r.logger.Info("stage started", "name", "HyDE")
-	hydeMap := r.generateHyDESnippets(ctx, files)
-	res, idx := r.searchHyDEBatch(ctx, collection, embedder, files, hydeMap)
-	r.logger.Info("stage completed", "name", "HyDE", "snippets_generated", len(hydeMap))
-	return res, idx
+
+	workChan := make(chan struct {
+		originalIdx int
+		query       string
+	}, len(files)*2)
+	resultsChan := make(chan struct {
+		idx  int
+		docs []schema.Document
+	}, len(files)*2)
+
+	var searchWg sync.WaitGroup
+	var genWg sync.WaitGroup
+
+	// 1. Start Search Workers
+	scopedStore := r.vectorStore.ForRepo(collection, embedder)
+	for range 3 {
+		searchWg.Add(1)
+		go func() {
+			defer searchWg.Done()
+			for work := range workChan {
+				docs := r.performSingleHyDEJob(ctx, scopedStore, work.query)
+				if len(docs) > 0 {
+					resultsChan <- struct {
+						idx  int
+						docs []schema.Document
+					}{work.originalIdx, docs}
+				}
+			}
+		}()
+	}
+
+	// 2. Start Generator
+	go r.runHyDEGenerator(ctx, files, &genWg, workChan)
+
+	// 3. Collector (waits for workers)
+	go func() {
+		searchWg.Wait()
+		close(resultsChan)
+	}()
+
+	return r.collectHyDEResults(ctx, resultsChan)
+}
+
+func (r *ragService) runHyDEGenerator(ctx context.Context, files []internalgithub.ChangedFile, wg *sync.WaitGroup, workChan chan<- struct {
+	originalIdx int
+	query       string
+}) {
+	defer close(workChan)
+
+	maxConcurrency := r.cfg.AI.HyDEConcurrency
+	if maxConcurrency <= 0 {
+		maxConcurrency = 5
+	}
+	hydeSem := make(chan struct{}, maxConcurrency)
+	for i, file := range files {
+		if file.Patch == "" {
+			continue
+		}
+
+		// Queue Base Query IMMEDIATELY
+		baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, file.Filename, file.Patch)
+		workChan <- struct {
+			originalIdx int
+			query       string
+		}{originalIdx: i, query: baseQuery}
+
+		// Queue HyDE Snippet Generation (Async)
+		if isLogicFile(file.Filename) {
+			wg.Add(1)
+			go func(idx int, f internalgithub.ChangedFile) {
+				defer wg.Done()
+				snippet := r.generateSingleHyDESnippet(ctx, f, hydeSem)
+				if snippet != "" {
+					workChan <- struct {
+						originalIdx int
+						query       string
+					}{originalIdx: idx, query: snippet}
+				}
+			}(i, file)
+		}
+	}
+	wg.Wait()
+}
+
+func (r *ragService) collectHyDEResults(ctx context.Context, resultsChan <-chan struct {
+	idx  int
+	docs []schema.Document
+}) ([][]schema.Document, []int) {
+	var finalResults [][]schema.Document
+	var finalIndices []int
+
+	for {
+		select {
+		case res, ok := <-resultsChan:
+			if !ok {
+				r.logger.Info("HyDE collection completed", "queries_processed", len(finalResults))
+				return finalResults, finalIndices
+			}
+			finalResults = append(finalResults, res.docs)
+			finalIndices = append(finalIndices, res.idx)
+		case <-ctx.Done():
+			r.logger.Warn("HyDE collection cancelled", "error", ctx.Err())
+			return finalResults, finalIndices
+		}
+	}
+}
+
+func (r *ragService) performSingleHyDEJob(ctx context.Context, scopedStore storage.ScopedVectorStore, query string) []schema.Document {
+	// 1. Clean the Query (Bottleneck #5: Strip diff noise)
+	cleanQuery := stripPatchNoise(query)
+
+	var searchOpts []vectorstores.Option
+	sparseVec, err := sparse.GenerateSparseVector(ctx, cleanQuery)
+	if err == nil {
+		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
+	}
+
+	// Recall
+	baseDocs, err := scopedStore.SimilaritySearch(ctx, cleanQuery, 20, searchOpts...)
+	if err != nil {
+		r.logger.Warn("base hybrid search failed", "error", err)
+		return nil
+	}
+
+	// 2. Pre-filter by Keyword Score (Bottleneck #2: N+1 Reranking)
+	preFilteredDocs := preFilterBM25(cleanQuery, baseDocs, 10)
+
+	// Precision (Rerank)
+	scoredDocs, err := r.reranker.Rerank(ctx, cleanQuery, preFilteredDocs)
+	if err != nil {
+		r.logger.Warn("reranking failed, falling back", "error", err)
+		return r.fallbackDocs(preFilteredDocs, 5)
+	}
+
+	return r.formatScoredDocs(scoredDocs, 5)
+}
+
+func (r *ragService) fallbackDocs(docs []schema.Document, limit int) []schema.Document {
+	if len(docs) > limit {
+		return docs[:limit]
+	}
+	return docs
+}
+
+func (r *ragService) formatScoredDocs(scoredDocs []schema.ScoredDocument, limit int) []schema.Document {
+	count := len(scoredDocs)
+	if count > limit {
+		count = limit
+	}
+	docs := make([]schema.Document, count)
+	for j := range count {
+		docs[j] = scoredDocs[j].Document
+		if docs[j].Metadata == nil {
+			docs[j].Metadata = make(map[string]any)
+		}
+		docs[j].Metadata["score"] = scoredDocs[j].Score
+		docs[j].Metadata["rerank_reason"] = scoredDocs[j].Reason
+	}
+	return docs
+}
+
+func (r *ragService) generateSingleHyDESnippet(ctx context.Context, file internalgithub.ChangedFile, sem chan struct{}) string {
+	patchHash := r.hashPatch(file.Patch)
+	if cached, ok := r.hydeCache.Load(patchHash); ok {
+		if snippet, valid := cached.(string); valid {
+			return snippet
+		}
+	}
+
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return ""
+	}
+
+	prompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: file.Patch})
+	if err != nil {
+		r.logger.Error("failed to render HyDE prompt", "error", err, "file", file.Filename)
+		return ""
+	}
+
+	snippet, _ := llms.GenerateFromSinglePrompt(ctx, r.generatorLLM, prompt)
+	if snippet != "" {
+		r.hydeCache.Store(patchHash, snippet)
+	} else {
+		r.logger.Error("HyDE generation returned empty result", "file", file.Filename, "patchHash", patchHash)
+	}
+	return snippet
 }
 
 func (r *ragService) gatherImpactContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
@@ -1392,176 +1591,16 @@ func (r *ragService) getArchContext(ctx context.Context, scopedStore storage.Sco
 	return archContext
 }
 
-func (r *ragService) generateHyDESnippets(ctx context.Context, files []internalgithub.ChangedFile) map[int]string {
-	type hydeResult struct {
-		index   int
-		snippet string
-	}
-	hydeChan := make(chan hydeResult, len(files))
-	var wg sync.WaitGroup
-	// Semaphore to limit concurrent LLM calls (e.g., 5 at a time)
-	sem := make(chan struct{}, 10)
-	defer close(sem)
-	cacheHits := 0
-
-	for i, file := range files {
-		if file.Patch == "" {
-			continue
-		}
-
-		// Compute patch hash for cache lookup
-		patchHash := r.hashPatch(file.Patch)
-
-		// Check cache first
-		if cached, ok := r.hydeCache.Load(patchHash); ok {
-			if snippet, valid := cached.(string); valid {
-				hydeChan <- hydeResult{index: i, snippet: snippet}
-				cacheHits++
-				continue
-			}
-		}
-
-		wg.Add(1)
-		go func(idx int, f internalgithub.ChangedFile, hash string) {
-			defer wg.Done()
-
-			// Con: Select-based acquisition to respect context cancellation
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-			prompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: f.Patch})
-			if err != nil {
-				return
-			}
-			snippet, _ := llms.GenerateFromSinglePrompt(ctx, r.generatorLLM, prompt)
-			if snippet != "" {
-				r.hydeCache.Store(hash, snippet) // Cache for future use
-				hydeChan <- hydeResult{index: idx, snippet: snippet}
-			}
-		}(i, file, patchHash)
-	}
-
-	go func() {
-		wg.Wait()
-		close(hydeChan)
-	}()
-
-	hydeMap := make(map[int]string)
-	for res := range hydeChan {
-		hydeMap[res.index] = res.snippet
-	}
-
-	if cacheHits > 0 {
-		r.logger.Debug("hyde cache hits", "hits", cacheHits, "total", len(files))
-	}
-	return hydeMap
-}
-
 // hashPatch computes a short hash of the patch content for caching.
 func (r *ragService) hashPatch(patch string) string {
 	hash := sha256.Sum256([]byte(patch))
 	return hex.EncodeToString(hash[:8])
 }
 
-//nolint:gocognit,nestif // Complex hybrid search logic with multiple fallbacks
-func (r *ragService) searchHyDEBatch(ctx context.Context, collectionName, embedderModelName string, files []internalgithub.ChangedFile, hydeMap map[int]string) ([][]schema.Document, []int) {
-	queries := make([]string, 0, len(files)*2)
-	indices := make([]int, 0, len(files)*2)
-
-	for i, file := range files {
-		if file.Patch == "" {
-			continue
-		}
-		queries = append(queries, fmt.Sprintf(
-			"To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s",
-			file.Filename, file.Patch,
-		))
-		indices = append(indices, i)
-
-		if snippet, ok := hydeMap[i]; ok {
-			queries = append(queries, snippet)
-			indices = append(indices, i)
-		}
-	}
-
-	if len(queries) == 0 {
-		return nil, nil
-	}
-
-	// Two-stage retrieval:
-	// 1. Recall: Fetch more docs than needed (e.g. 20)
-	// 2. Precision: Rerank and keep top K (e.g. 5)
-
-	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
-	finalResults := make([][]schema.Document, len(queries))
-
-	// We process queries sequentially or could parallelize locally, but for now sequentially is safer for logic correctness
-	// The underlying Reranker might have concurrency.
-
-	// Create a base retriever for recall.
-	// We need 20 documents for recall.
-	// Note: vectorstores.ToRetriever might not be available or might be a simple wrapper.
-	// If ToRetriever is not available, we can just use scopedStore.SimilaritySearch directly in a custom Retriever or just inline.
-	// But let's follow the user guide which suggested `vectorstores.ToRetriever`.
-	// If it fails compile, I will fix.
-
-	// baseRetriever was used here but now we use SCOPED store directly.
-
-	for i, query := range queries {
-		// Generate sparse vector for query if possible
-		var searchOpts []vectorstores.Option
-		sparseVec, err := sparse.GenerateSparseVector(ctx, query)
-		if err == nil {
-			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
-		}
-
-		// We need to use scopedStore directly to pass options, bypassing ToRetriever if we want hybrid search.
-		// However, RerankingRetriever expects a Retriever interface.
-		// For now, let's just use scopedStore for the base retrieval MANUALLY instead of baseRetriever.
-
-		baseDocs, err := scopedStore.SimilaritySearch(ctx, query, 20, searchOpts...)
-		if err != nil {
-			r.logger.Warn("base hybrid search failed", "error", err)
-			continue
-		}
-		r.logger.Info("retrieval stats", "step", "pre-rerank", "query_idx", i, "doc_count", len(baseDocs))
-
-		// Now rerank manually
-		var docs []schema.Document
-		scoredDocs, err := r.reranker.Rerank(ctx, query, baseDocs)
-		if err != nil {
-			r.logger.Warn("reranking failed for query, falling back to base results", "error", err, "query_idx", i)
-			if len(baseDocs) > 5 {
-				docs = baseDocs[:5]
-			} else {
-				docs = baseDocs
-			}
-		} else {
-			// Convert ScoredDocument to Document and slice top 5
-			// Assuming Reranker sorts by score descending
-			count := len(scoredDocs)
-			if count > 5 {
-				count = 5
-			}
-			docs = make([]schema.Document, count)
-			for j := range count {
-				// We might want to preserve the score in metadata if needed
-				docs[j] = scoredDocs[j].Document
-				if docs[j].Metadata == nil {
-					docs[j].Metadata = make(map[string]any)
-				}
-				docs[j].Metadata["score"] = scoredDocs[j].Score
-				docs[j].Metadata["rerank_reason"] = scoredDocs[j].Reason
-			}
-		}
-		r.logger.Info("retrieval stats", "step", "post-rerank", "query_idx", i, "doc_count", len(docs))
-		finalResults[i] = docs
-	}
-
-	return finalResults, indices
+// isLogicFile returns true if the file is a likely code/logic file.
+func isLogicFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return isCodeExtension(ext)
 }
 
 //nolint:gocognit
@@ -1717,4 +1756,81 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 	}
 
 	return filtered
+}
+
+// stripPatchNoise removes git metadata and deleted lines, preserving additions and context for semantic search.
+func stripPatchNoise(query string) string {
+	if query == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(query), "\n")
+	var cleanLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "---"), strings.HasPrefix(trimmed, "+++"), strings.HasPrefix(trimmed, "@@"):
+			continue // Strip diff headers
+		case strings.HasPrefix(trimmed, "-"):
+			continue // Skip deleted lines
+		case strings.HasPrefix(trimmed, "+"):
+			cleanLines = append(cleanLines, line) // Keep additions (with +)
+		default:
+			if trimmed != "" {
+				cleanLines = append(cleanLines, line) // Preserve context, metadata headers, etc.
+			}
+		}
+	}
+	if len(cleanLines) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(cleanLines, "\n"))
+}
+
+// preFilterBM25 performs a simple keyword-overlap based ranking to trim results
+// before sending them to the expensive reranker.
+func preFilterBM25(query string, docs []schema.Document, topK int) []schema.Document {
+	if len(docs) <= topK {
+		return docs
+	}
+
+	type scoredDoc struct {
+		doc   schema.Document
+		score int
+	}
+
+	// Simple keyword overlap score
+	queryTerms := strings.Fields(strings.ToLower(query))
+	filteredTerms := make([]string, 0, len(queryTerms))
+	for _, t := range queryTerms {
+		if len(t) >= 3 {
+			filteredTerms = append(filteredTerms, t)
+		}
+	}
+
+	if len(filteredTerms) == 0 {
+		return docs
+	}
+
+	scored := make([]scoredDoc, len(docs))
+	for i, doc := range docs {
+		score := 0
+		content := strings.ToLower(doc.PageContent)
+		for _, term := range filteredTerms {
+			if strings.Contains(content, term) {
+				score++
+			}
+		}
+		scored[i] = scoredDoc{doc: doc, score: score}
+	}
+
+	// Sort by overlap score
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	result := make([]schema.Document, topK)
+	for i := range topK {
+		result[i] = scored[i].doc
+	}
+	return result
 }
