@@ -46,18 +46,62 @@ Here are the individual reviews:
 
 **IMPORTANT**: Respond ONLY with a valid Markdown document. Do not wrap in JSON.
 
+The user expects a visually appealing, structured report. Use emojis, clear headers, and concise language.
+
 ```markdown
-# REVIEW SUMMARY
-[High-level summary of the consensus opinion. Highlight key strengths and critical weaknesses. End with a clear recommendation.]
+# 🛡️ Code Warden Consensus Review
 
-# VERDICT
-[APPROVE | REQUEST_CHANGES | COMMENT]
+## 🚦 Verdict: [APPROVE | REQUEST_CHANGES | COMMENT]
 
-# SUGGESTIONS
+> **Summary**
+> [High-level summary of the consensus opinion. Highlight key strengths and critical weaknesses. ~2-3 sentences.]
 
-## Suggestion [path/to/file.go:123]
-**Severity:** [Critical|High|Medium|Low]
-**Category:** [Security|Logic|Performance|Architecture|Readability]
+---
+
+## 🔍 Key Findings
+
+| Severity | Category | File | Issue |
+|:---:|:---:|---|---|
+| 🔴 **Critical** | Security | `path/to/file.go:123` | Brief description of critical issue |
+| 🟠 **High** | Logic | `path/to/other.go:45` | Brief description of high issue |
+| 🟡 **Medium** | Architecture | `...` | ... |
+
+---
+
+## 📝 Detailed Suggestions
+
+### 🔴 Critical & High Priority
+
+#### 1. [Short Title of Issue]
+**File:** `path/to/file.go:123`
+**Category:** [Security|Logic|Performance]
+
+**Observation:**
+[Description of the issue...]
+
+**Rationale:**
+[Why this is important...]
+
+**Suggested Fix:**
+```go
+// Minimal, correct fix
+...
+```
+
+---
+
+### 🟡 Medium Priority & Improvements
+
+#### 2. [Short Title]
+...
+
+---
+
+## 💡 Architecture & Design Quality
+[Brief bullet points on architectural alignment, patterns used, etc.]
+
+```
+
 
 ### Comment
 [Description of the issue...]

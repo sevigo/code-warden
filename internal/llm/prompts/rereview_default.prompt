@@ -57,18 +57,47 @@ Provide a brief, one-paragraph summary. State clearly whether all, some, or none
     **Suggestion:** Provide a clear recommendation.
 
 ### Final Output Format
-Return your review as a JSON object with the following structure:
+Return your review as a JSON object with the following structure. The "summary" field must contain the RICH MARKDOWN report.
 
 ```json
 {
   "verdict": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
-  "summary": "The full markdown content of your review here..."
+  "summary": "MARKDOWN_CONTENT_HERE"
 }
 ```
 
+**Markdown Content Template (for "summary" field):**
+
+```markdown
+# 🔄 Follow-up Review Summary
+
+## 🚦 Verdict: [APPROVE | REQUEST_CHANGES | COMMENT]
+
+> **Executive Summary**
+> [Concise summary. State clearly whether all original issues were addressed.]
+
+---
+
+## ✅ Resolved Issues
+*   **[Issue Title]**: Fixed. [Optional brief detail]
+*   **[Issue Title]**: Fixed.
+*   ...
+
+## ⚠️ Remaining / New Issues (If Any)
+
+### 🔴 [Critical/High] [Short Title]
+**File:** `path/to/filename.go`
+**Context:** [Why this is still an issue]
+**Suggestion:** [Clear recommendation]
+
+---
+
+## 🏁 Conclusion
+[Final encouraging words or next steps]
+```
+
 **Verdict Criteria:**
-- **APPROVE**: All original issues are resolved.
+- **APPROVE**: All original issues representatively resolved.
 - **REQUEST_CHANGES**: Critical issues remain or new critical issues introduced.
 - **COMMENT**: Status unclear or only minor non-blocking issues remain.
 
-Ensure the "summary" field contains the full markdown report (Summary of Fixes + Remaining Issues).

@@ -156,9 +156,11 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 	// Use range loop for modern Go style (Fixes intrange linter error)
 	for _, rawLine := range lines {
 		line := strings.TrimSpace(rawLine)
+		// normalize to uppercase for case-insensitive matching
+		// removing emojis/symbols for consistent matching would be ideal, but prefix matching is faster
 		upperLine := strings.ToUpper(line)
 
-		// Check for suggestion header (generic or specific)
+		// Check for suggestion header (Traditional: ## Suggestion [path] or New: **File:** `path`)
 		if filePath, startLine, endLine, ok := parseSuggestionHeader(line); ok {
 			// Flush previous suggestion
 			flushSuggestion(review, currentSuggestion, &commentBuilder)
@@ -172,19 +174,43 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 			continue
 		}
 
-		// Top-level section headers (Fixes ifElseChain linter error by using switch)
+		// Fallback: Check for "**File:** `path`" line which indicates a new suggestion in the visual format
+		// This handles the new prompt: #### Title \n **File:** path
+		if strings.HasPrefix(upperLine, "**FILE:**") {
+			// Parse: **File:** `path/to/file.go:123`
+			// Remove **File:** prefix
+			content := line[len("**File:**"):]
+			content = strings.TrimSpace(content)
+			content = strings.Trim(content, "`") // Remove backticks
+
+			if path, start, end, ok := parsePathAndLine(content); ok {
+				flushSuggestion(review, currentSuggestion, &commentBuilder)
+				currentSuggestion = &core.Suggestion{
+					FilePath:   path,
+					StartLine:  start,
+					LineNumber: end,
+				}
+				currentSection = "SUGGESTION_CONTENT"
+				continue
+			}
+		}
+
+		// Top-level section headers (Flexible matching)
 		switch {
-		case strings.HasPrefix(upperLine, "# REVIEW SUMMARY"):
+		// Summary can start with: # Review Summary, # 🛡️ Code Warden Consensus Review, # Summary
+		case strings.Contains(upperLine, "REVIEW SUMMARY") || strings.Contains(upperLine, "CONSENSUS REVIEW"):
 			flushSuggestion(review, currentSuggestion, &commentBuilder)
 			currentSuggestion = nil
 			currentSection = "SUMMARY"
 			continue
-		case strings.HasPrefix(upperLine, "# VERDICT"):
+		// Verdict can start with: # Verdict, ## 🚦 Verdict
+		case strings.Contains(upperLine, "VERDICT"):
 			flushSuggestion(review, currentSuggestion, &commentBuilder)
 			currentSuggestion = nil
 			currentSection = "VERDICT"
 			continue
-		case strings.HasPrefix(upperLine, "# SUGGESTIONS"):
+		// Suggestions can start with: # Suggestions, ## 📝 Detailed Suggestions
+		case strings.Contains(upperLine, "SUGGESTIONS") || strings.Contains(upperLine, "KEY FINDINGS"):
 			flushSuggestion(review, currentSuggestion, &commentBuilder)
 			currentSuggestion = nil
 			currentSection = "SUGGESTIONS"
@@ -197,9 +223,16 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 			processSummaryLine(line, &summaryBuilder)
 		case "VERDICT":
 			processVerdictLine(line, review, &summaryBuilder)
-			currentSection = "DONE_VERDICT"
+			// Don't switch to DONE_VERDICT immediately in case verdict spans multiple lines or has comments
+			// But traditionally verdict is one line.
+			// The new prompt has: ## 🚦 Verdict: [APPROVE]
+			// processingVerdictLine captures it.
 		case "SUGGESTION_CONTENT":
 			processSuggestionLine(rawLine, currentSuggestion, &commentBuilder)
+		case "SUGGESTIONS":
+			// If we are in suggestions section but haven't hit a `**File:**` or `## Suggestion` line yet,
+			// we might be parsing section intro text. We can ignore it or add to summary?
+			// Ideally we ignore until the first suggestion starts.
 		}
 	}
 
@@ -226,10 +259,16 @@ func processSummaryLine(line string, builder *strings.Builder) {
 }
 
 func processVerdictLine(line string, review *core.StructuredReview, _ *strings.Builder) {
-	if line != "" && !strings.HasPrefix(line, "#") {
-		review.Verdict = line // Critical: preserve structured field
-		// Do not append to Summary here. Status updater will handle formatting.
+	// Look for: verdict: APPROVE (case insensitive)
+	upper := strings.ToUpper(line)
+	if strings.Contains(upper, "APPROVE") {
+		review.Verdict = "APPROVE"
+	} else if strings.Contains(upper, "REQUEST_CHANGES") || strings.Contains(upper, "REQUEST CHANGES") {
+		review.Verdict = "REQUEST_CHANGES"
+	} else if strings.Contains(upper, "COMMENT") {
+		review.Verdict = "COMMENT"
 	}
+	// Fallback: if checking strict equality was key, now we are more flexible
 }
 
 func processSuggestionLine(rawLine string, s *core.Suggestion, builder *strings.Builder) {
