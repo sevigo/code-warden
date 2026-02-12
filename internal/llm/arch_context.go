@@ -149,8 +149,17 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 
 	// Case 2: Targeted Walk (Incremental Sync - Bottleneck #4)
 	uniqueDirs := make(map[string]struct{})
+	absRepoPath, _ := filepath.Abs(repoPath)
+
 	for _, p := range targetPaths {
-		dir := filepath.Dir(p)
+		// Security: Sanitize and validate target path (Review Feedback #1)
+		cleanP := filepath.Clean(p)
+		if strings.Contains(cleanP, "..") || filepath.IsAbs(cleanP) {
+			r.logger.Warn("skipping suspicious target path", "path", p)
+			continue
+		}
+
+		dir := filepath.Dir(cleanP)
 		// Traverse up to root to ensure all affected parent summaries are updated if needed
 		for {
 			uniqueDirs[dir] = struct{}{}
@@ -165,6 +174,14 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 
 	for relDir := range uniqueDirs {
 		fullPath := filepath.Join(repoPath, relDir)
+		absDirPath, _ := filepath.Abs(fullPath)
+
+		// Extra safety check (Review Feedback #1)
+		if !strings.HasPrefix(absDirPath, absRepoPath+string(os.PathSeparator)) && absDirPath != absRepoPath {
+			r.logger.Warn("directory traversal detected, skipping", "path", relDir)
+			continue
+		}
+
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			continue // Directory might have been deleted
 		}

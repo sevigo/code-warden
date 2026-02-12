@@ -559,8 +559,6 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 }
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
-//
-//nolint:gocognit,funlen // Complex logic with parallel execution and quota management
 func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -608,7 +606,6 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 		"Diff":               diff,
 	}
 
-	results := make([]ComparisonResult, 0, len(models))
 	resultsChan := make(chan ComparisonResult, len(models))
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -618,55 +615,77 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	sem := make(chan struct{}, maxConcurrentModels)
 
 	for _, modelName := range models {
-		go func(m string) {
-			// Acquire semaphore
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-workerCtx.Done():
-				return
-			}
-
-			// Con: Create local copy of promptData to ensure goroutine isolation
-			localPromptData := make(map[string]string, len(promptData))
-			for k, v := range promptData {
-				localPromptData[k] = v
-			}
-
-			llmModel, err := r.getOrCreateLLM(m)
-			if err != nil {
-				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to create LLM: %w", err)}
-				return
-			}
-
-			modelForPrompt := ModelProvider(m)
-			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
-			if err != nil {
-				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to render prompt: %w", err)}
-				return
-			}
-
-			// Use generateWithTimeout to ensure we respect cancellation
-			response, err := r.generateWithTimeout(workerCtx, llmModel, prompt, 5*time.Minute)
-			if err != nil {
-				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-					resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("generation timed out or canceled: %w", err)}
-				} else {
-					resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("LLM call failed: %w", err)}
-				}
-				return
-			}
-
-			resultsChan <- ComparisonResult{Model: m, Review: response}
-		}(modelName)
+		r.spawnReviewWorker(workerCtx, modelName, promptData, sem, resultsChan)
 	}
 
+	results, err := r.waitForQuorumResults(ctx, models, resultsChan)
+	if err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+//nolint:gocognit // Parallel processing with context and error handling is naturally branched
+func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData map[string]string, sem chan struct{}, resultsChan chan<- ComparisonResult) {
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-ctx.Done():
+			return
+		}
+
+		localPromptData := make(map[string]string, len(promptData))
+		for k, v := range promptData {
+			localPromptData[k] = v
+		}
+
+		llmModel, err := r.getOrCreateLLM(m)
+		if err != nil {
+			if ctx.Err() == nil {
+				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to create LLM: %w", err)}
+			}
+			return
+		}
+
+		modelForPrompt := ModelProvider(m)
+		prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
+		if err != nil {
+			if ctx.Err() == nil {
+				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to render prompt: %w", err)}
+			}
+			return
+		}
+
+		response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
+		if err != nil {
+			if ctx.Err() == nil {
+				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("generation failed: %w", err)}
+			}
+			return
+		}
+
+		if ctx.Err() == nil {
+			resultsChan <- ComparisonResult{Model: m, Review: response}
+		}
+	}()
+}
+
+func (r *ragService) waitForQuorumResults(ctx context.Context, models []string, resultsChan <-chan ComparisonResult) ([]ComparisonResult, error) {
+	results := make([]ComparisonResult, 0, len(models))
 	quorumThreshold := (len(models) * 2) / 3
 	if quorumThreshold < 1 {
 		quorumThreshold = 1
 	}
 
-	quorumTimer := time.NewTimer(24 * time.Hour) // Wait "forever" initially
+	quorumTimer := time.NewTimer(24 * time.Hour)
 	quorumTimer.Stop()
 	quorumTimerStarted := false
 
@@ -674,29 +693,17 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 		select {
 		case res := <-resultsChan:
 			results = append(results, res)
-			// Trigger straggler timeout if we have enough results but not all
 			if len(results) >= quorumThreshold && !quorumTimerStarted && len(results) < len(models) {
 				const stragglerTimeout = 30 * time.Second
 				quorumTimer.Reset(stragglerTimeout)
 				quorumTimerStarted = true
-				r.logger.Info("consensus quorum reached, starting straggler timeout",
-					"threshold", quorumThreshold,
-					"finished", len(results),
-					"total", len(models),
-					"timeout", stragglerTimeout,
-				)
 			}
 		case <-quorumTimer.C:
-			r.logger.Warn("consensus straggler timeout hit, proceeding with partial results",
-				"finished", len(results),
-				"total", len(models),
-			)
 			return results, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
-
 	return results, nil
 }
 
@@ -1278,7 +1285,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 		close(resultsChan)
 	}()
 
-	return r.collectHyDEResults(resultsChan)
+	return r.collectHyDEResults(ctx, resultsChan)
 }
 
 func (r *ragService) runHyDEGenerator(ctx context.Context, files []internalgithub.ChangedFile, wg *sync.WaitGroup, workChan chan<- struct {
@@ -1286,7 +1293,12 @@ func (r *ragService) runHyDEGenerator(ctx context.Context, files []internalgithu
 	query       string
 }) {
 	defer close(workChan)
-	hydeSem := make(chan struct{}, 5)
+
+	maxConcurrency := r.cfg.AI.HyDEConcurrency
+	if maxConcurrency <= 0 {
+		maxConcurrency = 5
+	}
+	hydeSem := make(chan struct{}, maxConcurrency)
 	for i, file := range files {
 		if file.Patch == "" {
 			continue
@@ -1317,19 +1329,27 @@ func (r *ragService) runHyDEGenerator(ctx context.Context, files []internalgithu
 	wg.Wait()
 }
 
-func (r *ragService) collectHyDEResults(resultsChan <-chan struct {
+func (r *ragService) collectHyDEResults(ctx context.Context, resultsChan <-chan struct {
 	idx  int
 	docs []schema.Document
 }) ([][]schema.Document, []int) {
 	var finalResults [][]schema.Document
 	var finalIndices []int
-	for res := range resultsChan {
-		finalResults = append(finalResults, res.docs)
-		finalIndices = append(finalIndices, res.idx)
-	}
 
-	r.logger.Info("stage completed", "name", "HyDE", "queries_processed", len(finalResults))
-	return finalResults, finalIndices
+	for {
+		select {
+		case res, ok := <-resultsChan:
+			if !ok {
+				r.logger.Info("HyDE collection completed", "queries_processed", len(finalResults))
+				return finalResults, finalIndices
+			}
+			finalResults = append(finalResults, res.docs)
+			finalIndices = append(finalIndices, res.idx)
+		case <-ctx.Done():
+			r.logger.Warn("HyDE collection cancelled", "error", ctx.Err())
+			return finalResults, finalIndices
+		}
+	}
 }
 
 func (r *ragService) performSingleHyDEJob(ctx context.Context, scopedStore storage.ScopedVectorStore, query string) []schema.Document {
@@ -1403,11 +1423,15 @@ func (r *ragService) generateSingleHyDESnippet(ctx context.Context, file interna
 
 	prompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: file.Patch})
 	if err != nil {
+		r.logger.Error("failed to render HyDE prompt", "error", err, "file", file.Filename)
 		return ""
 	}
+
 	snippet, _ := llms.GenerateFromSinglePrompt(ctx, r.generatorLLM, prompt)
 	if snippet != "" {
 		r.hydeCache.Store(patchHash, snippet)
+	} else {
+		r.logger.Error("HyDE generation returned empty result", "file", file.Filename, "patchHash", patchHash)
 	}
 	return snippet
 }
@@ -1715,24 +1739,26 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 	return filtered
 }
 
-// stripPatchNoise removes git metadata and deleted lines from the patch to focus
-// on what was actually added/changed.
+// stripPatchNoise removes git metadata and deleted lines, preserving additions and context for semantic search.
 func stripPatchNoise(query string) string {
-	lines := strings.Split(query, "\n")
+	if query == "" {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(query), "\n")
 	var cleanLines []string
 	for _, line := range lines {
-		// Keep metadata headers like "To understand...", but strip diff metadata
-		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "@@") {
-			continue
-		}
-		// Strip deleted lines
-		if strings.HasPrefix(line, "-") {
-			continue
-		}
-		// Clean the '+' prefix
-		cleanLine := strings.TrimPrefix(line, "+")
-		if cleanLine != "" {
-			cleanLines = append(cleanLines, cleanLine)
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "---"), strings.HasPrefix(trimmed, "+++"), strings.HasPrefix(trimmed, "@@"):
+			continue // Strip diff headers
+		case strings.HasPrefix(trimmed, "-"):
+			continue // Skip deleted lines
+		case strings.HasPrefix(trimmed, "+"):
+			cleanLines = append(cleanLines, line) // Keep additions (with +)
+		default:
+			if trimmed != "" {
+				cleanLines = append(cleanLines, line) // Preserve context, metadata headers, etc.
+			}
 		}
 	}
 	if len(cleanLines) == 0 {
