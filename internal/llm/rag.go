@@ -626,11 +626,23 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	return results, nil
 }
 
-//nolint:gocognit // Parallel processing with context and error handling is naturally branched
 func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData map[string]string, sem chan struct{}, resultsChan chan<- ComparisonResult) {
 	go func() {
+		result := ComparisonResult{Model: m}
+		sent := false
+		defer func() {
+			if !sent {
+				select {
+				case resultsChan <- result:
+				case <-time.After(100 * time.Millisecond):
+					// Prevent indefinite block if collector already exited (though unlikely given the design)
+				}
+			}
+		}()
+
 		select {
 		case <-ctx.Done():
+			result.Error = ctx.Err()
 			return
 		default:
 		}
@@ -639,6 +651,7 @@ func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData
 		case sem <- struct{}{}:
 			defer func() { <-sem }()
 		case <-ctx.Done():
+			result.Error = ctx.Err()
 			return
 		}
 
@@ -649,32 +662,26 @@ func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData
 
 		llmModel, err := r.getOrCreateLLM(m)
 		if err != nil {
-			if ctx.Err() == nil {
-				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to create LLM: %w", err)}
-			}
+			result.Error = fmt.Errorf("failed to create LLM: %w", err)
 			return
 		}
 
 		modelForPrompt := ModelProvider(m)
 		prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
 		if err != nil {
-			if ctx.Err() == nil {
-				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to render prompt: %w", err)}
-			}
+			result.Error = fmt.Errorf("failed to render prompt: %w", err)
 			return
 		}
 
 		response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
 		if err != nil {
-			if ctx.Err() == nil {
-				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("generation failed: %w", err)}
-			}
+			result.Error = fmt.Errorf("generation failed: %w", err)
 			return
 		}
 
-		if ctx.Err() == nil {
-			resultsChan <- ComparisonResult{Model: m, Review: response}
-		}
+		result.Review = response
+		sent = true
+		resultsChan <- result
 	}()
 }
 
