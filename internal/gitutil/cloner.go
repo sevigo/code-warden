@@ -226,7 +226,10 @@ func (c *Client) CloneAndCheckoutTemp(ctx context.Context, repoURL, sha, token s
 }
 
 func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
-	// Handle local paths directly. file:// is intentionally unsupported for security.
+	// Handle local paths. file:// is explicitly blocked for security (SSRF risk).
+	if strings.HasPrefix(strings.ToLower(repoURL), "file://") {
+		return "", fmt.Errorf("file:// URLs are not supported for security reasons")
+	}
 	if !strings.Contains(repoURL, "://") {
 		return repoURL, nil
 	}

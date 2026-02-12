@@ -182,8 +182,7 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Clone to local manually first to simulate existing state
-	// Use Depth: 1 to ensure commit1 is NOT present in the local history, simulating a GC or force push scenario.
+	// Clone SHALLOWLY (Depth: 1) to ensure commit1 is unreachable, forcing a diff error.
 	_, err = git.PlainClone(localPath, false, &git.CloneOptions{
 		URL:   remotePath,
 		Depth: 1,
