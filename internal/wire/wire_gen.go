@@ -33,6 +33,7 @@ import (
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
+	"github.com/sevigo/goframe/textsplitter"
 	"github.com/sevigo/goframe/vectorstores"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
 )
@@ -82,7 +83,12 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	ragService := llm.NewRAGService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, logger)
+	textSplitter, err := provideTextSplitter(parserRegistry, model, logger)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	ragService := llm.NewRAGService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
 	job := jobs.NewReviewJob(configConfig, ragService, store, repoManager, logger)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
 	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)
@@ -167,6 +173,22 @@ func provideDependencyRetriever(store storage.VectorStore) *vectorstores.Depende
 
 func provideParserRegistry(logger *slog.Logger) (parsers.ParserRegistry, error) {
 	return parsers.RegisterLanguagePlugins(logger)
+}
+
+func provideTextSplitter(registry parsers.ParserRegistry, model llms.Model, logger *slog.Logger) (textsplitter.TextSplitter, error) {
+	tokenizer := llm.NewOllamaTokenizerAdapter(model)
+	splitter, err := textsplitter.NewCodeAware(
+		registry,
+		tokenizer,
+		logger,
+		textsplitter.WithChunkSize(2000),
+		textsplitter.WithChunkOverlap(200),
+		textsplitter.WithParentContextConfig(textsplitter.ParentContextConfig{Enabled: true}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return splitter, nil
 }
 
 func newOllamaHTTPClient() *http.Client {

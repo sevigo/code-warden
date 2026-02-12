@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
@@ -49,6 +50,7 @@ type RAGService interface {
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
+	GetTextSplitter() textsplitter.TextSplitter
 }
 
 type ragService struct {
@@ -59,6 +61,7 @@ type ragService struct {
 	generatorLLM   llms.Model
 	reranker       schema.Reranker
 	parserRegistry parsers.ParserRegistry
+	splitter       textsplitter.TextSplitter
 	logger         *slog.Logger
 	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
 }
@@ -73,6 +76,7 @@ func NewRAGService(
 	gen llms.Model,
 	reranker schema.Reranker,
 	pr parsers.ParserRegistry,
+	splitter textsplitter.TextSplitter,
 	logger *slog.Logger,
 ) RAGService {
 	return &ragService{
@@ -83,124 +87,132 @@ func NewRAGService(
 		generatorLLM:   gen,
 		reranker:       reranker,
 		parserRegistry: pr,
+		splitter:       splitter,
 		logger:         logger,
 	}
 }
 
-// SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
+func (r *ragService) GetTextSplitter() textsplitter.TextSplitter {
+	return r.splitter
+}
+
 // SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
 //
 //nolint:gocognit,funlen // This function implements complex smart-scan logic that is difficult to split without losing context.
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
-	r.logger.Info("performing smart indexing of repository",
+	r.logger.Info("performing smart indexing with GoFrame GitLoader",
 		"path", repoPath,
 		"collection", repo.QdrantCollectionName,
-		"embedder", repo.EmbedderModelName,
 	)
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
 	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
+	startTime := time.Now()
 
-	// Smart Scan: Fetch existing file states
+	// Smart Scan: Fetch existing file states for fast skipping
 	existingFiles, err := r.store.GetFilesForRepo(ctx, repo.ID)
 	if err != nil {
-		r.logger.Warn("failed to fetch existing file states (proceeding with full scan)", "error", err)
+		r.logger.Warn("failed to fetch existing file states", "error", err)
 		existingFiles = make(map[string]storage.FileRecord)
 	}
 
-	startTime := time.Now()
-
-	// Create a scoped store for this repository
-	scopedStore := r.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
-
-	// IMPLEMENTATION OF PRE-SCAN
-	filesOnDisk, err := listFiles(repoPath, finalExcludeDirs, repoConfig.ExcludeExts)
-	if err != nil {
-		return err
-	}
-
-	filesToProcess := make([]string, 0, len(filesOnDisk))
-	skippedCount := 0
-
-	// Collect file records to update later
-	filesToUpdate := make([]storage.FileRecord, 0)
-
-	for _, file := range filesOnDisk {
-		fullPath := filepath.Join(repoPath, file)
-		hash, err := computeFileHash(fullPath)
-		if err != nil {
-			r.logger.Warn("failed to hash file, will process", "file", file, "error", err)
-			filesToProcess = append(filesToProcess, file)
-			continue
-		}
-
-		if rec, exists := existingFiles[file]; exists && rec.FileHash == hash {
-			// Unchanged!
-			skippedCount++
-			continue
-		}
-
-		// New or Changed
-		filesToProcess = append(filesToProcess, file)
-		filesToUpdate = append(filesToUpdate, storage.FileRecord{
-			RepositoryID: repo.ID,
-			FilePath:     file,
-			FileHash:     hash,
-		})
-	}
-
-	r.logger.Info("Smart Scan Analysis",
-		"total_files", len(filesOnDisk),
-		"unchanged_skipped", skippedCount,
-		"to_index", len(filesToProcess),
+	// Initialize GoFrame's GitLoader for streaming ingestion
+	loader, err := documentloaders.NewGit(repoPath, r.parserRegistry,
+		documentloaders.WithExcludeDirs(finalExcludeDirs),
+		documentloaders.WithExcludeExts(repoConfig.ExcludeExts),
+		documentloaders.WithWorkerCount(4),
+		documentloaders.WithGeneratedCodeDetection(true),
 	)
-
-	if len(filesToProcess) == 0 {
-		r.logger.Info("No files changed, skipping indexing.")
+	if err != nil {
+		return fmt.Errorf("failed to initialize git loader: %w", err)
 	}
 
-	// Execute indexing and cleanup
-	// We proceed regardless of count, but check filesToProcess for indexing
+	scopedStore := r.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+	processedCount := 0
+	skippedCount := 0
+	var mu sync.Mutex
 
-	// Now use processFilesParallel for the filtered list of files
-	r.logger.Info("indexing changed files", "count", len(filesToProcess))
-	allDocs := r.processFilesParallel(repoPath, filesToProcess, 8) // Parallelize
+	// Keep track of all files processed by the loader to identify deletions later
+	filesProcessedByLoader := make(map[string]struct{})
+	var filesProcessedByLoaderMu sync.Mutex
 
-	// Index the documents
-	if len(allDocs) > 0 {
-		// Upsert documents in batches
-		// Note: processFilesParallel returns all docs. For 17k files, this might be large.
-		// But we are filtered now.
-
-		_, err := scopedStore.AddDocuments(ctx, allDocs)
-		if err != nil {
-			return fmt.Errorf("failed to add documents to vector store: %w", err)
+	// Phase 1: Stream ingestion with OOM protection
+	err = loader.LoadAndProcessStream(ctx, func(ctx context.Context, docs []schema.Document) error {
+		// Group documents by source to apply SHA-skip logic effectively
+		docsByFile := make(map[string][]schema.Document)
+		for _, doc := range docs {
+			source, _ := doc.Metadata["source"].(string)
+			if source != "" {
+				docsByFile[source] = append(docsByFile[source], doc)
+			}
 		}
-	} else if len(filesToProcess) > 0 {
-		r.logger.Warn("files marked for processing produced no documents (parser issue?)", "count", len(filesToProcess))
-	}
 
-	// Upsert file records to DB (mark them as indexed)
-	if len(filesToUpdate) > 0 {
-		r.logger.Info("updating file tracking in database", "count", len(filesToUpdate))
-		if err := r.store.UpsertFiles(ctx, repo.ID, filesToUpdate); err != nil {
-			r.logger.Error("failed to update file tracking records", "error", err)
-			// Non-critical: we indexed them, but next time we might re-scan.
+		var docsToInsert []schema.Document
+		var filesToUpdate []storage.FileRecord
+
+		for file, fileDocs := range docsByFile {
+			filesProcessedByLoaderMu.Lock()
+			filesProcessedByLoader[file] = struct{}{}
+			filesProcessedByLoaderMu.Unlock()
+
+			fullPath := filepath.Join(repoPath, file)
+			hash, err := computeFileHash(fullPath)
+			if err != nil {
+				r.logger.Warn("hash failed, will re-process", "file", file, "error", err)
+			} else if rec, exists := existingFiles[file]; exists && rec.FileHash == hash {
+				mu.Lock()
+				skippedCount++
+				mu.Unlock()
+				continue
+			}
+
+			// Apply Code-Aware chunking to the retrieved documents (Part 2 instruction)
+			split, err := r.splitter.SplitDocuments(ctx, fileDocs)
+			if err != nil {
+				r.logger.Warn("splitting failed, using original chunks", "file", file, "error", err)
+				split = fileDocs
+			}
+
+			docsToInsert = append(docsToInsert, split...)
+			if hash != "" {
+				filesToUpdate = append(filesToUpdate, storage.FileRecord{
+					RepositoryID: repo.ID,
+					FilePath:     file,
+					FileHash:     hash,
+				})
+			}
 		}
+
+		if len(docsToInsert) > 0 {
+			if _, err := scopedStore.AddDocuments(ctx, docsToInsert); err != nil {
+				return fmt.Errorf("failed to add vectors: %w", err)
+			}
+			mu.Lock()
+			processedCount += len(docsByFile) // Approximate by file count
+			mu.Unlock()
+
+			// Update repository tracking in DB
+			if err := r.store.UpsertFiles(ctx, repo.ID, filesToUpdate); err != nil {
+				r.logger.Error("failed to update file state in DB", "error", err)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("repository ingestion failed: %w", err)
 	}
 
-	// Cleanup: Delete records for files that no longer exist on disk
-	// (We need to identify files in existingFiles but NOT in filesOnDisk)
+	// Cleanup: Delete records for files that are genuinely absent from disk.
+	// We check the filesystem directly rather than relying on filesProcessedByLoader,
+	// because the loader intentionally skips generated files (mocks, protobuf, etc.)
+	// and we don't want to delete their tracking records.
 	var pathsToDelete []string
-	onDiskMap := make(map[string]struct{})
-	for _, f := range filesOnDisk {
-		onDiskMap[f] = struct{}{}
-	}
-
 	for path := range existingFiles {
-		if _, onDisk := onDiskMap[path]; !onDisk {
+		fullPath := filepath.Join(repoPath, path)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			pathsToDelete = append(pathsToDelete, path)
 		}
 	}
@@ -227,8 +239,8 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 
 	r.logger.Info("repository setup complete",
-		"collection", repo.QdrantCollectionName,
-		"newly_indexed_files", len(filesToProcess),
+		"indexed_files", processedCount,
+		"skipped_files", skippedCount,
 		"duration", time.Since(startTime).Round(time.Second),
 	)
 
@@ -248,55 +260,6 @@ func computeFileHash(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// listFiles recurses directory and returns list of relative paths
-func listFiles(root string, excludeDirs, excludeExts []string) ([]string, error) {
-	var files []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if isExcludedDir(info.Name(), excludeDirs) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if isExcludedExt(info.Name(), excludeExts) {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		files = append(files, rel)
-		return nil
-	})
-	return files, err
-}
-
-func isExcludedDir(name string, excludes []string) bool {
-	// Check hidden dirs
-	if strings.HasPrefix(name, ".") && name != "." {
-		return true
-	}
-	for _, ex := range excludes {
-		if name == ex {
-			return true
-		}
-	}
-	return false
-}
-
-func isExcludedExt(name string, excludes []string) bool {
-	ext := strings.TrimPrefix(filepath.Ext(name), ".")
-	for _, ex := range excludes {
-		if ext == ex {
-			return true
-		}
-	}
-	return false
 }
 
 // UpdateRepoContext incrementally updates the vector store based on file changes.
@@ -336,8 +299,41 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		return nil
 	}
 
-	// Process files in parallel using worker pool
-	allDocs := r.processFilesParallel(repoPath, filesToProcess, 4)
+	// Process files in parallel using a worker pool
+	type fileResult struct {
+		docs []schema.Document
+	}
+
+	const numWorkers = 4
+	fileChan := make(chan string, len(filesToProcess))
+	resultChan := make(chan fileResult, len(filesToProcess))
+
+	var wg sync.WaitGroup
+	for range numWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for f := range fileChan {
+				docs := r.ProcessFile(repoPath, f)
+				resultChan <- fileResult{docs: docs}
+			}
+		}()
+	}
+
+	for _, f := range filesToProcess {
+		fileChan <- f
+	}
+	close(fileChan)
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	var allDocs []schema.Document
+	for res := range resultChan {
+		allDocs = append(allDocs, res.docs...)
+	}
 
 	if len(allDocs) > 0 {
 		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
@@ -355,137 +351,44 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	return nil
 }
 
-// processFilesParallel processes files concurrently using a worker pool.
-func (r *ragService) processFilesParallel(repoPath string, files []string, numWorkers int) []schema.Document {
-	if len(files) == 0 {
-		return nil
-	}
-
-	type result struct {
-		docs []schema.Document
-	}
-
-	fileChan := make(chan string, len(files))
-	resultChan := make(chan result, len(files))
-
-	// Start workers
-	var wg sync.WaitGroup
-	for range numWorkers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for file := range fileChan {
-				docs := r.ProcessFile(repoPath, file)
-				resultChan <- result{docs: docs}
-			}
-		}()
-	}
-
-	// Send files to workers
-	for _, file := range files {
-		fileChan <- file
-	}
-	close(fileChan)
-
-	// Wait for workers and close result channel
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results
-	var allDocs []schema.Document
-	for res := range resultChan {
-		allDocs = append(allDocs, res.docs...)
-	}
-	return allDocs
-}
-
 // ProcessFile reads, parses, and chunks a single file.
 func (r *ragService) ProcessFile(repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
+
+	// Read file for chunking
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
-		r.logger.Error("failed to read file for update, skipping", "file", file, "error", err)
-		return nil
-	}
-
-	parser, err := r.parserRegistry.GetParserForFile(fullPath, nil)
-	if err != nil {
-		r.logger.Warn("no suitable parser found for file, skipping", "file", file, "error", err)
+		r.logger.Error("failed to read file for processing", "file", file, "error", err)
 		return nil
 	}
 
 	// Sanitize content to ensure valid UTF-8.
-	// This prevents "string field contains invalid UTF-8" errors in gRPC/Qdrant.
+	// Use GoFrame's code-aware splitter for OOM protection and exact graph navigation.
+	// We wrap the raw content in a schema.Document and let the splitter handle it.
 	validContent := strings.ToValidUTF8(string(contentBytes), "")
+	doc := schema.NewDocument(validContent, map[string]any{
+		"source": file,
+	})
 
-	chunks, err := parser.Chunk(validContent, file, nil)
+	splitDocs, err := r.splitter.SplitDocuments(context.Background(), []schema.Document{doc})
 	if err != nil {
-		r.logger.Error("failed to chunk file", "file", file, "error", err)
+		r.logger.Error("failed to split document with code-aware splitter", "file", file, "error", err)
 		return nil
 	}
 
-	// Extract file-level metadata (imports, package name)
-	var fileMeta map[string]any
-	if meta, err := parser.ExtractMetadata(string(contentBytes), fullPath); err == nil {
-		fileMeta = make(map[string]any)
-		if meta.PackageName != "" {
-			fileMeta["package_name"] = meta.PackageName
-		}
-		if len(meta.Imports) > 0 {
-			fileMeta["imports"] = meta.Imports
-		}
-	}
-
-	var docs []schema.Document
-	for _, chunk := range chunks {
-		// Generate deterministic ID to allow idempotent updates (deduplication)
-		// ID = SHA256(FilePath + LineStart + LineEnd)
-		h := sha256.New()
-		h.Write([]byte(file))
-		fmt.Fprintf(h, ":%d:%d", chunk.LineStart, chunk.LineEnd)
-		sum := h.Sum(nil)
-		// Format as UUID: 8-4-4-4-12
-		id := fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
-
-		doc := schema.NewDocument(chunk.Content, map[string]any{
-			"id":               id,
-			"source":           file,
-			"identifier":       chunk.Identifier,
-			"chunk_type":       chunk.Type,
-			"line_start":       chunk.LineStart,
-			"line_end":         chunk.LineEnd,
-			"parent_id":        chunk.ParentID,
-			"full_parent_text": textsplitter.TruncateParentText(chunk.FullParentText, 2000), // Max 2000 chars
-		})
-
-		// Merge file-level metadata
-		for k, v := range fileMeta {
-			doc.Metadata[k] = v
+	for i := range splitDocs {
+		// Ensure sparse vectors are generated for hybrid search if possible
+		sparseVec, err := sparse.GenerateSparseVector(context.Background(), splitDocs[i].PageContent)
+		if err == nil {
+			splitDocs[i].Sparse = sparseVec
 		}
 
-		// Copy annotations (e.g. is_test)
-		for k, v := range chunk.Annotations {
-			doc.Metadata[k] = v
-		}
-
-		// Explicit test file marking (polyfill)
+		// Polyfill: Ensure is_test is set based on filename
 		if isTestFile(file) {
-			doc.Metadata["is_test"] = true
+			splitDocs[i].Metadata["is_test"] = true
 		}
-
-		// Generate sparse vector for hybrid search
-		sparseVec, err := sparse.GenerateSparseVector(context.Background(), chunk.Content)
-		if err != nil {
-			r.logger.Warn("failed to generate sparse vector for chunk", "file", file, "error", err)
-		} else {
-			doc.Sparse = sparseVec
-		}
-
-		docs = append(docs, doc)
 	}
-	return docs
+	return splitDocs
 }
 
 func isTestFile(path string) bool {
@@ -525,7 +428,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		return noChangesReview, noChangesReview.Summary, nil
 	}
 
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
@@ -588,7 +491,7 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 
 	contextString := preComputedContext
 	if contextString == "" {
-		contextString = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+		contextString = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 	}
 
 	// Reuse repoConfig logic
@@ -626,6 +529,7 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	return results, nil
 }
 
+//nolint:gocognit // Worker coordination with semaphore, context, and cleanup is inherently complex
 func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData map[string]string, sem chan struct{}, resultsChan chan<- ComparisonResult) {
 	go func() {
 		result := ComparisonResult{Model: m}
@@ -680,14 +584,21 @@ func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData
 		}
 
 		result.Review = response
-		sent = true
-		resultsChan <- result
+
+		select {
+		case resultsChan <- result:
+			sent = true
+		case <-ctx.Done():
+			result.Error = ctx.Err()
+		}
 	}()
 }
 
 func (r *ragService) waitForQuorumResults(ctx context.Context, models []string, resultsChan <-chan ComparisonResult) ([]ComparisonResult, error) {
 	results := make([]ComparisonResult, 0, len(models))
-	quorumThreshold := (len(models) * 2) / 3
+	// Use ceiling division to ensure for N=2 we wait for 2, not 1.
+	// (N*2 + 2) / 3 implements ceil(N*2/3) using integer arithmetic.
+	quorumThreshold := (len(models)*2 + 2) / 3
 	if quorumThreshold < 1 {
 		quorumThreshold = 1
 	}
@@ -759,7 +670,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 3. Centralized Context Building (The "Context Foundation")
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, nil, models, diff, changedFiles, contextString)
 	if err != nil {
@@ -956,7 +867,7 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 	}
 
 	// Build context (Arch + Impact + HyDE) just like a full review
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, changedFiles)
+	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	promptData := core.ReReviewData{
 		Language:         event.Language,
@@ -1130,78 +1041,11 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 	return builder.String()
 }
 
-// extractSymbolsFromPatch attempts to extract function or type names modified in a patch.
-func (r *ragService) extractSymbolsFromPatch(patch string) []string {
-	symbols := make(map[string]struct{})
-	lines := strings.Split(patch, "\n")
-
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "+") {
-			continue
-		}
-		line = strings.TrimSpace(strings.TrimPrefix(line, "+"))
-		if line == "" {
-			continue
-		}
-
-		if name := r.matchFuncSymbol(line); name != "" {
-			symbols[name] = struct{}{}
-		} else if name := r.matchTypeSymbol(line); name != "" {
-			symbols[name] = struct{}{}
-		}
-	}
-
-	result := make([]string, 0, len(symbols))
-	for s := range symbols {
-		result = append(result, s)
-	}
-	return result
-}
-
-func (r *ragService) matchFuncSymbol(line string) string {
-	if !strings.HasPrefix(line, "func ") {
-		return ""
-	}
-	parts := strings.Fields(line)
-	for i, part := range parts {
-		if part != "func" || i+1 >= len(parts) {
-			continue
-		}
-		name := parts[i+1]
-		// Handle receiver: (r *Type) Name
-		if strings.HasPrefix(name, "(") {
-			for j := i + 1; j < len(parts); j++ {
-				if strings.HasSuffix(parts[j], ")") && j+1 < len(parts) {
-					name = parts[j+1]
-					break
-				}
-			}
-		}
-		// Strip params and generics
-		if idx := strings.IndexAny(name, "(["); idx != -1 {
-			name = name[:idx]
-		}
-		return strings.TrimSpace(name)
-	}
-	return ""
-}
-
-func (r *ragService) matchTypeSymbol(line string) string {
-	if !strings.HasPrefix(line, "type ") {
-		return ""
-	}
-	parts := strings.Fields(line)
-	if len(parts) >= 2 {
-		return parts[1]
-	}
-	return ""
-}
-
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
 // It also fetches architectural summaries for the affected directories.
-func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName string, changedFiles []internalgithub.ChangedFile) string {
+func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) string {
 	if len(changedFiles) == 0 {
 		return ""
 	}
@@ -1219,7 +1063,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	// Run context gathering in parallel for lower latency
 	var wg sync.WaitGroup
-	var archContext, impactContext string
+	var archContext, impactContext, descriptionContext string
 	var hydeResults [][]schema.Document
 	var indices []int
 
@@ -1245,12 +1089,119 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		impactContext = r.gatherImpactContext(ctx, scopedStore, changedFiles, seenDocs, &seenDocsMu)
+		impactContext = r.gatherImpactContext(ctx, scopedStore, repoPath, changedFiles, seenDocs, &seenDocsMu)
 	}()
+
+	// 4. Description Context (MultiQuery)
+	if prDescription != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			descriptionContext = r.gatherDescriptionContext(ctx, collectionName, embedderModelName, prDescription)
+		}()
+	}
 
 	wg.Wait()
 
-	return r.assembleContext(archContext, impactContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
+	// Assemble and return the combined context from all stages.
+	// Validation happens per-snippet inside gatherDescriptionContext via validateSnippetRelevance.
+	return r.assembleContext(archContext, impactContext, descriptionContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
+}
+
+// gatherDescriptionContext uses MultiQuery retrieval to find code related to the PR description.
+// It generates 3 query variations via a small LLM, searches for each, deduplicates results,
+// and validates each snippet's relevance before including it.
+func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, embedder, description string) string {
+	r.logger.Info("stage started", "name", "DescriptionContext")
+
+	scopedStore := r.vectorStore.ForRepo(collection, embedder)
+
+	// Use a fast model for generating query variations
+	queryLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
+	if err != nil {
+		queryLLM = r.generatorLLM
+	}
+
+	// Generate 3 search queries from the PR description for broader recall
+	prompt := fmt.Sprintf("Generate 3 different search queries to find code relevant to this PR description:\n%s\nReturn only the queries, one per line.", description)
+	variationResp, err := queryLLM.Call(ctx, prompt)
+	if err != nil {
+		r.logger.Warn("query variation generation failed, falling back to raw description", "error", err)
+		variationResp = description
+	}
+	variations := strings.Split(variationResp, "\n")
+
+	var allDocs []schema.Document
+	for _, q := range variations {
+		q = strings.TrimSpace(q)
+		if q == "" {
+			continue
+		}
+		docs, err := scopedStore.SimilaritySearch(ctx, q, 3)
+		if err != nil {
+			r.logger.Warn("similarity search failed for query variation", "query", q, "error", err)
+			continue
+		}
+		allDocs = append(allDocs, docs...)
+	}
+
+	// Deduplicate by content hash
+	uniqueDocs := make(map[string]schema.Document)
+	for _, d := range allDocs {
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(d.PageContent)))
+		uniqueDocs[hash] = d
+	}
+
+	var builder strings.Builder
+	if len(uniqueDocs) > 0 {
+		builder.WriteString("# Related to PR Description\n\n")
+
+		// Validate snippets in parallel to avoid sequential LLM latency
+		type validatedSnippet struct {
+			text string
+		}
+		var validated []validatedSnippet
+		var validMu sync.Mutex
+		var valWg sync.WaitGroup
+
+		for _, d := range uniqueDocs {
+			valWg.Add(1)
+			go func() {
+				defer valWg.Done()
+				if r.validateSnippetRelevance(ctx, d.PageContent, description) {
+					snip := fmt.Sprintf("File: %s\n```\n%s\n```\n\n", d.Metadata["source"], d.PageContent)
+					validMu.Lock()
+					validated = append(validated, validatedSnippet{text: snip})
+					validMu.Unlock()
+				}
+			}()
+		}
+		valWg.Wait()
+
+		for _, v := range validated {
+			builder.WriteString(v.text)
+		}
+	}
+
+	r.logger.Info("stage completed", "name", "DescriptionContext", "unique_snippets", len(uniqueDocs))
+	return builder.String()
+}
+
+// validateSnippetRelevance uses a fast LLM to check if a retrieved snippet
+// is actually relevant to the given context. Fails open (returns true) if
+// the validator model is unavailable or returns an error.
+func (r *ragService) validateSnippetRelevance(ctx context.Context, snippet, prContext string) bool {
+	validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
+	if err != nil {
+		return true // Fail open: if no validator available, include the snippet
+	}
+
+	prompt := fmt.Sprintf("Is the following code snippet relevant to this context?\nContext: %s\nSnippet:\n%s\n\nReply with YES or NO.", prContext, snippet)
+	resp, err := validatorLLM.Call(ctx, prompt)
+	if err != nil {
+		return true
+	}
+	return strings.Contains(strings.ToUpper(resp), "YES")
 }
 
 func (r *ragService) gatherArchContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
@@ -1376,7 +1327,9 @@ func (r *ragService) performSingleHyDEJob(ctx context.Context, scopedStore stora
 	cleanQuery := stripPatchNoise(query)
 
 	var searchOpts []vectorstores.Option
-	sparseVec, err := sparse.GenerateSparseVector(ctx, cleanQuery)
+	// Key Change: Use un-stripped query for Sparse Vector to capture exact CamelCase identifiers
+	// that might be present in the diff metadata or deleted lines.
+	sparseVec, err := sparse.GenerateSparseVector(ctx, query)
 	if err == nil {
 		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 	}
@@ -1455,20 +1408,25 @@ func (r *ragService) generateSingleHyDESnippet(ctx context.Context, file interna
 	return snippet
 }
 
-func (r *ragService) gatherImpactContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+func (r *ragService) gatherImpactContext(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
 	r.logger.Info("stage started", "name", "ImpactAnalysis")
-	ic := r.getImpactContext(ctx, store, files, seen, mu)
+	ic := r.getImpactContext(ctx, store, repoPath, files, seen, mu)
 	r.logger.Info("stage completed", "name", "ImpactAnalysis")
 	return ic
 }
 
-func (r *ragService) assembleContext(arch, impact string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+func (r *ragService) assembleContext(arch, impact, description string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
 	var contextBuilder strings.Builder
 
 	if arch != "" {
 		contextBuilder.WriteString("# Architectural Context\n\n")
 		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
 		contextBuilder.WriteString(arch)
+		contextBuilder.WriteString("\n---\n\n")
+	}
+
+	if description != "" {
+		contextBuilder.WriteString(description) // Already formatted in gatherDescriptionContext
 		contextBuilder.WriteString("\n---\n\n")
 	}
 
@@ -1603,71 +1561,56 @@ func isLogicFile(path string) bool {
 	return isCodeExtension(ext)
 }
 
-//nolint:gocognit
-func (r *ragService) getImpactContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenMu *sync.RWMutex) string {
-	symbols := make(map[string]struct{})
+func (r *ragService) getImpactContext(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+	retriever := vectorstores.NewDependencyRetriever(store)
+	var impactBuilder strings.Builder
+
 	for _, file := range files {
-		if file.Patch == "" {
-			continue
-		}
-		extracted := r.extractSymbolsFromPatch(file.Patch)
-		if len(extracted) > 0 {
-			r.logger.Debug("extracted symbols for impact analysis", "file", file.Filename, "symbols", extracted)
-		}
-		for _, sym := range extracted {
-			symbols[sym] = struct{}{}
-		}
-	}
-
-	if len(symbols) == 0 {
-		return ""
-	}
-
-	var symbolList []string
-	for s := range symbols {
-		symbolList = append(symbolList, s)
-	}
-
-	query := fmt.Sprintf("Find code that calls or uses the following symbols: %s", strings.Join(symbolList, ", "))
-	docs, err := scopedStore.SimilaritySearch(ctx, query, 8)
-	if err != nil {
-		r.logger.Warn("failed to fetch impact context", "error", err)
-		return ""
-	}
-
-	var builder strings.Builder
-	for _, doc := range docs {
-		source, _ := doc.Metadata["source"].(string)
-		parentID, ok := doc.Metadata["parent_id"].(string)
-		if !ok {
-			parentID = ""
-		}
-		docKey := parentID
-		if docKey == "" {
-			docKey = source
-		}
-
-		seenMu.RLock()
-		_, exists := seenDocs[docKey]
-		seenMu.RUnlock()
-
-		if exists || r.isArchDocument(doc) {
+		parser, err := r.parserRegistry.GetParserForFile(file.Filename, nil)
+		if err != nil {
 			continue
 		}
 
-		// Swap snippet with full parent text if available
-		content := doc.PageContent
-		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
-			content = parentText
+		// Read actual source from disk — parsing git patch syntax would fail
+		fullPath, err := r.validateAndJoinPath(repoPath, file.Filename)
+		if err != nil {
+			continue
+		}
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
 		}
 
-		builder.WriteString(fmt.Sprintf("**%s** (potential impact usage):\n```\n%s\n```\n\n",
-			source, content))
-		seenMu.Lock()
-		seenDocs[docKey] = struct{}{}
-		seenMu.Unlock()
+		meta, err := parser.ExtractMetadata(string(content), file.Filename)
+		if err != nil {
+			continue
+		}
+
+		network, err := retriever.GetContextNetwork(ctx, meta.PackageName, meta.Imports)
+		if err != nil {
+			r.logger.Warn("dependency retrieval failed", "file", file.Filename, "error", err)
+			continue
+		}
+
+		// Process dependents (impact analysis)
+		for _, doc := range network.Dependents {
+			source, ok := doc.Metadata["source"].(string)
+			if !ok || source == "" {
+				continue
+			}
+			mu.Lock()
+			if _, exists := seen[source]; exists {
+				mu.Unlock()
+				continue
+			}
+			seen[source] = struct{}{}
+			mu.Unlock()
+
+			_, _ = impactBuilder.WriteString(fmt.Sprintf("File: %s (potential ripple effect from %s)\n---\n%s\n\n",
+				source, file.Filename, doc.PageContent))
+		}
 	}
-	return builder.String()
+	return impactBuilder.String()
 }
 
 func (r *ragService) isArchDocument(doc schema.Document) bool {
@@ -1763,27 +1706,36 @@ func stripPatchNoise(query string) string {
 	if query == "" {
 		return ""
 	}
-	lines := strings.Split(strings.TrimSpace(query), "\n")
+	lines := strings.Split(query, "\n")
 	var cleanLines []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(trimmed, "---"), strings.HasPrefix(trimmed, "+++"), strings.HasPrefix(trimmed, "@@"):
+		case strings.HasPrefix(trimmed, "diff --git"):
+			continue
+		case strings.HasPrefix(trimmed, "index "):
+			continue
+		case strings.HasPrefix(trimmed, "new file mode"):
+			continue
+		case strings.HasPrefix(trimmed, "deleted file mode"):
+			continue
+		case strings.HasPrefix(trimmed, "--- "), strings.HasPrefix(trimmed, "+++ "), strings.HasPrefix(trimmed, "@@"):
 			continue // Strip diff headers
 		case strings.HasPrefix(trimmed, "-"):
 			continue // Skip deleted lines
 		case strings.HasPrefix(trimmed, "+"):
-			cleanLines = append(cleanLines, line) // Keep additions (with +)
+			// Preserve additions with their + prefix so the LLM recognizes them as new code
+			cleanLines = append(cleanLines, line)
 		default:
 			if trimmed != "" {
-				cleanLines = append(cleanLines, line) // Preserve context, metadata headers, etc.
+				cleanLines = append(cleanLines, line) // Preserve context and HyDE preamble
 			}
 		}
 	}
 	if len(cleanLines) == 0 {
 		return ""
 	}
-	return strings.TrimSpace(strings.Join(cleanLines, "\n"))
+	return strings.Join(cleanLines, "\n")
 }
 
 // preFilterBM25 performs a simple keyword-overlap based ranking to trim results

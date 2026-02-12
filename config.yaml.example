@@ -58,6 +58,11 @@ ai:
   # Set to false if you want maximum speed and can tolerate slightly less precise context.
   enable_reranking: true
 
+  # Fast Model (The "Validator" - Gemma, Qwen-Coder-1.5b)
+  # Used for high-frequency tasks: generating search query variations, validating snippet relevance.
+  # Needs to be very fast and cheap.
+  fast_model: "gemma3:1b"
+
   # Model names
   # Generator Model (The "Main Driver" - Kimi)
   generator_model: "kimi-k2.5:cloud"

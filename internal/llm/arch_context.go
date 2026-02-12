@@ -149,7 +149,6 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 
 	// Case 2: Targeted Walk (Incremental Sync - Bottleneck #4)
 	uniqueDirs := make(map[string]struct{})
-	absRepoPath, _ := filepath.Abs(repoPath)
 
 	for _, p := range targetPaths {
 		// Security: Sanitize and validate target path (Review Feedback #1)
@@ -173,12 +172,10 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 	uniqueDirs["."] = struct{}{}
 
 	for relDir := range uniqueDirs {
-		fullPath := filepath.Join(repoPath, relDir)
-		absDirPath, _ := filepath.Abs(fullPath)
-
-		// Extra safety check (Review Feedback #1)
-		if !strings.HasPrefix(absDirPath, absRepoPath+string(os.PathSeparator)) && absDirPath != absRepoPath {
-			r.logger.Warn("directory traversal detected, skipping", "path", relDir)
+		// Securely join using validateAndJoinPath to prevent traversal and handle symlinks correctly
+		fullPath, err := r.validateAndJoinPath(repoPath, relDir)
+		if err != nil {
+			r.logger.Warn("directory traversal detected or invalid path", "path", relDir, "error", err)
 			continue
 		}
 
