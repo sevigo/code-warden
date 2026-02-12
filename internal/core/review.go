@@ -2,6 +2,12 @@ package core
 
 import "time"
 
+const (
+	VerdictApprove        = "APPROVE"
+	VerdictRequestChanges = "REQUEST_CHANGES"
+	VerdictComment        = "COMMENT"
+)
+
 // Review represents a single code review stored in the database.
 type Review struct {
 	ID            int64     `db:"id"`

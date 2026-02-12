@@ -56,8 +56,19 @@ Provide a brief, one-paragraph summary. State clearly whether all, some, or none
     **Issue:** Describe why the fix is incomplete or what new issue was introduced.
     **Suggestion:** Provide a clear recommendation.
 
-### Final Recommendation
-**Choose ONE of the following:**
+### Final Output Format
+Return your review as a JSON object with the following structure:
 
--   **✅ All Issues Resolved:** LGTM! The changes look great now.
--   **⚠️ Issues Still Remain:** Some points from the original review are not fully addressed. Please see the feedback above.
+```json
+{
+  "verdict": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+  "summary": "The full markdown content of your review here..."
+}
+```
+
+**Verdict Criteria:**
+- **APPROVE**: All original issues are resolved.
+- **REQUEST_CHANGES**: Critical issues remain or new critical issues introduced.
+- **COMMENT**: Status unclear or only minor non-blocking issues remain.
+
+Ensure the "summary" field contains the full markdown report (Summary of Fixes + Remaining Issues).

@@ -1194,6 +1194,13 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		return ""
 	}
 
+	// Bound the number of files processed to prevent OOM/DoS
+	const defaultMaxContextFiles = 20
+	if len(changedFiles) > defaultMaxContextFiles {
+		r.logger.Warn("truncating context files", "total", len(changedFiles), "limit", defaultMaxContextFiles)
+		changedFiles = changedFiles[:defaultMaxContextFiles]
+	}
+
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 	var seenDocsMu sync.RWMutex
 	seenDocs := make(map[string]struct{})
