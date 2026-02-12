@@ -175,13 +175,11 @@ func (p *reviewParser) handleContent(line, rawLine string) {
 		}
 
 	case stateSuggestions:
-		// Logic to capture "Titles" (e.g. #### 1. [Title]) that appear before **File:**
-		// We treat them as part of the *next* suggestion's comment.
-		if strings.HasPrefix(line, "###") {
-			if p.commentBuilder.Len() > 0 {
-				p.commentBuilder.WriteString("\n")
-			}
-			p.commentBuilder.WriteString(rawLine + "\n")
+		// Accumulate the Title before we even know the file path
+		// We capture ANY header (### or ####) as a potential title line for the NEXT suggestion.
+		if strings.HasPrefix(line, "###") || strings.HasPrefix(line, "####") {
+			// Ensure we have a separator if needed, but per-spec:
+			p.commentBuilder.WriteString("\n" + rawLine + "\n")
 		}
 
 	case stateSuggestionBody:
@@ -287,7 +285,14 @@ func parseSuggestionHeader(line string) (string, int, int, bool) {
 
 // parsePathAndLine helper handles "path:line" or "path:start-end" strings
 func parsePathAndLine(s string) (string, int, int, bool) {
+	// 1. Remove all possible Markdown junk first
+	s = strings.ReplaceAll(s, "*", "")
+	// Aggressively remove backticks and quotes from ANYWHERE in the string
+	s = strings.ReplaceAll(s, "`", "")
+	s = strings.ReplaceAll(s, "\"", "")
+	s = strings.ReplaceAll(s, "'", "")
 	s = strings.TrimSpace(s)
+
 	lastColon := strings.LastIndex(s, ":")
 	if lastColon == -1 {
 		return "", 0, 0, false
@@ -295,8 +300,6 @@ func parsePathAndLine(s string) (string, int, int, bool) {
 
 	// Trimming parts individually to preserve valid path characters usually
 	pathPart := strings.TrimSpace(s[:lastColon])
-	// CRITICAL: Strip any remaining quotes/backticks from the path itself
-	pathPart = strings.Trim(pathPart, "`\"'")
 	linePart := strings.TrimSpace(s[lastColon+1:])
 
 	// Basic validation

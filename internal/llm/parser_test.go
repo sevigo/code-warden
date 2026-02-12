@@ -227,3 +227,30 @@ This is the comment.
 		t.Errorf("Comment missing title. Got:\n%s", s.Comment)
 	}
 }
+
+func TestParseMarkdownReview_Chaos_Golden(t *testing.T) {
+	input := `## 📝 Detailed Suggestions
+### 🔴 Critical Bug
+**File:** ` + "`**internal/llm/parser.go**`" + `:50
+**Observation:** Logic is flawed.`
+
+	review, err := parseMarkdownReview(input)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if len(review.Suggestions) != 1 {
+		t.Fatalf("Caught %d suggestions, want 1", len(review.Suggestions))
+	}
+
+	s := review.Suggestions[0]
+	if s.FilePath != "internal/llm/parser.go" {
+		t.Errorf("Got FilePath %q, want %q", s.FilePath, "internal/llm/parser.go")
+	}
+	if !strings.Contains(s.Comment, "Critical Bug") {
+		t.Errorf("Comment missing Critical Bug title. Got:\n%s", s.Comment)
+	}
+	if !strings.Contains(s.Comment, "Observation") {
+		t.Errorf("Comment missing Observation. Got:\n%s", s.Comment)
+	}
+}

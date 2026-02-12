@@ -24,7 +24,7 @@ func validateSuggestions(logger *slog.Logger, suggestions []core.Suggestion, val
 		cleanPath := strings.TrimPrefix(s.FilePath, "./")
 		lines, exists := validLineMaps[cleanPath]
 		if !exists {
-			logger.Warn("Dropped suggestion for file not in PR", "file", s.FilePath)
+			logger.Warn("Dropped suggestion for file not in PR", "original", s.FilePath, "normalized", cleanPath)
 			continue
 		}
 
