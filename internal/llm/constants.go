@@ -32,9 +32,3 @@ func isCodeExtension(ext string) bool {
 		return false
 	}
 }
-
-const (
-	VerdictApprove        = "APPROVE"
-	VerdictRequestChanges = "REQUEST_CHANGES"
-	VerdictComment        = "COMMENT"
-)

@@ -254,3 +254,42 @@ func TestParseMarkdownReview_Chaos_Golden(t *testing.T) {
 		t.Errorf("Comment missing Observation. Got:\n%s", s.Comment)
 	}
 }
+
+func TestParseMarkdownReview_FlexibleHeaders_And_Dashes(t *testing.T) {
+	input := `## Summary
+### Suggestion src/foo.go:10–20
+**Severity:** Medium
+Fix this en-dash range.
+
+#### Suggestion [src/bar.go:30]
+**Severity:** Low
+Deep header level.
+`
+
+	review, err := parseMarkdownReview(input)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if len(review.Suggestions) != 2 {
+		t.Fatalf("Caught %d suggestions, want 2", len(review.Suggestions))
+	}
+
+	// 1. Check En-dash handling
+	s1 := review.Suggestions[0]
+	if s1.FilePath != "src/foo.go" {
+		t.Errorf("s1 file: got %q, want src/foo.go", s1.FilePath)
+	}
+	if s1.StartLine != 10 || s1.LineNumber != 20 {
+		t.Errorf("s1 range: got %d-%d, want 10-20 (en-dash handling failed)", s1.StartLine, s1.LineNumber)
+	}
+
+	// 2. Check Flexible Header (#### Suggestion)
+	s2 := review.Suggestions[1]
+	if s2.FilePath != "src/bar.go" {
+		t.Errorf("s2 file: got %q, want src/bar.go", s2.FilePath)
+	}
+	if s2.LineNumber != 30 {
+		t.Errorf("s2 line: got %d, want 30", s2.LineNumber)
+	}
+}

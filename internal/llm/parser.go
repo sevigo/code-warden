@@ -209,7 +209,7 @@ func extractVerdictFromLine(line string) string {
 		// Normalize spaces to underscores for comparison with constants
 		v = strings.ReplaceAll(v, " ", "_")
 		v = strings.ToUpper(v)
-		if v == VerdictRequestChanges || v == VerdictApprove || v == VerdictComment {
+		if v == core.VerdictRequestChanges || v == core.VerdictApprove || v == core.VerdictComment {
 			return v
 		}
 	}
@@ -219,14 +219,14 @@ func extractVerdictFromLine(line string) string {
 // extractVerdictFallback checks for bare keywords if strict format failed
 func extractVerdictFallback(line string) string {
 	upper := strings.ToUpper(line)
-	if strings.Contains(upper, VerdictApprove) {
-		return VerdictApprove
+	if strings.Contains(upper, core.VerdictApprove) {
+		return core.VerdictApprove
 	}
-	if strings.Contains(upper, VerdictRequestChanges) || strings.Contains(upper, "REQUEST CHANGES") {
-		return VerdictRequestChanges
+	if strings.Contains(upper, core.VerdictRequestChanges) || strings.Contains(upper, "REQUEST CHANGES") {
+		return core.VerdictRequestChanges
 	}
-	if strings.Contains(upper, VerdictComment) {
-		return VerdictComment
+	if strings.Contains(upper, core.VerdictComment) {
+		return core.VerdictComment
 	}
 	return ""
 }
@@ -246,22 +246,16 @@ func parseSuggestionHeader(line string) (string, int, int, bool) {
 		return parsePathAndLine(content)
 	}
 
-	// Strategy 2: Traditional ## Suggestion
-	if strings.HasPrefix(line, "##") {
-		// Check for "suggestion" *after* stripping ## and trim
+	// Strategy 2: Flexible Header Level (Traditional ## but allow ###, #### etc)
+	if strings.HasPrefix(line, "#") {
+		// Check for "suggestion" case-insensitive
 		lower := strings.ToLower(line)
-		idx := strings.Index(lower, "suggestion")
-		if idx >= 2 { // "##" is 2 chars, so "suggestion" must appear after prefix
-			// remove the "suggestion" part
-			// line is like "## Suggestion [path]"
-			// We want to extract what's after "suggestion"
-			// But case insensitive.
+		if strings.Contains(lower, "suggestion") {
+			// Strip all leading # and whitespace
+			cleaned := strings.TrimLeft(line, "# \t")
 
-			// Easier: trim ##, then case-insensitive trim "suggestion"
-			cleaned := strings.TrimPrefix(line, "##")
-			cleaned = strings.TrimSpace(cleaned)
-
-			// Remove "Suggestion" case-insensitively
+			// Remove "Suggestion" keyword (case-insensitive)
+			// prefix check since we trimmed left
 			if len(cleaned) >= 10 && strings.EqualFold(cleaned[:10], "suggestion") {
 				cleaned = cleaned[10:]
 			}
@@ -307,10 +301,12 @@ func parsePathAndLine(s string) (string, int, int, bool) {
 		return "", 0, 0, false
 	}
 
+	// Normalize dashes early — BEFORE splitting on "-"
+	linePart = strings.ReplaceAll(linePart, "–", "-") // En Dash
+	linePart = strings.ReplaceAll(linePart, "—", "-") // Em Dash
+
 	// Range handling (10-20)
-	if strings.Contains(linePart, "-") || strings.Contains(linePart, "–") {
-		// Normalize dashes
-		linePart = strings.ReplaceAll(linePart, "–", "-")
+	if strings.Contains(linePart, "-") {
 		parts := strings.Split(linePart, "-")
 		if len(parts) >= 2 {
 			start, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
