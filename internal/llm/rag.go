@@ -1762,7 +1762,7 @@ func stripPatchNoise(query string) string {
 		}
 	}
 	if len(cleanLines) == 0 {
-		return query
+		return ""
 	}
 	return strings.Join(cleanLines, "\n")
 }
@@ -1781,14 +1781,22 @@ func preFilterBM25(query string, docs []schema.Document, topK int) []schema.Docu
 
 	// Simple keyword overlap score
 	queryTerms := strings.Fields(strings.ToLower(query))
+	filteredTerms := make([]string, 0, len(queryTerms))
+	for _, t := range queryTerms {
+		if len(t) >= 3 {
+			filteredTerms = append(filteredTerms, t)
+		}
+	}
+
+	if len(filteredTerms) == 0 {
+		return docs
+	}
+
 	scored := make([]scoredDoc, len(docs))
 	for i, doc := range docs {
 		score := 0
 		content := strings.ToLower(doc.PageContent)
-		for _, term := range queryTerms {
-			if len(term) < 3 {
-				continue // Skip small words
-			}
+		for _, term := range filteredTerms {
 			if strings.Contains(content, term) {
 				score++
 			}
