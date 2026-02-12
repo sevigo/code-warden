@@ -183,7 +183,13 @@ func (m *manager) incrementalUpdate(
 
 	added, modified, deleted, err := m.gitClient.Diff(gitRepo, rec.LastIndexedSHA, ev.HeadSHA)
 	if err != nil {
-		return nil, fmt.Errorf("git diff: %w", err)
+		m.logger.Warn("git diff failed, falling back to full re-index",
+			"repo", ev.RepoFullName,
+			"last_indexed_sha", rec.LastIndexedSHA,
+			"head_sha", ev.HeadSHA,
+			"error", err,
+		)
+		return m.cloneAndIndex(ctx, ev, token, rec.ClonePath)
 	}
 
 	return &core.UpdateResult{

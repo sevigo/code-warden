@@ -227,6 +227,9 @@ func (c *Client) CloneAndCheckoutTemp(ctx context.Context, repoURL, sha, token s
 }
 
 func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
+	if strings.HasPrefix(repoURL, "file://") {
+		return repoURL, nil
+	}
 	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
 		return "", fmt.Errorf("invalid repository URL: %s", repoURL)
 	}
