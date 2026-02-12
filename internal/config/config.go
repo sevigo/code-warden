@@ -68,6 +68,9 @@ func (c *AIConfig) Validate() error {
 	if len(c.ComparisonModels) == 0 {
 		return nil
 	}
+	if c.HyDEConcurrency < 1 {
+		return errors.New("ai.hyde_concurrency must be >= 1")
+	}
 	if err := c.validateModels(); err != nil {
 		return err
 	}

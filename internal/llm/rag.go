@@ -1771,7 +1771,7 @@ func stripPatchNoise(query string) string {
 	if len(cleanLines) == 0 {
 		return ""
 	}
-	return strings.Join(cleanLines, "\n")
+	return strings.TrimSpace(strings.Join(cleanLines, "\n"))
 }
 
 // preFilterBM25 performs a simple keyword-overlap based ranking to trim results
