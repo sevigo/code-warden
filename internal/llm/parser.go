@@ -175,7 +175,14 @@ func (p *reviewParser) handleContent(line, rawLine string) {
 		}
 
 	case stateSuggestions:
-		// Ignore intro text
+		// Logic to capture "Titles" (e.g. #### 1. [Title]) that appear before **File:**
+		// We treat them as part of the *next* suggestion's comment.
+		if strings.HasPrefix(line, "###") {
+			if p.commentBuilder.Len() > 0 {
+				p.commentBuilder.WriteString("\n")
+			}
+			p.commentBuilder.WriteString(rawLine + "\n")
+		}
 
 	case stateSuggestionBody:
 		if p.currentSuggestion == nil {
@@ -200,8 +207,10 @@ func (p *reviewParser) flushSuggestion() {
 func extractVerdictFromLine(line string) string {
 	matches := verdictAttribute.FindStringSubmatch(line)
 	if len(matches) > 1 {
-		v := strings.ToUpper(strings.TrimSpace(matches[1]))
+		v := strings.TrimSpace(matches[1])
+		// Normalize spaces to underscores for comparison with constants
 		v = strings.ReplaceAll(v, " ", "_")
+		v = strings.ToUpper(v)
 		if v == VerdictRequestChanges || v == VerdictApprove || v == VerdictComment {
 			return v
 		}
@@ -233,26 +242,38 @@ func parseSuggestionHeader(line string) (string, int, int, bool) {
 	// Strategy 1: **File:**
 	if matches := fileAttribute.FindStringSubmatch(line); len(matches) > 1 {
 		content := strings.TrimSpace(matches[1])
-		content = strings.Trim(content, "`\"'")
+		// CRITICAL: Aggressively strip markdown formatting
+		content = strings.ReplaceAll(content, "*", "")
+		content = strings.Trim(content, "`\"' ")
 		return parsePathAndLine(content)
 	}
 
 	// Strategy 2: Traditional ## Suggestion
-	if strings.HasPrefix(line, "##") && strings.Contains(strings.ToLower(line), "suggestion") {
-		// Clean up to get just the bracketed part or path
-		// Remove "##"
-		cleaned := strings.TrimPrefix(line, "##")
-		// Remove "Suggestion" (case insensitive)
-		lower := strings.ToLower(cleaned)
+	if strings.HasPrefix(line, "##") {
+		// Check for "suggestion" *after* stripping ## and trim
+		lower := strings.ToLower(line)
 		idx := strings.Index(lower, "suggestion")
-		if idx != -1 {
-			cleaned = cleaned[idx+len("suggestion"):]
+		if idx >= 2 { // "##" is 2 chars, so "suggestion" must appear after prefix
+			// remove the "suggestion" part
+			// line is like "## Suggestion [path]"
+			// We want to extract what's after "suggestion"
+			// But case insensitive.
+
+			// Easier: trim ##, then case-insensitive trim "suggestion"
+			cleaned := strings.TrimPrefix(line, "##")
+			cleaned = strings.TrimSpace(cleaned)
+
+			// Remove "Suggestion" case-insensitively
+			if len(cleaned) >= 10 && strings.EqualFold(cleaned[:10], "suggestion") {
+				cleaned = cleaned[10:]
+			}
+
+			cleaned = strings.TrimSpace(cleaned)
+			cleaned = strings.TrimPrefix(cleaned, "[")
+			cleaned = strings.TrimSuffix(cleaned, "]")
+			cleaned = strings.Trim(cleaned, "`")
+			return parsePathAndLine(cleaned)
 		}
-		cleaned = strings.TrimSpace(cleaned)
-		cleaned = strings.TrimPrefix(cleaned, "[")
-		cleaned = strings.TrimSuffix(cleaned, "]")
-		cleaned = strings.Trim(cleaned, "`")
-		return parsePathAndLine(cleaned)
 	}
 
 	// Strategy 3: Loose bracket match [path:line] at start of line
@@ -272,7 +293,10 @@ func parsePathAndLine(s string) (string, int, int, bool) {
 		return "", 0, 0, false
 	}
 
+	// Trimming parts individually to preserve valid path characters usually
 	pathPart := strings.TrimSpace(s[:lastColon])
+	// CRITICAL: Strip any remaining quotes/backticks from the path itself
+	pathPart = strings.Trim(pathPart, "`\"'")
 	linePart := strings.TrimSpace(s[lastColon+1:])
 
 	// Basic validation
@@ -348,15 +372,12 @@ func stripMarkdownFence(s string) string {
 		return s
 	}
 	// If lang specified, usually safe to strip. If no lang, strip.
-	// We only preserve if it's explicitly NOT markdown/md and NOT empty?
-	// Actually most LLMs just output ```markdown. We'll strip commonly used ones or empty.
 	lang := strings.TrimPrefix(first, "```")
 	if lang != "" && lang != "markdown" && lang != "md" && lang != "text" {
 		return s
 	}
 
 	// Find first closing fence after the opening line (scanning forward)
-	// This ensures we only capture the intended block and ignore trailing garbage.
 	closeIdx := -1
 	for i := 1; i < len(lines); i++ {
 		if strings.TrimSpace(lines[i]) == "```" {
@@ -364,8 +385,11 @@ func stripMarkdownFence(s string) string {
 			break
 		}
 	}
+
 	if closeIdx > 0 {
-		return strings.Join(lines[1:closeIdx], "\n")
+		// Normalize: trim each line before joining, then trim overall
+		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
 	}
-	return strings.Join(lines[1:], "\n")
+	// Fallback: if closing fence is missing, preserve content *and* apply final trim
+	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
 }

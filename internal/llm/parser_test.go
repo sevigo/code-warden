@@ -193,3 +193,37 @@ func TestStripMarkdownFence(t *testing.T) {
 		})
 	}
 }
+
+func TestParseMarkdownReview_TitleGap_And_BoldPath(t *testing.T) {
+	input := `# REVIEW SUMMARY
+
+This is a summary.
+
+# SUGGESTIONS
+
+#### 1. [Missing Title Issue]
+**File:** ` + "`**internal/llm/parser.go**`" + `:123
+**Observation:** Some observation.
+
+### Comment
+This is the comment.
+`
+	review, err := parseMarkdownReview(input)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if len(review.Suggestions) != 1 {
+		t.Fatalf("Caught %d suggestions, want 1", len(review.Suggestions))
+	}
+
+	s := review.Suggestions[0]
+	if s.FilePath != "internal/llm/parser.go" {
+		t.Errorf("Got FilePath %q, want %q", s.FilePath, "internal/llm/parser.go")
+	}
+
+	// The title "#### 1. [Missing Title Issue]" should be captured in the comment/description
+	if !strings.Contains(s.Comment, "[Missing Title Issue]") {
+		t.Errorf("Comment missing title. Got:\n%s", s.Comment)
+	}
+}
