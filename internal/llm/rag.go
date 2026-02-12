@@ -189,15 +189,16 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 			if _, err := scopedStore.AddDocuments(ctx, docsToInsert); err != nil {
 				return fmt.Errorf("failed to add vectors: %w", err)
 			}
-			mu.Lock()
-			processedCount += len(docsByFile) // Approximate by file count
-			mu.Unlock()
 
 			// Update repository tracking in DB
 			if err := r.store.UpsertFiles(ctx, repo.ID, filesToUpdate); err != nil {
 				r.logger.Error("failed to update file state in DB", "error", err)
 			}
 		}
+
+		mu.Lock()
+		processedCount += len(docsByFile) // Count all processed files, even if 0 docs
+		mu.Unlock()
 		return nil
 	})
 
@@ -205,12 +206,16 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		return fmt.Errorf("repository ingestion failed: %w", err)
 	}
 
-	// Cleanup: Delete records for files that are genuinely absent from disk.
-	// We check the filesystem directly rather than relying on filesProcessedByLoader,
-	// because the loader intentionally skips generated files (mocks, protobuf, etc.)
-	// and we don't want to delete their tracking records.
+	// Cleanup: Delete records for files that are genuinely absent from disk AND were not processed by loader.
+	// We check the filesystem directly rather than relying on filesProcessedByLoader alone,
+	// but we respect filesProcessedByLoader as "exists" to avoid unnecessary stat calls.
 	var pathsToDelete []string
 	for path := range existingFiles {
+		// Optimization: If loader processed it, it definitely exists.
+		if _, seen := filesProcessedByLoader[path]; seen {
+			continue
+		}
+
 		fullPath := filepath.Join(repoPath, path)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			pathsToDelete = append(pathsToDelete, path)
@@ -1565,35 +1570,76 @@ func (r *ragService) getImpactContext(ctx context.Context, store storage.ScopedV
 	retriever := vectorstores.NewDependencyRetriever(store)
 	var impactBuilder strings.Builder
 
-	for _, file := range files {
-		parser, err := r.parserRegistry.GetParserForFile(file.Filename, nil)
+	// Suggestion [internal/llm/rag.go:1447] - Parallelize dependency retrieval
+	// Dependency impact analysis is O(k log m) per call. Sequential processing scales poorly.
+	// Parallelizing with bounded concurrency reduces wall-clock time linearly.
+
+	type depRequest struct {
+		Pkg     string
+		Imports []string
+		File    internalgithub.ChangedFile
+	}
+
+	reqs := make([]depRequest, 0, len(files))
+	for _, f := range files {
+		parser, err := r.parserRegistry.GetParserForFile(f.Filename, nil)
 		if err != nil {
 			continue
 		}
 
 		// Read actual source from disk — parsing git patch syntax would fail
-		fullPath, err := r.validateAndJoinPath(repoPath, file.Filename)
+		fullPath, err := r.validateAndJoinPath(repoPath, f.Filename)
 		if err != nil {
 			continue
 		}
+
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
 			continue
 		}
 
-		meta, err := parser.ExtractMetadata(string(content), file.Filename)
+		meta, err := parser.ExtractMetadata(string(content), f.Filename)
 		if err != nil {
 			continue
 		}
 
-		network, err := retriever.GetContextNetwork(ctx, meta.PackageName, meta.Imports)
-		if err != nil {
-			r.logger.Warn("dependency retrieval failed", "file", file.Filename, "error", err)
-			continue
-		}
+		reqs = append(reqs, depRequest{
+			Pkg:     meta.PackageName,
+			Imports: meta.Imports,
+			File:    f,
+		})
+	}
 
-		// Process dependents (impact analysis)
-		for _, doc := range network.Dependents {
+	// Parallelize with bounded concurrency
+	const maxConcurrentDepCalls = 10
+	sem := make(chan struct{}, maxConcurrentDepCalls)
+	depResults := make(map[string][]schema.Document)
+	var depMu sync.Mutex
+
+	var wg sync.WaitGroup
+	for _, req := range reqs {
+		wg.Add(1)
+		go func(r depRequest) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			network, err := retriever.GetContextNetwork(ctx, r.Pkg, r.Imports)
+			if err != nil {
+				// Log warning but continue
+				return
+			}
+
+			depMu.Lock()
+			depResults[r.File.Filename] = network.Dependents
+			depMu.Unlock()
+		}(req)
+	}
+	wg.Wait()
+
+	// Process results
+	for filename, dependents := range depResults {
+		for _, doc := range dependents {
 			source, ok := doc.Metadata["source"].(string)
 			if !ok || source == "" {
 				continue
@@ -1607,7 +1653,7 @@ func (r *ragService) getImpactContext(ctx context.Context, store storage.ScopedV
 			mu.Unlock()
 
 			_, _ = impactBuilder.WriteString(fmt.Sprintf("File: %s (potential ripple effect from %s)\n---\n%s\n\n",
-				source, file.Filename, doc.PageContent))
+				source, filename, doc.PageContent))
 		}
 	}
 	return impactBuilder.String()
