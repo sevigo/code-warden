@@ -12,7 +12,14 @@ type Suggestion struct {
 
 // StructuredReview represents the full review output from the LLM in a parsable format.
 type StructuredReview struct {
+	Title       string       `json:"title,omitempty"` // For distinct headers (e.g. "Re-Review Summary")
 	Summary     string       `json:"summary"`
 	Verdict     string       `json:"verdict,omitempty"` // Added for programmatic approval status
 	Suggestions []Suggestion `json:"suggestions"`
+}
+
+// ReReviewResult represents the structured output expected from the LLM for a re-review.
+type ReReviewResult struct {
+	Verdict string `json:"verdict"` // "APPROVE", "REQUEST_CHANGES", "COMMENT"
+	Summary string `json:"summary"`
 }

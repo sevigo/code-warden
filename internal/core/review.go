@@ -2,6 +2,12 @@ package core
 
 import "time"
 
+const (
+	VerdictApprove        = "APPROVE"
+	VerdictRequestChanges = "REQUEST_CHANGES"
+	VerdictComment        = "COMMENT"
+)
+
 // Review represents a single code review stored in the database.
 type Review struct {
 	ID            int64     `db:"id"`
@@ -13,8 +19,11 @@ type Review struct {
 }
 
 // ReReviewData is a type-safe struct for rendering re-review prompts.
+// ReReviewData is a type-safe struct for rendering re-review prompts.
 type ReReviewData struct {
-	Language       string
-	OriginalReview string
-	NewDiff        string
+	Language         string
+	OriginalReview   string
+	NewDiff          string
+	UserInstructions string
+	Context          string
 }

@@ -33,6 +33,9 @@ type GitHubEvent struct {
 	HeadSHA  string
 	Type     ReviewType
 
+	// UserInstructions captures optional text provided with the command (e.g. "/rereview check security")
+	UserInstructions string
+
 	Commenter      string
 	InstallationID int64
 }
@@ -48,15 +51,9 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	commentBody := strings.TrimSpace(strings.ToLower(event.GetComment().GetBody()))
-	var reviewType ReviewType
-
-	switch commentBody {
-	case "/review":
-		reviewType = FullReview
-	case "/rereview":
-		reviewType = ReReview
-	default:
-		return nil, fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
+	reviewType, instructions, err := parseReviewCommand(commentBody)
+	if err != nil {
+		return nil, err
 	}
 
 	repo := event.GetRepo()
@@ -78,16 +75,50 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	return &GitHubEvent{
-		Type:           reviewType,
-		RepoOwner:      repo.GetOwner().GetLogin(),
-		RepoName:       repo.GetName(),
-		RepoFullName:   repo.GetFullName(),
-		RepoCloneURL:   repo.GetCloneURL(),
-		Language:       repo.GetLanguage(),
-		InstallationID: event.GetInstallation().GetID(),
-		PRNumber:       prNumber,
-		PRTitle:        event.GetIssue().GetTitle(),
-		PRBody:         event.GetIssue().GetBody(),
-		Commenter:      event.GetComment().GetUser().GetLogin(),
+		Type:             reviewType,
+		RepoOwner:        repo.GetOwner().GetLogin(),
+		RepoName:         repo.GetName(),
+		RepoFullName:     repo.GetFullName(),
+		RepoCloneURL:     repo.GetCloneURL(),
+		Language:         repo.GetLanguage(),
+		InstallationID:   event.GetInstallation().GetID(),
+		PRNumber:         prNumber,
+		PRTitle:          event.GetIssue().GetTitle(),
+		PRBody:           event.GetIssue().GetBody(),
+		UserInstructions: instructions,
+		Commenter:        event.GetComment().GetUser().GetLogin(),
 	}, nil
+}
+
+const reReviewCmd = "/rereview"
+
+func parseReviewCommand(commentBody string) (ReviewType, string, error) {
+	if commentBody == "/review" {
+		return FullReview, "", nil
+	}
+
+	if !strings.HasPrefix(commentBody, reReviewCmd) {
+		return 0, "", fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
+	}
+
+	// Ensure it's "/rereview" exactly or "/rereview " (with space)
+	if commentBody != reReviewCmd && !strings.HasPrefix(commentBody, reReviewCmd+" ") {
+		return 0, "", fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
+	}
+
+	args := strings.TrimPrefix(commentBody, reReviewCmd)
+	instructions := strings.TrimSpace(args)
+
+	// Sanitize instructions
+	instructions = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, instructions)
+
+	return ReReview, instructions, nil
 }
