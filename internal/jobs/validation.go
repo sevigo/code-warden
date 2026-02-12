@@ -31,7 +31,11 @@ func validateSuggestions(logger *slog.Logger, suggestions []core.Suggestion, val
 		if _, lineExists := lines[s.LineNumber]; lineExists {
 			inline = append(inline, s)
 		} else {
-			logger.Warn("Moving suggestion to general findings (off-diff line)", "file", s.FilePath, "line", s.LineNumber)
+			logger.Warn("Moving suggestion to general findings (off-diff line)",
+				"original", s.FilePath,
+				"normalized", cleanPath,
+				"line", s.LineNumber,
+			)
 			offDiff = append(offDiff, s)
 		}
 	}
