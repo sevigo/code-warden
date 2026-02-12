@@ -95,9 +95,11 @@ Return your review as a valid Markdown document. Do NOT return JSON.
 ## ⚠️ Remaining / New Issues (If Any)
 
 ### 🔴 [Critical/High] [Short Title]
-**File:** `path/to/filename.go`
+**File:** `path/to/filename.go:10`
 **Context:** [Why this is still an issue]
 **Suggestion:** [Clear recommendation]
+
+> **IMPORTANT**: For every specific remaining issue, you MUST use the `### [Priority] [Title]` header followed by the `**File:**` anchor on the next line to ensure it is parsed correctly as an actionable suggestion.
 
 ---
 
