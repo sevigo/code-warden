@@ -31,6 +31,7 @@ import (
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
+	"github.com/sevigo/goframe/textsplitter"
 	"github.com/sevigo/goframe/vectorstores"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
 )
@@ -53,6 +54,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		provideEmbedder,
 		provideReranker,
 		provideParserRegistry,
+		provideTextSplitter,
 		provideLoggerConfig,
 		provideLogWriter,
 		provideDBConfig,
@@ -150,6 +152,22 @@ func provideDependencyRetriever(store storage.VectorStore) *vectorstores.Depende
 
 func provideParserRegistry(logger *slog.Logger) (parsers.ParserRegistry, error) {
 	return parsers.RegisterLanguagePlugins(logger)
+}
+
+func provideTextSplitter(registry parsers.ParserRegistry, model llms.Model, logger *slog.Logger) (textsplitter.TextSplitter, error) {
+	tokenizer := llm.NewOllamaTokenizerAdapter(model)
+	splitter, err := textsplitter.NewCodeAware(
+		registry,
+		tokenizer,
+		logger,
+		textsplitter.WithChunkSize(2000),
+		textsplitter.WithChunkOverlap(200),
+		textsplitter.WithParentContextConfig(textsplitter.ParentContextConfig{Enabled: true}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return splitter, nil
 }
 
 func newOllamaHTTPClient() *http.Client {
