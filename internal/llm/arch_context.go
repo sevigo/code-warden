@@ -40,19 +40,19 @@ type DirectoryInfo struct {
 	ContentHash string
 }
 
-// GenerateArchSummaries generates architectural summaries for directories in the repository.
-// It uses filesystem walking to discover directories and checks for existing summaries in batch.
-func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string) error {
+// GenerateArchSummaries generates architectural summaries for specified directories (or all if none provided).
+func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error {
 	r.logger.Info("generating architectural summaries",
 		"collection", collectionName,
 		"repoPath", repoPath,
+		"target_paths_count", len(targetPaths),
 	)
 
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 	summaryCache := r.fetchSummaryCache(ctx, scopedStore)
 
 	// Walk filesystem to discover directories and check cache
-	dirsToProcess, cachedCount, err := r.discoverDirectories(repoPath, summaryCache)
+	dirsToProcess, cachedCount, err := r.discoverDirectories(repoPath, targetPaths, summaryCache)
 	if err != nil {
 		return fmt.Errorf("failed to walk directories: %w", err)
 	}
@@ -116,47 +116,90 @@ func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.
 }
 
 // discoverDirectories walks the repo filesystem and returns directories needing summary updates.
-func (r *ragService) discoverDirectories(repoPath string, summaryCache map[string]string) (map[string]*DirectoryInfo, int, error) {
+// If targetPaths is provided, it ONLY scans those specific directories and their parents (up to root).
+//
+//nolint:gocognit // Complex logic for discovery vs targeted scan is better kept together for readability
+func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, summaryCache map[string]string) (map[string]*DirectoryInfo, int, error) {
 	dirsToProcess := make(map[string]*DirectoryInfo)
 	cachedCount := 0
 
-	err := filepath.WalkDir(repoPath, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	// Case 1: Full Recursive Walk (Initial Indexing)
+	if len(targetPaths) == 0 {
+		err := filepath.WalkDir(repoPath, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !d.IsDir() {
+				return nil
+			}
+			if strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
+				return filepath.SkipDir
+			}
+
+			relPath, _ := filepath.Rel(repoPath, path)
+			if relPath == "." {
+				relPath = rootDir
+			}
+			relPath = strings.ReplaceAll(relPath, "\\", "/")
+
+			return r.processSingleDir(repoPath, path, relPath, summaryCache, dirsToProcess, &cachedCount)
+		})
+		return dirsToProcess, cachedCount, err
+	}
+
+	// Case 2: Targeted Walk (Incremental Sync - Bottleneck #4)
+	uniqueDirs := make(map[string]struct{})
+	for _, p := range targetPaths {
+		dir := filepath.Dir(p)
+		// Traverse up to root to ensure all affected parent summaries are updated if needed
+		for {
+			uniqueDirs[dir] = struct{}{}
+			if dir == "." || dir == "/" || dir == "" {
+				break
+			}
+			dir = filepath.Dir(dir)
 		}
-		if !d.IsDir() {
-			return nil
-		}
-		if strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
-			return filepath.SkipDir
+	}
+	// Always include root summary in targeted scans as it might change
+	uniqueDirs["."] = struct{}{}
+
+	for relDir := range uniqueDirs {
+		fullPath := filepath.Join(repoPath, relDir)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			continue // Directory might have been deleted
 		}
 
-		relPath, _ := filepath.Rel(repoPath, path)
-		if relPath == "." {
-			relPath = rootDir
+		displayRelPath := relDir
+		if displayRelPath == "." {
+			displayRelPath = rootDir
 		}
-		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		displayRelPath = strings.ReplaceAll(displayRelPath, "\\", "/")
 
-		info, hash, scanErr := r.scanDirectoryOnDisk(repoPath, path, relPath)
-		if scanErr != nil {
-			r.logger.Warn("failed to scan directory", "path", path, "error", scanErr)
-			return nil
+		if err := r.processSingleDir(repoPath, fullPath, displayRelPath, summaryCache, dirsToProcess, &cachedCount); err != nil {
+			r.logger.Warn("targeted scan failed for directory", "path", relDir, "error", err)
 		}
-		if info == nil {
-			return nil
-		}
+	}
 
-		if cachedHash, ok := summaryCache[relPath]; ok && cachedHash == hash {
-			cachedCount++
-			return nil
-		}
+	return dirsToProcess, cachedCount, nil
+}
 
-		info.ContentHash = hash
-		dirsToProcess[relPath] = info
+func (r *ragService) processSingleDir(repoPath, fullPath, relPath string, summaryCache map[string]string, dirsToProcess map[string]*DirectoryInfo, cachedCount *int) error {
+	info, hash, scanErr := r.scanDirectoryOnDisk(repoPath, fullPath, relPath)
+	if scanErr != nil {
+		return scanErr
+	}
+	if info == nil {
 		return nil
-	})
+	}
 
-	return dirsToProcess, cachedCount, err
+	if cachedHash, ok := summaryCache[relPath]; ok && cachedHash == hash {
+		(*cachedCount)++
+		return nil
+	}
+
+	info.ContentHash = hash
+	dirsToProcess[relPath] = info
+	return nil
 }
 
 func (r *ragService) getDirectoryPath(doc schema.Document) string {
@@ -208,8 +251,7 @@ func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInf
 
 	// Start workers
 	var wg sync.WaitGroup
-	for i := range workers {
-		_ = i
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -403,16 +445,6 @@ func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*Director
 	}
 
 	return info, hexHash, nil
-}
-
-func isCodeExtension(ext string) bool {
-	switch ext {
-	// Add common code extensions here
-	case ".go", ".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".rs", ".rb", ".php", ".cs", ".swift", ".kt", ".scala":
-		return true
-	default:
-		return false
-	}
 }
 
 // GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.

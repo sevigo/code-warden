@@ -17,8 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
@@ -224,7 +222,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 
 	// Generate architectural summaries for directories (post-processing)
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath); err != nil {
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, nil); err != nil {
 		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
 	}
 
@@ -349,8 +347,8 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		}
 	}
 
-	// Trigger arch summary re-generation for the repository
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath); err != nil {
+	// Trigger targeted arch summary re-generation
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, append(filesToProcess, filesToDelete...)); err != nil {
 		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
 	}
 
@@ -562,7 +560,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
 //
-//nolint:gocognit,funlen // Complex logic with parallel execution and error aggregation
+//nolint:gocognit,funlen // Complex logic with parallel execution and quota management
 func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -611,92 +609,92 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	}
 
 	results := make([]ComparisonResult, 0, len(models))
-	var mu sync.Mutex
+	resultsChan := make(chan ComparisonResult, len(models))
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	g, ctx := errgroup.WithContext(ctx)
 	// Limit concurrency to avoid rate limits
-	// Review feedback: 3 is arbitrary. Bumping to 5 for now.
 	const maxConcurrentModels = 5
 	sem := make(chan struct{}, maxConcurrentModels)
-	// No defer close(sem) - channel will be GC'd or we can close after Wait()
 
 	for _, modelName := range models {
-		g.Go(func() error {
+		go func(m string) {
 			// Acquire semaphore
 			select {
 			case sem <- struct{}{}:
-				// Release only if acquired
 				defer func() { <-sem }()
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-workerCtx.Done():
+				return
 			}
 
-			// Check context again before starting work
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			r.logger.Info("generating review summary", "model", modelName)
-
-			// Con: Create local copy of promptData to ensure goroutine isolation (Priority 4)
-			// Maps are passed by reference; defensive copy prevents race conditions
-			// if caller modifies the original map during parallel execution.
+			// Con: Create local copy of promptData to ensure goroutine isolation
 			localPromptData := make(map[string]string, len(promptData))
 			for k, v := range promptData {
 				localPromptData[k] = v
 			}
 
-			llmModel, err := r.getOrCreateLLM(modelName)
+			llmModel, err := r.getOrCreateLLM(m)
 			if err != nil {
-				mu.Lock()
-				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to create LLM: %w", err)})
-				mu.Unlock()
-				return nil
+				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to create LLM: %w", err)}
+				return
 			}
 
-			modelForPrompt := ModelProvider(modelName)
+			modelForPrompt := ModelProvider(m)
 			prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
 			if err != nil {
-				mu.Lock()
-				results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("failed to render prompt: %w", err)})
-				mu.Unlock()
-				return nil
+				resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("failed to render prompt: %w", err)}
+				return
 			}
 
-			// Check context before expensive LLM call
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			// Use generateWithTimeout to ensure we respect cancellation even if the LLM client hangs
-			// Increased to 5m based on logs showing deepseek/kimi taking >2m
-			response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
+			// Use generateWithTimeout to ensure we respect cancellation
+			response, err := r.generateWithTimeout(workerCtx, llmModel, prompt, 5*time.Minute)
 			if err != nil {
-				mu.Lock()
-				// Check if it was a timeout
-				if errors.Is(err, context.DeadlineExceeded) {
-					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("generation timed out: %w", err)})
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("generation timed out or canceled: %w", err)}
 				} else {
-					results = append(results, ComparisonResult{Model: modelName, Error: fmt.Errorf("LLM call failed: %w", err)})
+					resultsChan <- ComparisonResult{Model: m, Error: fmt.Errorf("LLM call failed: %w", err)}
 				}
-				mu.Unlock()
-				return nil
+				return
 			}
 
-			// Check context before saving result
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			mu.Lock()
-			results = append(results, ComparisonResult{Model: modelName, Review: response})
-			mu.Unlock()
-			return nil
-		})
+			resultsChan <- ComparisonResult{Model: m, Review: response}
+		}(modelName)
 	}
 
-	if err := g.Wait(); err != nil {
-		return nil, err
+	quorumThreshold := (len(models) * 2) / 3
+	if quorumThreshold < 1 {
+		quorumThreshold = 1
+	}
+
+	quorumTimer := time.NewTimer(24 * time.Hour) // Wait "forever" initially
+	quorumTimer.Stop()
+	quorumTimerStarted := false
+
+	for range models {
+		select {
+		case res := <-resultsChan:
+			results = append(results, res)
+			// Trigger straggler timeout if we have enough results but not all
+			if len(results) >= quorumThreshold && !quorumTimerStarted && len(results) < len(models) {
+				const stragglerTimeout = 30 * time.Second
+				quorumTimer.Reset(stragglerTimeout)
+				quorumTimerStarted = true
+				r.logger.Info("consensus quorum reached, starting straggler timeout",
+					"threshold", quorumThreshold,
+					"finished", len(results),
+					"total", len(models),
+					"timeout", stragglerTimeout,
+				)
+			}
+		case <-quorumTimer.C:
+			r.logger.Warn("consensus straggler timeout hit, proceeding with partial results",
+				"finished", len(results),
+				"total", len(models),
+			)
+			return results, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	return results, nil
@@ -1335,32 +1333,46 @@ func (r *ragService) collectHyDEResults(resultsChan <-chan struct {
 }
 
 func (r *ragService) performSingleHyDEJob(ctx context.Context, scopedStore storage.ScopedVectorStore, query string) []schema.Document {
+	// 1. Clean the Query (Bottleneck #5: Strip diff noise)
+	cleanQuery := stripPatchNoise(query)
+
 	var searchOpts []vectorstores.Option
-	sparseVec, err := sparse.GenerateSparseVector(ctx, query)
+	sparseVec, err := sparse.GenerateSparseVector(ctx, cleanQuery)
 	if err == nil {
 		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 	}
 
 	// Recall
-	baseDocs, err := scopedStore.SimilaritySearch(ctx, query, 20, searchOpts...)
+	baseDocs, err := scopedStore.SimilaritySearch(ctx, cleanQuery, 20, searchOpts...)
 	if err != nil {
 		r.logger.Warn("base hybrid search failed", "error", err)
 		return nil
 	}
 
+	// 2. Pre-filter by Keyword Score (Bottleneck #2: N+1 Reranking)
+	preFilteredDocs := preFilterBM25(cleanQuery, baseDocs, 10)
+
 	// Precision (Rerank)
-	scoredDocs, err := r.reranker.Rerank(ctx, query, baseDocs)
+	scoredDocs, err := r.reranker.Rerank(ctx, cleanQuery, preFilteredDocs)
 	if err != nil {
 		r.logger.Warn("reranking failed, falling back", "error", err)
-		if len(baseDocs) > 5 {
-			return baseDocs[:5]
-		}
-		return baseDocs
+		return r.fallbackDocs(preFilteredDocs, 5)
 	}
 
+	return r.formatScoredDocs(scoredDocs, 5)
+}
+
+func (r *ragService) fallbackDocs(docs []schema.Document, limit int) []schema.Document {
+	if len(docs) > limit {
+		return docs[:limit]
+	}
+	return docs
+}
+
+func (r *ragService) formatScoredDocs(scoredDocs []schema.ScoredDocument, limit int) []schema.Document {
 	count := len(scoredDocs)
-	if count > 5 {
-		count = 5
+	if count > limit {
+		count = limit
 	}
 	docs := make([]schema.Document, count)
 	for j := range count {
@@ -1545,11 +1557,7 @@ func (r *ragService) hashPatch(patch string) string {
 // isLogicFile returns true if the file is a likely code/logic file.
 func isLogicFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".go", ".ts", ".js", ".tsx", ".jsx", ".py", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt":
-		return true
-	}
-	return false
+	return isCodeExtension(ext)
 }
 
 //nolint:gocognit
@@ -1705,4 +1713,71 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 	}
 
 	return filtered
+}
+
+// stripPatchNoise removes git metadata and deleted lines from the patch to focus
+// on what was actually added/changed.
+func stripPatchNoise(query string) string {
+	lines := strings.Split(query, "\n")
+	var cleanLines []string
+	for _, line := range lines {
+		// Keep metadata headers like "To understand...", but strip diff metadata
+		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "@@") {
+			continue
+		}
+		// Strip deleted lines
+		if strings.HasPrefix(line, "-") {
+			continue
+		}
+		// Clean the '+' prefix
+		cleanLine := strings.TrimPrefix(line, "+")
+		if cleanLine != "" {
+			cleanLines = append(cleanLines, cleanLine)
+		}
+	}
+	if len(cleanLines) == 0 {
+		return query
+	}
+	return strings.Join(cleanLines, "\n")
+}
+
+// preFilterBM25 performs a simple keyword-overlap based ranking to trim results
+// before sending them to the expensive reranker.
+func preFilterBM25(query string, docs []schema.Document, topK int) []schema.Document {
+	if len(docs) <= topK {
+		return docs
+	}
+
+	type scoredDoc struct {
+		doc   schema.Document
+		score int
+	}
+
+	// Simple keyword overlap score
+	queryTerms := strings.Fields(strings.ToLower(query))
+	scored := make([]scoredDoc, len(docs))
+	for i, doc := range docs {
+		score := 0
+		content := strings.ToLower(doc.PageContent)
+		for _, term := range queryTerms {
+			if len(term) < 3 {
+				continue // Skip small words
+			}
+			if strings.Contains(content, term) {
+				score++
+			}
+		}
+		scored[i] = scoredDoc{doc: doc, score: score}
+	}
+
+	// Sort by overlap score
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	result := make([]schema.Document, topK)
+	for i := range topK {
+		result[i] = scored[i].doc
+	}
+	return result
 }
