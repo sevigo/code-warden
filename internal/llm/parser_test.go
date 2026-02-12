@@ -293,3 +293,27 @@ Deep header level.
 		t.Errorf("s2 line: got %d, want 30", s2.LineNumber)
 	}
 }
+
+func TestParseMarkdownReview_NonBoldBackticks(t *testing.T) {
+	// Case: `internal/llm/parser.go:123` (Backticks ONLY, no stars)
+	input := `## Suggestion ` + "`internal/llm/parser.go:123`" + `
+**Severity:** Low
+Fix ` + "`weird`" + ` formatting.`
+
+	review, err := parseMarkdownReview(input)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+
+	if len(review.Suggestions) != 1 {
+		t.Fatalf("Caught %d suggestions, want 1", len(review.Suggestions))
+	}
+
+	s := review.Suggestions[0]
+	if s.FilePath != "internal/llm/parser.go" {
+		t.Errorf("Got FilePath %q, want internal/llm/parser.go", s.FilePath)
+	}
+	if s.LineNumber != 123 {
+		t.Errorf("Got LineNumber %d, want 123", s.LineNumber)
+	}
+}
