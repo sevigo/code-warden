@@ -177,13 +177,24 @@ func (m *manager) incrementalUpdate(
 			FilesToAddOrUpdate: files,
 			RepoPath:           rec.ClonePath,
 			HeadSHA:            ev.HeadSHA,
-			IsInitialClone:     true, // Treat as initial for indexing purposes
+			IsInitialClone:     true, // Force full re-index
 		}, nil
 	}
 
 	added, modified, deleted, err := m.gitClient.Diff(gitRepo, rec.LastIndexedSHA, ev.HeadSHA)
 	if err != nil {
-		return nil, fmt.Errorf("git diff: %w", err)
+		m.logger.Warn("git diff failed, falling back to full re-index",
+			"repo", ev.RepoFullName,
+			"last_indexed_sha", rec.LastIndexedSHA,
+			"head_sha", ev.HeadSHA,
+			"error", err,
+		)
+		// Cleanup corrupted state before re-cloning
+		if err := os.RemoveAll(rec.ClonePath); err != nil {
+			m.logger.Error("failed to remove repo directory before reclone", "path", rec.ClonePath, "err", err)
+			// Continue even if cleanup fails
+		}
+		return m.cloneAndIndex(ctx, ev, token, rec.ClonePath)
 	}
 
 	return &core.UpdateResult{
