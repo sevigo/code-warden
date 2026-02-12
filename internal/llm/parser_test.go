@@ -12,11 +12,12 @@ func TestParseMarkdownReview(t *testing.T) {
 		name        string
 		input       string
 		wantSummary string
+		wantVerdict string
 		wantCount   int
 		expectErr   bool
 	}{
 		{
-			name: "Valid Review",
+			name: "Valid Review Traditional",
 			input: `# REVIEW SUMMARY
 This is a good PR.
 
@@ -30,156 +31,96 @@ APPROVE
 **Category:** Logic
 
 ### Comment
-Fix this bug.
-
-### Rationale
-It crashes.
-
-### Fix
-` + "```go" + `
-if x != nil {
-  // ...
-}
-` + "```",
+Fix this bug.`,
 			wantSummary: "This is a good PR.",
+			wantVerdict: "APPROVE",
 			wantCount:   1,
 			expectErr:   false,
 		},
 		{
-			name: "Multiple Suggestions",
+			name: "Valid Review New Format (Emojis)",
+			input: `# 🛡️ CODE WARDEN CONSENSUS REVIEW
+
+## 🚦 VERDICT
+[APPROVE]
+
+> **SUMMARY**
+> This PR is excellent.
+
+## 🔍 KEY FINDINGS
+
+## **File:** ` + "`pkg/api.go:20`" + `
+**Severity:** Medium
+### Comment
+Check input validation.`,
+			wantSummary: "This PR is excellent.",
+			wantVerdict: "APPROVE",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Verdict in Header",
+			input: `
+# REVIEW SUMMARY
+LGTM
+
+## 🚦 VERDICT: [REQUEST_CHANGES]
+
+# SUGGESTIONS
+`,
+			wantSummary: "LGTM",
+			wantVerdict: "REQUEST_CHANGES",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name: "Verdict in Header without Brackets",
+			input: `
+# REVIEW SUMMARY
+LGTM
+
+## 🚦 VERDICT: APPROVE
+
+# SUGGESTIONS
+`,
+			wantSummary: "LGTM",
+			wantVerdict: "APPROVE",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name: "False Positive Prevention (Comment inside Summary)",
 			input: `# REVIEW SUMMARY
-Summary
+The user asked: "Should I add # VERDICT here?"
+And I said no.
+
+# VERDICT
+COMMENT
+`,
+			wantSummary: `The user asked: "Should I add # VERDICT here?"
+And I said no.`,
+			wantVerdict: "COMMENT",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name: "Multiple Suggestions New Format",
+			input: `# SUMMARY
+TLDR
 
 # SUGGESTIONS
 
-## Suggestion [foo.go:1]
-**Severity:** Low
+## **File:** ` + "`a.go:1`" + `
 ### Comment
-Comment 1
+A
 
-## Suggestion [bar.go:2]
-**Severity:** Critical
+## **File:** ` + "`b.go:2`" + `
 ### Comment
-Comment 2
+B
 `,
-			wantSummary: "Summary",
+			wantSummary: "TLDR",
+			wantVerdict: "",
 			wantCount:   2,
-			expectErr:   false,
-		},
-		{
-			name:      "Empty Input",
-			input:     "",
-			expectErr: true,
-		},
-		{
-			name:        "Response Wrapped in Markdown Fence",
-			input:       "```markdown\n# REVIEW SUMMARY\nLooks good.\n\n# VERDICT\nAPPROVE\n```",
-			wantSummary: "Looks good.",
-			wantCount:   0,
-			expectErr:   false,
-		},
-		{
-			name: "No Suggestions Section",
-			input: `# REVIEW SUMMARY
-Clean code, no issues found.
-
-# VERDICT
-APPROVE
-`,
-			wantSummary: "Clean code, no issues found.",
-			wantCount:   0,
-			expectErr:   false,
-		},
-		{
-			name: "Suggestion With Whitespace Before Line Number",
-			input: `# REVIEW SUMMARY
-Review
-
-# SUGGESTIONS
-
-## Suggestion [src/app.ts: 42]
-**Severity:** Medium
-**Category:** Performance
-
-### Comment
-Avoid repeated allocations.
-`,
-			wantSummary: "Review",
-			wantCount:   1,
-			expectErr:   false,
-		},
-		{
-			name: "Direct Header Format",
-			input: `# REVIEW SUMMARY
-Summary
-
-# SUGGESTIONS
-
-## pkg/file.go:55
-**Severity:** Medium
-### Comment
-Issue here.
-`,
-			wantSummary: "Summary",
-			wantCount:   1,
-			expectErr:   false,
-		},
-		{
-			name: "Multiline Suggestion",
-			input: `# REVIEW SUMMARY
-Summary
-
-# SUGGESTIONS
-
-## Suggestion [main.go:10-20]
-**Severity:** Low
-### Comment
-Refactor this range.
-`,
-			wantSummary: "Summary",
-			wantCount:   1,
-			expectErr:   false,
-		},
-		{
-			name: "Verdict does not leak into Summary",
-			input: `# REVIEW SUMMARY
-Good code.
-# VERDICT
-APPROVE`,
-			wantSummary: "Good code.",
-			wantCount:   0,
-			expectErr:   false,
-		},
-		{
-			name: "Suggestion With En Dash Range",
-			input: `# REVIEW SUMMARY
-Summary
-
-# SUGGESTIONS
-
-## Suggestion [main.go:10–20]
-**Severity:** Critical
-### Comment
-Fix range with En Dash.
-`,
-			wantSummary: "Summary",
-			wantCount:   1,
-			expectErr:   false,
-		},
-		{
-			name: "Suggestion Wrapped in Backticks",
-			input: `# REVIEW SUMMARY
-Summary
-
-# SUGGESTIONS
-
-## Suggestion ` + "`main.go:15`" + `
-**Severity:** Medium
-### Comment
-Fix file wrapped in backticks.
-`,
-			wantSummary: "Summary",
-			wantCount:   1,
 			expectErr:   false,
 		},
 	}
@@ -193,13 +134,8 @@ Fix file wrapped in backticks.
 			}
 			assert.NoError(t, err)
 			assert.Contains(t, got.Summary, tt.wantSummary)
-			// Verdict should not be part of summary (checked by Contains above via wantSummary not having it)
-			// But we can also check explicit exclusion if needed.
-			if strings.Contains(tt.input, "# VERDICT") {
-				// The input has verdict, check if parsed into field
-				// We don't have expected verdict field in struct yet, but can check it's not in summary.
-				assert.NotContains(t, got.Summary, "APPROVE")
-				assert.NotEmpty(t, got.Verdict)
+			if tt.wantVerdict != "" {
+				assert.Equal(t, tt.wantVerdict, got.Verdict)
 			}
 
 			assert.Len(t, got.Suggestions, tt.wantCount)

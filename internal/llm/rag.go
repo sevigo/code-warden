@@ -461,7 +461,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	if structuredReview.Verdict == "" {
-		structuredReview.Verdict = "COMMENT" // Default if missing
+		structuredReview.Verdict = VerdictComment // Default if missing
 	}
 	return structuredReview, rawReview, nil
 }

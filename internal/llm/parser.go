@@ -10,115 +10,32 @@ import (
 )
 
 var (
-	// Matches: ## Suggestion [path/to/file.go:123] or ## Suggestion [path/to/file.go: 123]
-	// Uses greedy .+ to match until the LAST colon, so Windows paths like C:\src\main.go:123 work.
+	// Anchored Regex for strict header detection
+	// Support both Markdown headers (#) and Blockquote headers (>) for flexibility.
+	// We allow optional emojis/symbols before the keywords.
+	headerSummary     = regexp.MustCompile(`(?i)^(?:#{1,6}|>)\s*(?:[^a-zA-Z0-9\n\r]*\s*)?(?:CODE\s+WARDEN\s+)?(?:REVIEW\s+SUMMARY|SUMMARY|CONSENSUS\s+REVIEW|EXECUTIVE\s+SUMMARY)\b`)
+	headerVerdict     = regexp.MustCompile(`(?i)^(?:#{1,6}|>)\s*(?:[^a-zA-Z0-9\n\r]*\s*)?VERDICT\b`)
+	headerSuggestions = regexp.MustCompile(`(?i)^(?:#{1,6}|>)\s*(?:[^a-zA-Z0-9\n\r]*\s*)?(?:DETAILED\s+)?(?:SUGGESTIONS|KEY\s+FINDINGS)\b`)
 
-	// suggestionHeaderRegex is removed in favor of manual parsing (parseSuggestionHeader)
-	// to prevent ReDoS and support Windows paths (which contain colons).
-	severityRegex = regexp.MustCompile(`(?i)\*\*Severity:?\*\*\s*(.*)`)
-	categoryRegex = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
+	// Regex for extracting attributes
+	verdictAttribute  = regexp.MustCompile(`(?i)(?:VERDICT[:\s]+)?\[?((?:APPROVE|REQUEST_CHANGES|REQUEST\s+CHANGES|COMMENT))\]?`)
+	severityAttribute = regexp.MustCompile(`(?i)\*\*Severity:?\*\*\s*(.*)`)
+	categoryAttribute = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
+
+	// File path parsing context (New: **File:** path)
+	fileAttribute = regexp.MustCompile(`(?i)\*\*File:\*\*\s*(.*)`)
 )
 
 const (
-	// maxLineLength limits the length of lines we parse to prevent DoS via large allocations.
 	maxLineLength = 4096
+
+	// Parser States
+	stateInit           = "INIT"
+	stateSummary        = "SUMMARY"
+	stateVerdict        = "VERDICT"
+	stateSuggestions    = "SUGGESTIONS"
+	stateSuggestionBody = "SUGGESTION_BODY"
 )
-
-// parseSuggestionHeader extracts file path and line number from a suggestion header.
-// Format: "## Suggestion [path/to/file.go:123]"
-// Standardizes on manual parsing to be 1. ReDoS-proof (linear time) and 2. Windows-path friendly.
-// parseSuggestionHeader parses a line starting with "## Suggestion".
-// Returns filePath, startLine, endLine, success.
-// If valid, startLine is 0 for single-line suggestions, or >0 for ranges.
-func parseSuggestionHeader(line string) (string, int, int, bool) {
-	if len(line) > maxLineLength {
-		return "", 0, 0, false
-	}
-
-	// Clean up the header line
-	header := strings.TrimSpace(line)
-	header = strings.TrimPrefix(header, "##")
-	header = strings.TrimSpace(header)
-
-	// Strategy 1: "Suggestion [path:line]" or "Suggestion path:line"
-	// Check case-insensitive prefix
-	if strings.HasPrefix(strings.ToLower(header), "suggestion") {
-		// Strip "Suggestion"
-		rest := header[len("suggestion"):]
-		rest = strings.TrimSpace(rest)
-		// Strip outer brackets if present
-		rest = strings.TrimPrefix(rest, "[")
-		rest = strings.TrimSuffix(rest, "]")
-		// Strip backticks if present
-		rest = strings.Trim(rest, "`")
-		rest = strings.TrimSpace(rest)
-
-		if path, start, end, ok := parsePathAndLine(rest); ok {
-			return path, start, end, true
-		}
-		// If it started with "Suggestion" but failed to parse, it's likely a malformed suggestion header.
-		// However, we should double check if "Suggestion" is actually part of the filename?
-		// Unlikely. We return false here to avoid false positives in Strategy 2.
-		return "", 0, 0, false
-	}
-
-	// Strategy 2: Direct "path:line" format (e.g. "internal/storage/database.go:250")
-	// Also handle if it's wrapped in brackets like "[path:line]"
-	cleanHeader := strings.TrimPrefix(header, "[")
-	cleanHeader = strings.TrimSuffix(cleanHeader, "]")
-	cleanHeader = strings.Trim(cleanHeader, "`")
-	cleanHeader = strings.TrimSpace(cleanHeader)
-
-	if path, start, end, ok := parsePathAndLine(cleanHeader); ok {
-		return path, start, end, true
-	}
-
-	return "", 0, 0, false
-}
-
-// parsePathAndLine helper handles "path:line" or "path:start-end" strings
-func parsePathAndLine(s string) (string, int, int, bool) {
-	lastColon := strings.LastIndex(s, ":")
-	if lastColon == -1 {
-		return "", 0, 0, false
-	}
-
-	pathPart := strings.TrimSpace(s[:lastColon])
-	linePart := strings.TrimSpace(s[lastColon+1:])
-
-	// Normalize dashes (En Dash, Em Dash) to standard hyphen
-	linePart = strings.ReplaceAll(linePart, "–", "-") // En Dash
-	linePart = strings.ReplaceAll(linePart, "—", "-") // Em Dash
-
-	// Validate path is not empty and not just "Suggestion"
-	if pathPart == "" || strings.EqualFold(pathPart, "suggestion") {
-		return "", 0, 0, false
-	}
-	// Basic sanitization
-	if strings.ContainsAny(pathPart, "\x00\r\n") {
-		return "", 0, 0, false
-	}
-
-	// Check for range (start-end)
-	if strings.Contains(linePart, "-") {
-		parts := strings.Split(linePart, "-")
-		if len(parts) == 2 {
-			start, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-			end, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-			if err1 == nil && err2 == nil && start > 0 && end > 0 && start <= end {
-				return pathPart, start, end, true
-			}
-		}
-	}
-
-	// Single line: use same value for start and end (non-zero)
-	lineNum, err := strconv.Atoi(linePart)
-	if err != nil || lineNum <= 0 {
-		return "", 0, 0, false
-	}
-
-	return pathPart, lineNum, lineNum, true // StartLine must equal LineNumber for single-line consistency
-}
 
 // ParseError represents a failure to parse the LLM output into a structured format.
 type ParseError struct {
@@ -138,207 +55,308 @@ func (e *ParseError) Unwrap() error {
 }
 
 // parseMarkdownReview extracts structured review data from the LLM's Markdown output.
+// It uses a robust state machine to handle the structure.
 func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
-	// 1. Normalize line endings for cross-platform reliability (Fixes High severity issue)
+	parser := &reviewParser{
+		state:  stateInit,
+		review: &core.StructuredReview{},
+	}
+	return parser.parse(markdown)
+}
+
+type reviewParser struct {
+	state             string
+	review            *core.StructuredReview
+	currentSuggestion *core.Suggestion
+	commentBuilder    strings.Builder
+	summaryBuilder    strings.Builder
+}
+
+func (p *reviewParser) parse(markdown string) (*core.StructuredReview, error) {
+	// 1. Normalize line endings
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 
-	// 2. Strip wrapping markdown code fence safely (Fixes Critical panic risk)
+	// 2. Strip wrapping markdown code fence
 	markdown = stripMarkdownFence(markdown)
 
-	review := &core.StructuredReview{}
 	lines := strings.Split(markdown, "\n")
 
-	var currentSection string
-	var currentSuggestion *core.Suggestion
-	var commentBuilder strings.Builder
-	var summaryBuilder strings.Builder
-
-	// Use range loop for modern Go style (Fixes intrange linter error)
 	for _, rawLine := range lines {
 		line := strings.TrimSpace(rawLine)
-		// normalize to uppercase for case-insensitive matching
-		// removing emojis/symbols for consistent matching would be ideal, but prefix matching is faster
-		upperLine := strings.ToUpper(line)
-
-		// Check for suggestion header (Traditional: ## Suggestion [path] or New: **File:** `path`)
-		if filePath, startLine, endLine, ok := parseSuggestionHeader(line); ok {
-			// Flush previous suggestion
-			flushSuggestion(review, currentSuggestion, &commentBuilder)
-
-			currentSuggestion = &core.Suggestion{
-				FilePath:   filePath,
-				StartLine:  startLine,
-				LineNumber: endLine,
-			}
-			currentSection = "SUGGESTION_CONTENT"
-			continue
+		if len(line) > maxLineLength {
+			continue // Skip excessively long lines to prevent DoS
 		}
-
-		// Fallback: Check for "**File:** `path`" line which indicates a new suggestion in the visual format
-		// This handles the new prompt: #### Title \n **File:** path
-		if strings.HasPrefix(upperLine, "**FILE:**") {
-			// Parse: **File:** `path/to/file.go:123`
-			// Remove **File:** prefix
-			content := line[len("**File:**"):]
-			content = strings.TrimSpace(content)
-			content = strings.Trim(content, "`") // Remove backticks
-
-			if path, start, end, ok := parsePathAndLine(content); ok {
-				flushSuggestion(review, currentSuggestion, &commentBuilder)
-				currentSuggestion = &core.Suggestion{
-					FilePath:   path,
-					StartLine:  start,
-					LineNumber: end,
-				}
-				currentSection = "SUGGESTION_CONTENT"
-				continue
-			}
-		}
-
-		// Top-level section headers (Flexible matching)
-		switch {
-		// Summary can start with: # Review Summary, # 🛡️ Code Warden Consensus Review, # Summary
-		case strings.Contains(upperLine, "REVIEW SUMMARY") || strings.Contains(upperLine, "CONSENSUS REVIEW"):
-			flushSuggestion(review, currentSuggestion, &commentBuilder)
-			currentSuggestion = nil
-			currentSection = "SUMMARY"
-			continue
-		// Verdict can start with: # Verdict, ## 🚦 Verdict
-		case strings.Contains(upperLine, "VERDICT"):
-			flushSuggestion(review, currentSuggestion, &commentBuilder)
-			currentSuggestion = nil
-			currentSection = "VERDICT"
-			continue
-		// Suggestions can start with: # Suggestions, ## 📝 Detailed Suggestions
-		case strings.Contains(upperLine, "SUGGESTIONS") || strings.Contains(upperLine, "KEY FINDINGS"):
-			flushSuggestion(review, currentSuggestion, &commentBuilder)
-			currentSuggestion = nil
-			currentSection = "SUGGESTIONS"
-			continue
-		}
-
-		// Content parsing based on section
-		switch currentSection {
-		case "SUMMARY":
-			processSummaryLine(line, &summaryBuilder)
-		case "VERDICT":
-			processVerdictLine(line, review, &summaryBuilder)
-			// Don't switch to DONE_VERDICT immediately in case verdict spans multiple lines or has comments
-			// But traditionally verdict is one line.
-			// The new prompt has: ## 🚦 Verdict: [APPROVE]
-			// processingVerdictLine captures it.
-		case "SUGGESTION_CONTENT":
-			processSuggestionLine(rawLine, currentSuggestion, &commentBuilder)
-		case "SUGGESTIONS":
-			// If we are in suggestions section but haven't hit a `**File:**` or `## Suggestion` line yet,
-			// we might be parsing section intro text. We can ignore it or add to summary?
-			// Ideally we ignore until the first suggestion starts.
-		}
+		p.processLine(line, rawLine)
 	}
 
-	// Flush remaining state
-	if summaryBuilder.Len() > 0 && review.Summary == "" {
-		review.Summary = summaryBuilder.String()
+	// Final flush
+	if p.summaryBuilder.Len() > 0 {
+		if p.review.Summary != "" {
+			p.review.Summary += "\n\n" + p.summaryBuilder.String()
+		} else {
+			p.review.Summary = p.summaryBuilder.String()
+		}
 	}
-	flushSuggestion(review, currentSuggestion, &commentBuilder)
+	p.flushSuggestion()
 
-	if review.Summary == "" && len(review.Suggestions) == 0 {
+	// Validation
+	if p.review.Summary == "" && len(p.review.Suggestions) == 0 && p.review.Verdict == "" {
 		return nil, fmt.Errorf("failed to parse review: no recognized sections found")
 	}
 
-	return review, nil
+	return p.review, nil
 }
 
-func processSummaryLine(line string, builder *strings.Builder) {
-	if line != "" && !strings.HasPrefix(line, "#") {
-		if builder.Len() > 0 {
-			builder.WriteString("\n")
+func (p *reviewParser) processLine(line, rawLine string) {
+	// --- State Transition Logic (Headers) ---
+	if p.checkHeaders(line) {
+		return
+	}
+
+	// --- Suggestion Detection ---
+	if filePath, start, end, ok := parseSuggestionHeader(line); ok {
+		p.flushSuggestion()
+		p.state = stateSuggestionBody
+		p.currentSuggestion = &core.Suggestion{
+			FilePath:   filePath,
+			StartLine:  start,
+			LineNumber: end,
 		}
-		builder.WriteString(line)
+		return
+	}
+
+	// --- Content Parsing based on State ---
+	p.handleContent(line, rawLine)
+}
+
+func (p *reviewParser) checkHeaders(line string) bool {
+	if headerSummary.MatchString(line) {
+		p.flushSuggestion()
+		p.state = stateSummary
+		return true
+	}
+
+	if headerVerdict.MatchString(line) {
+		p.flushSuggestion()
+		p.state = stateVerdict
+		// If verdict is inline, extract immediately
+		if v := extractVerdictFromLine(line); v != "" {
+			p.review.Verdict = v
+		}
+		return true
+	}
+
+	if headerSuggestions.MatchString(line) {
+		p.flushSuggestion()
+		p.state = stateSuggestions
+		return true
+	}
+	return false
+}
+
+func (p *reviewParser) handleContent(line, rawLine string) {
+	switch p.state {
+	case stateSummary:
+		// Accumulate summary text. Ignore sub-headers if they look like formatting.
+		if line != "" && !strings.HasPrefix(line, "#") {
+			if p.summaryBuilder.Len() > 0 {
+				p.summaryBuilder.WriteString("\n")
+			}
+			p.summaryBuilder.WriteString(line)
+		}
+
+	case stateVerdict:
+		if p.review.Verdict == "" {
+			if v := extractVerdictFromLine(line); v != "" {
+				p.review.Verdict = v
+			} else {
+				p.review.Verdict = extractVerdictFallback(line)
+			}
+		}
+
+	case stateSuggestions:
+		// Ignore intro text
+
+	case stateSuggestionBody:
+		if p.currentSuggestion == nil {
+			return
+		}
+		processSuggestionLine(line, rawLine, p.currentSuggestion, &p.commentBuilder)
 	}
 }
 
-func processVerdictLine(line string, review *core.StructuredReview, _ *strings.Builder) {
-	// Look for: verdict: APPROVE (case insensitive)
+func (p *reviewParser) flushSuggestion() {
+	if p.currentSuggestion != nil {
+		if p.commentBuilder.Len() > 0 {
+			p.currentSuggestion.Comment = strings.TrimSpace(p.commentBuilder.String())
+			p.commentBuilder.Reset()
+		}
+		p.review.Suggestions = append(p.review.Suggestions, *p.currentSuggestion)
+		p.currentSuggestion = nil
+	}
+}
+
+// extractVerdictFromLine attempts to find a verdict string in a line
+func extractVerdictFromLine(line string) string {
+	matches := verdictAttribute.FindStringSubmatch(line)
+	if len(matches) > 1 {
+		v := strings.ToUpper(strings.TrimSpace(matches[1]))
+		v = strings.ReplaceAll(v, " ", "_")
+		if v == VerdictRequestChanges || v == VerdictApprove || v == VerdictComment {
+			return v
+		}
+	}
+	return ""
+}
+
+// extractVerdictFallback checks for bare keywords if strict format failed
+func extractVerdictFallback(line string) string {
 	upper := strings.ToUpper(line)
-	if strings.Contains(upper, "APPROVE") {
-		review.Verdict = "APPROVE"
-	} else if strings.Contains(upper, "REQUEST_CHANGES") || strings.Contains(upper, "REQUEST CHANGES") {
-		review.Verdict = "REQUEST_CHANGES"
-	} else if strings.Contains(upper, "COMMENT") {
-		review.Verdict = "COMMENT"
+	if strings.Contains(upper, VerdictApprove) {
+		return VerdictApprove
 	}
-	// Fallback: if checking strict equality was key, now we are more flexible
+	if strings.Contains(upper, VerdictRequestChanges) || strings.Contains(upper, "REQUEST CHANGES") {
+		return VerdictRequestChanges
+	}
+	if strings.Contains(upper, VerdictComment) {
+		return VerdictComment
+	}
+	return ""
 }
 
-func processSuggestionLine(rawLine string, s *core.Suggestion, builder *strings.Builder) {
-	if s == nil {
+// 2. ## Suggestion [path/to/file.go:123] (Traditional)
+// 3. [path/to/file.go:123] (Generic)
+func parseSuggestionHeader(line string) (string, int, int, bool) {
+	if len(line) > maxLineLength {
+		return "", 0, 0, false
+	}
+	// Strategy 1: **File:**
+	if matches := fileAttribute.FindStringSubmatch(line); len(matches) > 1 {
+		content := strings.TrimSpace(matches[1])
+		content = strings.Trim(content, "`\"'")
+		return parsePathAndLine(content)
+	}
+
+	// Strategy 2: Traditional ## Suggestion
+	if strings.HasPrefix(line, "##") && strings.Contains(strings.ToLower(line), "suggestion") {
+		// Clean up to get just the bracketed part or path
+		// Remove "##"
+		cleaned := strings.TrimPrefix(line, "##")
+		// Remove "Suggestion" (case insensitive)
+		lower := strings.ToLower(cleaned)
+		idx := strings.Index(lower, "suggestion")
+		if idx != -1 {
+			cleaned = cleaned[idx+len("suggestion"):]
+		}
+		cleaned = strings.TrimSpace(cleaned)
+		cleaned = strings.TrimPrefix(cleaned, "[")
+		cleaned = strings.TrimSuffix(cleaned, "]")
+		cleaned = strings.Trim(cleaned, "`")
+		return parsePathAndLine(cleaned)
+	}
+
+	// Strategy 3: Loose bracket match [path:line] at start of line
+	if strings.HasPrefix(line, "[") && strings.Contains(line, ":") && strings.HasSuffix(line, "]") {
+		cleaned := strings.Trim(line, "[]` ")
+		return parsePathAndLine(cleaned)
+	}
+
+	return "", 0, 0, false
+}
+
+// parsePathAndLine helper handles "path:line" or "path:start-end" strings
+func parsePathAndLine(s string) (string, int, int, bool) {
+	s = strings.TrimSpace(s)
+	lastColon := strings.LastIndex(s, ":")
+	if lastColon == -1 {
+		return "", 0, 0, false
+	}
+
+	pathPart := strings.TrimSpace(s[:lastColon])
+	linePart := strings.TrimSpace(s[lastColon+1:])
+
+	// Basic validation
+	if pathPart == "" || strings.EqualFold(pathPart, "suggestion") || strings.ContainsAny(pathPart, "\x00\r\n") {
+		return "", 0, 0, false
+	}
+
+	// Range handling (10-20)
+	if strings.Contains(linePart, "-") || strings.Contains(linePart, "–") {
+		// Normalize dashes
+		linePart = strings.ReplaceAll(linePart, "–", "-")
+		parts := strings.Split(linePart, "-")
+		if len(parts) >= 2 {
+			start, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+			end, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if start > 0 && end >= start {
+				return pathPart, start, end, true
+			}
+		}
+	}
+
+	// Single line
+	lineNum, err := strconv.Atoi(linePart)
+	if err == nil && lineNum > 0 {
+		return pathPart, lineNum, lineNum, true
+	}
+
+	return "", 0, 0, false
+}
+
+func processSuggestionLine(line, rawLine string, suggestion *core.Suggestion, commentBuilder *strings.Builder) {
+	// Parse attributes (Severity, Category) or content
+	if matches := severityAttribute.FindStringSubmatch(line); len(matches) > 1 {
+		suggestion.Severity = strings.TrimSpace(matches[1])
 		return
 	}
-	line := strings.TrimSpace(rawLine)
-
-	switch {
-	case strings.HasPrefix(line, "**Severity"):
-		if matches := severityRegex.FindStringSubmatch(line); len(matches) > 1 {
-			s.Severity = strings.TrimSpace(matches[1])
-		}
-	case strings.HasPrefix(line, "**Category"):
-		if matches := categoryRegex.FindStringSubmatch(line); len(matches) > 1 {
-			s.Category = strings.TrimSpace(matches[1])
-		}
-	case strings.HasPrefix(line, "### Comment"):
-		// Skip header
-	case strings.HasPrefix(line, "### Rationale"):
-		builder.WriteString("\n\n**Rationale:**\n")
-	case strings.HasPrefix(line, "### Fix"):
-		builder.WriteString("\n\n**Fix:**\n")
-	default:
-		if line != "" || builder.Len() > 0 {
-			builder.WriteString(rawLine + "\n")
-		}
-	}
-}
-
-// flushSuggestion appends the current suggestion (if any) to the review and resets the builder.
-func flushSuggestion(review *core.StructuredReview, s *core.Suggestion, builder *strings.Builder) {
-	if s == nil {
+	if matches := categoryAttribute.FindStringSubmatch(line); len(matches) > 1 {
+		suggestion.Category = strings.TrimSpace(matches[1])
 		return
 	}
-	if builder.Len() > 0 {
-		s.Comment = strings.TrimSpace(builder.String())
-		builder.Reset()
+	if strings.HasPrefix(line, "### Comment") {
+		// Skip comment header, content follows
+		return
 	}
-	review.Suggestions = append(review.Suggestions, *s)
+	if strings.HasPrefix(line, "### Rationale") {
+		commentBuilder.WriteString("\n\n**Rationale:**\n")
+		return
+	}
+	if strings.HasPrefix(line, "### Fix") {
+		commentBuilder.WriteString("\n\n**Fix:**\n")
+		return
+	}
+
+	// Regular content line
+	if commentBuilder.Len() > 0 || line != "" {
+		commentBuilder.WriteString(rawLine + "\n")
+	}
 }
 
-// stripMarkdownFence removes ```markdown ... ``` wrapping that some LLMs add around their output.
-// It is hardened against missing closing fences to prevent panics, and only strips
-// fences if they are explicitly "markdown", "md", or have no language specified.
+// stripMarkdownFence removes ```markdown ... ``` wrapping
 func stripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)
 	if !strings.HasPrefix(trimmed, "```") {
 		return s
 	}
-
 	lines := strings.Split(trimmed, "\n")
 	if len(lines) < 2 {
 		return s
 	}
-
-	// Validate opening fence and check language
-	firstLine := strings.ToLower(strings.TrimSpace(lines[0]))
-	if !strings.HasPrefix(firstLine, "```") {
+	// Check header of fence
+	first := strings.ToLower(strings.TrimSpace(lines[0]))
+	if !strings.HasPrefix(first, "```") {
 		return s
 	}
-
-	lang := strings.TrimPrefix(firstLine, "```")
-	if lang != "" && lang != "markdown" && lang != "md" {
-		// Not a markdown fence, preserve it
+	// If lang specified, usually safe to strip. If no lang, strip.
+	// We only preserve if it's explicitly NOT markdown/md and NOT empty?
+	// Actually most LLMs just output ```markdown. We'll strip commonly used ones or empty.
+	lang := strings.TrimPrefix(first, "```")
+	if lang != "" && lang != "markdown" && lang != "md" && lang != "text" {
 		return s
 	}
 
 	// Find first closing fence after the opening line (scanning forward)
-	// This prevents over-stripping if the LLM output contains multiple fenced blocks or trailing text.
+	// This ensures we only capture the intended block and ignore trailing garbage.
 	closeIdx := -1
 	for i := 1; i < len(lines); i++ {
 		if strings.TrimSpace(lines[i]) == "```" {
@@ -346,11 +364,8 @@ func stripMarkdownFence(s string) string {
 			break
 		}
 	}
-
 	if closeIdx > 0 {
-		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
+		return strings.Join(lines[1:closeIdx], "\n")
 	}
-
-	// Fallback: If closing fence is missing (truncation), return everything after the opening fence
-	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
+	return strings.Join(lines[1:], "\n")
 }

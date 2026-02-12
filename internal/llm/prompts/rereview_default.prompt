@@ -57,14 +57,23 @@ Provide a brief, one-paragraph summary. State clearly whether all, some, or none
     **Suggestion:** Provide a clear recommendation.
 
 ### Final Output Format
-Return your review as a JSON object with the following structure. The "summary" field must contain the RICH MARKDOWN report.
+Return your review as a valid Markdown document. Do NOT return JSON.
 
-```json
-{
-  "verdict": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
-  "summary": "MARKDOWN_CONTENT_HERE"
-}
+```markdown
+# 🔄 Follow-up Review Summary
+
+## 🚦 Verdict: [APPROVE | REQUEST_CHANGES | COMMENT]
+
+> **Executive Summary**
+> [Concise summary. State clearly whether all original issues were addressed.]
+
+---
+
+## ✅ Resolved Issues
+*   **[Issue Title]**: Fixed. [Optional brief detail]
+...
 ```
+
 
 **Markdown Content Template (for "summary" field):**
 
