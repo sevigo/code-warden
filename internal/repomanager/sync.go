@@ -177,7 +177,7 @@ func (m *manager) incrementalUpdate(
 			FilesToAddOrUpdate: files,
 			RepoPath:           rec.ClonePath,
 			HeadSHA:            ev.HeadSHA,
-			IsInitialClone:     true, // Treat as initial for indexing purposes
+			IsInitialClone:     true, // Force full re-index
 		}, nil
 	}
 
@@ -189,6 +189,11 @@ func (m *manager) incrementalUpdate(
 			"head_sha", ev.HeadSHA,
 			"error", err,
 		)
+		// Cleanup corrupted state before re-cloning
+		if err := os.RemoveAll(rec.ClonePath); err != nil {
+			m.logger.Error("failed to remove repo directory before reclone", "path", rec.ClonePath, "err", err)
+			// Continue even if cleanup fails
+		}
 		return m.cloneAndIndex(ctx, ev, token, rec.ClonePath)
 	}
 

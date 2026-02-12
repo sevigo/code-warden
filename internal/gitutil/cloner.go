@@ -3,7 +3,6 @@ package gitutil
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -227,14 +226,13 @@ func (c *Client) CloneAndCheckoutTemp(ctx context.Context, repoURL, sha, token s
 }
 
 func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
-	if strings.HasPrefix(repoURL, "file://") {
+	// Handle local paths directly. file:// is intentionally unsupported for security.
+	if !strings.Contains(repoURL, "://") {
 		return repoURL, nil
 	}
+
 	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
 		return "", fmt.Errorf("invalid repository URL: %s", repoURL)
-	}
-	if token == "" {
-		return "", errors.New("github token cannot be empty")
 	}
 
 	parsedURL, err := url.Parse(repoURL)

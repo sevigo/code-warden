@@ -183,8 +183,10 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 	}
 
 	// Clone to local manually first to simulate existing state
+	// Use Depth: 1 to ensure commit1 is NOT present in the local history, simulating a GC or force push scenario.
 	_, err = git.PlainClone(localPath, false, &git.CloneOptions{
-		URL: remotePath,
+		URL:   remotePath,
+		Depth: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -206,12 +208,7 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 				ClonePath:            localPath,
 				EmbedderModelName:    "test-model",
 				QdrantCollectionName: "test_coll",
-				// VITAL: Set LastIndexedSHA to something that DOES NOT EXIST (or the old commit 1)
-				// If we set it to commit1, and commit1 exists, diff works.
-				// We want to simulate it NOT existing.
-				// Since we cloned the full repo, commit1 exists in local.
-				// Let's set it to some random SHA that definitely doesn't exist.
-				LastIndexedSHA: "0000000000000000000000000000000000000000",
+				LastIndexedSHA:       commit1.String(), // Missing from shallow clone triggers fallback
 			},
 		},
 	}
@@ -219,11 +216,10 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 	gitClient := gitutil.NewClient(logger)
 	mgr := New(cfg, store, &mockVectorStore{}, gitClient, logger)
 
-	// 2. Execute Sync
-	// We expect this to fail currently because LastIndexedSHA is invalid
+	// Sync should fail diff and fallback because commit1 is absent in shallow clone
 	event := &core.GitHubEvent{
 		RepoFullName: "test-user/test-repo",
-		RepoCloneURL: "file:///" + filepath.ToSlash(remotePath), // clone from our local temp remote
+		RepoCloneURL: remotePath, // Raw local path, no file://
 		HeadSHA:      commit2.String(),
 	}
 
@@ -240,5 +236,15 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 	}
 	if !res.IsInitialClone {
 		t.Error("Expected IsInitialClone to be true (indicating fallback to full clone)")
+	}
+
+	// LastIndexedSHA must be reset to avoid infinite re-index loops.
+	// Actual update to headSHA happens in the worker/caller after indexing.
+	repo, err := store.GetRepositoryByFullName(context.Background(), "test-user/test-repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.LastIndexedSHA != "" {
+		t.Errorf("Expected LastIndexedSHA to be reset to empty string, got %s", repo.LastIndexedSHA)
 	}
 }
