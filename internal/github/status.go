@@ -106,9 +106,14 @@ func formatInlineComment(sug core.Suggestion) string {
 
 	var sb strings.Builder
 	content := strings.TrimSpace(sug.Comment)
+
+	// Strip double blockquotes if the model generated them
+	content = strings.ReplaceAll(content, "\n> > ", "\n> ")
+	content = strings.ReplaceAll(content, "\n> [!", "\n[! ") // Handle broken alert prefixes if any
+
 	lines := strings.Split(content, "\n")
 
-	// 1. Process Title (If first line is a header like ### [Title])
+	// 1. Process Title
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
 		title := strings.TrimPrefix(strings.TrimSpace(lines[0]), "###")
 		sb.WriteString(fmt.Sprintf("### 🛡️ %s\n", strings.TrimSpace(title)))
@@ -117,36 +122,38 @@ func formatInlineComment(sug core.Suggestion) string {
 		sb.WriteString("### 🛡️ Code Review Finding\n")
 	}
 
-	// 2. Badge Line (Severity | Category)
+	// 2. Badge Line
 	sb.WriteString(fmt.Sprintf("%s **%s**", emoji, severity))
 	if sug.Category != "" {
 		sb.WriteString(fmt.Sprintf(" | _%s_", sug.Category))
 	}
 	sb.WriteString("\n\n")
 
-	// 3. Process Body and Wrap Observations/Rationale in Alerts
+	// 3. Process Body
 	insideAlert := false
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 
-		// If we hit a sub-header (like #### Suggested Fix or ```go), close the alert block if open
+		// If we hit a sub-header or code block, close the alert
 		if strings.HasPrefix(trimmedLine, "####") || strings.HasPrefix(trimmedLine, "```") {
 			if insideAlert {
-				sb.WriteString("\n") // Space before closing alert
+				sb.WriteString("\n")
 				insideAlert = false
 			}
 			sb.WriteString(line + "\n")
 			continue
 		}
 
-		// If it's a non-empty line and we aren't in an alert, open one
+		// Open alert for descriptive content (Observation/Rationale)
 		if !insideAlert && trimmedLine != "" {
 			sb.WriteString(fmt.Sprintf("> [!%s]\n", alert))
 			insideAlert = true
 		}
 
 		if insideAlert {
-			sb.WriteString(fmt.Sprintf("> %s\n", line))
+			// Strip single leading blockquote if the model added it redundantly
+			strippedLine := strings.TrimPrefix(trimmedLine, ">")
+			sb.WriteString(fmt.Sprintf("> %s\n", strings.TrimSpace(strippedLine)))
 		} else {
 			sb.WriteString(line + "\n")
 		}

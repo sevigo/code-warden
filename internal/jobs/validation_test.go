@@ -41,7 +41,7 @@ func TestValidateSuggestionsByLine(t *testing.T) {
 				{FilePath: "src/old.java", LineNumber: 1},
 			},
 			wantInlineLen:  2,
-			wantOffDiffLen: 2,
+			wantOffDiffLen: 0,
 		},
 		{
 			name: "With ./ prefix",
@@ -80,12 +80,12 @@ func TestValidateSuggestionsByLine(t *testing.T) {
 			wantOffDiffLen: 1,
 		},
 		{
-			name: "Unknown file is kept in off-diff",
+			name: "Unknown file is dropped",
 			suggestions: []core.Suggestion{
 				{FilePath: "ghost.go", LineNumber: 1},
 			},
 			wantInlineLen:  0,
-			wantOffDiffLen: 1,
+			wantOffDiffLen: 0,
 		},
 	}
 
