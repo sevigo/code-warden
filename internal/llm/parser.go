@@ -23,11 +23,12 @@ var (
 	categoryAttribute = regexp.MustCompile(`(?i)\*\*Category:?\*\*\s*(.*)`)
 
 	// File path parsing context (New: **File:** path)
-	fileAttribute = regexp.MustCompile(`(?i)\*\*File:\*\*\s*(.*)`)
+	// Non-greedy match for content to avoid eating into next attribute
+	fileAttribute = regexp.MustCompile(`(?i)\*\*File:\*\*\s*(.*?)(?:\s+\*\*|$)`)
 )
 
 const (
-	maxLineLength = 4096
+	maxLineLength = 4096 // Prevents DoS via excessive line allocation
 
 	// Parser States
 	stateInit           = "INIT"
@@ -35,6 +36,8 @@ const (
 	stateVerdict        = "VERDICT"
 	stateSuggestions    = "SUGGESTIONS"
 	stateSuggestionBody = "SUGGESTION_BODY"
+
+	suggestionKeyword = "suggestion"
 )
 
 // ParseError represents a failure to parse the LLM output into a structured format.
@@ -68,6 +71,7 @@ type reviewParser struct {
 	state             string
 	review            *core.StructuredReview
 	currentSuggestion *core.Suggestion
+	currentTitle      string // Deferred title for the next suggestion
 	commentBuilder    strings.Builder
 	summaryBuilder    strings.Builder
 }
@@ -121,6 +125,12 @@ func (p *reviewParser) processLine(line, rawLine string) {
 			FilePath:   filePath,
 			StartLine:  start,
 			LineNumber: end,
+		}
+
+		// Inject deferred title if present
+		if p.currentTitle != "" {
+			p.commentBuilder.WriteString(p.currentTitle + "\n")
+			p.currentTitle = ""
 		}
 		return
 	}
@@ -178,8 +188,8 @@ func (p *reviewParser) handleContent(line, rawLine string) {
 		// Accumulate the Title before we even know the file path
 		// We capture ANY header (### or ####) as a potential title line for the NEXT suggestion.
 		if strings.HasPrefix(line, "###") || strings.HasPrefix(line, "####") {
-			// Ensure we have a separator if needed, but per-spec:
-			p.commentBuilder.WriteString("\n" + rawLine + "\n")
+			// Defer key titles to be prepended to the *next* suggestion body
+			p.currentTitle = rawLine
 		}
 
 	case stateSuggestionBody:
@@ -202,18 +212,43 @@ func (p *reviewParser) flushSuggestion() {
 }
 
 // extractVerdictFromLine attempts to find a verdict string in a line
+// It prioritizes strict formats to prevent false positives from natural language.
 func extractVerdictFromLine(line string) string {
-	matches := verdictAttribute.FindStringSubmatch(line)
-	if len(matches) > 1 {
+	// First, remove leading headers and whitespace to handle "## Verdict: [APPROVE]"
+	cleaned := strings.TrimLeft(line, "# \t")
+	// Also remove common emojis/symbols often found in status headers
+	cleaned = strings.TrimLeft(cleaned, "🚦🛡️✅⚠️🔴🟠🟡📝🔍🏁🔄🔄🔄")
+	cleaned = strings.TrimSpace(cleaned)
+
+	// 1. Try strict bracketed match: [APPROVE] or VERDICT: [APPROVE]
+	// Handles prompt format: "## 🚦 Verdict: [APPROVE]"
+	if matches := regexp.MustCompile(`(?i)(?:VERDICT[:\s]+)?\[([A-Z_ ]+)\]`).FindStringSubmatch(cleaned); len(matches) > 1 {
 		v := strings.TrimSpace(matches[1])
-		// Normalize spaces to underscores for comparison with constants
 		v = strings.ReplaceAll(v, " ", "_")
 		v = strings.ToUpper(v)
-		if v == core.VerdictRequestChanges || v == core.VerdictApprove || v == core.VerdictComment {
+		if isValidVerdict(v) {
 			return v
 		}
 	}
+
+	// 2. Try "VERDICT: STATUS" or pure STATUS (case-insensitive, NO extra words)
+	// This prevents "I cannot APPROVE this" from matching.
+	if strings.HasPrefix(strings.ToUpper(cleaned), "VERDICT:") {
+		cleaned = strings.TrimSpace(cleaned[len("VERDICT:"):])
+	}
+
+	// Normalize to canonical form: uppercase + spaces -> underscores
+	v := strings.ReplaceAll(strings.ToUpper(cleaned), " ", "_")
+	v = strings.Trim(v, "[]") // simple trim incase of loose brackets
+	if isValidVerdict(v) {
+		return v
+	}
+
 	return ""
+}
+
+func isValidVerdict(v string) bool {
+	return v == core.VerdictApprove || v == core.VerdictRequestChanges || v == core.VerdictComment
 }
 
 // extractVerdictFallback checks for bare keywords if strict format failed
@@ -256,8 +291,8 @@ func parseSuggestionHeader(line string) (string, int, int, bool) {
 
 			// Remove "Suggestion" keyword (case-insensitive)
 			// prefix check since we trimmed left
-			if len(cleaned) >= 10 && strings.EqualFold(cleaned[:10], "suggestion") {
-				cleaned = cleaned[10:]
+			if len(cleaned) >= len(suggestionKeyword) && strings.EqualFold(cleaned[:len(suggestionKeyword)], suggestionKeyword) {
+				cleaned = cleaned[len(suggestionKeyword):]
 			}
 
 			cleaned = strings.TrimSpace(cleaned)
@@ -356,6 +391,8 @@ func processSuggestionLine(line, rawLine string, suggestion *core.Suggestion, co
 }
 
 // stripMarkdownFence removes ```markdown ... ``` wrapping
+// Return content between fences, preserving internal formatting.
+// Only the final combined string is trimmed of leading/trailing whitespace.
 func stripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)
 	if !strings.HasPrefix(trimmed, "```") {
@@ -386,9 +423,10 @@ func stripMarkdownFence(s string) string {
 	}
 
 	if closeIdx > 0 {
-		// Normalize: trim each line before joining, then trim overall
+		// Return content between fences, preserving internal formatting.
+		// Only the final combined string is trimmed of leading/trailing whitespace.
 		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
 	}
-	// Fallback: if closing fence is missing, preserve content *and* apply final trim
+	// Fallback: if closing fence is missing, preserve content and apply final trim
 	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
 }

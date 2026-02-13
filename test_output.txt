@@ -1,0 +1,28 @@
+=== RUN   TestParseMarkdownReview
+=== RUN   TestParseMarkdownReview/Valid_Review_Traditional
+=== RUN   TestParseMarkdownReview/Valid_Review_New_Format_(Emojis)
+=== RUN   TestParseMarkdownReview/Verdict_in_Header
+=== RUN   TestParseMarkdownReview/Verdict_in_Header_without_Brackets
+=== RUN   TestParseMarkdownReview/False_Positive_Prevention_(Comment_inside_Summary)
+=== RUN   TestParseMarkdownReview/Multiple_Suggestions_New_Format
+=== RUN   TestParseMarkdownReview/VerdictAsHeaderWithBrackets
+=== RUN   TestParseMarkdownReview/VerdictAsHeaderWithoutBrackets
+--- PASS: TestParseMarkdownReview (0.00s)
+    --- PASS: TestParseMarkdownReview/Valid_Review_Traditional (0.00s)
+    --- PASS: TestParseMarkdownReview/Valid_Review_New_Format_(Emojis) (0.00s)
+    --- PASS: TestParseMarkdownReview/Verdict_in_Header (0.00s)
+    --- PASS: TestParseMarkdownReview/Verdict_in_Header_without_Brackets (0.00s)
+    --- PASS: TestParseMarkdownReview/False_Positive_Prevention_(Comment_inside_Summary) (0.00s)
+    --- PASS: TestParseMarkdownReview/Multiple_Suggestions_New_Format (0.00s)
+    --- PASS: TestParseMarkdownReview/VerdictAsHeaderWithBrackets (0.00s)
+    --- PASS: TestParseMarkdownReview/VerdictAsHeaderWithoutBrackets (0.00s)
+=== RUN   TestParseMarkdownReview_TitleGap_And_BoldPath
+--- PASS: TestParseMarkdownReview_TitleGap_And_BoldPath (0.00s)
+=== RUN   TestParseMarkdownReview_Chaos_Golden
+--- PASS: TestParseMarkdownReview_Chaos_Golden (0.00s)
+=== RUN   TestParseMarkdownReview_FlexibleHeaders_And_Dashes
+--- PASS: TestParseMarkdownReview_FlexibleHeaders_And_Dashes (0.00s)
+=== RUN   TestParseMarkdownReview_NonBoldBackticks
+--- PASS: TestParseMarkdownReview_NonBoldBackticks (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/llm	0.112s

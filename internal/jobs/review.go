@@ -337,7 +337,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
 func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validLineMaps map[string]map[int]struct{}) error {
 	// Validate and filter suggestions to prevent 422 errors
-	inlineSuggestions, offDiffSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validLineMaps)
+	inlineSuggestions, offDiffSuggestions := ValidateSuggestionsByLine(j.logger, structuredReview.Suggestions, validLineMaps)
 	structuredReview.Suggestions = inlineSuggestions
 
 	// If there are off-diff suggestions, append them to the summary as "General Findings"

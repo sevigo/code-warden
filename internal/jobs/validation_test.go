@@ -8,7 +8,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 )
 
-func TestValidateSuggestions(t *testing.T) {
+func TestValidateSuggestionsByLine(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	validFiles := map[string]map[int]struct{}{
@@ -91,7 +91,7 @@ func TestValidateSuggestions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			inline, offDiff := validateSuggestions(logger, tt.suggestions, validFiles)
+			inline, offDiff := ValidateSuggestionsByLine(logger, tt.suggestions, validFiles)
 			if len(inline) != tt.wantInlineLen {
 				t.Errorf("inline: got %d, want %d", len(inline), tt.wantInlineLen)
 			}
@@ -102,7 +102,7 @@ func TestValidateSuggestions(t *testing.T) {
 	}
 
 	t.Run("No valid files provided", func(t *testing.T) {
-		inline, offDiff := validateSuggestions(logger, []core.Suggestion{{FilePath: "any.go"}}, nil)
+		inline, offDiff := ValidateSuggestionsByLine(logger, []core.Suggestion{{FilePath: "any.go"}}, nil)
 		if len(inline) != 1 {
 			t.Errorf("expected validation to be skipped when no valid files provided, got %d", len(inline))
 		}

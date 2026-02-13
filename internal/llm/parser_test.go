@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseMarkdownReview(t *testing.T) {
@@ -123,6 +124,22 @@ B
 			wantCount:   2,
 			expectErr:   false,
 		},
+		{
+			name:        "VerdictAsHeaderWithBrackets",
+			input:       "## 🚦 Verdict: [REQUEST_CHANGES]\n\n# SUGGESTIONS",
+			wantSummary: "",
+			wantVerdict: "REQUEST_CHANGES",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name:        "VerdictAsHeaderWithoutBrackets",
+			input:       "## 🚦 VERDICT: APPROVE\n\n# SUGGESTIONS",
+			wantSummary: "",
+			wantVerdict: "APPROVE",
+			wantCount:   0,
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -132,14 +149,19 @@ B
 				assert.Error(t, err)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Contains(t, got.Summary, tt.wantSummary)
 			if tt.wantVerdict != "" {
-				assert.Equal(t, tt.wantVerdict, got.Verdict)
+				assert.Equal(t, tt.wantVerdict, got.Verdict, "Verdict mismatch")
+			} else {
+				// If test expects no verdict, assert it's empty or Comment (default)
+				// But some tests might not care. The review bot complaint was about
+				// "tests omit explicit verdict assertions for new formats"
+				// So we should be strict if wantVerdict is provided.
 			}
 
 			assert.Len(t, got.Suggestions, tt.wantCount)
-			if tt.wantCount > 0 {
+			if tt.wantCount > 0 && len(got.Suggestions) > 0 {
 				assert.NotEmpty(t, got.Suggestions[0].FilePath)
 				// For multiline test, verify start/end
 				switch {
