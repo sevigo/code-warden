@@ -46,74 +46,44 @@ Here are the individual reviews:
 
 ### Output Format:
 
-**IMPORTANT**: Respond ONLY with a valid Markdown document. Do not wrap in JSON.
+**IMPORTANT**: You MUST wrap your entire response inside `<review>` tags. Core structured fields MUST be strictly tagged as shown below, while the content inside the tags remains rich Markdown.
 
-The user expects a visually appealing, structured report. Use emojis, clear headers, and concise language.
-
-```markdown
-# 🛡️ Code Warden Consensus Review
-
-## 🚦 Verdict: [APPROVE | REQUEST_CHANGES | COMMENT]
-
-> **Summary**
-> [High-level summary of the consensus opinion. Highlight key strengths and critical weaknesses. ~2-3 sentences.]
-
----
-
-## 🔍 Key Findings
-
-| Severity | Category | File | Issue |
-|:---:|:---:|---|---|
-| 🔴 **Critical** | Security | `path/to/file.go:123` | Brief description of critical issue |
-| 🟠 **High** | Logic | `path/to/other.go:45` | Brief description of high issue |
-| 🟡 **Medium** | Architecture | `...` | ... |
-
----
-
-## 📝 Detailed Suggestions
-
-### 🔴 Critical & High Priority
-
-#### 1. [Short Title of Issue]
-**File:** `path/to/file.go:123`
-**Category:** [Security|Logic|Performance]
-
-**Observation:**
-[Description of the issue...]
-
-**Rationale:**
-[Why this is important...]
-
-**Suggested Fix:**
-```go
-// Minimal, correct fix
-...
+```xml
+<review>
+  <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
+  <confidence>85</confidence>
+  <summary>
+    # 🛡️ Code Warden Consensus Review
+    ## 🚦 Verdict: [Value]
+    > [Executive Summary Markdown here. Highlight key strengths and critical weaknesses. ~2-3 sentences.]
+  </summary>
+  <suggestions>
+    <suggestion>
+      <file>path/to/file.go</file>
+      <line>123</line>
+      <severity>Critical</severity>
+      <category>Security</category>
+      <confidence>90</confidence>
+      <estimated_fix_time>15m</estimated_fix_time>
+      <reproducibility>Always | Sometimes | Intermittent</reproducibility>
+      <comment>
+        ### [Short Title of Issue]
+        
+        **Observation:**
+        [Description of the issue...]
+        
+        **Rationale:**
+        [Why this is important...]
+        
+        **Suggested Fix:**
+        ```go
+        // Minimal, correct fix
+        ...
+        ```
+      </comment>
+    </suggestion>
+  </suggestions>
+</review>
 ```
 
----
-
-### 🟡 Medium Priority & Improvements
-
-#### 2. [Short Title]
-...
-
----
-
-## 💡 Architecture & Design Quality
-[Brief bullet points on architectural alignment, patterns used, etc.]
-
-```
-
-
-### Comment
-[Description of the issue...]
-
-### Rationale
-[Why this is important...]
-
-### Fix
-```go
-// Minimal, correct fix
-...
-```
-```
+If no suggestions are found, the `<suggestions>` tag should be empty or omitted.

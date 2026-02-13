@@ -18,127 +18,100 @@ func TestParseMarkdownReview(t *testing.T) {
 		expectErr   bool
 	}{
 		{
-			name: "Valid Review Traditional",
-			input: `# REVIEW SUMMARY
-This is a good PR.
-
-# VERDICT
-APPROVE
-
-# SUGGESTIONS
-
-## Suggestion [main.go:10]
-**Severity:** High
-**Category:** Logic
-
-### Comment
-Fix this bug.`,
+			name: "Valid XML Review",
+			input: `
+<review>
+  <verdict>APPROVE</verdict>
+  <summary>This is a good PR.</summary>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <severity>High</severity>
+      <category>Logic</category>
+      <confidence>90</confidence>
+      <estimated_fix_time>15m</estimated_fix_time>
+      <reproducibility>Always</reproducibility>
+      <comment>Fix this bug.</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
 			wantSummary: "This is a good PR.",
 			wantVerdict: "APPROVE",
 			wantCount:   1,
 			expectErr:   false,
 		},
 		{
-			name: "Valid Review New Format (Emojis)",
-			input: `# 🛡️ CODE WARDEN CONSENSUS REVIEW
+			name: "Preamble-Resilient XML",
+			input: `
+Some preamble text before the review.
+Maybe some technical context.
 
-## 🚦 VERDICT
-[APPROVE]
+<review>
+  <verdict>REQUEST_CHANGES</verdict>
+  <summary>PR has issues.</summary>
+  <suggestions>
+    <suggestion>
+      <file>pkg/api.go</file>
+      <line>20-25</line>
+      <severity>Medium</severity>
+      <comment>Check input validation.</comment>
+    </suggestion>
+  </suggestions>
+</review>
 
-> **SUMMARY**
-> This PR is excellent.
-
-## 🔍 KEY FINDINGS
-
-## **File:** ` + "`pkg/api.go:20`" + `
-**Severity:** Medium
-### Comment
-Check input validation.`,
-			wantSummary: "This PR is excellent.",
+Some postamble text.`,
+			wantSummary: "PR has issues.",
+			wantVerdict: "REQUEST_CHANGES",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Dirty XML (Bolded Path and Extra Tags)",
+			input: `
+<review>
+  <verdict>[APPROVE]</verdict>
+  <summary>Summary with <b>tags</b></summary>
+  <suggestions>
+    <suggestion>
+      <file>**` + "`path/to/file.go`" + `**</file>
+      <line>123</line>
+      <comment>### Issue Title
+Rationale: ...</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "Summary with <b>tags</b>",
 			wantVerdict: "APPROVE",
 			wantCount:   1,
 			expectErr:   false,
 		},
 		{
-			name: "Verdict in Header",
+			name: "Multiple Suggestions and Range",
 			input: `
-# REVIEW SUMMARY
-LGTM
-
-## 🚦 VERDICT: [REQUEST_CHANGES]
-
-# SUGGESTIONS
-`,
-			wantSummary: "LGTM",
-			wantVerdict: "REQUEST_CHANGES",
-			wantCount:   0,
-			expectErr:   false,
-		},
-		{
-			name: "Verdict in Header without Brackets",
-			input: `
-# REVIEW SUMMARY
-LGTM
-
-## 🚦 VERDICT: APPROVE
-
-# SUGGESTIONS
-`,
-			wantSummary: "LGTM",
-			wantVerdict: "APPROVE",
-			wantCount:   0,
-			expectErr:   false,
-		},
-		{
-			name: "False Positive Prevention (Comment inside Summary)",
-			input: `# REVIEW SUMMARY
-The user asked: "Should I add # VERDICT here?"
-And I said no.
-
-# VERDICT
-COMMENT
-`,
-			wantSummary: `The user asked: "Should I add # VERDICT here?"
-And I said no.`,
-			wantVerdict: "COMMENT",
-			wantCount:   0,
-			expectErr:   false,
-		},
-		{
-			name: "Multiple Suggestions New Format",
-			input: `# SUMMARY
-TLDR
-
-# SUGGESTIONS
-
-## **File:** ` + "`a.go:1`" + `
-### Comment
-A
-
-## **File:** ` + "`b.go:2`" + `
-### Comment
-B
-`,
-			wantSummary: "TLDR",
+<review>
+  <suggestions>
+    <suggestion>
+      <file>a.go</file>
+      <line>1</line>
+      <comment>A</comment>
+    </suggestion>
+    <suggestion>
+      <file>b.go</file>
+      <line>10-20</line>
+      <comment>B</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
 			wantVerdict: "",
 			wantCount:   2,
 			expectErr:   false,
 		},
 		{
-			name:        "VerdictAsHeaderWithBrackets",
-			input:       "## 🚦 Verdict: [REQUEST_CHANGES]\n\n# SUGGESTIONS",
-			wantSummary: "",
-			wantVerdict: "REQUEST_CHANGES",
-			wantCount:   0,
-			expectErr:   false,
-		},
-		{
-			name:        "VerdictAsHeaderWithoutBrackets",
-			input:       "## 🚦 VERDICT: APPROVE\n\n# SUGGESTIONS",
-			wantSummary: "",
-			wantVerdict: "APPROVE",
-			wantCount:   0,
-			expectErr:   false,
+			name:      "Missing Review Tag",
+			input:     "This is just plain text without tags.",
+			expectErr: true,
 		},
 	}
 
@@ -153,27 +126,22 @@ B
 			assert.Contains(t, got.Summary, tt.wantSummary)
 			if tt.wantVerdict != "" {
 				assert.Equal(t, tt.wantVerdict, got.Verdict, "Verdict mismatch")
-			} else {
-				// If test expects no verdict, assert it's empty or Comment (default)
-				// But some tests might not care. The review bot complaint was about
-				// "tests omit explicit verdict assertions for new formats"
-				// So we should be strict if wantVerdict is provided.
 			}
 
 			assert.Len(t, got.Suggestions, tt.wantCount)
 			if tt.wantCount > 0 && len(got.Suggestions) > 0 {
 				assert.NotEmpty(t, got.Suggestions[0].FilePath)
-				// For multiline test, verify start/end
-				switch {
-				case strings.Contains(tt.name, "Multiline") || strings.Contains(tt.name, "En Dash"):
-					assert.Equal(t, 10, got.Suggestions[0].StartLine)
-					assert.Equal(t, 20, got.Suggestions[0].LineNumber)
-				case strings.Contains(tt.name, "Backticks"):
-					assert.Equal(t, 15, got.Suggestions[0].LineNumber)
-					assert.Equal(t, 15, got.Suggestions[0].StartLine)
-				default:
-					// For single line, StartLine MUST equal LineNumber
-					assert.Equal(t, got.Suggestions[0].LineNumber, got.Suggestions[0].StartLine, "Single line suggestion should have StartLine == LineNumber")
+				if tt.name == "Valid XML Review" {
+					assert.Equal(t, 90, got.Suggestions[0].Confidence)
+					assert.Equal(t, "15m", got.Suggestions[0].EstimatedFixTime)
+					assert.Equal(t, "Always", got.Suggestions[0].Reproducibility)
+				}
+				if tt.name == "Dirty XML (Bolded Path and Extra Tags)" {
+					assert.Equal(t, "path/to/file.go", got.Suggestions[0].FilePath)
+				}
+				if strings.Contains(tt.name, "Range") {
+					assert.Equal(t, 10, got.Suggestions[1].StartLine)
+					assert.Equal(t, 20, got.Suggestions[1].LineNumber)
 				}
 			}
 		})
@@ -188,23 +156,13 @@ func TestStripMarkdownFence(t *testing.T) {
 	}{
 		{
 			name:  "No fence",
-			input: "# Summary\nHello",
-			want:  "# Summary\nHello",
+			input: "<review>Hello</review>",
+			want:  "<review>Hello</review>",
 		},
 		{
 			name:  "Markdown fence",
-			input: "```markdown\n# Summary\nHello\n```",
-			want:  "# Summary\nHello",
-		},
-		{
-			name:  "MD fence",
-			input: "```md\n# Summary\n```",
-			want:  "# Summary",
-		},
-		{
-			name:  "Not a markdown fence",
-			input: "```json\n{}\n```",
-			want:  "```json\n{}\n```",
+			input: "```xml\n<review>\nHello\n</review>\n```",
+			want:  "<review>\nHello\n</review>",
 		},
 	}
 
@@ -213,129 +171,5 @@ func TestStripMarkdownFence(t *testing.T) {
 			got := stripMarkdownFence(tt.input)
 			assert.Equal(t, tt.want, got)
 		})
-	}
-}
-
-func TestParseMarkdownReview_TitleGap_And_BoldPath(t *testing.T) {
-	input := `# REVIEW SUMMARY
-
-This is a summary.
-
-# SUGGESTIONS
-
-#### 1. [Missing Title Issue]
-**File:** ` + "`**internal/llm/parser.go**`" + `:123
-**Observation:** Some observation.
-
-### Comment
-This is the comment.
-`
-	review, err := parseMarkdownReview(input)
-	if err != nil {
-		t.Fatalf("Parse error: %v", err)
-	}
-
-	if len(review.Suggestions) != 1 {
-		t.Fatalf("Caught %d suggestions, want 1", len(review.Suggestions))
-	}
-
-	s := review.Suggestions[0]
-	if s.FilePath != "internal/llm/parser.go" {
-		t.Errorf("Got FilePath %q, want %q", s.FilePath, "internal/llm/parser.go")
-	}
-
-	// The title "#### 1. [Missing Title Issue]" should be captured in the comment/description
-	if !strings.Contains(s.Comment, "[Missing Title Issue]") {
-		t.Errorf("Comment missing title. Got:\n%s", s.Comment)
-	}
-}
-
-func TestParseMarkdownReview_Chaos_Golden(t *testing.T) {
-	input := `## 📝 Detailed Suggestions
-### 🔴 Critical Bug
-**File:** ` + "`**internal/llm/parser.go**`" + `:50
-**Observation:** Logic is flawed.`
-
-	review, err := parseMarkdownReview(input)
-	if err != nil {
-		t.Fatalf("Parse error: %v", err)
-	}
-
-	if len(review.Suggestions) != 1 {
-		t.Fatalf("Caught %d suggestions, want 1", len(review.Suggestions))
-	}
-
-	s := review.Suggestions[0]
-	if s.FilePath != "internal/llm/parser.go" {
-		t.Errorf("Got FilePath %q, want %q", s.FilePath, "internal/llm/parser.go")
-	}
-	if !strings.Contains(s.Comment, "Critical Bug") {
-		t.Errorf("Comment missing Critical Bug title. Got:\n%s", s.Comment)
-	}
-	if !strings.Contains(s.Comment, "Observation") {
-		t.Errorf("Comment missing Observation. Got:\n%s", s.Comment)
-	}
-}
-
-func TestParseMarkdownReview_FlexibleHeaders_And_Dashes(t *testing.T) {
-	input := `## Summary
-### Suggestion src/foo.go:10–20
-**Severity:** Medium
-Fix this en-dash range.
-
-#### Suggestion [src/bar.go:30]
-**Severity:** Low
-Deep header level.
-`
-
-	review, err := parseMarkdownReview(input)
-	if err != nil {
-		t.Fatalf("Parse error: %v", err)
-	}
-
-	if len(review.Suggestions) != 2 {
-		t.Fatalf("Caught %d suggestions, want 2", len(review.Suggestions))
-	}
-
-	// 1. Check En-dash handling
-	s1 := review.Suggestions[0]
-	if s1.FilePath != "src/foo.go" {
-		t.Errorf("s1 file: got %q, want src/foo.go", s1.FilePath)
-	}
-	if s1.StartLine != 10 || s1.LineNumber != 20 {
-		t.Errorf("s1 range: got %d-%d, want 10-20 (en-dash handling failed)", s1.StartLine, s1.LineNumber)
-	}
-
-	// 2. Check Flexible Header (#### Suggestion)
-	s2 := review.Suggestions[1]
-	if s2.FilePath != "src/bar.go" {
-		t.Errorf("s2 file: got %q, want src/bar.go", s2.FilePath)
-	}
-	if s2.LineNumber != 30 {
-		t.Errorf("s2 line: got %d, want 30", s2.LineNumber)
-	}
-}
-
-func TestParseMarkdownReview_NonBoldBackticks(t *testing.T) {
-	// Case: `internal/llm/parser.go:123` (Backticks ONLY, no stars)
-	input := `## Suggestion ` + "`internal/llm/parser.go:123`" + `
-**Severity:** Low
-Fix ` + "`weird`" + ` formatting.`
-
-	review, err := parseMarkdownReview(input)
-	if err != nil {
-		t.Fatalf("Parse error: %v", err)
-	}
-
-	if len(review.Suggestions) != 1 {
-		t.Fatalf("Caught %d suggestions, want 1", len(review.Suggestions))
-	}
-
-	s := review.Suggestions[0]
-	if s.FilePath != "internal/llm/parser.go" {
-		t.Errorf("Got FilePath %q, want internal/llm/parser.go", s.FilePath)
-	}
-	if s.LineNumber != 123 {
-		t.Errorf("Got LineNumber %d, want 123", s.LineNumber)
 	}
 }
