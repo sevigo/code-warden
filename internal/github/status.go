@@ -70,7 +70,7 @@ func (s *statusUpdater) Completed(ctx context.Context, event *core.GitHubEvent, 
 }
 
 // PostStructuredReview posts a new pull request review with line-specific comments.
-// It formats comments with severity badges and posts a nicely formatted summary.
+// It adds severity badges to comments and includes a statistical summary.
 func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
 	var comments []DraftReviewComment
 	for _, sug := range review.Suggestions {
@@ -98,22 +98,71 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 	return s.client.CreateReview(ctx, event.RepoOwner, event.RepoName, event.PRNumber, event.HeadSHA, formattedSummary, comments)
 }
 
-// formatInlineComment creates a nicely formatted comment with severity and category.
+// formatInlineComment generates a pull request comment with severity alerts and category metadata.
 func formatInlineComment(sug core.Suggestion) string {
 	severity := sug.Severity
 	emoji := severityEmoji(severity)
+	alert := severityAlert(severity)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s **[%s]**", emoji, severity))
+	content := strings.TrimSpace(sug.Comment)
+
+	// Strip double blockquotes if the model generated them
+	content = strings.ReplaceAll(content, "\n> > ", "\n> ")
+	content = strings.ReplaceAll(content, "\n> [!", "\n[! ") // Handle broken alert prefixes if any
+
+	lines := strings.Split(content, "\n")
+
+	// 1. Process Title
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
+		title := strings.TrimPrefix(strings.TrimSpace(lines[0]), "###")
+		sb.WriteString(fmt.Sprintf("### 🛡️ %s\n", strings.TrimSpace(title)))
+		lines = lines[1:]
+	} else {
+		sb.WriteString("### 🛡️ Code Review Finding\n")
+	}
+
+	// 2. Badge Line
+	sb.WriteString(fmt.Sprintf("%s **%s**", emoji, severity))
 	if sug.Category != "" {
 		sb.WriteString(fmt.Sprintf(" | _%s_", sug.Category))
 	}
 	sb.WriteString("\n\n")
-	sb.WriteString(sug.Comment)
+
+	// 3. Process Body
+	insideAlert := false
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+
+		// If we hit a sub-header or code block, close the alert
+		if strings.HasPrefix(trimmedLine, "####") || strings.HasPrefix(trimmedLine, "```") {
+			if insideAlert {
+				sb.WriteString("\n")
+				insideAlert = false
+			}
+			sb.WriteString(line + "\n")
+			continue
+		}
+
+		// Open alert for descriptive content (Observation/Rationale)
+		if !insideAlert && trimmedLine != "" {
+			sb.WriteString(fmt.Sprintf("> [!%s]\n", alert))
+			insideAlert = true
+		}
+
+		if insideAlert {
+			// Strip single leading blockquote if the model added it redundantly
+			strippedLine := strings.TrimPrefix(trimmedLine, ">")
+			sb.WriteString(fmt.Sprintf("> %s\n", strings.TrimSpace(strippedLine)))
+		} else {
+			sb.WriteString(line + "\n")
+		}
+	}
+
 	return sb.String()
 }
 
-// formatReviewSummary creates a nicely formatted summary with statistics.
+// formatReviewSummary generates the final review summary including issue statistics.
 func formatReviewSummary(review *core.StructuredReview) string {
 	// Count severities
 	counts := map[string]int{"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
@@ -138,8 +187,8 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	sb.WriteString("\n\n")
 
 	if len(review.Suggestions) > 0 {
-		sb.WriteString("---\n\n")
-		sb.WriteString("### 📊 Issue Summary\n")
+		sb.WriteString("\n---\n\n")
+		sb.WriteString("### 📊 Issue Statistics\n")
 		sb.WriteString("| Severity | Count |\n")
 		sb.WriteString("|----------|-------|\n")
 		if counts["Critical"] > 0 {
@@ -187,5 +236,21 @@ func severityEmoji(severity string) string {
 		return "🟢"
 	default:
 		return "⚪"
+	}
+}
+
+// severityAlert returns the GitHub Alert type (NOTE, TIP, IMPORTANT, WARNING, CAUTION) for a severity.
+func severityAlert(severity string) string {
+	switch severity {
+	case "Critical":
+		return "CAUTION"
+	case "High":
+		return "WARNING"
+	case "Medium":
+		return "IMPORTANT"
+	case "Low":
+		return "NOTE"
+	default:
+		return "NOTE"
 	}
 }

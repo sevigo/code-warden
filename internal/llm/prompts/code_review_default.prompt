@@ -102,34 +102,45 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
 - **Low**: Minor improvements, style suggestions (ONLY include if highly valuable)
 
 ## OUTPUT FORMAT
-Respond ONLY with a valid Markdown document.
 
-```markdown
-# REVIEW SUMMARY
-[High-level technical assessment: overall health, architectural integration. End with verdict.]
+**IMPORTANT**: You MUST wrap your entire response inside `<review>` tags. Core structured fields MUST be strictly tagged as shown below, while the content inside the tags remains rich Markdown.
 
-# VERDICT
-[APPROVE | REQUEST_CHANGES | COMMENT]
-
-# SUGGESTIONS
-
-## Suggestion [relative/path/to/file:123]
-**(Do NOT wrap path in backticks! Use standard hyphens for ranges `10-20`)**
-**Severity:** [Critical|High|Medium|Low]
-**Category:** [Logic|Performance|Security|Architecture|Readability]
-
-### Comment
-[Concise problem statement]
-
-### Rationale
-[Why this is a risk. What breaks? Impact?]
-
-### Fix
-```{{.Language}}
-// Corrected implementation
+```xml
+<review>
+  <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
+  <confidence>95</confidence>
+  <summary>
+    # REVIEW SUMMARY
+    [High-level technical assessment: overall health, architectural integration. End with verdict.]
+  </summary>
+  <suggestions>
+    <suggestion>
+      <file>relative/path/to/file.go</file>
+      <line>123</line>
+      <severity>Critical</severity>
+      <category>Security</category>
+      <confidence>100</confidence>
+      <estimated_fix_time>5m</estimated_fix_time>
+      <reproducibility>Always</reproducibility>
+      <comment>
+        ### [Issue Title]
+        
+        **Observation:**
+        [Description of the technical problem found in the code]
+        
+        **Rationale:**
+        [Why this is important (security, performance, correctness, etc.)]
+        
+        #### 💡 Suggested Fix
+        ```{{.Language}}
+        // Optimized/Corrected implementation
+        ```
+      </comment>
+    </suggestion>
+  </suggestions>
+</review>
 ```
-```
 
-If no issues found, omit the `# SUGGESTIONS` section entirely and set the verdict to `APPROVE`.
+If no suggestions are found, the `<suggestions>` tag should be empty or omitted.
 
 Now analyze the PR:

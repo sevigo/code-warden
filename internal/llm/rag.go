@@ -44,7 +44,7 @@ type RAGService interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
-	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (string, error)
+	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
@@ -451,7 +451,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	// Parse Markdown Review
-	structuredReview, err := parseMarkdownReview(rawReview)
+	structuredReview, err := ParseMarkdownReview(rawReview)
 	if err != nil {
 		r.logger.Warn("failed to parse markdown review, using raw output as fallback", "error", err)
 		// Fallback: Use raw output as summary
@@ -461,7 +461,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	if structuredReview.Verdict == "" {
-		structuredReview.Verdict = "COMMENT" // Default if missing
+		structuredReview.Verdict = core.VerdictComment // Default if missing
 	}
 	return structuredReview, rawReview, nil
 }
@@ -689,7 +689,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 5. Parse and Add Disclaimer
-	structuredReview, err := parseMarkdownReview(rawConsensus)
+	structuredReview, err := ParseMarkdownReview(rawConsensus)
 	if err != nil {
 		r.logger.Warn("failed to parse consensus review, using raw output as fallback", "error", err)
 		structuredReview = &core.StructuredReview{Summary: rawConsensus}
@@ -859,16 +859,18 @@ func SanitizeModelForFilename(modelName string) string {
 }
 
 // GenerateReReview now focuses on data preparation and delegates to the helper.
-func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (string, error) {
+func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	r.logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	newDiff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		return "", fmt.Errorf("failed to get new PR diff: %w", err)
+		return nil, "", fmt.Errorf("failed to get new PR diff: %w", err)
 	}
 	if strings.TrimSpace(newDiff) == "" {
 		r.logger.Info("no new code changes found to re-review", "pr", event.PRNumber)
-		return "This pull request contains no new code changes to re-review.", nil
+		return &core.StructuredReview{
+			Summary: "This pull request contains no new code changes to re-review.",
+		}, "This pull request contains no new code changes to re-review.", nil
 	}
 
 	// Build context (Arch + Impact + HyDE) just like a full review
@@ -882,7 +884,25 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 		Context:          contextString,
 	}
 
-	return r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)
+	rawReview, err := r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)
+	if err != nil {
+		return nil, "", err
+	}
+
+	structuredReview, err := ParseMarkdownReview(rawReview)
+	if err != nil {
+		r.logger.Warn("failed to parse re-review, using raw output", "error", err)
+		structuredReview = &core.StructuredReview{Summary: rawReview}
+	}
+
+	if structuredReview.Title == "" {
+		structuredReview.Title = "🔄 Follow-up Review Summary"
+	}
+	if structuredReview.Verdict == "" {
+		structuredReview.Verdict = core.VerdictComment
+	}
+
+	return structuredReview, rawReview, nil
 }
 
 type QuestionPromptData struct {

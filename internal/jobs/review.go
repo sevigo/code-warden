@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -121,22 +120,19 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 	}
 
 	// 3. Generate Re-Review using RAG service
-	reReviewContent, err := j.ragService.GenerateReReview(ctx, reviewEnv.repo, event, lastReview, reviewEnv.ghClient, changedFiles)
+	structuredReview, _, err := j.ragService.GenerateReReview(ctx, reviewEnv.repo, event, lastReview, reviewEnv.ghClient, changedFiles)
 	if err != nil {
 		err = fmt.Errorf("failed to generate re-review: %w", err)
 		return err
 	}
 
 	// 4. Post the result
-	// Parse the result to check for structured data (valid JSON) or fallback to simple string check
-	structuredReview := parseReReviewResult(reReviewContent)
 	if err = reviewEnv.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
 		return fmt.Errorf("failed to post re-review comment: %w", err)
 	}
 
-	// Update reReviewContent for DB save if we parsed a summary from JSON
-	// The parser returns a StructuredReview which contains the summary.
-	reReviewContent = structuredReview.Summary
+	// Update reReviewContent for DB save
+	reReviewContent := structuredReview.Summary
 
 	// 5. Save the re-review as a new review record?
 	// Yes, to maintain history.
@@ -152,53 +148,6 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 	}
 
 	return reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID, "success", "Re-Review Complete", "Follow-up analysis finished.")
-}
-
-func stripMarkdownFence(content string) string {
-	content = strings.TrimSpace(content)
-	if strings.HasPrefix(content, "```json") {
-		content = strings.TrimPrefix(content, "```json")
-		content = strings.TrimSuffix(content, "```")
-	} else if strings.HasPrefix(content, "```") {
-		content = strings.TrimPrefix(content, "```")
-		content = strings.TrimSuffix(content, "```")
-	}
-	return strings.TrimSpace(content)
-}
-
-func parseReReviewResult(content string) *core.StructuredReview {
-	// 1. Attempt JSON parsing
-	var result core.ReReviewResult
-	jsonContent := stripMarkdownFence(content)
-	if errJSON := json.Unmarshal([]byte(jsonContent), &result); errJSON == nil {
-		verdict := strings.ToUpper(result.Verdict)
-		switch verdict {
-		case core.VerdictApprove, core.VerdictRequestChanges, core.VerdictComment:
-			// valid
-		default:
-			// log warning? context not available here, treating as COMMENT
-			verdict = core.VerdictComment
-		}
-		return &core.StructuredReview{
-			Title:   "🔄 Follow-up Review Summary",
-			Summary: result.Summary,
-			Verdict: verdict,
-		}
-	}
-
-	// 2. Fallback to legacy string matching
-	verdict := core.VerdictComment
-	if strings.Contains(content, "✅ All Issues Resolved") {
-		verdict = core.VerdictApprove
-	} else if strings.Contains(content, "⚠️ Issues Still Remain") {
-		verdict = core.VerdictRequestChanges
-	}
-
-	return &core.StructuredReview{
-		Title:   "🔄 Follow-up Review Summary",
-		Summary: content,
-		Verdict: verdict,
-	}
 }
 
 func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHubEvent, title, summary string) (err error) {
@@ -337,7 +286,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
 func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validLineMaps map[string]map[int]struct{}) error {
 	// Validate and filter suggestions to prevent 422 errors
-	inlineSuggestions, offDiffSuggestions := validateSuggestions(j.logger, structuredReview.Suggestions, validLineMaps)
+	inlineSuggestions, offDiffSuggestions := ValidateSuggestionsByLine(j.logger, structuredReview.Suggestions, validLineMaps)
 	structuredReview.Suggestions = inlineSuggestions
 
 	// If there are off-diff suggestions, append them to the summary as "General Findings"
