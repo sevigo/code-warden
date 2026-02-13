@@ -21,9 +21,8 @@ var (
 // It uses a memoization cache to avoid repeated compilation overhead.
 func getTagRegex(tag string) *regexp.Regexp {
 	quotedTag := regexp.QuoteMeta(tag)
-
 	cacheMu.RLock()
-	re, ok := tagRegexCache[quotedTag]
+	re, ok := tagRegexCache[quotedTag] // Use quoted tag as key to prevent collisions
 	cacheMu.RUnlock()
 	if ok {
 		return re
@@ -112,6 +111,9 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 
 	s := &core.Suggestion{
 		FilePath: sanitizePath(file),
+	}
+	if s.FilePath == "" {
+		return nil
 	}
 
 	// Normalize typographic dashes (En/Em) before splitting
@@ -235,8 +237,14 @@ func sanitizePath(path string) string {
 	path = strings.TrimSpace(path)
 	path = pathReplacer.Replace(path)
 
-	// Prevent directory traversal
-	if strings.Contains(path, "..") || strings.Contains(path, "//") {
+	// Normalize backslashes to forward slashes for consistent checking
+	normalized := strings.ReplaceAll(path, "\\", "/")
+
+	// Prevent absolute paths (Unix and Windows-style) and traversal
+	if strings.HasPrefix(normalized, "/") ||
+		(len(normalized) > 1 && normalized[1] == ':') || // Windows drive C:
+		strings.Contains(normalized, "..") ||
+		strings.Contains(normalized, "//") {
 		return ""
 	}
 	return strings.TrimSpace(path)

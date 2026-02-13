@@ -179,6 +179,50 @@ Great PR, but fix the typo.
 			expectErr:   false,
 		},
 		{
+			name: "Absolute Path Rejection",
+			input: `
+<review>
+  <summary>Path rejection test</summary>
+  <suggestions>
+    <suggestion>
+      <file>/etc/passwd</file>
+      <line>1</line>
+      <comment>Should be dropped</comment>
+    </suggestion>
+    <suggestion>
+      <file>../secrets.yaml</file>
+      <line>1</line>
+      <comment>Should also be dropped</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "Path rejection test",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
+			name: "Windows Absolute Path Rejection",
+			input: `
+<review>
+  <summary>Windows path rejection test</summary>
+  <suggestions>
+    <suggestion>
+      <file>C:\windows\system32\config</file>
+      <line>1</line>
+      <comment>Should be dropped</comment>
+    </suggestion>
+    <suggestion>
+      <file>\\server\share\file</file>
+      <line>1</line>
+      <comment>Should also be dropped</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "Windows path rejection test",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
 			name:      "Missing Review Tag",
 			input:     "This is just plain text without tags.",
 			expectErr: true,

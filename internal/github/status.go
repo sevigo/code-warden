@@ -76,6 +76,9 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 	for _, sug := range review.Suggestions {
 		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
 			formattedComment := formatInlineComment(sug)
+			if formattedComment == "" {
+				continue
+			}
 			// Enforce sane line ordering: startLine must be <= LineNumber
 			startLine := sug.StartLine
 			if startLine == 0 || startLine > sug.LineNumber {
@@ -100,66 +103,109 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 
 // formatInlineComment generates a pull request comment with severity alerts and category metadata.
 func formatInlineComment(sug core.Suggestion) string {
-	severity := sug.Severity
-	emoji := severityEmoji(severity)
-	alert := severityAlert(severity)
+	if sug.FilePath == "" || sug.LineNumber <= 0 {
+		return ""
+	}
 
 	var sb strings.Builder
-	content := strings.TrimSpace(sug.Comment)
+	lines := writeCommentHeader(&sb, sug)
+	writeCommentBody(&sb, lines, severityAlert(sug.Severity))
 
+	return sb.String()
+}
+
+func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
+	severity := sug.Severity
+	emoji := severityEmoji(severity)
+
+	content := strings.TrimSpace(sug.Comment)
 	// Strip double blockquotes if the model generated them
+	content = strings.TrimPrefix(content, "> > ")
 	content = strings.ReplaceAll(content, "\n> > ", "\n> ")
-	content = strings.ReplaceAll(content, "\n> [!", "\n[! ") // Handle broken alert prefixes if any
+	content = strings.ReplaceAll(content, "\n> [!", "\n[! ")
 
 	lines := strings.Split(content, "\n")
 
 	// 1. Process Title
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
 		title := strings.TrimPrefix(strings.TrimSpace(lines[0]), "###")
-		sb.WriteString(fmt.Sprintf("### 🛡️ %s\n", strings.TrimSpace(title)))
+		fmt.Fprintf(sb, "### 🛡️ %s\n", strings.TrimSpace(title))
 		lines = lines[1:]
 	} else {
 		sb.WriteString("### 🛡️ Code Review Finding\n")
 	}
 
 	// 2. Badge Line
-	sb.WriteString(fmt.Sprintf("%s **%s**", emoji, severity))
+	fmt.Fprintf(sb, "%s **%s**", emoji, severity)
 	if sug.Category != "" {
-		sb.WriteString(fmt.Sprintf(" | _%s_", sug.Category))
+		fmt.Fprintf(sb, " | _%s_", sug.Category)
 	}
 	sb.WriteString("\n\n")
 
-	// 3. Process Body
+	return lines
+}
+
+func writeCommentBody(sb *strings.Builder, lines []string, alertType string) {
 	insideAlert := false
+	inCodeBlock := false
+
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 
-		// If we hit a sub-header or code block, close the alert
-		if strings.HasPrefix(trimmedLine, "####") || strings.HasPrefix(trimmedLine, "```") {
-			if insideAlert {
-				sb.WriteString("\n")
-				insideAlert = false
+		// 1. Handle Code Blocks
+		if strings.HasPrefix(trimmedLine, "```") {
+			if inCodeBlock {
+				inCodeBlock = false
+			} else {
+				if insideAlert {
+					insideAlert = false
+					sb.WriteString("\n")
+				}
+				inCodeBlock = true
 			}
 			sb.WriteString(line + "\n")
 			continue
 		}
 
-		// Open alert for descriptive content (Observation/Rationale)
-		if !insideAlert && trimmedLine != "" {
-			sb.WriteString(fmt.Sprintf("> [!%s]\n", alert))
-			insideAlert = true
+		if inCodeBlock {
+			sb.WriteString(line + "\n")
+			continue
 		}
 
-		if insideAlert {
-			// Strip single leading blockquote if the model added it redundantly
-			strippedLine := strings.TrimPrefix(trimmedLine, ">")
-			sb.WriteString(fmt.Sprintf("> %s\n", strings.TrimSpace(strippedLine)))
-		} else {
+		// 2. Handle Sub-Headers
+		if strings.HasPrefix(trimmedLine, "####") {
+			if insideAlert {
+				insideAlert = false
+				sb.WriteString("\n")
+			}
 			sb.WriteString(line + "\n")
+			continue
 		}
+
+		// 3. Render Alert Content
+		insideAlert = renderAlertLine(sb, line, trimmedLine, insideAlert, alertType)
+	}
+}
+
+func renderAlertLine(sb *strings.Builder, line, trimmed string, insideAlert bool, alertType string) bool {
+	if !insideAlert && trimmed != "" {
+		fmt.Fprintf(sb, "> [!%s]\n", alertType)
+		insideAlert = true
 	}
 
-	return sb.String()
+	if insideAlert {
+		strippedLine := strings.TrimPrefix(line, ">")
+		cleanLine := strings.TrimRight(strippedLine, " \t\r\n")
+
+		if cleanLine == "" && trimmed != "" {
+			sb.WriteString("> \n")
+		} else {
+			fmt.Fprintf(sb, "> %s\n", cleanLine)
+		}
+	} else {
+		sb.WriteString(line + "\n")
+	}
+	return insideAlert
 }
 
 // formatReviewSummary generates the final review summary including issue statistics.
