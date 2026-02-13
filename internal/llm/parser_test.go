@@ -164,6 +164,21 @@ Rationale: ...</comment>
 			expectErr:   false,
 		},
 		{
+			name: "Legacy Markdown Review",
+			input: `
+# REVIEW SUMMARY
+Great PR, but fix the typo.
+
+# SUGGESTIONS
+*   **File:** path/to/legacy.go:42
+    **Severity:** Medium
+    Follow the naming convention.`,
+			wantSummary: "Great PR, but fix the typo.",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
 			name:      "Missing Review Tag",
 			input:     "This is just plain text without tags.",
 			expectErr: true,
@@ -172,7 +187,7 @@ Rationale: ...</comment>
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMarkdownReview(tt.input)
+			got, err := ParseMarkdownReview(tt.input)
 			if tt.expectErr {
 				assert.Error(t, err)
 				return
@@ -188,32 +203,48 @@ func verifyReviewResults(t *testing.T, name string, got *core.StructuredReview, 
 	if wantVerdict != "" {
 		assert.Equal(t, wantVerdict, got.Verdict, "Verdict mismatch")
 	}
-
 	assert.Len(t, got.Suggestions, wantCount)
-	if wantCount > 0 && len(got.Suggestions) > 0 {
-		assert.NotEmpty(t, got.Suggestions[0].FilePath)
-		if name == "Valid XML Review" {
-			assert.Equal(t, 90, got.Suggestions[0].Confidence)
-			assert.Equal(t, "15m", got.Suggestions[0].EstimatedFixTime)
-			assert.Equal(t, "Always", got.Suggestions[0].Reproducibility)
-		}
-		if name == "Dirty XML (Bolded Path and Extra Tags)" {
-			assert.Equal(t, "path/to/file.go", got.Suggestions[0].FilePath)
-		}
-		if strings.Contains(name, "Range") || strings.Contains(name, "Dashes") {
-			idx := 0
-			if name == "Multiple Suggestions and Range" {
-				idx = 1
-			}
-			assert.Equal(t, 10, got.Suggestions[idx].StartLine)
-			if strings.Contains(name, "Dashes") {
-				assert.Equal(t, 20, got.Suggestions[0].LineNumber)
-				assert.Equal(t, 30, got.Suggestions[1].StartLine)
-				assert.Equal(t, 40, got.Suggestions[1].LineNumber)
-			} else {
-				assert.Equal(t, 20, got.Suggestions[idx].LineNumber)
-			}
-		}
+
+	if wantCount == 0 || len(got.Suggestions) == 0 {
+		return
+	}
+
+	s := got.Suggestions[0]
+	assert.NotEmpty(t, s.FilePath)
+
+	verifySpecificMetadata(t, name, got)
+	verifyLineRanges(t, name, got)
+}
+
+func verifySpecificMetadata(t *testing.T, name string, got *core.StructuredReview) {
+	s := got.Suggestions[0]
+	if name == "Valid XML Review" {
+		assert.Equal(t, 90, s.Confidence)
+		assert.Equal(t, "15m", s.EstimatedFixTime)
+		assert.Equal(t, "Always", s.Reproducibility)
+	}
+	if name == "Dirty XML (Bolded Path and Extra Tags)" {
+		assert.Equal(t, "path/to/file.go", s.FilePath)
+	}
+}
+
+func verifyLineRanges(t *testing.T, name string, got *core.StructuredReview) {
+	if !strings.Contains(name, "Range") && !strings.Contains(name, "Dashes") {
+		return
+	}
+
+	idx := 0
+	if name == "Multiple Suggestions and Range" {
+		idx = 1
+	}
+
+	assert.Equal(t, 10, got.Suggestions[idx].StartLine)
+	if strings.Contains(name, "Dashes") {
+		assert.Equal(t, 20, got.Suggestions[0].LineNumber)
+		assert.Equal(t, 30, got.Suggestions[1].StartLine)
+		assert.Equal(t, 40, got.Suggestions[1].LineNumber)
+	} else {
+		assert.Equal(t, 20, got.Suggestions[idx].LineNumber)
 	}
 }
 

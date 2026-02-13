@@ -5,48 +5,78 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/sevigo/code-warden/internal/core"
 )
 
 var (
-	// regex to find <tag>content</tag>, handles potential whitespace in tags like <tag >
-	tagRegex = regexp.MustCompile(`(?s)<([\w\d]+)\b[^>]*>(.*?)</\1>`)
+	tagRegexCache = make(map[string]*regexp.Regexp)
+	cacheMu       sync.RWMutex
 )
 
-// parseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
-// It is "Preamble-Resilient" and handles rich Markdown inside tags.
-func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
+// getTagRegex returns a pre-compiled regex for the given XML tag.
+// It uses a memoization cache to avoid repeated compilation overhead.
+func getTagRegex(tag string) *regexp.Regexp {
+	tag = regexp.QuoteMeta(tag)
+	cacheMu.RLock()
+	re, ok := tagRegexCache[tag]
+	cacheMu.RUnlock()
+	if ok {
+		return re
+	}
+
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	if re, ok = tagRegexCache[tag]; ok {
+		return re
+	}
+	re = regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>(.*?)</` + tag + `\s*>`)
+	tagRegexCache[tag] = re
+	return re
+}
+
+// ParseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
+// It is "Preamble-Resilient" and includes a legacy fallback for "Graceful Degradation".
+func ParseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 	// 1. Normalize line endings
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 
-	// 2. Find the root <review> tag
+	// 2. Try XML first (Preferred Protocol)
+	if review, ok := parseXMLReview(markdown); ok {
+		return review, nil
+	}
+
+	// 3. Fallback to Legacy Markdown Parser if no <review> tags are found
+	return parseLegacyMarkdownReview(markdown)
+}
+
+// parseXMLReview implements the core XML-tagged parsing logic.
+func parseXMLReview(markdown string) (*core.StructuredReview, bool) {
 	reviewContent, ok := extractTag(markdown, "review")
 	if !ok {
-		// Fallback: If no tags are found, we might be receiving legacy Markdown.
-		// For now, let's strictly require the <review> tag for the new protocol.
-		return nil, fmt.Errorf("failed to parse review: <review> tag not found")
+		return nil, false
 	}
 
 	review := &core.StructuredReview{}
 
-	// 3. Extract Verdict
+	// Extract Verdict
 	if v, ok := extractTag(reviewContent, "verdict"); ok {
 		review.Verdict = normalizeVerdict(v)
 	}
 
-	// 4. Extract Review Confidence
+	// Extract Confidence
 	if c, ok := extractTag(reviewContent, "confidence"); ok {
-		review.Confidence, _ = strconv.Atoi(strings.TrimSpace(c))
+		review.Confidence = parseInt(c)
 	}
 
-	// 5. Extract Summary
+	// Extract Summary
 	if s, ok := extractTag(reviewContent, "summary"); ok {
 		review.Summary = unindent(s)
 	}
 
-	// 6. Extract Suggestions
+	// Extract Suggestions
 	suggestionsContent, _ := extractTag(reviewContent, "suggestions")
 	sourceForSuggestions := suggestionsContent
 	if sourceForSuggestions == "" {
@@ -61,12 +91,12 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 		}
 	}
 
-	// Validation
+	// If we found the tag but nothing useful was inside, it might be a hallucination
 	if review.Summary == "" && len(review.Suggestions) == 0 && review.Verdict == "" {
-		return nil, fmt.Errorf("failed to parse review: no recognized content inside <review> tags")
+		return nil, false
 	}
 
-	return review, nil
+	return review, true
 }
 
 // parseSuggestionBlock extracts fields from a single <suggestion> block.
@@ -89,11 +119,11 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 	if strings.Contains(lineStr, "-") {
 		parts := strings.Split(lineStr, "-")
 		if len(parts) >= 2 {
-			s.StartLine, _ = strconv.Atoi(strings.TrimSpace(parts[0]))
-			s.LineNumber, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+			s.StartLine = parseInt(parts[0])
+			s.LineNumber = parseInt(parts[1])
 		}
 	} else {
-		line, _ := strconv.Atoi(strings.TrimSpace(lineStr))
+		line := parseInt(lineStr)
 		s.LineNumber = line
 		s.StartLine = line
 	}
@@ -112,7 +142,7 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 		s.Comment = unindent(comm)
 	}
 	if conf, ok := extractTag(content, "confidence"); ok {
-		s.Confidence, _ = strconv.Atoi(strings.TrimSpace(conf))
+		s.Confidence = parseInt(conf)
 	}
 	if eft, ok := extractTag(content, "estimated_fix_time"); ok {
 		s.EstimatedFixTime = strings.TrimSpace(eft)
@@ -126,7 +156,7 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 
 // extractTag finds the content between <tag> and </tag>.
 func extractTag(content, tag string) (string, bool) {
-	re := regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>(.*?)</` + tag + `>`)
+	re := getTagRegex(tag)
 	match := re.FindStringSubmatch(content)
 	if match == nil {
 		return "", false
@@ -137,7 +167,7 @@ func extractTag(content, tag string) (string, bool) {
 // extractMultipleTags finds all occurrences of content between <tag> and </tag>.
 func extractMultipleTags(content, tag string) []string {
 	results := []string{}
-	re := regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>(.*?)</` + tag + `>`)
+	re := getTagRegex(tag)
 	matches := re.FindAllStringSubmatch(content, -1)
 	for _, m := range matches {
 		results = append(results, m[1])
@@ -145,15 +175,25 @@ func extractMultipleTags(content, tag string) []string {
 	return results
 }
 
+// parseInt safely converts string to int, returning 0 on error.
+// It is robust against non-digit noise like percentages or brackets.
+func parseInt(s string) int {
+	// 1. Remove non-digit noise (handle things like "95%" or "[95]")
+	s = strings.TrimFunc(s, func(r rune) bool {
+		return !unicode.IsDigit(r)
+	})
+	// 2. Convert to int
+	v, _ := strconv.Atoi(s)
+	return v
+}
+
 // unindent removes common leading whitespace from multiline strings.
-// This prevents "pretty-printed" XML from breaking Markdown rendering on GitHub.
 func unindent(s string) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) <= 1 {
 		return strings.TrimSpace(s)
 	}
 
-	// Find the minimum indentation level (ignoring empty lines)
 	minIndent := -1
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
@@ -190,12 +230,8 @@ func unindent(s string) string {
 // sanitizePath aggressively strips common LLM formatting from file paths.
 func sanitizePath(path string) string {
 	path = strings.TrimSpace(path)
-	// Remove markdown markers often hallucinanted inside tags
-	path = strings.ReplaceAll(path, "*", "")
-	path = strings.ReplaceAll(path, "`", "")
-	path = strings.ReplaceAll(path, "\"", "")
-	path = strings.ReplaceAll(path, "'", "")
-	return strings.TrimSpace(path)
+	replacer := strings.NewReplacer("*", "", "`", "", "\"", "", "'", "")
+	return strings.TrimSpace(replacer.Replace(path))
 }
 
 // normalizeVerdict maps a string to canonical core.Verdict constants.
@@ -216,7 +252,112 @@ func normalizeVerdict(v string) string {
 	}
 }
 
-// stripMarkdownFence is kept for a first-pass cleanup if the LLM wraps the whole XML in a code block.
+// parseLegacyMarkdownReview handles older formats without XML tags.
+func parseLegacyMarkdownReview(markdown string) (*core.StructuredReview, error) {
+	markdown = stripMarkdownFence(markdown)
+	lines := strings.Split(markdown, "\n")
+	review := &core.StructuredReview{}
+
+	currentSection := ""
+	var currentSuggestion *core.Suggestion
+	var commentBuilder strings.Builder
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		upper := strings.ToUpper(trimmed)
+
+		// Section detection
+		if section := detectLegacySection(upper); section != "" {
+			currentSection = section
+			continue
+		}
+
+		// Suggestion detection (Legacy Header)
+		if filePath, start, end, ok := parseLegacySuggestionHeader(trimmed); ok {
+			if currentSuggestion != nil {
+				currentSuggestion.Comment = strings.TrimSpace(commentBuilder.String())
+				review.Suggestions = append(review.Suggestions, *currentSuggestion)
+			}
+			currentSuggestion = &core.Suggestion{
+				FilePath:   filePath,
+				StartLine:  start,
+				LineNumber: end,
+			}
+			commentBuilder.Reset()
+			continue
+		}
+
+		accumulateLegacyContent(line, currentSection, &review.Summary, currentSuggestion, &commentBuilder)
+	}
+
+	// Final flush
+	if currentSuggestion != nil {
+		currentSuggestion.Comment = strings.TrimSpace(commentBuilder.String())
+		review.Suggestions = append(review.Suggestions, *currentSuggestion)
+	}
+	review.Summary = strings.TrimSpace(review.Summary)
+
+	if review.Summary == "" && len(review.Suggestions) == 0 && review.Verdict == "" {
+		return nil, fmt.Errorf("failed to parse review: no XML found and legacy parsing yielded no results")
+	}
+
+	return review, nil
+}
+
+func detectLegacySection(upper string) string {
+	switch {
+	case strings.Contains(upper, "# VERDICT"):
+		return "verdict"
+	case strings.Contains(upper, "# SUMMARY") || strings.Contains(upper, "# REVIEW SUMMARY"):
+		return "summary"
+	case strings.Contains(upper, "# SUGGESTIONS"):
+		return "suggestions"
+	default:
+		return ""
+	}
+}
+
+func accumulateLegacyContent(line, section string, summary *string, suggestion *core.Suggestion, commentBuilder *strings.Builder) {
+	trimmed := strings.TrimSpace(line)
+	upper := strings.ToUpper(trimmed)
+
+	switch section {
+	case "verdict":
+		// Handled directly if needed, but usually summary contains it in legacy
+	case "summary":
+		*summary += line + "\n"
+	case "suggestions":
+		if suggestion != nil {
+			switch {
+			case strings.HasPrefix(upper, "**SEVERITY:**"):
+				suggestion.Severity = strings.TrimSpace(trimmed[len("**SEVERITY:**"):])
+			case strings.HasPrefix(upper, "**CATEGORY:**"):
+				suggestion.Category = strings.TrimSpace(trimmed[len("**CATEGORY:**"):])
+			default:
+				commentBuilder.WriteString(line + "\n")
+			}
+		}
+	}
+}
+
+func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
+	// Clean markdown noise from line before matching
+	cleanLine := strings.NewReplacer("*", "", "`", "", "[", "", "]", "").Replace(line)
+	// Matches: Suggestion: file.go:10 or File: file.go:10 or file.go:10-20
+	re := regexp.MustCompile(`(?i)(?:Suggestion|File:)?\s*([\w\d\.\/\-_\\ ]+)[:\s]+(\d+)(?:-(\d+))?`)
+	matches := re.FindStringSubmatch(cleanLine)
+	if len(matches) < 3 {
+		return "", 0, 0, false
+	}
+	path := strings.TrimSpace(matches[1])
+	start, _ := strconv.Atoi(matches[2])
+	end := start
+	if matches[3] != "" {
+		end, _ = strconv.Atoi(matches[3])
+	}
+	return path, start, end, true
+}
+
 func stripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)
 	if !strings.HasPrefix(trimmed, "```") {
@@ -227,7 +368,6 @@ func stripMarkdownFence(s string) string {
 		return s
 	}
 
-	// Find first closing fence
 	closeIdx := -1
 	for i := 1; i < len(lines); i++ {
 		if strings.TrimSpace(lines[i]) == "```" {

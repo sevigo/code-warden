@@ -42,70 +42,44 @@ Here is the review you provided previously:
 
 ---
 
-## Your Follow-up Review
+## OUTPUT FORMAT
 
-### Summary of Fixes
-Provide a brief, one-paragraph summary. State clearly whether all, some, or none of the original points have been addressed.
+**IMPORTANT**: You MUST wrap your entire response inside `<review>` tags. Core structured fields MUST be strictly tagged as shown below, while the content inside the tags remains rich Markdown.
 
-### Remaining Issues
-*If all issues from the original review are fixed and no new issues are present*, simply write: "All previous points have been addressed successfully. Great work!"
-*Otherwise*, list any remaining or new issues here using the same format as a standard review:
-
-*   **File:** `path/to/filename.go`
-    **Severity:** [Medium]
-    **Issue:** Describe why the fix is incomplete or what new issue was introduced.
-    **Suggestion:** Provide a clear recommendation.
-
-### Final Output Format
-Return your review as a valid Markdown document. Do NOT return JSON.
-
-```markdown
-# 🔄 Follow-up Review Summary
-
-## 🚦 Verdict: [APPROVE | REQUEST_CHANGES | COMMENT]
-
-> **Executive Summary**
-> [Concise summary. State clearly whether all original issues were addressed.]
-
----
-
-## ✅ Resolved Issues
-*   **[Issue Title]**: Fixed. [Optional brief detail]
-...
+```xml
+<review>
+  <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
+  <confidence>95</confidence>
+  <summary>
+    # 🔄 Follow-up Review Summary
+    ## 🚦 Verdict: [Value]
+    > [Concise summary. State clearly whether all original issues were addressed.]
+    
+    ---
+    
+    ## ✅ Resolved Issues
+    *   **[Issue Title]**: Fixed. [Optional brief detail]
+    ...
+  </summary>
+  <suggestions>
+    <suggestion>
+      <file>path/to/filename.go</file>
+      <line>10</line>
+      <severity>Critical | High | Medium</severity>
+      <comment>
+        ### [Issue Title]
+        **Context:** [Why this is still an issue]
+        **Suggestion:** [Clear recommendation]
+      </comment>
+    </suggestion>
+  </suggestions>
+</review>
 ```
 
-
-**Markdown Content Template (for "summary" field):**
-
-```markdown
-# 🔄 Follow-up Review Summary
-
-## 🚦 Verdict: [APPROVE | REQUEST_CHANGES | COMMENT]
-
-> **Executive Summary**
-> [Concise summary. State clearly whether all original issues were addressed.]
+If no remaining issues are found, the `<suggestions>` tag should be empty or omitted.
+If all issues from the original review are fixed and no new issues are present, note this clearly in the `<summary>`.
 
 ---
-
-## ✅ Resolved Issues
-*   **[Issue Title]**: Fixed. [Optional brief detail]
-*   **[Issue Title]**: Fixed.
-*   ...
-
-## ⚠️ Remaining / New Issues (If Any)
-
-### 🔴 [Critical/High] [Short Title]
-**File:** `path/to/filename.go:10`
-**Context:** [Why this is still an issue]
-**Suggestion:** [Clear recommendation]
-
-> **IMPORTANT**: For every specific remaining issue, you MUST use the `### [Priority] [Title]` header followed by the `**File:**` anchor on the next line to ensure it is parsed correctly as an actionable suggestion.
-
----
-
-## 🏁 Conclusion
-[Final encouraging words or next steps]
-```
 
 **Verdict Criteria:**
 - **APPROVE**: All original issues representatively resolved.

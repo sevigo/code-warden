@@ -98,7 +98,7 @@ func TestDoS_PreambleResilience(t *testing.T) {
 	input := hugePreamble + "<review><summary>OK</summary></review>"
 
 	start := time.Now()
-	_, err := parseMarkdownReview(input)
+	_, err := ParseMarkdownReview(input)
 	duration := time.Since(start)
 
 	assert.NoError(t, err)
