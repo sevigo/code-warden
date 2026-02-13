@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/sevigo/code-warden/internal/core"
 )
 
 func TestParseMarkdownReview(t *testing.T) {
@@ -123,28 +125,32 @@ Rationale: ...</comment>
 				return
 			}
 			require.NoError(t, err)
-			assert.Contains(t, got.Summary, tt.wantSummary)
-			if tt.wantVerdict != "" {
-				assert.Equal(t, tt.wantVerdict, got.Verdict, "Verdict mismatch")
-			}
-
-			assert.Len(t, got.Suggestions, tt.wantCount)
-			if tt.wantCount > 0 && len(got.Suggestions) > 0 {
-				assert.NotEmpty(t, got.Suggestions[0].FilePath)
-				if tt.name == "Valid XML Review" {
-					assert.Equal(t, 90, got.Suggestions[0].Confidence)
-					assert.Equal(t, "15m", got.Suggestions[0].EstimatedFixTime)
-					assert.Equal(t, "Always", got.Suggestions[0].Reproducibility)
-				}
-				if tt.name == "Dirty XML (Bolded Path and Extra Tags)" {
-					assert.Equal(t, "path/to/file.go", got.Suggestions[0].FilePath)
-				}
-				if strings.Contains(tt.name, "Range") {
-					assert.Equal(t, 10, got.Suggestions[1].StartLine)
-					assert.Equal(t, 20, got.Suggestions[1].LineNumber)
-				}
-			}
+			verifyReviewResults(t, tt.name, got, tt.wantSummary, tt.wantVerdict, tt.wantCount)
 		})
+	}
+}
+
+func verifyReviewResults(t *testing.T, name string, got *core.StructuredReview, wantSummary, wantVerdict string, wantCount int) {
+	assert.Contains(t, got.Summary, wantSummary)
+	if wantVerdict != "" {
+		assert.Equal(t, wantVerdict, got.Verdict, "Verdict mismatch")
+	}
+
+	assert.Len(t, got.Suggestions, wantCount)
+	if wantCount > 0 && len(got.Suggestions) > 0 {
+		assert.NotEmpty(t, got.Suggestions[0].FilePath)
+		if name == "Valid XML Review" {
+			assert.Equal(t, 90, got.Suggestions[0].Confidence)
+			assert.Equal(t, "15m", got.Suggestions[0].EstimatedFixTime)
+			assert.Equal(t, "Always", got.Suggestions[0].Reproducibility)
+		}
+		if name == "Dirty XML (Bolded Path and Extra Tags)" {
+			assert.Equal(t, "path/to/file.go", got.Suggestions[0].FilePath)
+		}
+		if strings.Contains(name, "Range") {
+			assert.Equal(t, 10, got.Suggestions[1].StartLine)
+			assert.Equal(t, 20, got.Suggestions[1].LineNumber)
+		}
 	}
 }
 
