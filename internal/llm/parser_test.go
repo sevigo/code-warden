@@ -111,6 +111,59 @@ Rationale: ...</comment>
 			expectErr:   false,
 		},
 		{
+			name: "Indented XML (Pretty Printed)",
+			input: `
+<review>
+  <summary>
+    # Title
+    This is indented.
+  </summary>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <comment>
+        The comment is also indented.
+        - Point 1
+      </comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "# Title\nThis is indented.",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "En and Em Dashes in Range",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>a.go</file>
+      <line>10–20</line>
+      <comment>En dash</comment>
+    </suggestion>
+    <suggestion>
+      <file>b.go</file>
+      <line>30—40</line>
+      <comment>Em dash</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   2,
+			expectErr:   false,
+		},
+		{
+			name:        "Tags with whitespace",
+			input:       "<review ><summary >OK</summary   ></review >",
+			wantSummary: "OK",
+			wantCount:   0,
+			expectErr:   false,
+		},
+		{
 			name:      "Missing Review Tag",
 			input:     "This is just plain text without tags.",
 			expectErr: true,
@@ -147,9 +200,19 @@ func verifyReviewResults(t *testing.T, name string, got *core.StructuredReview, 
 		if name == "Dirty XML (Bolded Path and Extra Tags)" {
 			assert.Equal(t, "path/to/file.go", got.Suggestions[0].FilePath)
 		}
-		if strings.Contains(name, "Range") {
-			assert.Equal(t, 10, got.Suggestions[1].StartLine)
-			assert.Equal(t, 20, got.Suggestions[1].LineNumber)
+		if strings.Contains(name, "Range") || strings.Contains(name, "Dashes") {
+			idx := 0
+			if name == "Multiple Suggestions and Range" {
+				idx = 1
+			}
+			assert.Equal(t, 10, got.Suggestions[idx].StartLine)
+			if strings.Contains(name, "Dashes") {
+				assert.Equal(t, 20, got.Suggestions[0].LineNumber)
+				assert.Equal(t, 30, got.Suggestions[1].StartLine)
+				assert.Equal(t, 40, got.Suggestions[1].LineNumber)
+			} else {
+				assert.Equal(t, 20, got.Suggestions[idx].LineNumber)
+			}
 		}
 	}
 }
