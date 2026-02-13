@@ -76,6 +76,9 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 	for _, sug := range review.Suggestions {
 		if sug.FilePath != "" && sug.LineNumber > 0 && sug.Comment != "" {
 			formattedComment := formatInlineComment(sug)
+			if formattedComment == "" {
+				continue
+			}
 			// Enforce sane line ordering: startLine must be <= LineNumber
 			startLine := sug.StartLine
 			if startLine == 0 || startLine > sug.LineNumber {
@@ -117,6 +120,7 @@ func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
 
 	content := strings.TrimSpace(sug.Comment)
 	// Strip double blockquotes if the model generated them
+	content = strings.TrimPrefix(content, "> > ")
 	content = strings.ReplaceAll(content, "\n> > ", "\n> ")
 	content = strings.ReplaceAll(content, "\n> [!", "\n[! ")
 

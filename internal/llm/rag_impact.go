@@ -90,8 +90,15 @@ func (r *ragService) fetchImpactResults(ctx context.Context, retriever *vectorst
 
 func (r *ragService) processImpactResults(depResults map[string][]schema.Document, seen map[string]struct{}, mu *sync.RWMutex) string {
 	var impactBuilder strings.Builder
+	const maxImpactSnippets = 10
+	totalSnippets := 0
+
 	for filename, dependents := range depResults {
 		for _, doc := range dependents {
+			if totalSnippets >= maxImpactSnippets {
+				return impactBuilder.String()
+			}
+
 			source, ok := doc.Metadata["source"].(string)
 			if !ok || source == "" {
 				continue
@@ -106,6 +113,7 @@ func (r *ragService) processImpactResults(depResults map[string][]schema.Documen
 
 			_, _ = impactBuilder.WriteString(fmt.Sprintf("File: %s (potential ripple effect from %s)\n---\n%s\n\n",
 				source, filename, doc.PageContent))
+			totalSnippets++
 		}
 	}
 	return impactBuilder.String()

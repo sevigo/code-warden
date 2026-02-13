@@ -50,6 +50,29 @@ func TestFormatInlineComment(t *testing.T) {
 				"Fix it.",
 			},
 		},
+		{
+			name: "empty comment returns empty string",
+			sug: core.Suggestion{
+				FilePath: "test.go", LineNumber: 10, Severity: "High", Comment: "",
+			},
+			contains: []string{""},
+		},
+		{
+			name: "Windows path with backslash is handled",
+			sug: core.Suggestion{
+				FilePath: "C:\\path\\test.go", LineNumber: 5, Severity: "Low",
+				Comment: "Fix this",
+			},
+			contains: []string{"### 🛡️ Code Review Finding"},
+		},
+		{
+			name: "invalid line number returns empty string",
+			sug: core.Suggestion{
+				FilePath: "test.go", LineNumber: 0, Severity: "Medium",
+				Comment: "Fix this",
+			},
+			contains: []string{""},
+		},
 	}
 
 	for _, tt := range tests {

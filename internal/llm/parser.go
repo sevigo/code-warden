@@ -20,8 +20,9 @@ var (
 // getTagRegex returns a pre-compiled regex for the given XML tag.
 // It uses a memoization cache to avoid repeated compilation overhead.
 func getTagRegex(tag string) *regexp.Regexp {
+	quotedTag := regexp.QuoteMeta(tag)
 	cacheMu.RLock()
-	re, ok := tagRegexCache[tag]
+	re, ok := tagRegexCache[quotedTag] // Use quoted tag as key to prevent collisions
 	cacheMu.RUnlock()
 	if ok {
 		return re
@@ -30,12 +31,11 @@ func getTagRegex(tag string) *regexp.Regexp {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 	// Double-check after acquiring write lock
-	if re, ok = tagRegexCache[tag]; ok {
+	if re, ok = tagRegexCache[quotedTag]; ok {
 		return re
 	}
-	quotedTag := regexp.QuoteMeta(tag)
 	re = regexp.MustCompile(`(?is)<` + quotedTag + `\b[^>]*>(.*?)</` + quotedTag + `\s*>`)
-	tagRegexCache[tag] = re
+	tagRegexCache[quotedTag] = re
 	return re
 }
 
@@ -237,8 +237,14 @@ func sanitizePath(path string) string {
 	path = strings.TrimSpace(path)
 	path = pathReplacer.Replace(path)
 
-	// Prevent directory traversal and enforce relative paths
-	if strings.HasPrefix(path, "/") || strings.Contains(path, "..") || strings.Contains(path, "//") {
+	// Normalize backslashes to forward slashes for consistent checking
+	normalized := strings.ReplaceAll(path, "\\", "/")
+
+	// Prevent absolute paths (Unix and Windows-style) and traversal
+	if strings.HasPrefix(normalized, "/") ||
+		(len(normalized) > 1 && normalized[1] == ':') || // Windows drive C:
+		strings.Contains(normalized, "..") ||
+		strings.Contains(normalized, "//") {
 		return ""
 	}
 	return strings.TrimSpace(path)

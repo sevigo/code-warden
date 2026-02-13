@@ -20,14 +20,12 @@ func ValidateSuggestionsByLine(logger *slog.Logger, suggestions []core.Suggestio
 	var offDiff []core.Suggestion
 
 	for _, s := range suggestions {
-		if s.FilePath == "" {
-			continue
-		}
+		originalPath := s.FilePath
 		cleanPath := strings.TrimPrefix(s.FilePath, "./")
 		lines, exists := validLineMaps[cleanPath]
 		if !exists {
 			logger.Warn("Dropping suggestion (file not in PR)",
-				"original", s.FilePath,
+				"original", originalPath,
 				"normalized", cleanPath,
 			)
 			continue
