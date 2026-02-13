@@ -2,10 +2,17 @@ package llm
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/sevigo/code-warden/internal/core"
+)
+
+var (
+	// regex to find <tag>content</tag>, handles potential whitespace in tags like <tag >
+	tagRegex = regexp.MustCompile(`(?s)<([\w\d]+)\b[^>]*>(.*?)</\1>`)
 )
 
 // parseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
@@ -18,8 +25,6 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 	reviewContent, ok := extractTag(markdown, "review")
 	if !ok {
 		// Fallback: If no tags are found, we might be receiving legacy Markdown.
-		// However, the requirement is to use XML, so we should ideally fail or
-		// implement a very minimal best-effort.
 		// For now, let's strictly require the <review> tag for the new protocol.
 		return nil, fmt.Errorf("failed to parse review: <review> tag not found")
 	}
@@ -38,13 +43,11 @@ func parseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 
 	// 5. Extract Summary
 	if s, ok := extractTag(reviewContent, "summary"); ok {
-		review.Summary = strings.TrimSpace(s)
+		review.Summary = unindent(s)
 	}
 
-	// 5. Extract Suggestions
+	// 6. Extract Suggestions
 	suggestionsContent, _ := extractTag(reviewContent, "suggestions")
-	// If <suggestions> is missing but there are <suggestion> tags in reviewContent,
-	// we handle those too for extra resilience.
 	sourceForSuggestions := suggestionsContent
 	if sourceForSuggestions == "" {
 		sourceForSuggestions = reviewContent
@@ -78,6 +81,10 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 		FilePath: sanitizePath(file),
 	}
 
+	// Normalize typographic dashes (En/Em) before splitting
+	lineStr = strings.ReplaceAll(lineStr, "–", "-") // En dash
+	lineStr = strings.ReplaceAll(lineStr, "—", "-") // Em dash
+
 	// Handle single line or range (10-20)
 	if strings.Contains(lineStr, "-") {
 		parts := strings.Split(lineStr, "-")
@@ -102,7 +109,7 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 		s.Category = strings.TrimSpace(cat)
 	}
 	if comm, ok := extractTag(content, "comment"); ok {
-		s.Comment = strings.TrimSpace(comm)
+		s.Comment = unindent(comm)
 	}
 	if conf, ok := extractTag(content, "confidence"); ok {
 		s.Confidence, _ = strconv.Atoi(strings.TrimSpace(conf))
@@ -119,43 +126,65 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 
 // extractTag finds the content between <tag> and </tag>.
 func extractTag(content, tag string) (string, bool) {
-	startTag := "<" + tag + ">"
-	endTag := "</" + tag + ">"
-
-	startIdx := strings.Index(content, startTag)
-	if startIdx == -1 {
+	re := regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>(.*?)</` + tag + `>`)
+	match := re.FindStringSubmatch(content)
+	if match == nil {
 		return "", false
 	}
-
-	endIdx := strings.Index(content[startIdx:], endTag)
-	if endIdx == -1 {
-		return "", false
-	}
-
-	return content[startIdx+len(startTag) : startIdx+endIdx], true
+	return match[1], true
 }
 
 // extractMultipleTags finds all occurrences of content between <tag> and </tag>.
 func extractMultipleTags(content, tag string) []string {
-	var results []string
-	startTag := "<" + tag + ">"
-	endTag := "</" + tag + ">"
-
-	curr := content
-	for {
-		startIdx := strings.Index(curr, startTag)
-		if startIdx == -1 {
-			break
-		}
-		endIdx := strings.Index(curr[startIdx:], endTag)
-		if endIdx == -1 {
-			break
-		}
-
-		results = append(results, curr[startIdx+len(startTag):startIdx+endIdx])
-		curr = curr[startIdx+endIdx+len(endTag):]
+	results := []string{}
+	re := regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>(.*?)</` + tag + `>`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	for _, m := range matches {
+		results = append(results, m[1])
 	}
 	return results
+}
+
+// unindent removes common leading whitespace from multiline strings.
+// This prevents "pretty-printed" XML from breaking Markdown rendering on GitHub.
+func unindent(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= 1 {
+		return strings.TrimSpace(s)
+	}
+
+	// Find the minimum indentation level (ignoring empty lines)
+	minIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := 0
+		for _, r := range line {
+			if unicode.IsSpace(r) {
+				indent++
+			} else {
+				break
+			}
+		}
+		if minIndent == -1 || indent < minIndent {
+			minIndent = indent
+		}
+	}
+
+	if minIndent <= 0 {
+		return strings.TrimSpace(s)
+	}
+
+	var result []string
+	for _, line := range lines {
+		if len(line) >= minIndent {
+			result = append(result, line[minIndent:])
+		} else {
+			result = append(result, "")
+		}
+	}
+	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
 // sanitizePath aggressively strips common LLM formatting from file paths.
