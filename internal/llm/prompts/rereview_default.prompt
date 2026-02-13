@@ -68,8 +68,10 @@ Here is the review you provided previously:
       <severity>Critical | High | Medium</severity>
       <comment>
         ### [Issue Title]
-        **Context:** [Why this is still an issue]
-        **Suggestion:** [Clear recommendation]
+        **Observation:** [Why this feedback from the original review is still an issue]
+        **Rationale:** [Impact if left unaddressed]
+        #### 💡 Suggested Fix
+        [Clear recommendation or code snippet]
       </comment>
     </suggestion>
   </suggestions>

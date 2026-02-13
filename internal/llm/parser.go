@@ -14,14 +14,16 @@ import (
 var (
 	tagRegexCache = make(map[string]*regexp.Regexp)
 	cacheMu       sync.RWMutex
+	pathReplacer  = strings.NewReplacer("*", "", "`", "", "\"", "", "'", "")
 )
 
 // getTagRegex returns a pre-compiled regex for the given XML tag.
 // It uses a memoization cache to avoid repeated compilation overhead.
 func getTagRegex(tag string) *regexp.Regexp {
-	tag = regexp.QuoteMeta(tag)
+	quotedTag := regexp.QuoteMeta(tag)
+
 	cacheMu.RLock()
-	re, ok := tagRegexCache[tag]
+	re, ok := tagRegexCache[quotedTag]
 	cacheMu.RUnlock()
 	if ok {
 		return re
@@ -29,16 +31,17 @@ func getTagRegex(tag string) *regexp.Regexp {
 
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-	if re, ok = tagRegexCache[tag]; ok {
+	// Double-check after acquiring write lock
+	if re, ok = tagRegexCache[quotedTag]; ok {
 		return re
 	}
-	re = regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>(.*?)</` + tag + `\s*>`)
-	tagRegexCache[tag] = re
+	re = regexp.MustCompile(`(?is)<` + quotedTag + `\b[^>]*>(.*?)</` + quotedTag + `\s*>`)
+	tagRegexCache[quotedTag] = re
 	return re
 }
 
 // ParseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
-// It is "Preamble-Resilient" and includes a legacy fallback for "Graceful Degradation".
+// It handles preambles gracefully and maintains a fallback for legacy markdown formats.
 func ParseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 	// 1. Normalize line endings
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
@@ -227,11 +230,16 @@ func unindent(s string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
-// sanitizePath aggressively strips common LLM formatting from file paths.
+// sanitizePath strips LLM-specific formatting from file paths
 func sanitizePath(path string) string {
 	path = strings.TrimSpace(path)
-	replacer := strings.NewReplacer("*", "", "`", "", "\"", "", "'", "")
-	return strings.TrimSpace(replacer.Replace(path))
+	path = pathReplacer.Replace(path)
+
+	// Prevent directory traversal
+	if strings.Contains(path, "..") || strings.Contains(path, "//") {
+		return ""
+	}
+	return strings.TrimSpace(path)
 }
 
 // normalizeVerdict maps a string to canonical core.Verdict constants.
@@ -240,12 +248,12 @@ func normalizeVerdict(v string) string {
 	v = strings.ReplaceAll(v, " ", "_")
 	v = strings.Trim(v, "[]")
 
-	switch {
-	case strings.Contains(v, "APPROVE"):
+	switch v {
+	case core.VerdictApprove:
 		return core.VerdictApprove
-	case strings.Contains(v, "REQUEST_CHANGES"):
+	case core.VerdictRequestChanges:
 		return core.VerdictRequestChanges
-	case strings.Contains(v, "COMMENT"):
+	case core.VerdictComment:
 		return core.VerdictComment
 	default:
 		return ""
@@ -340,22 +348,58 @@ func accumulateLegacyContent(line, section string, summary *string, suggestion *
 	}
 }
 
+// parseLegacySuggestionHeader safely parses "File:123" or "Suggestion [file.go]:45-60" without regex.
+// Safe for untrusted LLM output; no backtracking possible.
 func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
-	// Clean markdown noise from line before matching
-	cleanLine := strings.NewReplacer("*", "", "`", "", "[", "", "]", "").Replace(line)
-	// Matches: Suggestion: file.go:10 or File: file.go:10 or file.go:10-20
-	re := regexp.MustCompile(`(?i)(?:Suggestion|File:)?\s*([\w\d\.\/\-_\\ ]+)[:\s]+(\d+)(?:-(\d+))?`)
-	matches := re.FindStringSubmatch(cleanLine)
-	if len(matches) < 3 {
+	// Trim leading markdown artifacts and whitespace
+	cleaned := strings.TrimFunc(line, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '*' || r == '`' || r == '[' || r == ']'
+	})
+
+	// Detect typical header prefixes and strip them
+	prefixes := []string{"Suggestion", "File", "FILE", "suggestion"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(cleaned, p) {
+			cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, p))
+			break
+		}
+	}
+	cleaned = strings.TrimLeft(cleaned, ": ")
+
+	lastColon := strings.LastIndex(cleaned, ":")
+	if lastColon <= 0 {
 		return "", 0, 0, false
 	}
-	path := strings.TrimSpace(matches[1])
-	start, _ := strconv.Atoi(matches[2])
-	end := start
-	if matches[3] != "" {
-		end, _ = strconv.Atoi(matches[3])
+
+	path := strings.TrimSpace(cleaned[:lastColon])
+	linesPart := strings.TrimSpace(cleaned[lastColon+1:])
+
+	// Normalize various dash variants
+	linesPart = strings.ReplaceAll(linesPart, "–", "-")
+	linesPart = strings.ReplaceAll(linesPart, "—", "-")
+
+	// Handle ranges (e.g., "12-15")
+	if strings.Contains(linesPart, "-") {
+		parts := strings.Split(linesPart, "-")
+		if len(parts) != 2 {
+			return "", 0, 0, false
+		}
+		startStr := strings.TrimSpace(parts[0])
+		endStr := strings.TrimSpace(parts[1])
+		start, err1 := strconv.Atoi(startStr)
+		end, err2 := strconv.Atoi(endStr)
+		if err1 != nil || err2 != nil || start <= 0 || end <= 0 || start > end {
+			return "", 0, 0, false
+		}
+		return path, start, end, true
 	}
-	return path, start, end, true
+
+	// Single line
+	ln, err := strconv.Atoi(linesPart)
+	if err != nil || ln <= 0 {
+		return "", 0, 0, false
+	}
+	return path, ln, ln, true
 }
 
 func stripMarkdownFence(s string) string {

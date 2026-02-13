@@ -125,15 +125,15 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
       <comment>
         ### [Issue Title]
         
-        **Comment:**
-        [Concise problem statement]
+        **Observation:**
+        [Description of the technical problem found in the code]
         
         **Rationale:**
-        [Why this is a risk. What breaks? Impact?]
+        [Why this is important (security, performance, correctness, etc.)]
         
-        **Fix:**
+        #### 💡 Suggested Fix
         ```{{.Language}}
-        // Corrected implementation
+        // Optimized/Corrected implementation
         ```
       </comment>
     </suggestion>

@@ -37,10 +37,8 @@ Here are the individual reviews:
    - Fix suggestions must be *concrete, minimal, and syntactically correct*.  **CRITICAL**: Verify that your suggested code fits the surrounding context provided in the RAG snippets (e.g., use the correct variable names, existing function signatures, and project-specific idioms visible in the context).
    - **CRITICAL**: You MUST preserve the exact file path and line number for every suggestion. Do not hallucinate line numbers. If a model provided a line number, use it.
    - **CRITICAL**: You MUST use actual line numbers from the provided reviews that correspond to the technical code being discussed. Do not use placeholders like 1, 2, or 3 if they are not the true line numbers. If a reviewer provided an incorrect line number, but the finding is valid, use your best architectural judgment to either find the correct line or move the finding to the summary.
-   - **CRITICAL**: You MUST use actual line numbers from the provided reviews that correspond to the technical code being discussed. Do not use placeholders like 1, 2, or 3 if they are not the true line numbers. If a reviewer provided an incorrect line number, but the finding is valid, use your best architectural judgment to either find the correct line or move the finding to the summary.
    - **IMPORTANT**: Only suggestions with valid line numbers will be displayed as inline comments.
-   - **FORMAT**: Every suggestion must start with a priority header (### 🔴 or ### 🟠 or ### 🟡) followed immediately by the **File:** anchor on the next line.
-   - **PATH**: Use `## Suggestion [path/to/file.go:10-20]`. Do NOT wrap the path in backticks. Use standard hyphens `-` for ranges, not dashes `–`.
+   - **PATH**: Use `<file>path/to/file.go</file>`. Use standard hyphens `-` for ranges, not dashes `–`.
 
 ---
 
@@ -67,15 +65,15 @@ Here are the individual reviews:
       <estimated_fix_time>15m</estimated_fix_time>
       <reproducibility>Always | Sometimes | Intermittent</reproducibility>
       <comment>
-        ### [Short Title of Issue]
+        ### [Issue Title]
         
         **Observation:**
-        [Description of the issue...]
+        [Synthesized description of the issue...]
         
         **Rationale:**
-        [Why this is important...]
+        [Why this needs to be fixed...]
         
-        **Suggested Fix:**
+        #### 💡 Suggested Fix
         ```go
         // Minimal, correct fix
         ...
