@@ -197,16 +197,18 @@ func processCommentLine(sb *strings.Builder, line string, state *commentState, a
 		return
 	}
 
-	// 3. Render Alert Content
+	// 	// 3. Render Alert Content
 	// We want to wrap the core content in an alert, but avoid double blockquotes
 	// The original code was handling "> >". Let's simplify.
-	// If the line is already a blockquote, strip one level.
-	if strings.HasPrefix(trimmedLine, ">") {
-		line = strings.TrimPrefix(line, ">")
-		line = strings.TrimPrefix(line, " ")
-	}
+	// We ONLY strip one level of blockquotes if it looks like a forced wrapping from previous iterations,
+	// but generally we should trust the LLM's output relative to the new "compact" header.
 
-	state.insideAlert = renderAlertLine(sb, line, trimmedLine, state.insideAlert, alertType)
+	// Fix: Do NOT strip ">" unilaterally. Nested blockquotes (>>) are valid markdown.
+	// Only if the LLM output is " > some text" resulting in double nesting when we wrap it (which we don't anymore),
+	// would it be an issue. Since we are moving AWAY from wrapping the whole body in an alert,
+	// we should just respect the line as is.
+
+	sb.WriteString(line + "\n")
 }
 
 func renderAlertLine(sb *strings.Builder, line, trimmed string, insideAlert bool, alertType string) bool {
@@ -245,8 +247,6 @@ func formatReviewSummary(review *core.StructuredReview) string {
 		icon := verdictIcon(review.Verdict)
 		// E.g., ### 🚫 Verdict: REQUEST_CHANGES
 		sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
-	} else {
-		sb.WriteString("### 📝 Code Review Summary\n\n")
 	}
 
 	// 2. Main Summary Body
@@ -267,6 +267,19 @@ func formatReviewSummary(review *core.StructuredReview) string {
 				emoji := severityEmoji(sev)
 				sb.WriteString(fmt.Sprintf("| %s %s | %d |\n", emoji, sev, count))
 			}
+		}
+	}
+
+	// 4. Model Ratings Table (Only if ratings exist)
+	if len(review.ModelRatings) > 0 {
+		sb.WriteString("\n---\n")
+		sb.WriteString("#### 🤖 Model Ratings\n\n")
+		sb.WriteString("| Model | Score | Critique |\n")
+		sb.WriteString("|-------|-------|----------|\n")
+
+		for _, rating := range review.ModelRatings {
+			stars := strings.Repeat("⭐", rating.Score)
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", rating.ModelName, stars, rating.Critique))
 		}
 	}
 

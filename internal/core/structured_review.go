@@ -13,13 +13,21 @@ type Suggestion struct {
 	Reproducibility  string `json:"reproducibility,omitempty"`
 }
 
+// ModelRating captures the consensus model's evaluation of a peer model.
+type ModelRating struct {
+	ModelName string `json:"model_name"`
+	Score     int    `json:"score"`    // 1-5
+	Critique  string `json:"critique"` // Brief 1-line assessment
+}
+
 // StructuredReview represents the full review output from the LLM in a parsable format.
 type StructuredReview struct {
-	Title       string       `json:"title,omitempty"` // For distinct headers (e.g. "Re-Review Summary")
-	Summary     string       `json:"summary"`
-	Verdict     string       `json:"verdict,omitempty"` // Added for programmatic approval status
-	Confidence  int          `json:"confidence,omitempty"`
-	Suggestions []Suggestion `json:"suggestions"`
+	Title        string        `json:"title,omitempty"` // For distinct headers (e.g. "Re-Review Summary")
+	Summary      string        `json:"summary"`
+	Verdict      string        `json:"verdict,omitempty"` // Added for programmatic approval status
+	Confidence   int           `json:"confidence,omitempty"`
+	Suggestions  []Suggestion  `json:"suggestions"`
+	ModelRatings []ModelRating `json:"model_ratings,omitempty"` // Consensus only
 }
 
 // ReReviewResult represents the structured output expected from the LLM for a re-review.

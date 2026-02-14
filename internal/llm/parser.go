@@ -93,12 +93,41 @@ func parseXMLReview(markdown string) (*core.StructuredReview, bool) {
 		}
 	}
 
+	// Extract Model Ratings (Consensus Only)
+	ratingsContent, _ := extractTag(reviewContent, "model_ratings")
+	if ratingsContent != "" {
+		ratingBlocks := extractMultipleTags(ratingsContent, "rating")
+		for _, block := range ratingBlocks {
+			if r := parseRatingBlock(block); r != nil {
+				review.ModelRatings = append(review.ModelRatings, *r)
+			}
+		}
+	}
+
 	// If we found the tag but nothing useful was inside, it might be a hallucination
 	if review.Summary == "" && len(review.Suggestions) == 0 && review.Verdict == "" {
 		return nil, false
 	}
 
 	return review, true
+}
+
+func parseRatingBlock(content string) *core.ModelRating {
+	model, modelOk := extractTag(content, "model_name")
+	scoreStr, scoreOk := extractTag(content, "score")
+	if !modelOk || !scoreOk {
+		return nil
+	}
+
+	r := &core.ModelRating{
+		ModelName: strings.TrimSpace(model),
+		Score:     parseInt(scoreStr),
+	}
+
+	if critique, ok := extractTag(content, "critique"); ok {
+		r.Critique = strings.TrimSpace(critique)
+	}
+	return r
 }
 
 // parseSuggestionBlock extracts fields from a single <suggestion> block.

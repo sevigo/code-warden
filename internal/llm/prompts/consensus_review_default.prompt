@@ -41,6 +41,11 @@ Here are the individual reviews:
    - **PATH**: Use `<file>path/to/file.go</file>`. Use standard hyphens `-` for ranges, not dashes `–`.
    - **FORMAT**: DO NOT use GitHub Alerts (e.g., [!IMPORTANT]) or blockquotes (>) in your comment content. Use standard Markdown headers and lists.
 
+7. **Rate the Models**:
+   - Evaluate each input model's review on a scale of 1-5 based on helpfulness and accuracy.
+   - Provide a 1-sentence critique explaining the score.
+   - Include these ratings in the `<model_ratings>` block.
+
 ---
 
 ### Output Format:
@@ -82,6 +87,20 @@ Here are the individual reviews:
       </comment>
     </suggestion>
   </suggestions>
+    </suggestion>
+  </suggestions>
+  <model_ratings>
+    <rating>
+      <model_name>gemini-1.5-pro</model_name>
+      <score>4</score>
+      <critique>Good depth but missed edge case in parser.</critique>
+    </rating>
+    <rating>
+      <model_name>gpt-4o</model_name>
+      <score>5</score>
+      <critique>Excellent, caught the security flaw.</critique>
+    </rating>
+  </model_ratings>
 </review>
 ```
 

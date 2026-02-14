@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 
 	"github.com/sevigo/code-warden/internal/config"
@@ -291,16 +290,22 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 
 	// If there are off-diff suggestions, append them to the summary as "General Findings"
 	if len(offDiffSuggestions) > 0 {
-		var offDiffBuilder strings.Builder
-		offDiffBuilder.WriteString(structuredReview.Summary)
-		offDiffBuilder.WriteString("\n\n---\n### 💡 General Findings (Outside Modified Lines)\n\n")
-		offDiffBuilder.WriteString("The following issues were identified in parts of the code not directly modified in this PR:\n\n")
-		for _, s := range offDiffSuggestions {
-			offDiffBuilder.WriteString(fmt.Sprintf("*   **File:** `%s` (Line %d)\n", s.FilePath, s.LineNumber))
-			offDiffBuilder.WriteString(fmt.Sprintf("    **Severity:** %s\n", s.Severity))
-			offDiffBuilder.WriteString(fmt.Sprintf("    **Issue:** %s\n\n", s.Comment))
-		}
-		structuredReview.Summary = offDiffBuilder.String()
+		// User requested to disable "General Findings" to reduce noise.
+		// We log them for debug purposes instead.
+		j.logger.Info("Hidden off-diff suggestions", "count", len(offDiffSuggestions))
+
+		/*
+			var offDiffBuilder strings.Builder
+			offDiffBuilder.WriteString(structuredReview.Summary)
+			offDiffBuilder.WriteString("\n\n---\n### 💡 General Findings (Outside Modified Lines)\n\n")
+			offDiffBuilder.WriteString("The following issues were identified in parts of the code not directly modified in this PR:\n\n")
+			for _, s := range offDiffSuggestions {
+				offDiffBuilder.WriteString(fmt.Sprintf("*   **File:** `%s` (Line %d)\n", s.FilePath, s.LineNumber))
+				offDiffBuilder.WriteString(fmt.Sprintf("    **Severity:** %s\n", s.Severity))
+				offDiffBuilder.WriteString(fmt.Sprintf("    **Issue:** %s\n\n", s.Comment))
+			}
+			structuredReview.Summary = offDiffBuilder.String()
+		*/
 	}
 
 	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
