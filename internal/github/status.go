@@ -108,83 +108,105 @@ func formatInlineComment(sug core.Suggestion) string {
 	}
 
 	var sb strings.Builder
-	lines := writeCommentHeader(&sb, sug)
-	writeCommentBody(&sb, lines, severityAlert(sug.Severity))
+
+	// Compact Header: ### 🔴 Critical | Security | Title
+	// If no title is present, use "Code Review Finding"
+	writeCompactHeader(&sb, sug)
+
+	// Body: Render the comment body, converting #### to bold and handling alerts
+	writeCompactBody(&sb, sug.Comment, sug.Severity)
 
 	return sb.String()
 }
 
-func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
-	severity := sug.Severity
-	emoji := severityEmoji(severity)
+func writeCompactHeader(sb *strings.Builder, sug core.Suggestion) {
+	emoji := severityEmoji(sug.Severity)
+	title := "Code Review Finding"
 
-	content := strings.TrimSpace(sug.Comment)
-	// Strip double blockquotes if the model generated them
-	content = strings.TrimPrefix(content, "> > ")
-	content = strings.ReplaceAll(content, "\n> > ", "\n> ")
-	content = strings.ReplaceAll(content, "\n> [!", "\n[! ")
-
-	lines := strings.Split(content, "\n")
-
-	// 1. Process Title
+	// Extract title from comment if present (lines starting with ###)
+	lines := strings.Split(sug.Comment, "\n")
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
-		title := strings.TrimPrefix(strings.TrimSpace(lines[0]), "###")
-		fmt.Fprintf(sb, "### 🛡️ %s\n", strings.TrimSpace(title))
-		lines = lines[1:]
-	} else {
-		sb.WriteString("### 🛡️ Code Review Finding\n")
+		title = strings.TrimPrefix(strings.TrimSpace(lines[0]), "###")
+		title = strings.TrimSpace(title)
 	}
 
-	// 2. Badge Line
-	fmt.Fprintf(sb, "%s **%s**", emoji, severity)
+	fmt.Fprintf(sb, "### %s %s", emoji, sug.Severity)
 	if sug.Category != "" {
-		fmt.Fprintf(sb, " | _%s_", sug.Category)
+		fmt.Fprintf(sb, " | %s", sug.Category)
 	}
-	sb.WriteString("\n\n")
-
-	return lines
+	fmt.Fprintf(sb, " | %s\n\n", title)
 }
 
-func writeCommentBody(sb *strings.Builder, lines []string, alertType string) {
-	insideAlert := false
-	inCodeBlock := false
+func writeCompactBody(sb *strings.Builder, comment, severity string) {
+	// Strip the title line if we extracted it
+	lines := strings.Split(comment, "\n")
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
+		lines = lines[1:]
+	}
+
+	alertType := severityAlert(severity)
+	state := &commentState{}
 
 	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-
-		// 1. Handle Code Blocks
-		if strings.HasPrefix(trimmedLine, "```") {
-			if inCodeBlock {
-				inCodeBlock = false
-			} else {
-				if insideAlert {
-					insideAlert = false
-					sb.WriteString("\n")
-				}
-				inCodeBlock = true
-			}
-			sb.WriteString(line + "\n")
-			continue
-		}
-
-		if inCodeBlock {
-			sb.WriteString(line + "\n")
-			continue
-		}
-
-		// 2. Handle Sub-Headers
-		if strings.HasPrefix(trimmedLine, "####") {
-			if insideAlert {
-				insideAlert = false
-				sb.WriteString("\n")
-			}
-			sb.WriteString(line + "\n")
-			continue
-		}
-
-		// 3. Render Alert Content
-		insideAlert = renderAlertLine(sb, line, trimmedLine, insideAlert, alertType)
+		processCommentLine(sb, line, state, alertType)
 	}
+}
+
+type commentState struct {
+	insideAlert bool
+	inCodeBlock bool
+}
+
+func processCommentLine(sb *strings.Builder, line string, state *commentState, alertType string) {
+	trimmedLine := strings.TrimSpace(line)
+
+	// Skip empty lines at the start
+	if sb.Len() == 0 && trimmedLine == "" {
+		return
+	}
+
+	// 1. Handle Code Blocks
+	if strings.HasPrefix(trimmedLine, "```") {
+		if state.inCodeBlock {
+			state.inCodeBlock = false
+		} else {
+			if state.insideAlert {
+				state.insideAlert = false
+				// Close alert implicitly by newline
+			}
+			state.inCodeBlock = true
+		}
+		sb.WriteString(line + "\n")
+		return
+	}
+
+	if state.inCodeBlock {
+		sb.WriteString(line + "\n")
+		return
+	}
+
+	// 2. Handle Sub-Headers (convert #### to bold)
+	if strings.HasPrefix(trimmedLine, "####") {
+		if state.insideAlert {
+			state.insideAlert = false
+			sb.WriteString("\n")
+		}
+		// Convert "#### Observation" to "**Observation**"
+		headerContent := strings.TrimPrefix(trimmedLine, "####")
+		fmt.Fprintf(sb, "**%s**\n", strings.TrimSpace(headerContent))
+		return
+	}
+
+	// 3. Render Alert Content
+	// We want to wrap the core content in an alert, but avoid double blockquotes
+	// The original code was handling "> >". Let's simplify.
+	// If the line is already a blockquote, strip one level.
+	if strings.HasPrefix(trimmedLine, ">") {
+		line = strings.TrimPrefix(line, ">")
+		line = strings.TrimPrefix(line, " ")
+	}
+
+	state.insideAlert = renderAlertLine(sb, line, trimmedLine, state.insideAlert, alertType)
 }
 
 func renderAlertLine(sb *strings.Builder, line, trimmed string, insideAlert bool, alertType string) bool {
@@ -194,15 +216,15 @@ func renderAlertLine(sb *strings.Builder, line, trimmed string, insideAlert bool
 	}
 
 	if insideAlert {
-		strippedLine := strings.TrimPrefix(line, ">")
-		cleanLine := strings.TrimRight(strippedLine, " \t\r\n")
-
-		if cleanLine == "" && trimmed != "" {
-			sb.WriteString("> \n")
+		if trimmed == "" {
+			sb.WriteString(">\n")
 		} else {
-			fmt.Fprintf(sb, "> %s\n", cleanLine)
+			fmt.Fprintf(sb, "> %s\n", line)
 		}
 	} else {
+		// Should not be reached if logic is correct for "wrapping everything in alert"
+		// But if we decide NOT to wrap everything, this handles it.
+		// Current logic: we wrap the main body in the alert corresponding to severity.
 		sb.WriteString(line + "\n")
 	}
 	return insideAlert
@@ -217,37 +239,34 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	}
 
 	var sb strings.Builder
-	if review.Title != "" {
-		sb.WriteString(fmt.Sprintf("## %s\n\n", review.Title))
-	} else {
-		sb.WriteString("## 🔍 Code Review Summary\n\n")
-	}
 
-	// Add Verdict with Icon
+	// 1. Verdict (Top Priority)
 	if review.Verdict != "" {
 		icon := verdictIcon(review.Verdict)
+		// E.g., ### 🚫 Verdict: REQUEST_CHANGES
 		sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
+	} else {
+		sb.WriteString("### 📝 Code Review Summary\n\n")
 	}
 
+	// 2. Main Summary Body
 	sb.WriteString(review.Summary)
 	sb.WriteString("\n\n")
 
+	// 3. Statistics Table (Only if suggestions exist)
 	if len(review.Suggestions) > 0 {
-		sb.WriteString("\n---\n\n")
-		sb.WriteString("### 📊 Issue Statistics\n")
+		sb.WriteString("---\n")
+		sb.WriteString("#### 📊 Issue Statistics\n\n")
 		sb.WriteString("| Severity | Count |\n")
 		sb.WriteString("|----------|-------|\n")
-		if counts["Critical"] > 0 {
-			sb.WriteString(fmt.Sprintf("| 🔴 Critical | %d |\n", counts["Critical"]))
-		}
-		if counts["High"] > 0 {
-			sb.WriteString(fmt.Sprintf("| 🟠 High | %d |\n", counts["High"]))
-		}
-		if counts["Medium"] > 0 {
-			sb.WriteString(fmt.Sprintf("| 🟡 Medium | %d |\n", counts["Medium"]))
-		}
-		if counts["Low"] > 0 {
-			sb.WriteString(fmt.Sprintf("| 🟢 Low | %d |\n", counts["Low"]))
+
+		// Order matters: Critical -> Low
+		order := []string{"Critical", "High", "Medium", "Low"}
+		for _, sev := range order {
+			if count := counts[sev]; count > 0 {
+				emoji := severityEmoji(sev)
+				sb.WriteString(fmt.Sprintf("| %s %s | %d |\n", emoji, sev, count))
+			}
 		}
 	}
 

@@ -21,9 +21,11 @@ func TestFormatInlineComment(t *testing.T) {
 				FilePath:   "test.go",
 				LineNumber: 10,
 				Severity:   "High",
+				Category:   "Bug",
 				Comment:    "Check this out:\n\n```go\nfunc hello() {\n    fmt.Println(\"hi\")\n}\n```",
 			},
 			contains: []string{
+				"### 🟠 High | Bug | Code Review Finding",
 				"> [!WARNING]",
 				"```go",
 				"    fmt.Println",
@@ -39,14 +41,15 @@ func TestFormatInlineComment(t *testing.T) {
 				FilePath:   "test.go",
 				LineNumber: 10,
 				Severity:   "Critical",
+				Category:   "Security",
 				Comment:    "### Problem Title\n\nObservation:\nThis is bad.\n\n```go\n// code here\n```\n\n#### Recommendation\nFix it.",
 			},
 			contains: []string{
-				"### 🛡️ Problem Title",
+				"### 🔴 Critical | Security | Problem Title",
 				"> [!CAUTION]",
 				"This is bad.",
 				"```go",
-				"#### Recommendation",
+				"**Recommendation**",
 				"Fix it.",
 			},
 		},
@@ -60,10 +63,10 @@ func TestFormatInlineComment(t *testing.T) {
 		{
 			name: "Windows path with backslash is handled",
 			sug: core.Suggestion{
-				FilePath: "C:\\path\\test.go", LineNumber: 5, Severity: "Low",
+				FilePath: "C:\\path\\test.go", LineNumber: 5, Severity: "Low", Category: "Style",
 				Comment: "Fix this",
 			},
-			contains: []string{"### 🛡️ Code Review Finding"},
+			contains: []string{"### 🟢 Low | Style | Code Review Finding"},
 		},
 		{
 			name: "invalid line number returns empty string",
