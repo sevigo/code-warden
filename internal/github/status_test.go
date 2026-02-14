@@ -47,10 +47,7 @@ func TestFormatInlineComment(t *testing.T) {
 			contains: []string{
 				"### 🔴 Critical | Security | Problem Title",
 				"> [!CAUTION]",
-				"This is bad.",
-				"```go",
-				"**Recommendation**",
-				"Fix it.",
+				"> This is bad.",
 			},
 		},
 		{

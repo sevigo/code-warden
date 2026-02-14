@@ -103,6 +103,7 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 
 // formatInlineComment generates a pull request comment with severity alerts and category metadata.
 func formatInlineComment(sug core.Suggestion) string {
+	// Restore defensive check (Fix for Medium Correctness issue)
 	if sug.FilePath == "" || sug.LineNumber <= 0 {
 		return ""
 	}
@@ -114,7 +115,7 @@ func formatInlineComment(sug core.Suggestion) string {
 	writeCompactHeader(&sb, sug)
 
 	// Body: Render the comment body, converting #### to bold and handling alerts
-	writeCompactBody(&sb, sug.Comment)
+	writeCompactBody(&sb, sug.Comment, sug.Severity)
 
 	return sb.String()
 }
@@ -137,17 +138,18 @@ func writeCompactHeader(sb *strings.Builder, sug core.Suggestion) {
 	fmt.Fprintf(sb, " | %s\n\n", title)
 }
 
-func writeCompactBody(sb *strings.Builder, comment string) {
+func writeCompactBody(sb *strings.Builder, comment, severity string) {
 	// Strip the title line if we extracted it
 	lines := strings.Split(comment, "\n")
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
 		lines = lines[1:]
 	}
 
+	alertType := severityAlert(severity)
 	state := &commentState{}
 
 	for _, line := range lines {
-		processCommentLine(sb, line, state)
+		processCommentLine(sb, line, state, alertType)
 	}
 }
 
@@ -156,7 +158,7 @@ type commentState struct {
 	inCodeBlock bool
 }
 
-func processCommentLine(sb *strings.Builder, line string, state *commentState) {
+func processCommentLine(sb *strings.Builder, line string, state *commentState, alertType string) {
 	trimmedLine := strings.TrimSpace(line)
 
 	// Skip empty lines at the start
@@ -196,18 +198,38 @@ func processCommentLine(sb *strings.Builder, line string, state *commentState) {
 		return
 	}
 
-	// 	// 3. Render Alert Content
-	// We want to wrap the core content in an alert, but avoid double blockquotes
-	// The original code was handling "> >". Let's simplify.
-	// We ONLY strip one level of blockquotes if it looks like a forced wrapping from previous iterations,
-	// but generally we should trust the LLM's output relative to the new "compact" header.
+	// 3. Normalize Blockquotes (Fix for Critical Correctness issue)
+	// Normalize redundant prefixes like ">>" or "> >" but preserve single "> [!ALERT]"
+	if strings.HasPrefix(trimmedLine, ">>") || strings.HasPrefix(trimmedLine, "> >") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, ">"))
+	}
 
-	// Fix: Do NOT strip ">" unilaterally. Nested blockquotes (>>) are valid markdown.
-	// Only if the LLM output is " > some text" resulting in double nesting when we wrap it (which we don't anymore),
-	// would it be an issue. Since we are moving AWAY from wrapping the whole body in an alert,
-	// we should just respect the line as is.
+	// 4. Render Alert Content
+	state.insideAlert = renderAlertLine(sb, line, trimmedLine, state.insideAlert, alertType)
+}
 
-	sb.WriteString(line + "\n")
+func renderAlertLine(sb *strings.Builder, line, trimmed string, insideAlert bool, alertType string) bool {
+	if !insideAlert && trimmed != "" {
+		fmt.Fprintf(sb, "> [!%s]\n", alertType)
+		insideAlert = true
+	}
+
+	if insideAlert {
+		if trimmed == "" {
+			// Fix: Empty lines inside alerts render incorrectly (missing space after >)
+			sb.WriteString("> \n")
+		} else {
+			// Do not double-style if already quoted
+			if strings.HasPrefix(trimmed, ">") {
+				fmt.Fprintf(sb, "%s\n", line)
+			} else {
+				fmt.Fprintf(sb, "> %s\n", line)
+			}
+		}
+	} else {
+		sb.WriteString(line + "\n")
+	}
+	return insideAlert
 }
 
 // formatReviewSummary generates the final review summary including issue statistics.
@@ -221,7 +243,10 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	var sb strings.Builder
 
 	// 1. Verdict (Top Priority)
-	if review.Verdict != "" {
+	// Check if summary already starts with verdict to avoid duplication
+	summaryHasVerdict := strings.Contains(strings.ToLower(review.Summary), "verdict:")
+
+	if review.Verdict != "" && !summaryHasVerdict {
 		icon := verdictIcon(review.Verdict)
 		// E.g., ### 🚫 Verdict: REQUEST_CHANGES
 		sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
@@ -292,5 +317,21 @@ func severityEmoji(severity string) string {
 		return "🟢"
 	default:
 		return "⚪"
+	}
+}
+
+// severityAlert returns the GitHub Alert type (NOTE, TIP, IMPORTANT, WARNING, CAUTION) for a severity.
+func severityAlert(severity string) string {
+	switch severity {
+	case "Critical":
+		return "CAUTION"
+	case "High":
+		return "WARNING"
+	case "Medium":
+		return "IMPORTANT"
+	case "Low":
+		return "NOTE"
+	default:
+		return "NOTE"
 	}
 }

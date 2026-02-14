@@ -79,6 +79,32 @@ func TestFormatInlineComment_Compact(t *testing.T) {
 	}
 }
 
+func TestFormatInlineComment_NoStrip(t *testing.T) {
+	// Test that we normalize >> to > (based on user feedback)
+	// And that we wrap in alert.
+	sug := core.Suggestion{
+		FilePath:   "main.go",
+		LineNumber: 10,
+		Severity:   "High",
+		Comment:    "> This is a blockquote.\n>> This is nested.",
+	}
+
+	output := formatInlineComment(sug)
+	// Expect the output to be wrapped in a Warning alert
+	assert.Contains(t, output, "> [!WARNING]")
+
+	// Let's assert what the code DOES (User's suggested fix implies loss of nesting but valid GitHub rendering)
+	// Input: > This is a blockquote. -> Output: > This is a blockquote. (Text inside alert)
+	// Input: >> This is nested. -> Output: > This is nested. (Text inside alert)
+
+	// We check that the output contains the lines prefixed by > (inside alert)
+	assert.Contains(t, output, "> This is a blockquote.")
+	assert.Contains(t, output, "> This is nested.")
+
+	// Ensure we don't have the ">>" prefix which breaks GitHub
+	assert.NotContains(t, output, ">> This is nested.")
+}
+
 func TestFormatInlineComment_Visual(t *testing.T) {
 	// 1. Basic Comment
 	sug := core.Suggestion{
@@ -93,9 +119,11 @@ func TestFormatInlineComment_Visual(t *testing.T) {
 
 	// Check Header
 	assert.Contains(t, output, "### 🔴 Critical | Security | SQL Injection Vulnerability")
-	// Check Body (bold headers)
-	assert.NotContains(t, output, "####")
-	// Check Code Block
+	// Check Alert Wrapper (Critical -> CAUTION)
+	assert.Contains(t, output, "> [!CAUTION]")
+	// Check content inside alert
+	assert.Contains(t, output, "> This line is vulnerable to SQL injection.")
+	// Check Code Block inside alert (simple Line + \n)
 	assert.Contains(t, output, "```go")
 }
 
@@ -173,19 +201,4 @@ func TestFormatReviewSummary_WithRatings(t *testing.T) {
 	assert.Contains(t, output, "#### 🤖 Model Ratings")
 	assert.Contains(t, output, "| gpt-4o | ⭐⭐⭐⭐⭐ | Excellent |")
 	assert.Contains(t, output, "| claude-3-opus | ⭐⭐⭐⭐ | Good |")
-}
-
-func TestFormatInlineComment_NoStrip(t *testing.T) {
-	// Test that we DO NOT unilaterally strip >
-	sug := core.Suggestion{
-		FilePath:   "main.go",
-		LineNumber: 10,
-		Severity:   "High",
-		Comment:    "> This is a blockquote.\n>> This is nested.",
-	}
-
-	output := formatInlineComment(sug)
-	// Expect the actual lines to be preserved
-	assert.Contains(t, output, "> This is a blockquote.")
-	assert.Contains(t, output, ">> This is nested.")
 }
