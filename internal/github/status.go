@@ -114,7 +114,7 @@ func formatInlineComment(sug core.Suggestion) string {
 	writeCompactHeader(&sb, sug)
 
 	// Body: Render the comment body, converting #### to bold and handling alerts
-	writeCompactBody(&sb, sug.Comment, sug.Severity)
+	writeCompactBody(&sb, sug.Comment)
 
 	return sb.String()
 }
@@ -137,18 +137,17 @@ func writeCompactHeader(sb *strings.Builder, sug core.Suggestion) {
 	fmt.Fprintf(sb, " | %s\n\n", title)
 }
 
-func writeCompactBody(sb *strings.Builder, comment, severity string) {
+func writeCompactBody(sb *strings.Builder, comment string) {
 	// Strip the title line if we extracted it
 	lines := strings.Split(comment, "\n")
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
 		lines = lines[1:]
 	}
 
-	alertType := severityAlert(severity)
 	state := &commentState{}
 
 	for _, line := range lines {
-		processCommentLine(sb, line, state, alertType)
+		processCommentLine(sb, line, state)
 	}
 }
 
@@ -157,7 +156,7 @@ type commentState struct {
 	inCodeBlock bool
 }
 
-func processCommentLine(sb *strings.Builder, line string, state *commentState, alertType string) {
+func processCommentLine(sb *strings.Builder, line string, state *commentState) {
 	trimmedLine := strings.TrimSpace(line)
 
 	// Skip empty lines at the start
@@ -209,27 +208,6 @@ func processCommentLine(sb *strings.Builder, line string, state *commentState, a
 	// we should just respect the line as is.
 
 	sb.WriteString(line + "\n")
-}
-
-func renderAlertLine(sb *strings.Builder, line, trimmed string, insideAlert bool, alertType string) bool {
-	if !insideAlert && trimmed != "" {
-		fmt.Fprintf(sb, "> [!%s]\n", alertType)
-		insideAlert = true
-	}
-
-	if insideAlert {
-		if trimmed == "" {
-			sb.WriteString(">\n")
-		} else {
-			fmt.Fprintf(sb, "> %s\n", line)
-		}
-	} else {
-		// Should not be reached if logic is correct for "wrapping everything in alert"
-		// But if we decide NOT to wrap everything, this handles it.
-		// Current logic: we wrap the main body in the alert corresponding to severity.
-		sb.WriteString(line + "\n")
-	}
-	return insideAlert
 }
 
 // formatReviewSummary generates the final review summary including issue statistics.
@@ -314,21 +292,5 @@ func severityEmoji(severity string) string {
 		return "🟢"
 	default:
 		return "⚪"
-	}
-}
-
-// severityAlert returns the GitHub Alert type (NOTE, TIP, IMPORTANT, WARNING, CAUTION) for a severity.
-func severityAlert(severity string) string {
-	switch severity {
-	case "Critical":
-		return "CAUTION"
-	case "High":
-		return "WARNING"
-	case "Medium":
-		return "IMPORTANT"
-	case "Low":
-		return "NOTE"
-	default:
-		return "NOTE"
 	}
 }
