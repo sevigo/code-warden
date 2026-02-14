@@ -125,7 +125,20 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 		return err
 	}
 
-	// 4. Post the result
+	// 4. Validate and filter suggestions (Fix for 422 Unprocessable Entity)
+	validLineMaps := make(map[string]map[int]struct{})
+	for _, f := range changedFiles {
+		validLineMaps[f.Filename] = github.ParseValidLinesFromPatch(f.Patch, j.logger)
+	}
+
+	inlineSuggestions, offDiffSuggestions := ValidateSuggestionsByLine(j.logger, structuredReview.Suggestions, validLineMaps)
+	structuredReview.Suggestions = inlineSuggestions
+
+	if len(offDiffSuggestions) > 0 {
+		j.logger.Info("Hidden off-diff suggestions during re-review", "count", len(offDiffSuggestions))
+	}
+
+	// 5. Post the result
 	if err = reviewEnv.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
 		return fmt.Errorf("failed to post re-review comment: %w", err)
 	}
