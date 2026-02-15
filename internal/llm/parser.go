@@ -169,14 +169,6 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 		}
 	}
 
-	// Ensure consistency if we want to support both during migration,
-	// but the plan implies moving towards code_suggestion.
-	// I will set CodeSuggestion. SuggestedCode in struct might be redundant now but I'll leave it in the file for now to avoid breaking other things if they depend on it,
-	// although I'm not setting it here anymore?
-	// Wait, if I don't set SuggestedCode, and status.go uses SuggestedCode (currently), I need to update status.go to use CodeSuggestion too.
-	// The plan says "Update formatInlineComment ... If sug.CodeSuggestion != ''".
-	// So yes, I switch entirely to CodeSuggestion.
-
 	return s
 }
 
