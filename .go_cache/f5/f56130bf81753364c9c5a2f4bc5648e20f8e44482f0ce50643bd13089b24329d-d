@@ -1,0 +1,5 @@
+./all_tokens.go
+./generate.go
+./grapheme_clusters.go
+./tables.go
+./utf8_seqs.go

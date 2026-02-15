@@ -255,7 +255,7 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	// Actually, to avoid "RerankPrompt not defined" error, I should make sure I ADD it to llm package first or use a string literal.
 	// I will use "rerank_precision" string literal matching the prompt file name I will create.
 
-	prompt, err := promptMgr.Render("rerank_precision", llm.ModelProvider(cfg.AI.RerankerModel), nil)
+	prompt, err := promptMgr.Render("rerank_precision", nil)
 	if err != nil {
 		// Fallback or log? User plan implies we should use it.
 		// If render fails (e.g. file not found), maybe fallback to default.

@@ -332,6 +332,10 @@ func (s *Scanner) validateRepoPath(basePath, providedPath string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute base path: %w", err)
 	}
+	// Resolve symlinks for base path too (e.g. handles macOS /var -> /private/var)
+	if resolvedBase, err := filepath.EvalSymlinks(absBase); err == nil {
+		absBase = resolvedBase
+	}
 
 	absPath, err := s.resolveAbsolutePath(absBase, providedPath)
 	if err != nil {
@@ -376,16 +380,23 @@ func (s *Scanner) resolveAbsolutePath(absBase, providedPath string) (string, err
 
 func (s *Scanner) resolveMissingPathTarget(absPath string) (string, error) {
 	curr := absPath
+	var missing []string
 	for {
 		parent := filepath.Dir(curr)
 		if parent == curr || parent == "." || parent == "/" || parent == filepath.VolumeName(parent) {
 			break
 		}
 		if resolved, pErr := filepath.EvalSymlinks(parent); pErr == nil {
-			return filepath.Join(resolved, filepath.Base(curr)), nil
+			// Found the first existing parent! Reconstruct the path from it downwards.
+			res := filepath.Join(resolved, filepath.Base(curr))
+			for i := len(missing) - 1; i >= 0; i-- {
+				res = filepath.Join(res, missing[i])
+			}
+			return res, nil
 		} else if !os.IsNotExist(pErr) {
 			return "", fmt.Errorf("parent path validation failed: %w", pErr)
 		}
+		missing = append(missing, filepath.Base(curr))
 		curr = parent
 	}
 	return absPath, nil

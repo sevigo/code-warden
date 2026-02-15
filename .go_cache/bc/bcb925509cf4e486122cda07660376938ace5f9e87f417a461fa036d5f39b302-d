@@ -1,0 +1,11 @@
+./bert.go
+./default.go
+./normalized.go
+./normalizer.go
+./pattern.go
+./precompiled.go
+./prepend.go
+./replace.go
+./sequence.go
+./strip.go
+./unicode.go

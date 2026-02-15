@@ -575,8 +575,7 @@ func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData
 			return
 		}
 
-		modelForPrompt := ModelProvider(m)
-		prompt, err := r.promptMgr.Render(CodeReviewPrompt, modelForPrompt, localPromptData)
+		prompt, err := r.promptMgr.Render(CodeReviewPrompt, localPromptData)
 		if err != nil {
 			result.Error = fmt.Errorf("failed to render prompt: %w", err)
 			return
@@ -945,8 +944,7 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 		Context:  contextString,
 		History:  strings.Join(history, "\n"),
 	}
-	modelForPrompt := ModelProvider(r.cfg.AI.GeneratorModel)
-	prompt, err := r.promptMgr.Render("question", modelForPrompt, promptData)
+	prompt, err := r.promptMgr.Render("question", promptData)
 	if err != nil {
 		return "", fmt.Errorf("could not render question prompt: %w", err)
 	}
@@ -1035,8 +1033,7 @@ func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core
 		llmModel = r.generatorLLM
 	}
 
-	modelForPrompt := ModelProvider(r.cfg.AI.GeneratorModel)
-	prompt, err := r.promptMgr.Render(promptKey, modelForPrompt, promptData)
+	prompt, err := r.promptMgr.Render(promptKey, promptData)
 	if err != nil {
 		return "", fmt.Errorf("could not render prompt '%s': %w", promptKey, err)
 	}
@@ -1418,7 +1415,7 @@ func (r *ragService) generateSingleHyDESnippet(ctx context.Context, file interna
 		return ""
 	}
 
-	prompt, err := r.promptMgr.Render(HyDEPrompt, DefaultProvider, HyDEData{Patch: file.Patch})
+	prompt, err := r.promptMgr.Render(HyDEPrompt, HyDEData{Patch: file.Patch})
 	if err != nil {
 		r.logger.Error("failed to render HyDE prompt", "error", err, "file", file.Filename)
 		return ""
