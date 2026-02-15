@@ -12,9 +12,6 @@ type Suggestion struct {
 	EstimatedFixTime string `json:"estimated_fix_time,omitempty"`
 	Reproducibility  string `json:"reproducibility,omitempty"`
 	CodeSuggestion   string `json:"code_suggestion,omitempty"` // Raw code fix from LLM
-	// SuggestedCode is deprecated and will be removed in v2.
-	// Kept for internal binary compatibility but ignored in JSON.
-	SuggestedCode string `json:"-"`
 }
 
 // StructuredReview represents the full review output from the LLM in a parsable format.
