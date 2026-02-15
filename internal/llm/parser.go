@@ -155,6 +155,27 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 	if repro, ok := extractTag(content, "reproducibility"); ok {
 		s.Reproducibility = strings.TrimSpace(repro)
 	}
+	// Prioritize <code_suggestion>
+	codeTag, codeOk := extractTag(content, "code_suggestion")
+
+	if codeOk {
+		s.CodeSuggestion = stripMarkdownFence(unindent(codeTag))
+	} else {
+		// Fallback to <fix_code> with warning
+		fix, fixOk := extractTag(content, "fix_code")
+		if fixOk {
+			// Logger isn't available here in current sig, assuming safe fallback
+			s.CodeSuggestion = stripMarkdownFence(unindent(fix))
+		}
+	}
+
+	// Ensure consistency if we want to support both during migration,
+	// but the plan implies moving towards code_suggestion.
+	// I will set CodeSuggestion. SuggestedCode in struct might be redundant now but I'll leave it in the file for now to avoid breaking other things if they depend on it,
+	// although I'm not setting it here anymore?
+	// Wait, if I don't set SuggestedCode, and status.go uses SuggestedCode (currently), I need to update status.go to use CodeSuggestion too.
+	// The plan says "Update formatInlineComment ... If sug.CodeSuggestion != ''".
+	// So yes, I switch entirely to CodeSuggestion.
 
 	return s
 }
@@ -412,24 +433,39 @@ func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
 
 func stripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)
+
+	// If it doesn't start with a fence, return original immediately
 	if !strings.HasPrefix(trimmed, "```") {
 		return s
 	}
+
 	lines := strings.Split(trimmed, "\n")
 	if len(lines) < 2 {
-		return s
+		return s // Too short to be a valid block, return original
 	}
 
-	closeIdx := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "```" {
-			closeIdx = i
+	// Find start (skip opening line like ```go)
+	start := 1
+
+	// Scan backwards for closing fence
+	end := -1
+	for i := len(lines) - 1; i >= start; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+			end = i
 			break
 		}
 	}
 
-	if closeIdx > 0 {
-		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
+	// If no closing fence found, preserve original data (Critical Fix)
+	if end == -1 {
+		return s
 	}
-	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
+
+	if start >= end {
+		// Only return empty string if the fence was literally empty (e.g. ```\n```)
+		// implying the LLM output an empty suggestion.
+		return ""
+	}
+
+	return strings.Join(lines[start:end], "\n")
 }
