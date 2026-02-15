@@ -1,6 +1,0 @@
-./events.go
-./jobs.go
-./repo_config.go
-./repomanager.go
-./review.go
-./structured_review.go

@@ -1,7 +1,0 @@
-./constant.go
-./emptyStatement.go
-./enumType.go
-./error.go
-./fullIdent.go
-./lexer.go
-./messageType.go

@@ -1,6 +1,0 @@
-./error.go
-./file.go
-./iterator.go
-./param.go
-./rune-reader.go
-./util.go
