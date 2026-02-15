@@ -4,6 +4,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -31,11 +32,12 @@ type StatusUpdater interface {
 
 type statusUpdater struct {
 	client Client
+	logger *slog.Logger
 }
 
 // NewStatusUpdater creates and returns a new instance of a statusUpdater.
-func NewStatusUpdater(client Client) StatusUpdater {
-	return &statusUpdater{client: client}
+func NewStatusUpdater(client Client, logger *slog.Logger) StatusUpdater {
+	return &statusUpdater{client: client, logger: logger}
 }
 
 // PostSimpleComment posts a single, general comment on the pull request.
@@ -92,9 +94,13 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 		// Enforce sane line ordering: startLine must be <= LineNumber
 		startLine := sug.StartLine
 		if startLine == 0 || startLine > sug.LineNumber {
-			// Log for observability if we are normalizing a weird range
 			if startLine > sug.LineNumber {
-				fmt.Printf("Warning: normalizing invalid range %s:%d-%d to single line %d\n", sug.FilePath, startLine, sug.LineNumber, sug.LineNumber)
+				s.logger.Warn("normalizing invalid line range",
+					"file", sug.FilePath,
+					"start_line", startLine,
+					"line_number", sug.LineNumber,
+					"normalized_to", sug.LineNumber,
+				)
 			}
 			startLine = sug.LineNumber // treat as single-line at sug.LineNumber
 		}
@@ -111,7 +117,6 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 }
 
 // formatInlineComment generates a pull request comment with a clean, compact format.
-// It uses GitHub alerts only for Critical/High severity issues.
 func formatInlineComment(sug core.Suggestion) string {
 	if sug.FilePath == "" || sug.LineNumber <= 0 {
 		return ""
@@ -119,16 +124,14 @@ func formatInlineComment(sug core.Suggestion) string {
 
 	var sb strings.Builder
 	lines := writeCommentHeader(&sb, sug)
-	// Only use alerts for Critical and High severity
-	useAlert := sug.Severity == SeverityCritical || sug.Severity == SeverityHigh
-	writeCommentBody(&sb, lines, useAlert, severityAlert(sug.Severity))
+	writeCommentBody(&sb, lines)
 
 	return sb.String()
 }
 
 func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
 	severity := sug.Severity
-	emoji := severityEmoji(severity)
+	emoji := SeverityEmoji(severity)
 
 	content := strings.TrimSpace(sug.Comment)
 	// Strip double blockquotes if the model generated them
@@ -151,68 +154,46 @@ func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
 	}
 	sb.WriteString("\n\n")
 
+	// Add GitHub Alert for high-severity issues
+	if severity == SeverityCritical || severity == SeverityHigh {
+		alert := SeverityAlert(severity)
+		fmt.Fprintf(sb, "> [!%s]\n", alert)
+	}
+
 	return lines[startIdx:]
 }
 
-// commentBodyState tracks the state of comment body processing.
-type commentBodyState struct {
-	insideAlert  bool
-	inCodeBlock  bool
-	alertStarted bool
-}
-
-func writeCommentBody(sb *strings.Builder, lines []string, useAlert bool, alertType string) {
-	state := commentBodyState{}
+func writeCommentBody(sb *strings.Builder, lines []string) {
+	inCodeBlock := false
 
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 
-		switch {
-		case isCodeBlockDelimiter(trimmedLine):
-			handleCodeBlock(sb, line, &state)
-		case state.inCodeBlock:
+		// Handle Code Blocks
+		if strings.HasPrefix(trimmedLine, "```") {
+			inCodeBlock = !inCodeBlock
 			sb.WriteString(line + "\n")
-		case isSubHeader(trimmedLine):
-			handleSubHeader(sb, line, trimmedLine, &state)
-		case trimmedLine == "":
-			handleEmptyLine(sb, state.insideAlert)
-		default:
-			handleContent(sb, line, useAlert, alertType, &state)
+			continue
 		}
-	}
-}
 
-func isCodeBlockDelimiter(line string) bool {
-	return strings.HasPrefix(line, "```")
-}
-
-func isSubHeader(line string) bool {
-	return strings.HasPrefix(line, "####") || strings.HasPrefix(line, "###")
-}
-
-func handleCodeBlock(sb *strings.Builder, line string, state *commentBodyState) {
-	if state.inCodeBlock {
-		state.inCodeBlock = false
-	} else {
-		if state.insideAlert {
-			state.insideAlert = false
-			sb.WriteString("\n")
+		if inCodeBlock {
+			sb.WriteString(line + "\n")
+			continue
 		}
-		state.inCodeBlock = true
-	}
-	sb.WriteString(line + "\n")
-}
 
-func handleSubHeader(sb *strings.Builder, line, trimmedLine string, state *commentBodyState) {
-	if state.insideAlert {
-		state.insideAlert = false
-		sb.WriteString("\n")
-	}
-	// Convert #### to bold prefix for cleaner look
-	if strings.HasPrefix(trimmedLine, "####") {
-		headerText := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "####"))
-		sb.WriteString(formatSubHeader(headerText))
-	} else {
+		// Handle Sub-Headers (####) - convert to bold
+		if strings.HasPrefix(trimmedLine, "####") {
+			headerText := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "####"))
+			sb.WriteString(formatSubHeader(headerText))
+			continue
+		}
+
+		// Skip ### headers (already handled in header)
+		if strings.HasPrefix(trimmedLine, "###") {
+			continue
+		}
+
+		// Write the line as-is (plain markdown)
 		sb.WriteString(line + "\n")
 	}
 }
@@ -223,32 +204,6 @@ func formatSubHeader(headerText string) string {
 		return "💡 **Fix:**\n"
 	default:
 		return "**" + headerText + "**\n"
-	}
-}
-
-func handleEmptyLine(sb *strings.Builder, insideAlert bool) {
-	if insideAlert {
-		sb.WriteString("> \n")
-	} else {
-		sb.WriteString("\n")
-	}
-}
-
-func handleContent(sb *strings.Builder, line string, useAlert bool, alertType string, state *commentBodyState) {
-	if useAlert {
-		// Start alert block on first non-empty content
-		if !state.alertStarted {
-			fmt.Fprintf(sb, "> [!%s]\n", alertType)
-			state.alertStarted = true
-			state.insideAlert = true
-		}
-		// Strip any existing > prefix from the line
-		strippedLine := strings.TrimPrefix(line, ">")
-		cleanLine := strings.TrimRight(strippedLine, " \t\r\n")
-		fmt.Fprintf(sb, "> %s\n", cleanLine)
-	} else {
-		// Plain markdown for Medium/Low severity
-		sb.WriteString(line + "\n")
 	}
 }
 
@@ -326,8 +281,8 @@ func verdictIcon(verdict string) string {
 	}
 }
 
-// severityEmoji returns an emoji for the given severity level.
-func severityEmoji(severity string) string {
+// SeverityEmoji returns an emoji for the given severity level.
+func SeverityEmoji(severity string) string {
 	switch severity {
 	case SeverityCritical:
 		return "🔴"
@@ -342,8 +297,8 @@ func severityEmoji(severity string) string {
 	}
 }
 
-// severityAlert returns the GitHub Alert type (NOTE, TIP, IMPORTANT, WARNING, CAUTION) for a severity.
-func severityAlert(severity string) string {
+// SeverityAlert returns the GitHub alert type for a severity level.
+func SeverityAlert(severity string) string {
 	switch severity {
 	case SeverityCritical:
 		return "CAUTION"

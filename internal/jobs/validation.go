@@ -89,7 +89,7 @@ func isReviewableFile(path string) bool {
 		base := filepath.Base(path)
 		// Common build/config files without extensions
 		switch base {
-		case "makefile", "dockerfile", "rakefile", "gemfile", "procfile":
+		case "rakefile", "gemfile", "procfile", "dockerfile", "makefile":
 			return false // These are config/build files
 		}
 		// Unknown files without extension - review them (could be scripts)

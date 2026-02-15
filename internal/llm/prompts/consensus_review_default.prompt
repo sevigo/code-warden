@@ -52,13 +52,11 @@ Here are the individual reviews:
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>85</confidence>
   <summary>
-    # 🛡️ Code Warden Consensus Review
-    ## 🚦 Verdict: [Value]
     > [Executive Summary Markdown here. Highlight key strengths and critical weaknesses. ~2-3 sentences.]
   </summary>
   <suggestions>
     <suggestion>
-      <file>path/to/file.go</file>
+      <file>path/to/file.lang</file> // use correct language extension here
       <line>123</line>
       <severity>Critical</severity>
       <category>Security</category>
@@ -73,7 +71,7 @@ Here are the individual reviews:
         [Why this needs to be fixed...]
 
         **Fix:**
-        ```go
+        ```lang // use correct language extension here
         // Minimal, correct fix
         ...
         ```

@@ -300,7 +300,7 @@ func TestSeverityEmoji(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.severity, func(t *testing.T) {
-			got := severityEmoji(tt.severity)
+			got := SeverityEmoji(tt.severity)
 			assert.Equal(t, tt.expected, got)
 		})
 	}
@@ -340,7 +340,7 @@ func TestSeverityAlert(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.severity, func(t *testing.T) {
-			got := severityAlert(tt.severity)
+			got := SeverityAlert(tt.severity)
 			assert.Equal(t, tt.expected, got)
 		})
 	}

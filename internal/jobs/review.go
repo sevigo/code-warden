@@ -330,34 +330,33 @@ func appendOffDiffSuggestions(summary string, suggestions []core.Suggestion) str
 	for _, s := range suggestions {
 		// Extract a brief title from the first line of the comment
 		briefTitle := extractBriefTitle(s.Comment)
-		emoji := severityEmoji(s.Severity)
-		sb.WriteString(fmt.Sprintf("- **%s:%d** %s %s: %s\n", s.FilePath, s.LineNumber, emoji, s.Severity, briefTitle))
+		emoji := github.SeverityEmoji(s.Severity)
+		alert := github.SeverityAlert(s.Severity)
+		sb.WriteString(fmt.Sprintf("- **%s:%d** %s %s [%s]: %s\n", s.FilePath, s.LineNumber, emoji, s.Severity, alert, briefTitle))
 	}
 
 	sb.WriteString("\n</details>")
 	return sb.String()
 }
 
-// extractBriefTitle extracts a brief title from the comment (first meaningful line).
 func extractBriefTitle(comment string) string {
-	lines := strings.Split(comment, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(comment, "\n")
+	for line := range lines {
 		trimmed := strings.TrimSpace(line)
-		// Skip empty lines and markdown headers
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "**") {
+		if trimmed == "" {
 			continue
 		}
-		// Skip observation/rationale labels
-		if strings.HasPrefix(trimmed, "Observation:") || strings.HasPrefix(trimmed, "Rationale:") {
-			rest := strings.TrimPrefix(trimmed, "Observation:")
-			rest = strings.TrimPrefix(rest, "Rationale:")
-			rest = strings.TrimSpace(rest)
-			if rest != "" {
-				return truncateTitle(rest, 80)
-			}
+		// Skip known section markers precisely
+		if strings.HasPrefix(trimmed, "Observation:") ||
+			strings.HasPrefix(trimmed, "**Observation:**") ||
+			strings.HasPrefix(trimmed, "Rationale:") ||
+			strings.HasPrefix(trimmed, "**Rationale:") ||
+			strings.HasPrefix(trimmed, "Fix:") ||
+			strings.HasPrefix(trimmed, "**Fix:") ||
+			strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, ">") {
 			continue
 		}
-		// Return the first meaningful content
 		return truncateTitle(trimmed, 80)
 	}
 	return "Issue identified"
@@ -369,22 +368,6 @@ func truncateTitle(title string, maxLen int) string {
 		return title
 	}
 	return title[:maxLen-3] + "..."
-}
-
-// severityEmoji returns the emoji for a severity level.
-func severityEmoji(severity string) string {
-	switch severity {
-	case "Critical":
-		return "🔴"
-	case "High":
-		return "🟠"
-	case "Medium":
-		return "🟡"
-	case "Low":
-		return "🟢"
-	default:
-		return "⚪"
-	}
 }
 
 // updateVectorStoreAndSHA performs the indexing of changed files.
@@ -432,7 +415,7 @@ func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, ti
 	}
 	event.HeadSHA = pr.GetHead().GetSHA()
 
-	statusUpdater := github.NewStatusUpdater(ghClient)
+	statusUpdater := github.NewStatusUpdater(ghClient, j.logger)
 	checkRunID, err := statusUpdater.InProgress(ctx, event, title, summary)
 	if err != nil {
 		return nil, "", nil, 0, fmt.Errorf("failed to set in-progress status: %w", err)
