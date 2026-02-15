@@ -123,15 +123,13 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
       <estimated_fix_time>5m</estimated_fix_time>
       <reproducibility>Always</reproducibility>
       <comment>
-        ### [Issue Title]
-        
         **Observation:**
         [Description of the technical problem found in the code]
-        
+
         **Rationale:**
         [Why this is important (security, performance, correctness, etc.)]
-        
-        #### 💡 Suggested Fix
+
+        **Fix:**
         ```{{.Language}}
         // Optimized/Corrected implementation
         ```

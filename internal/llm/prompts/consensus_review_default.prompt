@@ -66,15 +66,13 @@ Here are the individual reviews:
       <estimated_fix_time>15m</estimated_fix_time>
       <reproducibility>Always | Sometimes | Intermittent</reproducibility>
       <comment>
-        ### [Issue Title]
-        
         **Observation:**
         [Synthesized description of the issue...]
-        
+
         **Rationale:**
         [Why this needs to be fixed...]
-        
-        #### 💡 Suggested Fix
+
+        **Fix:**
         ```go
         // Minimal, correct fix
         ...

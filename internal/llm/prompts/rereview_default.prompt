@@ -67,10 +67,13 @@ Here is the review you provided previously:
       <line>10</line>
       <severity>Critical | High | Medium</severity>
       <comment>
-        ### [Issue Title]
-        **Observation:** [Why this feedback from the original review is still an issue]
-        **Rationale:** [Impact if left unaddressed]
-        #### 💡 Suggested Fix
+        **Observation:**
+        [Why this feedback from the original review is still an issue]
+
+        **Rationale:**
+        [Impact if left unaddressed]
+
+        **Fix:**
         [Clear recommendation or code snippet]
       </comment>
     </suggestion>
