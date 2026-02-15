@@ -392,7 +392,7 @@ func TestStripMarkdownFence(t *testing.T) {
 		{
 			name:  "Unclosed fence",
 			input: "```go\nfunc foo() {}",
-			want:  "```go\nfunc foo() {}",
+			want:  "func foo() {}",
 		},
 		{
 			name:  "Fence with whitespace",

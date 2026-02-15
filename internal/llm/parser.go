@@ -291,11 +291,11 @@ func sanitizePath(path string) string {
 
 	// Normalize and reject traversal attempts
 	cleaned := filepath.Clean(path)
-	if strings.Contains(cleaned, "..") || strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, `\`) {
+	if filepath.IsAbs(cleaned) || strings.Contains(cleaned, "..") || strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, `\`) {
 		return ""
 	}
 
-	return cleaned
+	return filepath.ToSlash(cleaned)
 }
 
 // normalizeVerdict maps a string to canonical core.Verdict constants.
