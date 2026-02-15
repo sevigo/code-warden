@@ -114,7 +114,7 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 			return fmt.Errorf("review cancelled: %w", ctx.Err())
 		}
 
-		formattedComment := formatInlineComment(ctx, sug, s.logger)
+		formattedComment := formatInlineComment(ctx, sug)
 		if formattedComment == "" {
 			continue
 		}
@@ -146,7 +146,7 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 
 // formatInlineComment creates a GitHub-flavored markdown comment for inline review suggestions.
 // It uses GitHub Alerts for Critical/High severity and plain markdown for Medium/Low.
-func formatInlineComment(ctx context.Context, sug core.Suggestion, logger *slog.Logger) string {
+func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 	if ctx.Err() != nil {
 		return ""
 	}
@@ -162,7 +162,7 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion, logger *slog.
 	emoji := SeverityEmoji(sug.Severity)
 	sb.WriteString(fmt.Sprintf("**%s %s**", emoji, sug.Severity))
 	if sug.Category != "" {
-		sb.WriteString(fmt.Sprintf(" — %s", sug.Category))
+		fmt.Fprintf(&sb, " — %s", sug.Category)
 	}
 	sb.WriteString("\n\n")
 
@@ -212,7 +212,7 @@ func preprocessComment(comment string) string {
 	lines := strings.Split(comment, "\n")
 	var processed []string
 
-	for i := 0; i < len(lines); i++ {
+	for i := range lines {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
@@ -234,11 +234,12 @@ func preprocessComment(comment string) string {
 
 			// Map common header patterns to emojis
 			emoji := "💡"
-			if containsAny(strings.ToLower(headerText), []string{"fix", "solution", "recommendation"}) {
+			switch {
+			case containsAny(strings.ToLower(headerText), []string{"fix", "solution", "recommendation"}):
 				emoji = "💡"
-			} else if containsAny(strings.ToLower(headerText), []string{"rationale", "why", "reason"}) {
+			case containsAny(strings.ToLower(headerText), []string{"rationale", "why", "reason"}):
 				emoji = "📖"
-			} else if containsAny(strings.ToLower(headerText), []string{"observation", "issue", "problem"}) {
+			case containsAny(strings.ToLower(headerText), []string{"observation", "issue", "problem"}):
 				emoji = "🔍"
 			}
 

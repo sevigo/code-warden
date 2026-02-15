@@ -354,14 +354,14 @@ func stripMarkdownFence(s string) string {
 	startLine := -1
 	endLine := -1
 
-	for i := 0; i < len(lines); i++ {
+	for i := range lines {
 		line := strings.TrimSpace(lines[i])
-		
+
 		// Only process lines that are pure fence markers (```)
 		if !strings.HasPrefix(line, "```") {
 			continue
 		}
-		
+
 		// Count backtick sequences — only match standalone fences
 		if strings.Count(line, "```") != 1 {
 			continue // Skip lines with multiple ``` sequences
@@ -373,7 +373,6 @@ func stripMarkdownFence(s string) string {
 			startLine = i
 		} else {
 			// Closing fence
-			fenceDepth = 0
 			endLine = i
 			break
 		}
