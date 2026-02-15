@@ -175,11 +175,11 @@ func TestFormatInlineComment(t *testing.T) {
 		{
 			name: "includes suggested code block and footer",
 			sug: core.Suggestion{
-				FilePath:      "test.go",
-				LineNumber:    10,
-				Severity:      "Medium",
-				Comment:       "Use a faster algorithm.",
-				SuggestedCode: "func fast() {\n  // optimized\n}",
+				FilePath:       "test.go",
+				LineNumber:     10,
+				Severity:       "Medium",
+				Comment:        "Use a faster algorithm.",
+				CodeSuggestion: "func fast() {\n  // optimized\n}",
 			},
 			contains: []string{
 				"**🟡 Medium**",

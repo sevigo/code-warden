@@ -146,7 +146,7 @@ func formatInlineComment(sug core.Suggestion) string {
 		fmt.Fprintf(&sb, "> [!%s]\n", alert)
 	}
 
-	writeCommentBody(&sb, lines, sug.SuggestedCode)
+	writeCommentBody(&sb, lines, sug.CodeSuggestion)
 
 	// Add Re-Review Footer
 	sb.WriteString("\n---\n")

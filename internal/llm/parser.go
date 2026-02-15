@@ -156,9 +156,21 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 		s.Reproducibility = strings.TrimSpace(repro)
 	}
 	if fix, ok := extractTag(content, "fix_code"); ok {
-		// Clean up the suggested code (trim whitespace, remove markdown fences if model added them)
-		s.SuggestedCode = stripMarkdownFence(unindent(fix))
+		// Legacy/Fallback
+		s.CodeSuggestion = stripMarkdownFence(unindent(fix))
 	}
+	// Preferred: Explicit code_suggestion tag
+	if fix, ok := extractTag(content, "code_suggestion"); ok {
+		s.CodeSuggestion = stripMarkdownFence(unindent(fix))
+	}
+
+	// Ensure consistency if we want to support both during migration,
+	// but the plan implies moving towards code_suggestion.
+	// I will set CodeSuggestion. SuggestedCode in struct might be redundant now but I'll leave it in the file for now to avoid breaking other things if they depend on it,
+	// although I'm not setting it here anymore?
+	// Wait, if I don't set SuggestedCode, and status.go uses SuggestedCode (currently), I need to update status.go to use CodeSuggestion too.
+	// The plan says "Update formatInlineComment ... If sug.CodeSuggestion != ''".
+	// So yes, I switch entirely to CodeSuggestion.
 
 	return s
 }
@@ -416,24 +428,29 @@ func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
 
 func stripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)
+
+	// Check if it starts with a fence
 	if !strings.HasPrefix(trimmed, "```") {
 		return s
 	}
+
 	lines := strings.Split(trimmed, "\n")
 	if len(lines) < 2 {
-		return s
+		return s // Too short to be a valid block
 	}
 
-	closeIdx := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "```" {
-			closeIdx = i
-			break
-		}
+	// Remove first line (e.g., ```go)
+	start := 1
+
+	// Check last line for closing fence
+	end := len(lines)
+	if strings.HasPrefix(strings.TrimSpace(lines[end-1]), "```") {
+		end--
 	}
 
-	if closeIdx > 0 {
-		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
+	if start >= end {
+		return ""
 	}
-	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
+
+	return strings.Join(lines[start:end], "\n")
 }

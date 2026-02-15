@@ -11,7 +11,20 @@ type Suggestion struct {
 	Confidence       int    `json:"confidence,omitempty"`
 	EstimatedFixTime string `json:"estimated_fix_time,omitempty"`
 	Reproducibility  string `json:"reproducibility,omitempty"`
-	SuggestedCode    string `json:"suggested_code,omitempty"` // For GitHub suggested changes
+	CodeSuggestion   string `json:"code_suggestion,omitempty"` // Raw code fix from LLM
+	SuggestedCode    string `json:"suggested_code,omitempty"`  // Deprecated: Kept for backward compatibility if needed, or remove if unused. Keeping for now as per plan implies addition. Actually, the plan says "Add CodeSuggestion", I should probably use that. The existing `SuggestedCode` seems to be what was used before, or maybe I should replace it? The prompt says "Add a CodeSuggestion field". code-warden seems to be using `SuggestedCode` in `status.go` currently (line 14 above).
+	// Wait, looking at `status.go` in previous turn (step 8):
+	// 14: 	SuggestedCode    string `json:"suggested_code,omitempty"` // For GitHub suggested changes
+	// And parser.go (step 7):
+	// 160: 		s.SuggestedCode = stripMarkdownFence(unindent(fix))
+
+	// The plan says:
+	// Core: Add CodeSuggestion field.
+	// Parser: s.CodeSuggestion = stripMarkdownFence(unindent(fix))
+	// Github: if sug.CodeSuggestion != "" { ... }
+
+	// It seems I should add `CodeSuggestion` and use IT instead of `SuggestedCode`.
+	// I will add it.
 }
 
 // StructuredReview represents the full review output from the LLM in a parsable format.
