@@ -1,4 +1,3 @@
-// Package github provides functionality for interacting with the GitHub API.
 package github
 
 import (

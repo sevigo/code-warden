@@ -1,5 +1,3 @@
-// Package llm provides functionality for interacting with Large Language Models (LLMs),
-// including prompt construction and Retrieval-Augmented Generation (RAG) workflows.
 package llm
 
 import (
