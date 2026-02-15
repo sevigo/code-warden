@@ -140,17 +140,32 @@ func formatInlineComment(sug core.Suggestion) string {
 	var sb strings.Builder
 	lines := writeCommentHeader(&sb, sug)
 
-	// Add GitHub Alert for high-severity issues
+	// Determine if we need an alert block
+	prefix := ""
 	if sug.Severity == SeverityCritical || sug.Severity == SeverityHigh {
 		alert := SeverityAlert(sug.Severity)
 		fmt.Fprintf(&sb, "> [!%s]\n", alert)
+		prefix = "> "
 	}
 
-	writeCommentBody(&sb, lines, sug.SuggestedCode)
+	writeCommentBody(&sb, lines, prefix)
 
-	// Add Re-Review Footer
-	sb.WriteString("\n---\n")
-	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
+	// Append GitHub Suggested Change if present
+	// MUST be outside the alert block to function as a suggested change
+	if sug.SuggestedCode != "" {
+		sb.WriteString("\n```suggestion\n")
+		// Sanitize to prevent breaking the fence
+		code := strings.ReplaceAll(sug.SuggestedCode, "```", "`"+""+"`"+""+"`")
+		sb.WriteString(strings.TrimSpace(code))
+		sb.WriteString("\n```\n")
+	}
+
+	// Add Re-Review Footer only if not already present
+	// Check original comment for the command to avoid duplication
+	if !strings.Contains(sug.Comment, "/rereview") {
+		sb.WriteString("\n---\n")
+		sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
+	}
 
 	return sb.String()
 }
@@ -183,7 +198,7 @@ func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
 	return lines[startIdx:]
 }
 
-func writeCommentBody(sb *strings.Builder, lines []string, suggestedCode string) {
+func writeCommentBody(sb *strings.Builder, lines []string, prefix string) {
 	inCodeBlock := false
 
 	for _, line := range lines {
@@ -192,19 +207,19 @@ func writeCommentBody(sb *strings.Builder, lines []string, suggestedCode string)
 		// Handle Code Blocks
 		if strings.HasPrefix(trimmedLine, "```") {
 			inCodeBlock = !inCodeBlock
-			sb.WriteString(line + "\n")
+			sb.WriteString(prefix + line + "\n")
 			continue
 		}
 
 		if inCodeBlock {
-			sb.WriteString(line + "\n")
+			sb.WriteString(prefix + line + "\n")
 			continue
 		}
 
 		// Handle Sub-Headers (####) - convert to bold
 		if strings.HasPrefix(trimmedLine, "####") {
 			headerText := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "####"))
-			sb.WriteString(formatSubHeader(headerText))
+			sb.WriteString(prefix + formatSubHeader(headerText))
 			continue
 		}
 
@@ -213,15 +228,8 @@ func writeCommentBody(sb *strings.Builder, lines []string, suggestedCode string)
 			continue
 		}
 
-		// Write the line as-is (plain markdown)
-		sb.WriteString(line + "\n")
-	}
-
-	// Append GitHub Suggested Change if present
-	if suggestedCode != "" {
-		sb.WriteString("\n```suggestion\n")
-		sb.WriteString(suggestedCode)
-		sb.WriteString("\n```\n")
+		// Write the line with prefix
+		sb.WriteString(prefix + line + "\n")
 	}
 }
 

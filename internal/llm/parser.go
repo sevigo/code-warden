@@ -414,26 +414,15 @@ func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
 	return path, ln, ln, true
 }
 
+// stripMarkdownFence removes surrounding markdown code fences (```) and any language identifier.
 func stripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)
-	if !strings.HasPrefix(trimmed, "```") {
-		return s
+	// Regex to match start fence (``` + optional chars), content, and end fence (```)
+	// (?s) enables dot-matches-newline
+	re := regexp.MustCompile(`(?s)^\s*` + "```" + `\w*\s*\n?(.*?)\n?` + "```" + `\s*$`)
+	match := re.FindStringSubmatch(trimmed)
+	if len(match) > 1 {
+		return strings.TrimSpace(match[1])
 	}
-	lines := strings.Split(trimmed, "\n")
-	if len(lines) < 2 {
-		return s
-	}
-
-	closeIdx := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "```" {
-			closeIdx = i
-			break
-		}
-	}
-
-	if closeIdx > 0 {
-		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
-	}
-	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
+	return trimmed
 }

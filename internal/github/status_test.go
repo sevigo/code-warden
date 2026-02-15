@@ -98,12 +98,12 @@ func TestFormatInlineComment(t *testing.T) {
 			contains: []string{
 				"**🟠 High**",
 				"> [!WARNING]",
-				"```go",
-				"fmt.Println",
-			},
-			excludes: []string{
 				"> ```go",
 				">     fmt.Println",
+			},
+			excludes: []string{
+				// "```go" is present as a substring (prefixed), so we can't exclude it broadly.
+				// The "contains" check above confirms the prefix is present.
 			},
 		},
 		{
@@ -167,6 +167,7 @@ func TestFormatInlineComment(t *testing.T) {
 			contains: []string{
 				"**🟠 High**\n\n",
 				"> [!WARNING]",
+				"> Issue without category.",
 			},
 			excludes: []string{
 				" — ",
@@ -186,6 +187,50 @@ func TestFormatInlineComment(t *testing.T) {
 				"Use a faster algorithm.",
 				"```suggestion\nfunc fast() {\n  // optimized\n}\n```",
 				"> 💡 Reply with `/rereview` to trigger a new review.",
+			},
+		},
+		{
+			name: "deduplicates footer if already present",
+			sug: core.Suggestion{
+				FilePath:   "test.go",
+				LineNumber: 10,
+				Severity:   "Low",
+				Comment:    "Fix typo.\n> 💡 Reply with `/rereview`",
+			},
+			contains: []string{
+				"Fix typo.",
+				"> 💡 Reply with `/rereview`",
+			},
+			excludes: []string{
+				"\n---\n\n---\n", // Double footer separator
+			},
+		},
+		{
+			name: "sanitizes nested backticks in suggested code",
+			sug: core.Suggestion{
+				FilePath:      "test.go",
+				LineNumber:    10,
+				Severity:      "Medium",
+				Comment:       "Fix.",
+				SuggestedCode: "```go\nfunc x() {}\n```",
+			},
+			contains: []string{
+				"```suggestion",
+				"`" + "" + "`" + "" + "`" + "go", // Verify sanitization logic
+			},
+		},
+		{
+			name: "prefixes alert body lines correctly",
+			sug: core.Suggestion{
+				FilePath:   "test.go",
+				LineNumber: 10,
+				Severity:   "High",
+				Comment:    "Line 1.\nLine 2.",
+			},
+			contains: []string{
+				"> [!WARNING]",
+				"> Line 1.",
+				"> Line 2.",
 			},
 		},
 	}
