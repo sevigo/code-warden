@@ -1,0 +1,3 @@
+./chunker.go
+./core.go
+./extractor.go

@@ -1,0 +1,7 @@
+./doc.go
+./marshal.go
+./simple.go
+./type.go
+./type_implied.go
+./unmarshal.go
+./value.go

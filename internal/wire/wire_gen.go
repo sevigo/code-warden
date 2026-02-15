@@ -249,7 +249,7 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logg
 
 	const RerankPromptKey = "rerank_precision" // I will define this in llm package or use string here for now to avoid circular deps if any (unlikely as wire imports llm).
 
-	prompt, err := promptMgr.Render("rerank_precision", llm.ModelProvider(cfg.AI.RerankerModel), nil)
+	prompt, err := promptMgr.Render("rerank_precision", nil)
 	if err != nil {
 		logger2.
 			Debug("Loaded rerank prompt", "prompt_len", len(prompt))
