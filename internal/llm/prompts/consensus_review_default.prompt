@@ -52,13 +52,11 @@ Here are the individual reviews:
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>85</confidence>
   <summary>
-    # 🛡️ Code Warden Consensus Review
-    ## 🚦 Verdict: [Value]
-    > [Executive Summary Markdown here. Highlight key strengths and critical weaknesses. ~2-3 sentences.]
+    <!-- Execute Summary Markdown here. Highlight key strengths and critical weaknesses. ~2-3 sentences. -->
   </summary>
   <suggestions>
     <suggestion>
-      <file>path/to/file.go</file>
+      <file>path/to/file.lang</file> // use correct language extension here
       <line>123</line>
       <severity>Critical</severity>
       <category>Security</category>
@@ -66,16 +64,14 @@ Here are the individual reviews:
       <estimated_fix_time>15m</estimated_fix_time>
       <reproducibility>Always | Sometimes | Intermittent</reproducibility>
       <comment>
-        ### [Issue Title]
-        
         **Observation:**
-        [Synthesized description of the issue...]
-        
+        <!-- Synthesized description of the issue... -->
+
         **Rationale:**
-        [Why this needs to be fixed...]
-        
-        #### 💡 Suggested Fix
-        ```go
+        <!-- Why this needs to be fixed... -->
+
+        **Fix:**
+        ```lang // use correct language extension here
         // Minimal, correct fix
         ...
         ```

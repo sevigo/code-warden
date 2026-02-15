@@ -1,0 +1,70 @@
+=== RUN   TestFormatInlineComment
+=== RUN   TestFormatInlineComment/critical_severity_uses_GitHub_alert
+=== RUN   TestFormatInlineComment/high_severity_uses_GitHub_alert
+=== RUN   TestFormatInlineComment/medium_severity_uses_plain_markdown_(no_alert)
+=== RUN   TestFormatInlineComment/low_severity_uses_plain_markdown_(no_alert)
+=== RUN   TestFormatInlineComment/code_block_stays_outside_alert
+=== RUN   TestFormatInlineComment/strips_legacy_###_title_header
+=== RUN   TestFormatInlineComment/converts_####_header_to_bold
+=== RUN   TestFormatInlineComment/empty_comment_returns_empty_string
+=== RUN   TestFormatInlineComment/invalid_line_number_returns_empty_string
+=== RUN   TestFormatInlineComment/no_category_still_works
+--- PASS: TestFormatInlineComment (0.00s)
+    --- PASS: TestFormatInlineComment/critical_severity_uses_GitHub_alert (0.00s)
+    --- PASS: TestFormatInlineComment/high_severity_uses_GitHub_alert (0.00s)
+    --- PASS: TestFormatInlineComment/medium_severity_uses_plain_markdown_(no_alert) (0.00s)
+    --- PASS: TestFormatInlineComment/low_severity_uses_plain_markdown_(no_alert) (0.00s)
+    --- PASS: TestFormatInlineComment/code_block_stays_outside_alert (0.00s)
+    --- PASS: TestFormatInlineComment/strips_legacy_###_title_header (0.00s)
+    --- PASS: TestFormatInlineComment/converts_####_header_to_bold (0.00s)
+    --- PASS: TestFormatInlineComment/empty_comment_returns_empty_string (0.00s)
+    --- PASS: TestFormatInlineComment/invalid_line_number_returns_empty_string (0.00s)
+    --- PASS: TestFormatInlineComment/no_category_still_works (0.00s)
+=== RUN   TestFormatReviewSummary
+=== RUN   TestFormatReviewSummary/summary_with_suggestions_shows_compact_stats
+=== RUN   TestFormatReviewSummary/summary_with_only_critical_shows_only_critical
+=== RUN   TestFormatReviewSummary/summary_with_no_suggestions_has_no_stats
+=== RUN   TestFormatReviewSummary/default_title_when_no_title_provided
+--- PASS: TestFormatReviewSummary (0.00s)
+    --- PASS: TestFormatReviewSummary/summary_with_suggestions_shows_compact_stats (0.00s)
+    --- PASS: TestFormatReviewSummary/summary_with_only_critical_shows_only_critical (0.00s)
+    --- PASS: TestFormatReviewSummary/summary_with_no_suggestions_has_no_stats (0.00s)
+    --- PASS: TestFormatReviewSummary/default_title_when_no_title_provided (0.00s)
+=== RUN   TestSeverityEmoji
+=== RUN   TestSeverityEmoji/Critical
+=== RUN   TestSeverityEmoji/High
+=== RUN   TestSeverityEmoji/Medium
+=== RUN   TestSeverityEmoji/Low
+=== RUN   TestSeverityEmoji/Unknown
+--- PASS: TestSeverityEmoji (0.00s)
+    --- PASS: TestSeverityEmoji/Critical (0.00s)
+    --- PASS: TestSeverityEmoji/High (0.00s)
+    --- PASS: TestSeverityEmoji/Medium (0.00s)
+    --- PASS: TestSeverityEmoji/Low (0.00s)
+    --- PASS: TestSeverityEmoji/Unknown (0.00s)
+=== RUN   TestVerdictIcon
+=== RUN   TestVerdictIcon/APPROVE
+=== RUN   TestVerdictIcon/REQUEST_CHANGES
+=== RUN   TestVerdictIcon/REQUEST_CHANGES#01
+=== RUN   TestVerdictIcon/COMMENT
+=== RUN   TestVerdictIcon/unknown
+--- PASS: TestVerdictIcon (0.00s)
+    --- PASS: TestVerdictIcon/APPROVE (0.00s)
+    --- PASS: TestVerdictIcon/REQUEST_CHANGES (0.00s)
+    --- PASS: TestVerdictIcon/REQUEST_CHANGES#01 (0.00s)
+    --- PASS: TestVerdictIcon/COMMENT (0.00s)
+    --- PASS: TestVerdictIcon/unknown (0.00s)
+=== RUN   TestSeverityAlert
+=== RUN   TestSeverityAlert/Critical
+=== RUN   TestSeverityAlert/High
+=== RUN   TestSeverityAlert/Medium
+=== RUN   TestSeverityAlert/Low
+=== RUN   TestSeverityAlert/Unknown
+--- PASS: TestSeverityAlert (0.00s)
+    --- PASS: TestSeverityAlert/Critical (0.00s)
+    --- PASS: TestSeverityAlert/High (0.00s)
+    --- PASS: TestSeverityAlert/Medium (0.00s)
+    --- PASS: TestSeverityAlert/Low (0.00s)
+    --- PASS: TestSeverityAlert/Unknown (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/github	(cached)

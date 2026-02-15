@@ -285,22 +285,16 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
 func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validLineMaps map[string]map[int]struct{}) error {
+	// Filter out non-code file suggestions first
+	structuredReview.Suggestions = FilterNonCodeSuggestions(j.logger, structuredReview.Suggestions)
+
 	// Validate and filter suggestions to prevent 422 errors
 	inlineSuggestions, offDiffSuggestions := ValidateSuggestionsByLine(j.logger, structuredReview.Suggestions, validLineMaps)
 	structuredReview.Suggestions = inlineSuggestions
 
-	// If there are off-diff suggestions, append them to the summary as "General Findings"
+	// If there are off-diff suggestions, append them to the summary in a collapsible section
 	if len(offDiffSuggestions) > 0 {
-		var offDiffBuilder strings.Builder
-		offDiffBuilder.WriteString(structuredReview.Summary)
-		offDiffBuilder.WriteString("\n\n---\n### 💡 General Findings (Outside Modified Lines)\n\n")
-		offDiffBuilder.WriteString("The following issues were identified in parts of the code not directly modified in this PR:\n\n")
-		for _, s := range offDiffSuggestions {
-			offDiffBuilder.WriteString(fmt.Sprintf("*   **File:** `%s` (Line %d)\n", s.FilePath, s.LineNumber))
-			offDiffBuilder.WriteString(fmt.Sprintf("    **Severity:** %s\n", s.Severity))
-			offDiffBuilder.WriteString(fmt.Sprintf("    **Issue:** %s\n\n", s.Comment))
-		}
-		structuredReview.Summary = offDiffBuilder.String()
+		structuredReview.Summary = appendOffDiffSuggestions(structuredReview.Summary, offDiffSuggestions)
 	}
 
 	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
@@ -324,6 +318,56 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 
 	j.logger.Info("Full review job completed successfully")
 	return nil
+}
+
+// appendOffDiffSuggestions adds off-diff suggestions to the summary in a collapsible section.
+func appendOffDiffSuggestions(summary string, suggestions []core.Suggestion) string {
+	var sb strings.Builder
+	sb.WriteString(summary)
+	sb.WriteString("\n\n<details>\n")
+	sb.WriteString(fmt.Sprintf("<summary>📝 %d off-diff observation(s)</summary>\n\n", len(suggestions)))
+
+	for _, s := range suggestions {
+		// Extract a brief title from the first line of the comment
+		briefTitle := extractBriefTitle(s.Comment)
+		emoji := github.SeverityEmoji(s.Severity)
+		alert := github.SeverityAlert(s.Severity)
+		sb.WriteString(fmt.Sprintf("- **%s:%d** %s %s [%s]: %s\n", s.FilePath, s.LineNumber, emoji, s.Severity, alert, briefTitle))
+	}
+
+	sb.WriteString("\n</details>")
+	return sb.String()
+}
+
+func extractBriefTitle(comment string) string {
+	lines := strings.Split(comment, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Skip known section markers precisely
+		if strings.HasPrefix(trimmed, "Observation:") ||
+			strings.HasPrefix(trimmed, "**Observation:**") ||
+			strings.HasPrefix(trimmed, "Rationale:") ||
+			strings.HasPrefix(trimmed, "**Rationale:") ||
+			strings.HasPrefix(trimmed, "Fix:") ||
+			strings.HasPrefix(trimmed, "**Fix:") ||
+			strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, ">") {
+			continue
+		}
+		return truncateTitle(trimmed, 80)
+	}
+	return "Issue identified"
+}
+
+// truncateTitle truncates a title to a maximum length.
+func truncateTitle(title string, maxLen int) string {
+	if len(title) <= maxLen {
+		return title
+	}
+	return title[:maxLen-3] + "..."
 }
 
 // updateVectorStoreAndSHA performs the indexing of changed files.
@@ -371,7 +415,7 @@ func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, ti
 	}
 	event.HeadSHA = pr.GetHead().GetSHA()
 
-	statusUpdater := github.NewStatusUpdater(ghClient)
+	statusUpdater := github.NewStatusUpdater(ghClient, j.logger)
 	checkRunID, err := statusUpdater.InProgress(ctx, event, title, summary)
 	if err != nil {
 		return nil, "", nil, 0, fmt.Errorf("failed to set in-progress status: %w", err)
