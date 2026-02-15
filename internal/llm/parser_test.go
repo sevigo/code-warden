@@ -295,6 +295,63 @@ func main() {
 			wantCount:   1,
 			expectErr:   false,
 		},
+		{
+			name: "Reproduction: Missing Inline Comments",
+			input: `
+<review>
+  <verdict>REQUEST_CHANGES</verdict>
+  <confidence>98</confidence>
+  <summary>
+    # SYNTHESIZED CODE REVIEW
+    Summary text...
+  </summary>
+  <suggestions>
+    <suggestion>
+      <file>internal/llm/parser.go</file>
+      <line>278-290</line>
+      <severity>Critical</severity>
+      <category>Security</category>
+      <confidence>100</confidence>
+      <estimated_fix_time>10m</estimated_fix_time>
+      <reproducibility>Always</reproducibility>
+      <comment>
+        **Observation:**
+        The clean path function...
+      </comment>
+    </suggestion>
+    <suggestion>
+      <file>internal/github/status.go</file>
+      <line>236-240</line>
+      <severity>Critical</severity>
+      <comment>
+        **Observation:**
+        Ineffective escaping...
+      </comment>
+      <code_suggestion>
+        Code...
+      </code_suggestion>
+    </suggestion>
+    <suggestion>
+      <file>internal/llm/parser.go</file>
+      <line>455</line>
+      <severity>Critical</severity>
+      <comment>
+        **Observation:**
+        ReDoS...
+        **Fix:**
+        Replace...
+      </code_suggestion> <!-- MALFORMED CLOSING TAG -->
+      <code_suggestion>
+        Code...
+      </code_suggestion>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "SYNTHESIZED CODE REVIEW",
+			wantVerdict: "REQUEST_CHANGES",
+			wantCount:   3, // Parsed 3 suggestions (3rd has empty comment)
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -306,6 +363,11 @@ func main() {
 			}
 			require.NoError(t, err)
 			verifyReviewResults(t, tt.name, got, tt.wantSummary, tt.wantVerdict, tt.wantCount)
+
+			if tt.name == "Reproduction: Missing Inline Comments" {
+				assert.Equal(t, "", got.Suggestions[2].Comment, "3rd suggestion should have empty comment due to malformed XML")
+				assert.NotEmpty(t, got.Suggestions[0].Comment, "1st suggestion should have comment")
+			}
 		})
 	}
 }

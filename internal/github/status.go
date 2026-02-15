@@ -99,18 +99,26 @@ func (s *statusUpdater) Completed(ctx context.Context, event *core.GitHubEvent, 
 func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
 	var comments []DraftReviewComment
 	for _, sug := range review.Suggestions {
+		// Context check at start of loop iteration for responsiveness
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
+
 		if sug.FilePath == "" || sug.LineNumber <= 0 || sug.Comment == "" {
 			continue
 		}
+
+		if ctx.Err() != nil {
+			return fmt.Errorf("review cancelled: %w", ctx.Err())
+		}
+
 		formattedComment := formatInlineComment(ctx, sug, s.logger)
 		if formattedComment == "" {
 			continue
 		}
+
 		// Enforce sane line ordering: startLine must be <= LineNumber
 		startLine := sug.StartLine
 		if startLine == 0 || startLine > sug.LineNumber {
@@ -136,198 +144,225 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 	return s.client.CreateReview(ctx, event.RepoOwner, event.RepoName, event.PRNumber, event.HeadSHA, formattedSummary, comments)
 }
 
-// formatInlineComment generates a pull request comment with a clean, compact format.
+// formatInlineComment creates a GitHub-flavored markdown comment for inline review suggestions.
+// It uses GitHub Alerts for Critical/High severity and plain markdown for Medium/Low.
 func formatInlineComment(ctx context.Context, sug core.Suggestion, logger *slog.Logger) string {
-	// Check context cancellation
 	if ctx.Err() != nil {
 		return ""
 	}
 
-	if sug.FilePath == "" || sug.LineNumber <= 0 {
+	// Validate required fields
+	if sug.LineNumber <= 0 || strings.TrimSpace(sug.Comment) == "" {
 		return ""
 	}
 
 	var sb strings.Builder
-	lines := writeCommentHeader(&sb, sug)
 
-	// Add GitHub Alert for high-severity issues
-	if sug.Severity == SeverityCritical || sug.Severity == SeverityHigh {
-		alert := SeverityAlert(sug.Severity)
-		fmt.Fprintf(&sb, "> [!%s]\n", alert)
+	// 1. Severity Header
+	emoji := SeverityEmoji(sug.Severity)
+	sb.WriteString(fmt.Sprintf("**%s %s**", emoji, sug.Severity))
+	if sug.Category != "" {
+		sb.WriteString(fmt.Sprintf(" — %s", sug.Category))
 	}
+	sb.WriteString("\n\n")
 
-	writeCommentBody(&sb, lines, sug.CodeSuggestion)
+	// 2. Process Comment
+	comment := preprocessComment(sug.Comment)
 
-	// Append Suggested Change
-	if sug.CodeSuggestion != "" {
-		// Size warning (Medium Severity feedback)
-		if len(sug.CodeSuggestion) > 10000 {
-			logger.WarnContext(ctx, "suggestion code block is unusually large", "size", len(sug.CodeSuggestion))
+	// 3. Wrap in GitHub Alert for Critical/High
+	if shouldUseAlert(sug.Severity) {
+		alertType := SeverityAlert(sug.Severity)
+		sb.WriteString(fmt.Sprintf("> [!%s]\n", alertType))
+
+		// Extract text before first code block
+		textPart, codePart := splitTextAndCode(comment)
+
+		// Quote the text part
+		quotedText := quoteText(textPart)
+		sb.WriteString(quotedText)
+
+		// Add code blocks outside the alert
+		if codePart != "" {
+			sb.WriteString("\n\n")
+			sb.WriteString(codePart)
 		}
+	} else {
+		// Medium/Low: Plain markdown (no alert)
+		sb.WriteString(comment)
 	}
 
-	sb.WriteString("\n---\n")
+	// 4. Add Code Suggestion (if present) - MUST be outside alert
+	if sug.CodeSuggestion != "" {
+		sb.WriteString("\n\n```suggestion\n")
+		sb.WriteString(strings.TrimSpace(sug.CodeSuggestion))
+		sb.WriteString("\n```")
+	}
+
+	// 5. Footer
+	sb.WriteString("\n\n---\n")
 	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
 
 	return sb.String()
 }
 
-func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
-	severity := sug.Severity
-	emoji := SeverityEmoji(severity)
+// preprocessComment cleans up LLM-generated comments by:
+// - Stripping legacy ### title headers
+// - Converting #### headers to bold with emojis
+func preprocessComment(comment string) string {
+	lines := strings.Split(comment, "\n")
+	var processed []string
 
-	content := strings.TrimSpace(sug.Comment)
-	// Strip double blockquotes if the model generated them
-	content = strings.TrimPrefix(content, "> > ")
-	content = strings.ReplaceAll(content, "\n> > ", "\n> ")
-	content = strings.ReplaceAll(content, "\n> [!", "\n[! ")
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
 
-	lines := strings.Split(content, "\n")
+		// Strip legacy ### headers (e.g., "### Old Style Title")
+		if strings.HasPrefix(trimmed, "### ") {
+			continue
+		}
 
-	// Skip any ### title line (for backward compatibility with old prompts)
-	startIdx := 0
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "###") {
-		startIdx = 1
+		// Convert #### headers to bold with emoji
+		if strings.HasPrefix(trimmed, "#### ") {
+			headerText := strings.TrimSpace(strings.TrimPrefix(trimmed, "#### "))
+			headerText = strings.TrimSpace(strings.TrimPrefix(headerText, "**"))
+			headerText = strings.TrimSpace(strings.TrimSuffix(headerText, "**"))
+
+			// Simplify common patterns: "Suggested Fix" → "Fix"
+			headerText = strings.TrimPrefix(headerText, "Suggested ")
+			headerText = strings.TrimPrefix(headerText, "Recommended ")
+			headerText = strings.TrimPrefix(headerText, "Proposed ")
+
+			// Map common header patterns to emojis
+			emoji := "💡"
+			if containsAny(strings.ToLower(headerText), []string{"fix", "solution", "recommendation"}) {
+				emoji = "💡"
+			} else if containsAny(strings.ToLower(headerText), []string{"rationale", "why", "reason"}) {
+				emoji = "📖"
+			} else if containsAny(strings.ToLower(headerText), []string{"observation", "issue", "problem"}) {
+				emoji = "🔍"
+			}
+
+			processed = append(processed, fmt.Sprintf("%s **%s:**", emoji, headerText))
+			continue
+		}
+
+		processed = append(processed, line)
 	}
 
-	// Write compact header line: **🔴 Critical** — Category
-	fmt.Fprintf(sb, "**%s %s**", emoji, severity)
-	if sug.Category != "" {
-		fmt.Fprintf(sb, " — %s", sug.Category)
-	}
-	sb.WriteString("\n\n")
-
-	return lines[startIdx:]
+	return strings.Join(processed, "\n")
 }
 
-func writeCommentBody(sb *strings.Builder, lines []string, suggestedCode string) {
-	inCodeBlock := false
-
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-
-		// Handle Code Blocks
-		if strings.HasPrefix(trimmedLine, "```") {
-			inCodeBlock = !inCodeBlock
-			sb.WriteString(line + "\n")
-			continue
-		}
-
-		if inCodeBlock {
-			sb.WriteString(line + "\n")
-			continue
-		}
-
-		// Handle Sub-Headers (####) - convert to bold
-		if strings.HasPrefix(trimmedLine, "####") {
-			headerText := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "####"))
-			sb.WriteString(formatSubHeader(headerText))
-			continue
-		}
-
-		// Skip ### headers (already handled in header)
-		if strings.HasPrefix(trimmedLine, "###") {
-			continue
-		}
-
-		// Write the line as-is (plain markdown)
-		sb.WriteString(line + "\n")
-	}
-
-	// Validate size and log warnings for oversized code suggestions
-	if suggestedCode != "" {
-		sb.WriteString("\n```suggestion\n")
-		// Escape triple backticks to prevent fence termination
-		safeCode := strings.ReplaceAll(suggestedCode, "```", "`````")
-		sb.WriteString(safeCode)
-		sb.WriteString("\n```\n")
-	}
-}
-
-func formatSubHeader(headerText string) string {
-	switch {
-	case strings.Contains(headerText, "Suggested Fix"), strings.Contains(headerText, "Fix"):
-		return "💡 **Fix:**\n"
+// shouldUseAlert determines if a severity level should use GitHub Alerts
+func shouldUseAlert(severity string) bool {
+	switch severity {
+	case SeverityCritical, SeverityHigh:
+		return true
 	default:
-		return "**" + headerText + "**\n"
+		return false
 	}
 }
 
-// formatReviewSummary generates the final review summary with a compact statistics line.
-func formatReviewSummary(review *core.StructuredReview) string {
-	// Count severities
-	counts := map[string]int{
-		SeverityCritical: 0,
-		SeverityHigh:     0,
-		SeverityMedium:   0,
-		SeverityLow:      0,
-	}
-	total := 0
-	for _, sug := range review.Suggestions {
-		counts[sug.Severity]++
-		total++
+// splitTextAndCode separates text content from code blocks
+func splitTextAndCode(content string) (text, code string) {
+	// Find first code block
+	codeStart := strings.Index(content, "```")
+	if codeStart == -1 {
+		return content, ""
 	}
 
-	var sb strings.Builder
-	if review.Title != "" {
-		sb.WriteString(fmt.Sprintf("## %s\n\n", review.Title))
-	} else {
-		sb.WriteString("## 🔍 Code Review Summary\n\n")
+	return strings.TrimSpace(content[:codeStart]), strings.TrimSpace(content[codeStart:])
+}
+
+// quoteText adds "> " prefix to each line for GitHub alert formatting
+func quoteText(text string) string {
+	if text == "" {
+		return ""
 	}
 
-	// Add Verdict with Icon
-	if review.Verdict != "" {
-		icon := verdictIcon(review.Verdict)
-		sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
+	lines := strings.Split(text, "\n")
+	var quoted []string
+	for _, line := range lines {
+		quoted = append(quoted, "> "+line)
 	}
+	return strings.Join(quoted, "\n")
+}
 
-	sb.WriteString(review.Summary)
-	sb.WriteString("\n\n")
-
-	// Compact statistics line instead of table
-	if total > 0 {
-		stats := buildStatsLine(counts)
-		if len(stats) > 0 {
-			sb.WriteString(fmt.Sprintf("*Found %d suggestion(s): %s*\n", total, strings.Join(stats, ", ")))
+// containsAny checks if text contains any of the given substrings
+func containsAny(text string, substrs []string) bool {
+	for _, substr := range substrs {
+		if strings.Contains(text, substr) {
+			return true
 		}
+	}
+	return false
+}
+
+// formatReviewSummary creates a summary comment for the entire PR review
+func formatReviewSummary(review *core.StructuredReview) string {
+	var sb strings.Builder
+
+	// Title
+	title := review.Title
+	if title == "" {
+		title = "🔍 Code Review Summary"
+	}
+	sb.WriteString(fmt.Sprintf("## %s\n\n", title))
+
+	// Verdict
+	icon := verdictIcon(review.Verdict)
+	sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
+
+	// Summary content
+	if review.Summary != "" {
+		sb.WriteString(review.Summary)
+		sb.WriteString("\n\n")
+	}
+
+	// Compact statistics (only if suggestions exist)
+	if len(review.Suggestions) > 0 {
+		stats := buildCompactStats(review.Suggestions)
+		sb.WriteString(stats)
 	}
 
 	return sb.String()
 }
 
-func buildStatsLine(counts map[string]int) []string {
-	var stats []string
-	if counts[SeverityCritical] > 0 {
-		stats = append(stats, fmt.Sprintf("%s %d Critical", SeverityEmojiCritical, counts[SeverityCritical]))
+// buildCompactStats creates a one-line summary of issue counts by severity
+func buildCompactStats(suggestions []core.Suggestion) string {
+	counts := make(map[string]int)
+	for _, sug := range suggestions {
+		severity := sug.Severity
+		if severity == "" {
+			severity = "Unknown"
+		}
+		counts[severity]++
 	}
-	if counts[SeverityHigh] > 0 {
-		stats = append(stats, fmt.Sprintf("%s %d High", SeverityEmojiHigh, counts[SeverityHigh]))
+
+	total := len(suggestions)
+	var parts []string
+
+	// Order: Critical, High, Medium, Low
+	if count := counts[SeverityCritical]; count > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d %s", SeverityEmojiCritical, count, SeverityCritical))
 	}
-	if counts[SeverityMedium] > 0 {
-		stats = append(stats, fmt.Sprintf("%s %d Medium", SeverityEmojiMedium, counts[SeverityMedium]))
+	if count := counts[SeverityHigh]; count > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d %s", SeverityEmojiHigh, count, SeverityHigh))
 	}
-	if counts[SeverityLow] > 0 {
-		stats = append(stats, fmt.Sprintf("🟢 %d Low", counts[SeverityLow]))
+	if count := counts[SeverityMedium]; count > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d %s", SeverityEmojiMedium, count, SeverityMedium))
 	}
-	return stats
+	if count := counts[SeverityLow]; count > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d %s", SeverityEmojiLow, count, SeverityLow))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("*Found %d suggestion(s): %s*\n\n", total, strings.Join(parts, ", "))
 }
 
-// verdictIcon returns an icon for the given verdict using normalized exact matching.
-func verdictIcon(verdict string) string {
-	v := strings.ToUpper(strings.TrimSpace(verdict))
-	switch v {
-	case "APPROVE":
-		return VerdictIconApprove
-	case "REQUEST_CHANGES", "REQUEST CHANGES":
-		return VerdictIconRequestChanges
-	case "COMMENT":
-		return VerdictIconComment
-	default:
-		return "📝"
-	}
-}
-
-// SeverityEmoji returns an emoji for the given severity level.
+// SeverityEmoji returns the emoji for a given severity level
 func SeverityEmoji(severity string) string {
 	switch severity {
 	case SeverityCritical:
@@ -343,7 +378,7 @@ func SeverityEmoji(severity string) string {
 	}
 }
 
-// SeverityAlert returns the GitHub alert type for a severity level.
+// SeverityAlert returns the GitHub Alert type for a severity level
 func SeverityAlert(severity string) string {
 	switch severity {
 	case SeverityCritical:
@@ -356,5 +391,20 @@ func SeverityAlert(severity string) string {
 		return "NOTE"
 	default:
 		return "NOTE"
+	}
+}
+
+// verdictIcon returns the emoji for a verdict
+func verdictIcon(verdict string) string {
+	v := strings.ToUpper(strings.TrimSpace(verdict))
+	switch v {
+	case "APPROVE", "APPROVED":
+		return VerdictIconApprove
+	case "REQUEST_CHANGES", "CHANGES_REQUESTED", "REQUEST CHANGES":
+		return VerdictIconRequestChanges
+	case "COMMENT", "NEEDS_DISCUSSION":
+		return VerdictIconComment
+	default:
+		return "📝"
 	}
 }

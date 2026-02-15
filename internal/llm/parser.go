@@ -276,7 +276,7 @@ func unindent(s string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
-// sanitizePath strips LLM-specific formatting from file paths
+// sanitizePath ensures the file path is safe and relative.
 func sanitizePath(path string) string {
 	if path == "" {
 		return ""
@@ -289,9 +289,25 @@ func sanitizePath(path string) string {
 	path = strings.ReplaceAll(path, "'", "")
 	path = strings.TrimSpace(path)
 
-	// Normalize and reject traversal attempts
+	// Reject traversal attempts *before* cleaning
+	if strings.Contains(path, "..") || strings.Contains(path, "//") || strings.Contains(path, "\\\\") {
+		return ""
+	}
+
+	// Normalize separators to forward slashes for uniform handling
+	path = strings.ReplaceAll(path, "\\", "/")
+
+	// Reject absolute paths and Windows drive letters
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `.\`) ||
+		(len(path) > 1 && path[1] == ':') {
+		return ""
+	}
+
+	// Final validation after cleaning
 	cleaned := filepath.Clean(path)
-	if filepath.IsAbs(cleaned) || strings.Contains(cleaned, "..") || strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, `\`) {
+	if strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, `\`) ||
+		strings.HasPrefix(cleaned, `.\`) || strings.HasPrefix(cleaned, "..") ||
+		strings.Contains(cleaned, "/..") || strings.Contains(cleaned, `\..`) {
 		return ""
 	}
 
@@ -301,19 +317,84 @@ func sanitizePath(path string) string {
 // normalizeVerdict maps a string to canonical core.Verdict constants.
 func normalizeVerdict(v string) string {
 	v = strings.ToUpper(strings.TrimSpace(v))
-	v = strings.ReplaceAll(v, " ", "_")
-	v = strings.Trim(v, "[]")
+	// Remove brackets if present
+	v = strings.TrimPrefix(v, "[")
+	v = strings.TrimSuffix(v, "]")
 
 	switch v {
-	case core.VerdictApprove:
+	case "APPROVE", "APPROVED":
 		return core.VerdictApprove
-	case core.VerdictRequestChanges:
+	case "REQUEST_CHANGES", "CHANGES_REQUESTED":
 		return core.VerdictRequestChanges
-	case core.VerdictComment:
+	case "COMMENT", "NEEDS_DISCUSSION":
 		return core.VerdictComment
 	default:
+		return core.VerdictComment
+	}
+}
+
+func stripMarkdownFence(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "```") {
+		return s
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 2 {
+		return s
+	}
+
+	// Enforce hard limits to prevent ReDoS
+	const maxLines = 10000
+	if len(lines) > maxLines {
 		return ""
 	}
+
+	fenceDepth := 0
+	startLine := -1
+	endLine := -1
+
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		
+		// Only process lines that are pure fence markers (```)
+		if !strings.HasPrefix(line, "```") {
+			continue
+		}
+		
+		// Count backtick sequences — only match standalone fences
+		if strings.Count(line, "```") != 1 {
+			continue // Skip lines with multiple ``` sequences
+		}
+
+		if fenceDepth == 0 {
+			// Opening fence
+			fenceDepth = 1
+			startLine = i
+		} else {
+			// Closing fence
+			fenceDepth = 0
+			endLine = i
+			break
+		}
+
+		if fenceDepth > 5 {
+			return "" // reject deeply nested fences
+		}
+	}
+
+	// Case 1: Found both opening and closing fence
+	if startLine != -1 && endLine != -1 && endLine > startLine+1 {
+		return strings.Join(lines[startLine+1:endLine], "\n")
+	}
+
+	// Case 2: Found opening fence but no closing (unclosed fence - be lenient)
+	if startLine != -1 && endLine == -1 && len(lines) > startLine+1 {
+		return strings.Join(lines[startLine+1:], "\n")
+	}
+
+	// Case 3: Malformed or empty content
+	return ""
 }
 
 // parseLegacyMarkdownReview handles older formats without XML tags.
@@ -456,46 +537,4 @@ func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
 		return "", 0, 0, false
 	}
 	return path, ln, ln, true
-}
-
-func stripMarkdownFence(s string) string {
-	trimmed := strings.TrimSpace(s)
-
-	// If it doesn't start with a fence, return original immediately
-	if !strings.HasPrefix(trimmed, "```") {
-		return s
-	}
-
-	lines := strings.Split(trimmed, "\n")
-	if len(lines) < 2 {
-		return s // Too short to be a valid block, return original
-	}
-
-	// Find start (skip opening line like ```go)
-	start := 1
-
-	// Scan backwards for closing fence
-	end := -1
-	for i := len(lines) - 1; i >= start; i-- {
-		if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
-			end = i
-			break
-		}
-	}
-
-	// If no closing fence found, strip the opening fence line to avoid nested fences (Critical Fix)
-	if end == -1 {
-		if start < len(lines) {
-			return strings.Join(lines[start:], "\n")
-		}
-		return ""
-	}
-
-	if start >= end {
-		// Only return empty string if the fence was literally empty (e.g. ```\n```)
-		// implying the LLM output an empty suggestion.
-		return ""
-	}
-
-	return strings.Join(lines[start:end], "\n")
 }
