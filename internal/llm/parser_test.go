@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -272,11 +274,32 @@ func main() {
 			wantCount:   1,
 			expectErr:   false,
 		},
+		{
+			name: "Comment Tag Stripping",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <comment>
+        Fix this.
+        <fix_code>func foo() {}</fix_code>
+        <code_suggestion>func bar() {}</code_suggestion>
+      </comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseMarkdownReview(tt.input)
+			got, err := ParseMarkdownReview(context.Background(), tt.input, slog.Default())
 			if tt.expectErr {
 				assert.Error(t, err)
 				return
@@ -324,6 +347,9 @@ func verifySpecificMetadata(t *testing.T, name string, got *core.StructuredRevie
 	}
 	if name == "Dirty XML (Bolded Path and Extra Tags)" {
 		assert.Equal(t, "path/to/file.go", s.FilePath)
+	}
+	if name == "Comment Tag Stripping" {
+		assert.Equal(t, "Fix this.", s.Comment)
 	}
 }
 

@@ -99,6 +99,11 @@ func (s *statusUpdater) Completed(ctx context.Context, event *core.GitHubEvent, 
 func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
 	var comments []DraftReviewComment
 	for _, sug := range review.Suggestions {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if sug.FilePath == "" || sug.LineNumber <= 0 || sug.Comment == "" {
 			continue
 		}
@@ -161,12 +166,8 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion, logger *slog.
 		}
 	}
 
-	// Logic Fix: Deduplicate Footer
-	// Only append if it's not already there (though usually we append once at the end)
-	footer := "\n\n---\n> 💡 Reply with `/rereview` to trigger a new review."
-	if !strings.Contains(sb.String(), "/rereview") {
-		sb.WriteString(footer)
-	}
+	sb.WriteString("\n---\n")
+	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
 
 	return sb.String()
 }
@@ -233,10 +234,12 @@ func writeCommentBody(sb *strings.Builder, lines []string, suggestedCode string)
 		sb.WriteString(line + "\n")
 	}
 
-	// Append GitHub Suggested Change if present
+	// Validate size and log warnings for oversized code suggestions
 	if suggestedCode != "" {
 		sb.WriteString("\n```suggestion\n")
-		sb.WriteString(suggestedCode)
+		// Escape triple backticks to prevent fence termination
+		safeCode := strings.ReplaceAll(suggestedCode, "```", "`````")
+		sb.WriteString(safeCode)
 		sb.WriteString("\n```\n")
 	}
 }

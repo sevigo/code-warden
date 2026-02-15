@@ -73,10 +73,10 @@ Here are the individual reviews:
         **Fix:**
         <!-- Clear recommendation or code snippet -->
         
-        <!-- OPTIONAL: Provide <fix_code> ONLY if you are highly confident. It must be a drop-in replacement. -->
-        <fix_code>
+        <!-- OPTIONAL: Provide <code_suggestion> ONLY if you are highly confident. It must be a drop-in replacement. -->
+        <code_suggestion>
         ...
-        </fix_code>
+        </code_suggestion>
       </comment>
     </suggestion>
   </suggestions>
