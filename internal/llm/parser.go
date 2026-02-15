@@ -155,6 +155,10 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 	if repro, ok := extractTag(content, "reproducibility"); ok {
 		s.Reproducibility = strings.TrimSpace(repro)
 	}
+	if fix, ok := extractTag(content, "fix_code"); ok {
+		// Clean up the suggested code (trim whitespace, remove markdown fences if model added them)
+		s.SuggestedCode = stripMarkdownFence(unindent(fix))
+	}
 
 	return s
 }

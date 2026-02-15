@@ -146,7 +146,11 @@ func formatInlineComment(sug core.Suggestion) string {
 		fmt.Fprintf(&sb, "> [!%s]\n", alert)
 	}
 
-	writeCommentBody(&sb, lines)
+	writeCommentBody(&sb, lines, sug.SuggestedCode)
+
+	// Add Re-Review Footer
+	sb.WriteString("\n---\n")
+	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
 
 	return sb.String()
 }
@@ -179,7 +183,7 @@ func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
 	return lines[startIdx:]
 }
 
-func writeCommentBody(sb *strings.Builder, lines []string) {
+func writeCommentBody(sb *strings.Builder, lines []string, suggestedCode string) {
 	inCodeBlock := false
 
 	for _, line := range lines {
@@ -211,6 +215,13 @@ func writeCommentBody(sb *strings.Builder, lines []string) {
 
 		// Write the line as-is (plain markdown)
 		sb.WriteString(line + "\n")
+	}
+
+	// Append GitHub Suggested Change if present
+	if suggestedCode != "" {
+		sb.WriteString("\n```suggestion\n")
+		sb.WriteString(suggestedCode)
+		sb.WriteString("\n```\n")
 	}
 }
 

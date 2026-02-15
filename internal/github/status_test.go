@@ -172,6 +172,22 @@ func TestFormatInlineComment(t *testing.T) {
 				" — ",
 			},
 		},
+		{
+			name: "includes suggested code block and footer",
+			sug: core.Suggestion{
+				FilePath:      "test.go",
+				LineNumber:    10,
+				Severity:      "Medium",
+				Comment:       "Use a faster algorithm.",
+				SuggestedCode: "func fast() {\n  // optimized\n}",
+			},
+			contains: []string{
+				"**🟡 Medium**",
+				"Use a faster algorithm.",
+				"```suggestion\nfunc fast() {\n  // optimized\n}\n```",
+				"> 💡 Reply with `/rereview` to trigger a new review.",
+			},
+		},
 	}
 
 	for _, tt := range tests {

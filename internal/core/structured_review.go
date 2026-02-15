@@ -11,6 +11,7 @@ type Suggestion struct {
 	Confidence       int    `json:"confidence,omitempty"`
 	EstimatedFixTime string `json:"estimated_fix_time,omitempty"`
 	Reproducibility  string `json:"reproducibility,omitempty"`
+	SuggestedCode    string `json:"suggested_code,omitempty"` // For GitHub suggested changes
 }
 
 // StructuredReview represents the full review output from the LLM in a parsable format.
