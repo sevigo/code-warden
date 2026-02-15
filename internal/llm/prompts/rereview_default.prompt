@@ -50,14 +50,12 @@ Here is the review you provided previously:
 <review>
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>95</confidence>
-  <summary>
-    # 🔄 Follow-up Review Summary
-    > [Concise summary. State clearly whether all original issues were addressed.]
+    <!-- Concise summary. State clearly whether all original issues were addressed. -->
     
     ---
     
     ## ✅ Resolved Issues
-    *   **[Issue Title]**: Fixed. [Optional brief detail]
+    *   **Issue Title**: Fixed. <!-- Brief detail -->
     ...
   </summary>
   <suggestions>
@@ -65,15 +63,14 @@ Here is the review you provided previously:
       <file>path/to/filename.go</file>
       <line>10</line>
       <severity>Critical | High | Medium</severity>
-      <comment>
         **Observation:**
-        [Why this feedback from the original review is still an issue]
+        <!-- Why this feedback from the original review is still an issue -->
 
         **Rationale:**
-        [Impact if left unaddressed]
+        <!-- Impact if left unaddressed -->
 
         **Fix:**
-        [Clear recommendation or code snippet]
+        <!-- Clear recommendation or code snippet -->
       </comment>
     </suggestion>
   </suggestions>

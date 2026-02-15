@@ -124,6 +124,13 @@ func formatInlineComment(sug core.Suggestion) string {
 
 	var sb strings.Builder
 	lines := writeCommentHeader(&sb, sug)
+
+	// Add GitHub Alert for high-severity issues
+	if sug.Severity == SeverityCritical || sug.Severity == SeverityHigh {
+		alert := SeverityAlert(sug.Severity)
+		fmt.Fprintf(&sb, "> [!%s]\n", alert)
+	}
+
 	writeCommentBody(&sb, lines)
 
 	return sb.String()
@@ -153,12 +160,6 @@ func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
 		fmt.Fprintf(sb, " — %s", sug.Category)
 	}
 	sb.WriteString("\n\n")
-
-	// Add GitHub Alert for high-severity issues
-	if severity == SeverityCritical || severity == SeverityHigh {
-		alert := SeverityAlert(severity)
-		fmt.Fprintf(sb, "> [!%s]\n", alert)
-	}
 
 	return lines[startIdx:]
 }

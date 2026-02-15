@@ -52,7 +52,7 @@ Here are the individual reviews:
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>85</confidence>
   <summary>
-    > [Executive Summary Markdown here. Highlight key strengths and critical weaknesses. ~2-3 sentences.]
+    <!-- Execute Summary Markdown here. Highlight key strengths and critical weaknesses. ~2-3 sentences. -->
   </summary>
   <suggestions>
     <suggestion>
@@ -65,10 +65,10 @@ Here are the individual reviews:
       <reproducibility>Always | Sometimes | Intermittent</reproducibility>
       <comment>
         **Observation:**
-        [Synthesized description of the issue...]
+        <!-- Synthesized description of the issue... -->
 
         **Rationale:**
-        [Why this needs to be fixed...]
+        <!-- Why this needs to be fixed... -->
 
         **Fix:**
         ```lang // use correct language extension here
