@@ -362,24 +362,6 @@ func TestStripMarkdownFence(t *testing.T) {
 			name:  "Markdown fence",
 			input: "```xml\n<review>\nHello\n</review>\n```",
 			want:  "<review>\nHello\n</review>",
-			// Wait, implementation: return strings.TrimSpace(strings.Join(lines[start:end], "\n"))
-			// strings.TrimSpace will remove trailing \n. So no newline at end.
-			// Let's check implementation again.
-			// 438: 	return strings.Join(lines[start:end], "\n")
-			// It joins with \n. It does NOT trim space at the very end of the result, but it trimmed space at start.
-			// Actually:
-			// 418: 	trimmed := strings.TrimSpace(s)
-			// ...
-			// lines := strings.Split(trimmed, "\n")
-			// ...
-			// return strings.Join(lines[start:end], "\n")
-
-			// If input is "```xml\n<review>\nHello\n</review>\n```"
-			// trimmed is same.
-			// lines: ["```xml", "<review>", "Hello", "</review>", "```"]
-			// start=1, end=4. lines[1:4] is ["<review>", "Hello", "</review>"]
-			// result: "<review>\nHello\n</review>"
-			// So NO newline at end.
 		},
 		{
 			name:  "Unclosed fence",
