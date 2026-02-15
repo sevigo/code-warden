@@ -330,8 +330,7 @@ func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *Dire
 		Imports: strings.Join(info.Imports, "\n"),
 	}
 
-	// Render the prompt
-	prompt, err := r.promptMgr.Render(ArchSummaryPrompt, DefaultProvider, promptData)
+	prompt, err := r.promptMgr.Render(ArchSummaryPrompt, promptData)
 	if err != nil {
 		return schema.Document{}, fmt.Errorf("failed to render arch summary prompt: %w", err)
 	}
@@ -545,7 +544,7 @@ func (r *ragService) processDirectorySummaries(ctx context.Context, models []str
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		summary := r.generateSingleSummary(ctx, modelName, relPath, info, llmInstances[modelName])
+		summary := r.generateSingleSummary(ctx, info, llmInstances[modelName])
 		resultsMu.Lock()
 		results[modelName][relPath] = summary
 		resultsMu.Unlock()
@@ -557,6 +556,10 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 	cleanRepo, err := filepath.Abs(repoPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid repo path: %w", err)
+	}
+	// Resolve symlinks for base path too (e.g. handles macOS /var -> /private/var)
+	if resolvedRepo, err := filepath.EvalSymlinks(cleanRepo); err == nil {
+		cleanRepo = resolvedRepo
 	}
 
 	if relPath == "." || relPath == "" || relPath == "/" {
@@ -610,7 +613,7 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 	return resolvedPath, nil
 }
 
-func (r *ragService) generateSingleSummary(ctx context.Context, modelName, _ string, info *DirectoryInfo, llm llms.Model) string {
+func (r *ragService) generateSingleSummary(ctx context.Context, info *DirectoryInfo, llm llms.Model) string {
 	if llm == nil {
 		return "Error: LLM not initialized"
 	}
@@ -622,7 +625,7 @@ func (r *ragService) generateSingleSummary(ctx context.Context, modelName, _ str
 		Imports: "N/A (Comparison Mode)",
 	}
 
-	prompt, err := r.promptMgr.Render(ArchSummaryPrompt, ModelProvider(modelName), promptData)
+	prompt, err := r.promptMgr.Render(ArchSummaryPrompt, promptData)
 	if err != nil {
 		return fmt.Sprintf("Error rendering prompt: %v", err)
 	}
