@@ -71,10 +71,12 @@ Here are the individual reviews:
         <!-- Why this needs to be fixed... -->
 
         **Fix:**
-        ```lang // use correct language extension here
-        // Minimal, correct fix
+        <!-- Clear recommendation or code snippet -->
+        
+        <!-- OPTIONAL: Provide <code_suggestion> ONLY if you are highly confident. It must be a drop-in replacement. -->
+        <code_suggestion>
         ...
-        ```
+        </code_suggestion>
       </comment>
     </suggestion>
   </suggestions>

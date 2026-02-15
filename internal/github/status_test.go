@@ -1,6 +1,8 @@
 package github
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -172,11 +174,27 @@ func TestFormatInlineComment(t *testing.T) {
 				" — ",
 			},
 		},
+		{
+			name: "includes suggested code block and footer",
+			sug: core.Suggestion{
+				FilePath:       "test.go",
+				LineNumber:     10,
+				Severity:       "Medium",
+				Comment:        "Use a faster algorithm.",
+				CodeSuggestion: "func fast() {\n  // optimized\n}",
+			},
+			contains: []string{
+				"**🟡 Medium**",
+				"Use a faster algorithm.",
+				"```suggestion\nfunc fast() {\n  // optimized\n}\n```",
+				"> 💡 Reply with `/rereview` to trigger a new review.",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatInlineComment(tt.sug)
+			got := formatInlineComment(context.Background(), tt.sug, slog.Default())
 			for _, c := range tt.contains {
 				assert.Contains(t, got, c, "expected to contain: %s", c)
 			}

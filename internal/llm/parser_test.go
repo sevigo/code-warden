@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -227,11 +229,77 @@ Great PR, but fix the typo.
 			input:     "This is just plain text without tags.",
 			expectErr: true,
 		},
+
+		{
+			name: "Explicit Code Suggestion",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <code_suggestion>
+func main() {
+	fmt.Println("Hello")
+}
+      </code_suggestion>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Explicit Code Suggestion with Markdown Fence",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <code_suggestion>
+` + "```go" + `
+func main() {
+	fmt.Println("Hello")
+}
+` + "```" + `
+      </code_suggestion>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Comment Tag Stripping",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <comment>
+        Fix this.
+        <fix_code>func foo() {}</fix_code>
+        <code_suggestion>func bar() {}</code_suggestion>
+      </comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseMarkdownReview(tt.input)
+			got, err := ParseMarkdownReview(context.Background(), tt.input, slog.Default())
 			if tt.expectErr {
 				assert.Error(t, err)
 				return
@@ -258,6 +326,16 @@ func verifyReviewResults(t *testing.T, name string, got *core.StructuredReview, 
 
 	verifySpecificMetadata(t, name, got)
 	verifyLineRanges(t, name, got)
+	verifyCodeSuggestion(t, name, got)
+}
+
+func verifyCodeSuggestion(t *testing.T, name string, got *core.StructuredReview) {
+	if !strings.Contains(name, "Code Suggestion") {
+		return
+	}
+	s := got.Suggestions[0]
+	expectedCode := "func main() {\n\tfmt.Println(\"Hello\")\n}"
+	assert.Equal(t, expectedCode, s.CodeSuggestion)
 }
 
 func verifySpecificMetadata(t *testing.T, name string, got *core.StructuredReview) {
@@ -269,6 +347,9 @@ func verifySpecificMetadata(t *testing.T, name string, got *core.StructuredRevie
 	}
 	if name == "Dirty XML (Bolded Path and Extra Tags)" {
 		assert.Equal(t, "path/to/file.go", s.FilePath)
+	}
+	if name == "Comment Tag Stripping" {
+		assert.Equal(t, "Fix this.", s.Comment)
 	}
 }
 
@@ -307,6 +388,16 @@ func TestStripMarkdownFence(t *testing.T) {
 			name:  "Markdown fence",
 			input: "```xml\n<review>\nHello\n</review>\n```",
 			want:  "<review>\nHello\n</review>",
+		},
+		{
+			name:  "Unclosed fence",
+			input: "```go\nfunc foo() {}",
+			want:  "```go\nfunc foo() {}",
+		},
+		{
+			name:  "Fence with whitespace",
+			input: "   ```go   \nfunc foo() {}\n   ```   ",
+			want:  "func foo() {}",
 		},
 	}
 

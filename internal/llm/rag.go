@@ -451,7 +451,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	// Parse Markdown Review
-	structuredReview, err := ParseMarkdownReview(rawReview)
+	structuredReview, err := ParseMarkdownReview(ctx, rawReview, r.logger)
 	if err != nil {
 		r.logger.Warn("failed to parse markdown review, using raw output as fallback", "error", err)
 		// Fallback: Use raw output as summary
@@ -688,7 +688,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 5. Parse and Add Disclaimer
-	structuredReview, err := ParseMarkdownReview(rawConsensus)
+	structuredReview, err := ParseMarkdownReview(ctx, rawConsensus, r.logger)
 	if err != nil {
 		r.logger.Warn("failed to parse consensus review, using raw output as fallback", "error", err)
 		structuredReview = &core.StructuredReview{Summary: rawConsensus}
@@ -888,7 +888,7 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 		return nil, "", err
 	}
 
-	structuredReview, err := ParseMarkdownReview(rawReview)
+	structuredReview, err := ParseMarkdownReview(ctx, rawReview, r.logger)
 	if err != nil {
 		r.logger.Warn("failed to parse re-review, using raw output", "error", err)
 		structuredReview = &core.StructuredReview{Summary: rawReview}

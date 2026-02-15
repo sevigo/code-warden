@@ -130,10 +130,16 @@ Analyze the diff using the provided Architectural Context and your knowledge of 
         [Why this is important (security, performance, correctness, etc.)]
 
         **Fix:**
-        ```{{.Language}}
-        // Optimized/Corrected implementation
-        ```
+        [Explanation of the fix strategy]
       </comment>
+      <code_suggestion>
+        (OPTIONAL) Provide the specific code fix here.
+        Rules:
+        1. ONLY provide this if you are highly confident (90%+).
+        2. Provide RAW CODE only. Do NOT use markdown backticks (```) inside this tag.
+        3. Ensure indentation matches the surrounding code exactly.
+        4. If replacing multiple lines, ensure the logic fits the start/end line context.
+      </code_suggestion>
     </suggestion>
   </suggestions>
 </review>

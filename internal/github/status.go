@@ -99,10 +99,15 @@ func (s *statusUpdater) Completed(ctx context.Context, event *core.GitHubEvent, 
 func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
 	var comments []DraftReviewComment
 	for _, sug := range review.Suggestions {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if sug.FilePath == "" || sug.LineNumber <= 0 || sug.Comment == "" {
 			continue
 		}
-		formattedComment := formatInlineComment(sug)
+		formattedComment := formatInlineComment(ctx, sug, s.logger)
 		if formattedComment == "" {
 			continue
 		}
@@ -132,7 +137,12 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 }
 
 // formatInlineComment generates a pull request comment with a clean, compact format.
-func formatInlineComment(sug core.Suggestion) string {
+func formatInlineComment(ctx context.Context, sug core.Suggestion, logger *slog.Logger) string {
+	// Check context cancellation
+	if ctx.Err() != nil {
+		return ""
+	}
+
 	if sug.FilePath == "" || sug.LineNumber <= 0 {
 		return ""
 	}
@@ -146,7 +156,18 @@ func formatInlineComment(sug core.Suggestion) string {
 		fmt.Fprintf(&sb, "> [!%s]\n", alert)
 	}
 
-	writeCommentBody(&sb, lines)
+	writeCommentBody(&sb, lines, sug.CodeSuggestion)
+
+	// Append Suggested Change
+	if sug.CodeSuggestion != "" {
+		// Size warning (Medium Severity feedback)
+		if len(sug.CodeSuggestion) > 10000 {
+			logger.WarnContext(ctx, "suggestion code block is unusually large", "size", len(sug.CodeSuggestion))
+		}
+	}
+
+	sb.WriteString("\n---\n")
+	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
 
 	return sb.String()
 }
@@ -179,7 +200,7 @@ func writeCommentHeader(sb *strings.Builder, sug core.Suggestion) []string {
 	return lines[startIdx:]
 }
 
-func writeCommentBody(sb *strings.Builder, lines []string) {
+func writeCommentBody(sb *strings.Builder, lines []string, suggestedCode string) {
 	inCodeBlock := false
 
 	for _, line := range lines {
@@ -211,6 +232,15 @@ func writeCommentBody(sb *strings.Builder, lines []string) {
 
 		// Write the line as-is (plain markdown)
 		sb.WriteString(line + "\n")
+	}
+
+	// Validate size and log warnings for oversized code suggestions
+	if suggestedCode != "" {
+		sb.WriteString("\n```suggestion\n")
+		// Escape triple backticks to prevent fence termination
+		safeCode := strings.ReplaceAll(suggestedCode, "```", "`````")
+		sb.WriteString(safeCode)
+		sb.WriteString("\n```\n")
 	}
 }
 
