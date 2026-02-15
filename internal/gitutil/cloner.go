@@ -61,7 +61,6 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 	return repo, nil
 }
 
-// Fetch fetches updates from the 'origin' remote.
 // Fetch fetches updates from the 'origin' remote using git CLI.
 func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...string) error {
 	c.Logger.InfoContext(ctx, "fetching latest changes from origin")
@@ -76,6 +75,10 @@ func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...s
 
 	var err error
 	for i := 0; i <= maxRetries; i++ {
+		// Check context cancellation
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = path
 
@@ -108,7 +111,6 @@ func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...s
 	return err
 }
 
-// Checkout switches the repository's worktree to a specific commit.
 // Checkout switches the repository's worktree to a specific commit using git CLI.
 func (c *Client) Checkout(ctx context.Context, path string, sha string) error {
 	c.Logger.Info("checking out commit", "sha", sha)
