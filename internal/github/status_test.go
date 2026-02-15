@@ -1,6 +1,8 @@
 package github
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -192,7 +194,7 @@ func TestFormatInlineComment(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatInlineComment(tt.sug)
+			got := formatInlineComment(context.Background(), tt.sug, slog.Default())
 			for _, c := range tt.contains {
 				assert.Contains(t, got, c, "expected to contain: %s", c)
 			}

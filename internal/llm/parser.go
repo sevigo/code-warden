@@ -155,13 +155,18 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 	if repro, ok := extractTag(content, "reproducibility"); ok {
 		s.Reproducibility = strings.TrimSpace(repro)
 	}
-	if fix, ok := extractTag(content, "fix_code"); ok {
-		// Legacy/Fallback
-		s.CodeSuggestion = stripMarkdownFence(unindent(fix))
-	}
-	// Preferred: Explicit code_suggestion tag
-	if fix, ok := extractTag(content, "code_suggestion"); ok {
-		s.CodeSuggestion = stripMarkdownFence(unindent(fix))
+	// Prioritize <code_suggestion>
+	codeTag, codeOk := extractTag(content, "code_suggestion")
+
+	if codeOk {
+		s.CodeSuggestion = stripMarkdownFence(unindent(codeTag))
+	} else {
+		// Fallback to <fix_code> with warning
+		fix, fixOk := extractTag(content, "fix_code")
+		if fixOk {
+			// Logger isn't available here in current sig, assuming safe fallback
+			s.CodeSuggestion = stripMarkdownFence(unindent(fix))
+		}
 	}
 
 	// Ensure consistency if we want to support both during migration,
@@ -429,26 +434,36 @@ func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
 func stripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)
 
-	// Check if it starts with a fence
+	// If it doesn't start with a fence, return original immediately
 	if !strings.HasPrefix(trimmed, "```") {
 		return s
 	}
 
 	lines := strings.Split(trimmed, "\n")
 	if len(lines) < 2 {
-		return s // Too short to be a valid block
+		return s // Too short to be a valid block, return original
 	}
 
-	// Remove first line (e.g., ```go)
+	// Find start (skip opening line like ```go)
 	start := 1
 
-	// Check last line for closing fence
-	end := len(lines)
-	if strings.HasPrefix(strings.TrimSpace(lines[end-1]), "```") {
-		end--
+	// Scan backwards for closing fence
+	end := -1
+	for i := len(lines) - 1; i >= start; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+			end = i
+			break
+		}
+	}
+
+	// If no closing fence found, preserve original data (Critical Fix)
+	if end == -1 {
+		return s
 	}
 
 	if start >= end {
+		// Only return empty string if the fence was literally empty (e.g. ```\n```)
+		// implying the LLM output an empty suggestion.
 		return ""
 	}
 

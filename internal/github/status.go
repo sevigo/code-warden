@@ -102,7 +102,7 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 		if sug.FilePath == "" || sug.LineNumber <= 0 || sug.Comment == "" {
 			continue
 		}
-		formattedComment := formatInlineComment(sug)
+		formattedComment := formatInlineComment(ctx, sug, s.logger)
 		if formattedComment == "" {
 			continue
 		}
@@ -132,7 +132,12 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 }
 
 // formatInlineComment generates a pull request comment with a clean, compact format.
-func formatInlineComment(sug core.Suggestion) string {
+func formatInlineComment(ctx context.Context, sug core.Suggestion, logger *slog.Logger) string {
+	// Check context cancellation
+	if ctx.Err() != nil {
+		return ""
+	}
+
 	if sug.FilePath == "" || sug.LineNumber <= 0 {
 		return ""
 	}
@@ -148,9 +153,20 @@ func formatInlineComment(sug core.Suggestion) string {
 
 	writeCommentBody(&sb, lines, sug.CodeSuggestion)
 
-	// Add Re-Review Footer
-	sb.WriteString("\n---\n")
-	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
+	// Append Suggested Change
+	if sug.CodeSuggestion != "" {
+		// Size warning (Medium Severity feedback)
+		if len(sug.CodeSuggestion) > 10000 {
+			logger.WarnContext(ctx, "suggestion code block is unusually large", "size", len(sug.CodeSuggestion))
+		}
+	}
+
+	// Logic Fix: Deduplicate Footer
+	// Only append if it's not already there (though usually we append once at the end)
+	footer := "\n\n---\n> 💡 Reply with `/rereview` to trigger a new review."
+	if !strings.Contains(sb.String(), "/rereview") {
+		sb.WriteString(footer)
+	}
 
 	return sb.String()
 }

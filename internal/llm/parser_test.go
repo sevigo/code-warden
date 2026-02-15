@@ -302,7 +302,6 @@ func verifyReviewResults(t *testing.T, name string, got *core.StructuredReview, 
 	assert.NotEmpty(t, s.FilePath)
 
 	verifySpecificMetadata(t, name, got)
-	verifySpecificMetadata(t, name, got)
 	verifyLineRanges(t, name, got)
 	verifyCodeSuggestion(t, name, got)
 }
