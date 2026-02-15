@@ -1,8 +1,0 @@
-./added-vocabulary.go
-./config.go
-./encoding.go
-./file-util.go
-./init.go
-./pretokenizer.go
-./tokenizer.go
-./util.go

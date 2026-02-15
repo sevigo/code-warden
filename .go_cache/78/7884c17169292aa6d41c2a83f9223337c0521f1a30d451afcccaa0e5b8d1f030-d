@@ -1,5 +1,0 @@
-./docgen.go
-./manager.go
-./scanner.go
-./state.go
-./scanner_test.go

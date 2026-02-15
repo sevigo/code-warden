@@ -28,6 +28,7 @@ reviews/
 # Go workspace file
 go.work
 go.work.sum
+.go_cache/
 
 # env file
 .env

@@ -1,4 +1,0 @@
-./dependency_retriever.go
-./multi_query.go
-./retriever.go
-./vectorstores.go
