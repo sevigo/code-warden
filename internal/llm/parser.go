@@ -1,7 +1,10 @@
 package llm
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,7 +17,6 @@ import (
 var (
 	tagRegexCache = make(map[string]*regexp.Regexp)
 	cacheMu       sync.RWMutex
-	pathReplacer  = strings.NewReplacer("*", "", "`", "", "\"", "", "'", "")
 )
 
 // getTagRegex returns a pre-compiled regex for the given XML tag.
@@ -41,12 +43,12 @@ func getTagRegex(tag string) *regexp.Regexp {
 
 // ParseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
 // It handles preambles gracefully and maintains a fallback for legacy markdown formats.
-func ParseMarkdownReview(markdown string) (*core.StructuredReview, error) {
+func ParseMarkdownReview(ctx context.Context, markdown string, logger *slog.Logger) (*core.StructuredReview, error) {
 	// 1. Normalize line endings
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 
 	// 2. Try XML first (Preferred Protocol)
-	if review, ok := parseXMLReview(markdown); ok {
+	if review, ok := parseXMLReview(ctx, markdown, logger); ok {
 		return review, nil
 	}
 
@@ -55,7 +57,7 @@ func ParseMarkdownReview(markdown string) (*core.StructuredReview, error) {
 }
 
 // parseXMLReview implements the core XML-tagged parsing logic.
-func parseXMLReview(markdown string) (*core.StructuredReview, bool) {
+func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*core.StructuredReview, bool) {
 	reviewContent, ok := extractTag(markdown, "review")
 	if !ok {
 		return nil, false
@@ -87,7 +89,10 @@ func parseXMLReview(markdown string) (*core.StructuredReview, bool) {
 
 	suggestionBlocks := extractMultipleTags(sourceForSuggestions, "suggestion")
 	for _, block := range suggestionBlocks {
-		s := parseSuggestionBlock(block)
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		s := parseSuggestionBlock(ctx, block, logger)
 		if s != nil {
 			review.Suggestions = append(review.Suggestions, *s)
 		}
@@ -102,7 +107,19 @@ func parseXMLReview(markdown string) (*core.StructuredReview, bool) {
 }
 
 // parseSuggestionBlock extracts fields from a single <suggestion> block.
-func parseSuggestionBlock(content string) *core.Suggestion {
+//
+//nolint:gocognit // This function has necessary complexity to handle multiple fields and legacy tags.
+func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logger) *core.Suggestion {
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	const maxBlockBytes = 100_000 // 100KB limit for a single suggestion block
+	if len(content) > maxBlockBytes {
+		logger.WarnContext(ctx, "suggestion block exceeds max allowed size", "size", len(content))
+		return nil
+	}
+
 	file, fileOk := extractTag(content, "file")
 	lineStr, lineOk := extractTag(content, "line")
 	if !fileOk || !lineOk {
@@ -144,7 +161,11 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 		s.Category = strings.TrimSpace(cat)
 	}
 	if comm, ok := extractTag(content, "comment"); ok {
-		s.Comment = unindent(comm)
+		// Clean up the comment by removing any embedded <fix_code> or <code_suggestion> tags
+		// ensuring they don't leak into the visible GitHub comment body.
+		cleaned := removeTag(comm, "fix_code")
+		cleaned = removeTag(cleaned, "code_suggestion")
+		s.Comment = unindent(cleaned)
 	}
 	if conf, ok := extractTag(content, "confidence"); ok {
 		s.Confidence = parseInt(conf)
@@ -154,6 +175,23 @@ func parseSuggestionBlock(content string) *core.Suggestion {
 	}
 	if repro, ok := extractTag(content, "reproducibility"); ok {
 		s.Reproducibility = strings.TrimSpace(repro)
+	}
+	// Prioritize <code_suggestion>
+	codeTag, codeOk := extractTag(content, "code_suggestion")
+
+	if codeOk {
+		const maxCodeBytes = 10_000
+		if len(codeTag) > maxCodeBytes {
+			logger.WarnContext(ctx, "code suggestion exceeds safe size", "size", len(codeTag))
+		}
+		s.CodeSuggestion = stripMarkdownFence(unindent(codeTag))
+	} else {
+		// Fallback to <fix_code> with warning
+		fix, fixOk := extractTag(content, "fix_code")
+		if fixOk {
+			logger.WarnContext(ctx, "using deprecated <fix_code> tag")
+			s.CodeSuggestion = stripMarkdownFence(unindent(fix))
+		}
 	}
 
 	return s
@@ -178,6 +216,12 @@ func extractMultipleTags(content, tag string) []string {
 		results = append(results, m[1])
 	}
 	return results
+}
+
+// removeTag removes the <tag>...</tag> block from the content.
+func removeTag(content, tag string) string {
+	re := getTagRegex(tag)
+	return re.ReplaceAllString(content, "")
 }
 
 // parseInt safely converts string to int, returning 0 on error.
@@ -232,40 +276,124 @@ func unindent(s string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
-// sanitizePath strips LLM-specific formatting from file paths
+// sanitizePath ensures the file path is safe and relative.
 func sanitizePath(path string) string {
-	path = strings.TrimSpace(path)
-	path = pathReplacer.Replace(path)
-
-	// Normalize backslashes to forward slashes for consistent checking
-	normalized := strings.ReplaceAll(path, "\\", "/")
-
-	// Prevent absolute paths (Unix and Windows-style) and traversal
-	if strings.HasPrefix(normalized, "/") ||
-		(len(normalized) > 1 && normalized[1] == ':') || // Windows drive C:
-		strings.Contains(normalized, "..") ||
-		strings.Contains(normalized, "//") {
+	if path == "" {
 		return ""
 	}
-	return strings.TrimSpace(path)
+
+	// Strip common LLM artifacts
+	path = strings.ReplaceAll(path, "*", "")
+	path = strings.ReplaceAll(path, "`", "")
+	path = strings.ReplaceAll(path, "\"", "")
+	path = strings.ReplaceAll(path, "'", "")
+	path = strings.TrimSpace(path)
+
+	// Reject traversal attempts *before* cleaning
+	if strings.Contains(path, "..") || strings.Contains(path, "//") || strings.Contains(path, "\\\\") {
+		return ""
+	}
+
+	// Normalize separators to forward slashes for uniform handling
+	path = strings.ReplaceAll(path, "\\", "/")
+
+	// Reject absolute paths and Windows drive letters
+	if strings.HasPrefix(path, "/") || strings.HasPrefix(path, `.\`) ||
+		(len(path) > 1 && path[1] == ':') {
+		return ""
+	}
+
+	// Final validation after cleaning
+	cleaned := filepath.Clean(path)
+	if strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, `\`) ||
+		strings.HasPrefix(cleaned, `.\`) || strings.HasPrefix(cleaned, "..") ||
+		strings.Contains(cleaned, "/..") || strings.Contains(cleaned, `\..`) {
+		return ""
+	}
+
+	return filepath.ToSlash(cleaned)
 }
 
 // normalizeVerdict maps a string to canonical core.Verdict constants.
 func normalizeVerdict(v string) string {
 	v = strings.ToUpper(strings.TrimSpace(v))
-	v = strings.ReplaceAll(v, " ", "_")
-	v = strings.Trim(v, "[]")
+	// Remove brackets if present
+	v = strings.TrimPrefix(v, "[")
+	v = strings.TrimSuffix(v, "]")
 
 	switch v {
-	case core.VerdictApprove:
+	case "APPROVE", "APPROVED":
 		return core.VerdictApprove
-	case core.VerdictRequestChanges:
+	case "REQUEST_CHANGES", "CHANGES_REQUESTED":
 		return core.VerdictRequestChanges
-	case core.VerdictComment:
+	case "COMMENT", "NEEDS_DISCUSSION":
 		return core.VerdictComment
 	default:
+		return core.VerdictComment
+	}
+}
+
+func stripMarkdownFence(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "```") {
+		return s
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 2 {
+		return s
+	}
+
+	// Enforce hard limits to prevent ReDoS
+	const maxLines = 10000
+	if len(lines) > maxLines {
 		return ""
 	}
+
+	fenceDepth := 0
+	startLine := -1
+	endLine := -1
+
+	for i := range lines {
+		line := strings.TrimSpace(lines[i])
+
+		// Only process lines that are pure fence markers (```)
+		if !strings.HasPrefix(line, "```") {
+			continue
+		}
+
+		// Count backtick sequences — only match standalone fences
+		if strings.Count(line, "```") != 1 {
+			continue // Skip lines with multiple ``` sequences
+		}
+
+		if fenceDepth == 0 {
+			// Opening fence
+			fenceDepth = 1
+			startLine = i
+		} else {
+			// Closing fence
+			endLine = i
+			break
+		}
+
+		if fenceDepth > 5 {
+			return "" // reject deeply nested fences
+		}
+	}
+
+	// Case 1: Found both opening and closing fence
+	if startLine != -1 && endLine != -1 && endLine > startLine+1 {
+		return strings.Join(lines[startLine+1:endLine], "\n")
+	}
+
+	// Case 2: Found opening fence but no closing (unclosed fence - be lenient)
+	if startLine != -1 && endLine == -1 && len(lines) > startLine+1 {
+		return strings.Join(lines[startLine+1:], "\n")
+	}
+
+	// Case 3: Malformed or empty content
+	return ""
 }
 
 // parseLegacyMarkdownReview handles older formats without XML tags.
@@ -408,28 +536,4 @@ func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
 		return "", 0, 0, false
 	}
 	return path, ln, ln, true
-}
-
-func stripMarkdownFence(s string) string {
-	trimmed := strings.TrimSpace(s)
-	if !strings.HasPrefix(trimmed, "```") {
-		return s
-	}
-	lines := strings.Split(trimmed, "\n")
-	if len(lines) < 2 {
-		return s
-	}
-
-	closeIdx := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "```" {
-			closeIdx = i
-			break
-		}
-	}
-
-	if closeIdx > 0 {
-		return strings.TrimSpace(strings.Join(lines[1:closeIdx], "\n"))
-	}
-	return strings.TrimSpace(strings.Join(lines[1:], "\n"))
 }

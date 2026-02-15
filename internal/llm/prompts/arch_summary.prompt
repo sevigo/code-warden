@@ -1,19 +1,32 @@
-You are an expert software architect analyzing a codebase.
+You are an expert software architect analyzing a codebase for a RAG-based code review system.
 
-Directory: {{.Path}}
-
-Files in this directory:
+**Directory:** {{.Path}}
+**Files in this directory:**
 {{.Files}}
 
-Exported symbols (functions, types, constants):
+**Exported Symbols (functions, types, constants):**
 {{.Symbols}}
 
-Imports from other packages:
+**External Package Dependencies:**
 {{.Imports}}
 
-Provide a concise 2-3 sentence summary of this module's responsibility. Focus on:
-1. What is the primary purpose of this package/directory?
-2. What abstraction layer does it belong to (e.g., data access, business logic, API, utilities)?
-3. What other components might depend on it?
+Your summary will be embedded as a vector and retrieved during code reviews. Optimize for retrieval by being SPECIFIC and CONCRETE.
 
-Summary:
+Generate a structured summary:
+
+**PRIMARY PURPOSE:** [1 sentence - what business problem does this module solve?]
+
+**ARCHITECTURAL LAYER:** [Choose one: Data Access | Business Logic | API/HTTP Handler | Infrastructure | Utility | CLI]
+
+**KEY RESPONSIBILITIES:** [2-3 bullet points of what this module does]
+
+**DEPENDS ON:** [List 2-3 most important external packages from Imports above]
+
+**EXPORTS:** [List 3-5 most important symbols that other modules likely use]
+
+**COUPLING CONCERNS:** [Any tight coupling, god objects, or architectural violations visible from the symbols]
+
+Focus on information that helps reviewers understand:
+1. What breaks if this module changes
+2. What other modules depend on this
+3. What patterns/abstractions this module implements

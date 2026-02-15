@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -98,7 +100,7 @@ func TestDoS_PreambleResilience(t *testing.T) {
 	input := hugePreamble + "<review><summary>OK</summary></review>"
 
 	start := time.Now()
-	_, err := ParseMarkdownReview(input)
+	_, err := ParseMarkdownReview(context.Background(), input, slog.Default())
 	duration := time.Since(start)
 
 	assert.NoError(t, err)

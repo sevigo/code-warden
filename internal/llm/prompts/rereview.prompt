@@ -72,6 +72,13 @@ Here is the review you provided previously:
         **Fix:**
         <!-- Clear recommendation or code snippet -->
       </comment>
+      <code_suggestion>
+        (OPTIONAL) Provide the specific code fix here.
+        Rules:
+        1. ONLY provide this if you are highly confident (90%+).
+        2. Provide RAW CODE only. Do NOT use markdown backticks (```) inside this tag.
+        3. Ensure indentation matches the surrounding code exactly.
+      </code_suggestion>
     </suggestion>
   </suggestions>
 </review>

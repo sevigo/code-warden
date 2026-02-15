@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -227,17 +229,145 @@ Great PR, but fix the typo.
 			input:     "This is just plain text without tags.",
 			expectErr: true,
 		},
+
+		{
+			name: "Explicit Code Suggestion",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <code_suggestion>
+func main() {
+	fmt.Println("Hello")
+}
+      </code_suggestion>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Explicit Code Suggestion with Markdown Fence",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <code_suggestion>
+` + "```go" + `
+func main() {
+	fmt.Println("Hello")
+}
+` + "```" + `
+      </code_suggestion>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Comment Tag Stripping",
+			input: `
+<review>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <comment>
+        Fix this.
+        <fix_code>func foo() {}</fix_code>
+        <code_suggestion>func bar() {}</code_suggestion>
+      </comment>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "",
+			wantVerdict: "",
+			wantCount:   1,
+			expectErr:   false,
+		},
+		{
+			name: "Reproduction: Missing Inline Comments",
+			input: `
+<review>
+  <verdict>REQUEST_CHANGES</verdict>
+  <confidence>98</confidence>
+  <summary>
+    # SYNTHESIZED CODE REVIEW
+    Summary text...
+  </summary>
+  <suggestions>
+    <suggestion>
+      <file>internal/llm/parser.go</file>
+      <line>278-290</line>
+      <severity>Critical</severity>
+      <category>Security</category>
+      <confidence>100</confidence>
+      <estimated_fix_time>10m</estimated_fix_time>
+      <reproducibility>Always</reproducibility>
+      <comment>
+        **Observation:**
+        The clean path function...
+      </comment>
+    </suggestion>
+    <suggestion>
+      <file>internal/github/status.go</file>
+      <line>236-240</line>
+      <severity>Critical</severity>
+      <comment>
+        **Observation:**
+        Ineffective escaping...
+      </comment>
+      <code_suggestion>
+        Code...
+      </code_suggestion>
+    </suggestion>
+    <suggestion>
+      <file>internal/llm/parser.go</file>
+      <line>455</line>
+      <severity>Critical</severity>
+      <comment>
+        **Observation:**
+        ReDoS...
+        **Fix:**
+        Replace...
+      </code_suggestion> <!-- MALFORMED CLOSING TAG -->
+      <code_suggestion>
+        Code...
+      </code_suggestion>
+    </suggestion>
+  </suggestions>
+</review>`,
+			wantSummary: "SYNTHESIZED CODE REVIEW",
+			wantVerdict: "REQUEST_CHANGES",
+			wantCount:   3, // Parsed 3 suggestions (3rd has empty comment)
+			expectErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseMarkdownReview(tt.input)
+			got, err := ParseMarkdownReview(context.Background(), tt.input, slog.Default())
 			if tt.expectErr {
 				assert.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
 			verifyReviewResults(t, tt.name, got, tt.wantSummary, tt.wantVerdict, tt.wantCount)
+
+			if tt.name == "Reproduction: Missing Inline Comments" {
+				assert.Equal(t, "", got.Suggestions[2].Comment, "3rd suggestion should have empty comment due to malformed XML")
+				assert.NotEmpty(t, got.Suggestions[0].Comment, "1st suggestion should have comment")
+			}
 		})
 	}
 }
@@ -258,6 +388,16 @@ func verifyReviewResults(t *testing.T, name string, got *core.StructuredReview, 
 
 	verifySpecificMetadata(t, name, got)
 	verifyLineRanges(t, name, got)
+	verifyCodeSuggestion(t, name, got)
+}
+
+func verifyCodeSuggestion(t *testing.T, name string, got *core.StructuredReview) {
+	if !strings.Contains(name, "Code Suggestion") {
+		return
+	}
+	s := got.Suggestions[0]
+	expectedCode := "func main() {\n\tfmt.Println(\"Hello\")\n}"
+	assert.Equal(t, expectedCode, s.CodeSuggestion)
 }
 
 func verifySpecificMetadata(t *testing.T, name string, got *core.StructuredReview) {
@@ -269,6 +409,9 @@ func verifySpecificMetadata(t *testing.T, name string, got *core.StructuredRevie
 	}
 	if name == "Dirty XML (Bolded Path and Extra Tags)" {
 		assert.Equal(t, "path/to/file.go", s.FilePath)
+	}
+	if name == "Comment Tag Stripping" {
+		assert.Equal(t, "Fix this.", s.Comment)
 	}
 }
 
@@ -307,6 +450,16 @@ func TestStripMarkdownFence(t *testing.T) {
 			name:  "Markdown fence",
 			input: "```xml\n<review>\nHello\n</review>\n```",
 			want:  "<review>\nHello\n</review>",
+		},
+		{
+			name:  "Unclosed fence",
+			input: "```go\nfunc foo() {}",
+			want:  "func foo() {}",
+		},
+		{
+			name:  "Fence with whitespace",
+			input: "   ```go   \nfunc foo() {}\n   ```   ",
+			want:  "func foo() {}",
 		},
 	}
 
