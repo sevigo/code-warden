@@ -340,8 +340,8 @@ func appendOffDiffSuggestions(summary string, suggestions []core.Suggestion) str
 }
 
 func extractBriefTitle(comment string) string {
-	lines := strings.SplitSeq(comment, "\n")
-	for line := range lines {
+	lines := strings.Split(comment, "\n")
+	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue

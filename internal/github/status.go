@@ -13,6 +13,21 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 )
 
+// Severity emojis
+const (
+	SeverityEmojiCritical = "🔴"
+	SeverityEmojiHigh     = "🟠"
+	SeverityEmojiMedium   = "🟡"
+	SeverityEmojiLow      = "🟢"
+)
+
+// Verdict icons
+const (
+	VerdictIconApprove        = "✅"
+	VerdictIconRequestChanges = "🚫"
+	VerdictIconComment        = "💬"
+)
+
 // Severity constants to avoid string duplication.
 const (
 	SeverityCritical = "Critical"
@@ -253,13 +268,13 @@ func formatReviewSummary(review *core.StructuredReview) string {
 func buildStatsLine(counts map[string]int) []string {
 	var stats []string
 	if counts[SeverityCritical] > 0 {
-		stats = append(stats, fmt.Sprintf("🔴 %d Critical", counts[SeverityCritical]))
+		stats = append(stats, fmt.Sprintf("%s %d Critical", SeverityEmojiCritical, counts[SeverityCritical]))
 	}
 	if counts[SeverityHigh] > 0 {
-		stats = append(stats, fmt.Sprintf("🟠 %d High", counts[SeverityHigh]))
+		stats = append(stats, fmt.Sprintf("%s %d High", SeverityEmojiHigh, counts[SeverityHigh]))
 	}
 	if counts[SeverityMedium] > 0 {
-		stats = append(stats, fmt.Sprintf("🟡 %d Medium", counts[SeverityMedium]))
+		stats = append(stats, fmt.Sprintf("%s %d Medium", SeverityEmojiMedium, counts[SeverityMedium]))
 	}
 	if counts[SeverityLow] > 0 {
 		stats = append(stats, fmt.Sprintf("🟢 %d Low", counts[SeverityLow]))
@@ -272,11 +287,11 @@ func verdictIcon(verdict string) string {
 	v := strings.ToUpper(strings.TrimSpace(verdict))
 	switch v {
 	case "APPROVE":
-		return "✅"
+		return VerdictIconApprove
 	case "REQUEST_CHANGES", "REQUEST CHANGES":
-		return "🚫"
+		return VerdictIconRequestChanges
 	case "COMMENT":
-		return "💬"
+		return VerdictIconComment
 	default:
 		return "📝"
 	}
@@ -286,13 +301,13 @@ func verdictIcon(verdict string) string {
 func SeverityEmoji(severity string) string {
 	switch severity {
 	case SeverityCritical:
-		return "🔴"
+		return SeverityEmojiCritical
 	case SeverityHigh:
-		return "🟠"
+		return SeverityEmojiHigh
 	case SeverityMedium:
-		return "🟡"
+		return SeverityEmojiMedium
 	case SeverityLow:
-		return "🟢"
+		return SeverityEmojiLow
 	default:
 		return "⚪"
 	}
