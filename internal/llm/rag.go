@@ -1956,8 +1956,9 @@ func (r *ragService) cleanCommentForQuery(comment string) string {
 	comment = strings.ReplaceAll(comment, "`", " ")
 
 	// Normalize structural headers to separators for semantic retention
-	// This preserves the semantic meaning (e.g., "Observation:", "Fix:") while reducing noise
-	comment = statusRegex.ReplaceAllString(comment, "STATUS: $1 | ")
+	// This preserves the semantic meaning (e.g., "Observation:", "Fix:") while reducing noise.
+	// Status markers are removed as they don't contribute to code retrieval.
+	comment = statusRegex.ReplaceAllString(comment, " ")
 	comment = obsRegex.ReplaceAllString(comment, " | Observation: ")
 	comment = rootCauseRegex.ReplaceAllString(comment, " | Root Cause: ")
 	comment = fixRegex.ReplaceAllString(comment, " | Fix: ")
