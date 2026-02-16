@@ -151,29 +151,14 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 	uniqueDirs := make(map[string]struct{})
 
 	for _, p := range targetPaths {
-		// Security: Sanitize and validate target path (Review Feedback #1)
-		// Security: Sanitize and validate target path (Review Feedback #1)
-		// Resolve absolute paths to prevent traversal via ".." which filepath.Clean might mask
-		absRepoPath, err := filepath.Abs(repoPath)
+		// Securely validate and join the path using our helper
+		_, err := r.validateAndJoinPath(repoPath, p)
 		if err != nil {
-			r.logger.Warn("could not resolve repo path", "error", err)
-			continue
-		}
-
-		absP, err := filepath.Abs(filepath.Join(repoPath, filepath.Clean(p)))
-		if err != nil {
-			r.logger.Warn("invalid target path", "path", p, "error", err)
-			continue
-		}
-
-		relP, err := filepath.Rel(absRepoPath, absP)
-		if err != nil || strings.HasPrefix(relP, "..") || filepath.IsAbs(relP) {
-			r.logger.Warn("skipping suspicious target path (potential traversal)", "path", p, "resolved", absP)
+			r.logger.Warn("invalid or suspicious target path", "path", p, "error", err)
 			continue
 		}
 
 		// Use the cleaned path for directory traversal.
-		// We've already validated it doesn't traverse outside repo via relP check above.
 		cleanP := filepath.Clean(p)
 		dir := filepath.Dir(cleanP)
 		// Traverse up to root to ensure all affected parent summaries are updated if needed

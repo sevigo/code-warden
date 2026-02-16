@@ -17,14 +17,27 @@ import (
 var (
 	tagRegexCache = make(map[string]*regexp.Regexp)
 	cacheMu       sync.RWMutex
+	reAnyNextTag  = regexp.MustCompile(`(?i)<[a-z_]+\b[^>]*>`)
 )
 
 // getTagRegex returns a pre-compiled regex for the given XML tag.
 // It uses a memoization cache to avoid repeated compilation overhead.
 func getTagRegex(tag string) *regexp.Regexp {
-	quotedTag := regexp.QuoteMeta(tag)
+	return getCachedRegex(tag, func(quoted string) string {
+		return `(?is)<` + quoted + `\b[^>]*>`
+	})
+}
+
+// getCloseTagRegex returns a pre-compiled regex for the closing XML tag.
+func getCloseTagRegex(tag string) *regexp.Regexp {
+	return getCachedRegex("/"+tag, func(quoted string) string {
+		return `(?is)</` + quoted[1:] + `\s*>`
+	})
+}
+
+func getCachedRegex(key string, patternBuilder func(string) string) *regexp.Regexp {
 	cacheMu.RLock()
-	re, ok := tagRegexCache[quotedTag] // Use quoted tag as key to prevent collisions
+	re, ok := tagRegexCache[key]
 	cacheMu.RUnlock()
 	if ok {
 		return re
@@ -32,12 +45,12 @@ func getTagRegex(tag string) *regexp.Regexp {
 
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-	// Double-check after acquiring write lock
-	if re, ok = tagRegexCache[quotedTag]; ok {
+	if re, ok = tagRegexCache[key]; ok {
 		return re
 	}
-	re = regexp.MustCompile(`(?is)<` + quotedTag + `\b[^>]*>(.*?)</` + quotedTag + `\s*>`)
-	tagRegexCache[quotedTag] = re
+	quoted := regexp.QuoteMeta(key)
+	re = regexp.MustCompile(patternBuilder(quoted))
+	tagRegexCache[key] = re
 	return re
 }
 
@@ -87,7 +100,7 @@ func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (
 		sourceForSuggestions = reviewContent
 	}
 
-	suggestionBlocks := extractMultipleTags(sourceForSuggestions, "suggestion")
+	suggestionBlocks := extractMultipleTags(ctx, sourceForSuggestions, "suggestion")
 	for _, block := range suggestionBlocks {
 		if ctx.Err() != nil {
 			return nil, false
@@ -197,31 +210,108 @@ func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logg
 	return s
 }
 
-// extractTag finds the content between <tag> and </tag>.
+// extractTag finds the content between <tag> and the corresponding </tag> or the next sibling tag.
 func extractTag(content, tag string) (string, bool) {
-	re := getTagRegex(tag)
-	match := re.FindStringSubmatch(content)
-	if match == nil {
+	reOpen := getTagRegex(tag)
+	openMatch := reOpen.FindStringIndex(content)
+	if openMatch == nil {
 		return "", false
 	}
-	return match[1], true
+
+	startContent := openMatch[1]
+	remaining := content[startContent:]
+
+	// 1. Try to find the correct closing tag
+	reClose := getCloseTagRegex(tag)
+	closeMatch := reClose.FindStringIndex(remaining)
+	if closeMatch != nil {
+		return remaining[:closeMatch[0]], true
+	}
+
+	// 2. Lenient Fallback: Find the next opening tag of any type
+	nextMatch := reAnyNextTag.FindStringIndex(remaining)
+	if nextMatch != nil {
+		// Return content but we might want to signal leniency in the future
+		return remaining[:nextMatch[0]], true
+	}
+
+	return remaining, true
 }
 
 // extractMultipleTags finds all occurrences of content between <tag> and </tag>.
-func extractMultipleTags(content, tag string) []string {
-	results := []string{}
-	re := getTagRegex(tag)
-	matches := re.FindAllStringSubmatch(content, -1)
-	for _, m := range matches {
-		results = append(results, m[1])
+func extractMultipleTags(ctx context.Context, content, tag string) []string {
+	var results []string
+	reOpen := getTagRegex(tag)
+	remaining := content
+
+	for ctx.Err() == nil {
+		openMatch := reOpen.FindStringIndex(remaining)
+		if openMatch == nil {
+			break
+		}
+
+		startContent := openMatch[1]
+		searchSpace := remaining[startContent:]
+
+		// Find end of this tag
+		var contentEnd int
+		var foundEnd bool
+
+		// 1. Try to find the correct closing tag
+		reClose := getCloseTagRegex(tag)
+		closeMatch := reClose.FindStringIndex(searchSpace)
+		if closeMatch != nil {
+			contentEnd = closeMatch[0]
+			foundEnd = true
+			// Advance to after the closing tag
+			remaining = searchSpace[closeMatch[1]:]
+		} else {
+			// 2. Lenient Fallback: Find the next opening tag
+			nextMatch := reAnyNextTag.FindStringIndex(searchSpace)
+			if nextMatch != nil {
+				contentEnd = nextMatch[0]
+				foundEnd = true
+				// Advance to the next opening tag (don't skip it!)
+				remaining = searchSpace[nextMatch[0]:]
+			} else {
+				// No more tags at all, consume until the end
+				results = append(results, searchSpace)
+				break
+			}
+		}
+
+		if foundEnd {
+			results = append(results, searchSpace[:contentEnd])
+		}
 	}
+
 	return results
 }
 
 // removeTag removes the <tag>...</tag> block from the content.
 func removeTag(content, tag string) string {
-	re := getTagRegex(tag)
-	return re.ReplaceAllString(content, "")
+	reOpen := getTagRegex(tag)
+	openMatch := reOpen.FindStringIndex(content)
+	if openMatch == nil {
+		return content
+	}
+
+	reClose := getCloseTagRegex(tag)
+	closeMatch := reClose.FindStringIndex(content[openMatch[1]:])
+	if closeMatch != nil {
+		// Strict removal
+		fullEnd := openMatch[1] + closeMatch[1]
+		return content[:openMatch[0]] + content[fullEnd:]
+	}
+
+	// Lenient removal (up to next tag or end)
+	nextMatch := reAnyNextTag.FindStringIndex(content[openMatch[1]:])
+	if nextMatch != nil {
+		fullEnd := openMatch[1] + nextMatch[0]
+		return content[:openMatch[0]] + content[fullEnd:]
+	}
+
+	return content[:openMatch[0]]
 }
 
 // parseInt safely converts string to int, returning 0 on error.

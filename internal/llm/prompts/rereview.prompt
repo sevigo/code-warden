@@ -42,45 +42,60 @@ Here is the review you provided previously:
 
 ---
 
+---
+
+## XML GENERATION PROTOCOL
+
+**You are acting as a data serializer. The XML structure is NOT decorative; it is a strict schema. Violations will break the downstream parser.**
+
+### 1. ABSOLUTE REQUIREMENT: TAG CLOSURE DISCIPLINE
+You MUST follow this sequence EXACTLY for every suggestion:
+1. Write the opening `<suggestion>` tag.
+2. Fill in `<file>`, `<line>`, `<severity>`.
+3. Open `<comment>`.
+4. Write your detailed observation and fix recommendation.
+5. **Type `</comment>` IMMEDIATELY after the last word of your comment.**
+6. **Type `<code_suggestion>` on the NEXT line.**
+7. Write ONLY RAW CODE inside `<code_suggestion>` (No backticks!).
+8. **Type `</code_suggestion>` IMMEDIATELY after the code code.**
+9. Close the `<suggestion>` block with `</suggestion>`.
+
+### 2. TAG STACK MENTAL MODEL
+When you open a tag, imagine pushing it onto a stack:
+- Open `<comment>` → Stack: `[comment]`
+- Close with `</comment>` → Stack: `[]`
+- Open `<code_suggestion>` → Stack: `[code_suggestion]`
+- Close with `</code_suggestion>` → Stack: `[]`
+
+If your stack shows `[comment]` and you are about to write code, you **MUST** pop `[comment]` with `</comment>` first.
+
+---
+
 ## OUTPUT FORMAT
 
-**IMPORTANT**: You MUST wrap your entire response inside `<review>` tags. Core structured fields MUST be strictly tagged as shown below, while the content inside the tags remains rich Markdown.
+**IMPORTANT**: You MUST wrap your entire response inside `<review>` tags. Core structured fields MUST be strictly tagged as shown below. VIOLATION = PARSER FAILURE.
 
 ```xml
 <review>
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>95</confidence>
+  <summary>
     <!-- Concise summary. State clearly whether all original issues were addressed. -->
-    
-    ---
-    
-    ## ✅ Resolved Issues
-    *   **Issue Title**: Fixed. <!-- Brief detail -->
-    ...
   </summary>
   <suggestions>
     <suggestion>
       <file>path/to/filename.go</file>
       <line>10</line>
       <severity>Critical | High | Medium</severity>
-        **Observation:**
-        <!-- Why this feedback from the original review is still an issue -->
-
-        **Rationale:**
-        <!-- Impact if left unaddressed -->
-
-        **Fix:**
-        <!-- Clear recommendation or code snippet -->
-      </comment>
+      <comment>
+        **Observation:** [Detail]
+        **Rationale:** [Impact]
+        **Fix:** [Recommendation]
+      </comment>  <!-- CLOSE COMMENT HERE, BEFORE NEXT TAG -->
       <code_suggestion>
-        (OPTIONAL) Provide the specific code fix here.
-        Rules:
-        1. ONLY provide this if you are highly confident (90%+).
-        2. Provide RAW CODE only. Do NOT use markdown backticks (```) inside this tag.
-        3. Ensure indentation matches the surrounding code exactly.
-        4. Define EXACT line range in the <suggestion line=".."> attribute. If multiple lines are replaced, use 10-15 format.
-        5. DO NOT include unchanged surrounding code context; only include the replacement code.
-      </code_suggestion>
+// RAW CODE ONLY - NO markdown backticks
+(OPTIONAL code fix)
+      </code_suggestion>  <!-- CLOSE CODE_SUGGESTION HERE -->
     </suggestion>
   </suggestions>
 </review>

@@ -35,3 +35,4 @@ go.work.sum
 config.yaml
 warden-terminal.log
 llm_context.md
+*_test_results*
