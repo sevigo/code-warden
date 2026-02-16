@@ -179,38 +179,38 @@ func TestCombineReReviewContext(t *testing.T) {
 	r := &ragService{}
 
 	tests := []struct {
-		name           string
-		standardCtx    string
-		feedbackCtx    string
-		expectedParts  []string
+		name            string
+		standardCtx     string
+		feedbackCtx     string
+		expectedParts   []string
 		unexpectedParts []string
 	}{
 		{
-			name:           "both contexts present",
-			standardCtx:    "Standard context",
-			feedbackCtx:    "Feedback context",
-			expectedParts:  []string{"Feedback context", "---", "Standard context"},
+			name:            "both contexts present",
+			standardCtx:     "Standard context",
+			feedbackCtx:     "Feedback context",
+			expectedParts:   []string{"Feedback context", "---", "Standard context"},
 			unexpectedParts: []string{},
 		},
 		{
-			name:           "only standard context",
-			standardCtx:    "Standard context",
-			feedbackCtx:    "",
-			expectedParts:  []string{"Standard context"},
+			name:            "only standard context",
+			standardCtx:     "Standard context",
+			feedbackCtx:     "",
+			expectedParts:   []string{"Standard context"},
 			unexpectedParts: []string{"---"},
 		},
 		{
-			name:           "only feedback context",
-			standardCtx:    "",
-			feedbackCtx:    "Feedback context",
-			expectedParts:  []string{"Feedback context", "---"},
+			name:            "only feedback context",
+			standardCtx:     "",
+			feedbackCtx:     "Feedback context",
+			expectedParts:   []string{"Feedback context", "---"},
 			unexpectedParts: []string{},
 		},
 		{
-			name:           "both empty",
-			standardCtx:    "",
-			feedbackCtx:    "",
-			expectedParts:  []string{},
+			name:            "both empty",
+			standardCtx:     "",
+			feedbackCtx:     "",
+			expectedParts:   []string{},
 			unexpectedParts: []string{},
 		},
 	}
