@@ -33,49 +33,36 @@ Combine independent reviews of the same Pull Request into a single, high-quality
 
 ---
 
-## PHASE 2: ⚠️ THE HARDENED XML SCHEMA RULES
+## PHASE 2: XML GENERATION PROTOCOL
 
 **You are acting as a data serializer. The XML structure is NOT decorative; it is a strict schema. Violations will break the downstream parser.**
 
-### 1. Tag Sibling Rule (NO NESTING)
-The `<comment>` tag and the `<code_suggestion>` tag are **SIBLINGS**. They must exist at the same level.
-- ❌ **STRICTLY FORBIDDEN:** `<comment> ... <code_suggestion> ... </comment>`
-- ✅ **REQUIRED:** `</comment><code_suggestion> ... </code_suggestion>`
+### 1. ABSOLUTE REQUIREMENT: TAG CLOSURE DISCIPLINE
+You MUST follow this sequence EXACTLY for every suggestion:
+1. Write the opening `<suggestion>` tag.
+2. Fill in `<file>`, `<line>`, `<severity>`, `<category>`, `<confidence>`, `<estimated_fix_time>`, `<reproducibility>`.
+3. Open `<comment>`.
+4. Write your detailed observation and fix recommendation.
+5. **Type `</comment>` IMMEDIATELY after the last word of your comment.**
+6. **Type `<code_suggestion>` on the NEXT line.**
+7. Write ONLY RAW CODE inside `<code_suggestion>` (No backticks!).
+8. **Type `</code_suggestion>` IMMEDIATELY after the code code.**
+9. Close the `<suggestion>` block with `</suggestion>`.
 
-### 2. Mechanical Closing Rule
-Before typing a closing tag, you must verify the most recent opening tag.
-- If you just finished writing the human explanation, you **MUST** close it with `</comment>`.
-- You **NEVER** close a comment with `</code_suggestion>`.
+### 2. TAG STACK MENTAL MODEL
+When you open a tag, imagine pushing it onto a stack:
+- Open `<comment>` → Stack: `[comment]`
+- Close with `</comment>` → Stack: `[]`
+- Open `<code_suggestion>` → Stack: `[code_suggestion]`
+- Close with `</code_suggestion>` → Stack: `[]`
 
-### 3. Raw Code Rule
-The `<code_suggestion>` block must contain **ONLY RAW CODE**.
-- ❌ **STRICTLY FORBIDDEN:** Using Markdown backticks (```) or language identifiers (go, python) inside the tag.
-- ✅ **REQUIRED:** Pure code only.
-
-### 4. Anti-Pattern Warning
-```xml
-<!-- ❌ ILLEGAL NESTING -->
-<comment>
-  Check this fix:
-  <code_suggestion>if (err) return;</code_suggestion>
-</comment>
-
-<!-- ❌ ILLEGAL TAG SWAP -->
-<comment>This is a bug.</code_suggestion>
-
-<!-- ✅ LEGAL STRUCTURE -->
-<suggestion>
-  ...
-  <comment>Human-readable explanation here.</comment>
-  <code_suggestion>Actual code fix here</code_suggestion>
-</suggestion>
-```
+If your stack shows `[comment]` and you are about to write code, you **MUST** pop `[comment]` with `</comment>` first.
 
 ---
 
 ## PHASE 3: OUTPUT FORMAT
 
-**CRITICAL: You MUST wrap your entire response in `<review>` tags. Every field MUST be strictly tagged. Ensure every opening tag has a matching closing tag (e.g., `<comment>` must be closed with `</comment>`, NOT `</code_suggestion>`).**
+**CRITICAL: You MUST wrap your entire response in `<review>` tags. Core structured fields MUST be strictly tagged. VIOLATION = PARSER FAILURE. There are NO EXCEPTIONS.**
 
 ```xml
 <review>
@@ -115,35 +102,18 @@ The `<code_suggestion>` block must contain **ONLY RAW CODE**.
 [Recommendation]
 
 **Model Agreement:** [Identified by: gemma3 (95%)]
-      </comment>
+      </comment>  <!-- CLOSE COMMENT HERE, BEFORE NEXT TAG -->
       <code_suggestion>
 // RAW CODE ONLY - NO markdown backticks
 if err := validatePath(userInput); err != nil {
     return fmt.Errorf("invalid path: %w", err)
 }
-      </code_suggestion>
+      </code_suggestion>  <!-- CLOSE CODE_SUGGESTION HERE -->
     </suggestion>
     
-    <!-- Repeat <suggestion> blocks for each issue -->
+    <!-- Repeat <suggestion> blocks as needed -->
   </suggestions>
 </review>
 ```
-
-**TAGGING RULES:**
-1.  `<comment>` MUST be closed with `</comment>`.
-2.  `<code_suggestion>` MUST be closed with `</code_suggestion>`.
-3.  DO NOT nest tags incorrectly.
-4.  DO NOT use markdown backticks inside `<code_suggestion>`.
-
----
-
-## PHASE 4: FINAL MECHANICAL CHECKLIST
-**Perform these checks in your mind BEFORE streaming the final characters of your response:**
-
-1. **Count Tags:** Do I have an equal number of `<comment>` and `</comment>` tags?
-2. **Sibling Check:** Did I close the `</comment>` tag **BEFORE** opening the `<code_suggestion>` tag?
-3. **Backtick Check:** Are there any triple backticks inside `<code_suggestion>`? (If yes, remove them).
-4. **Line Check:** Is the `<line>` number exactly as provided in the source reviews?
-5. **Path Check:** Is the `<file>` path exactly as it appears in the `Changed Files` list?
 
 **Synthesize the review now, following these strict structural constraints.**
