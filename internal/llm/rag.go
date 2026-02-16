@@ -982,24 +982,13 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	seenDocs := make(map[string]struct{})
 
 	for _, doc := range docs {
-		source, _ := doc.Metadata["source"].(string)
-		identifier, _ := doc.Metadata["identifier"].(string)
-		parentID, ok := doc.Metadata["parent_id"].(string)
-		if !ok {
-			parentID = ""
-		}
-
-		// Deduplicate based on parent_id if available, otherwise use source + identifier
-		docKey := parentID
-		if docKey == "" {
-			docKey = fmt.Sprintf("%s-%s", source, identifier)
-		}
-
+		docKey := r.getDocKey(doc)
 		if _, exists := seenDocs[docKey]; exists {
 			continue
 		}
 		seenDocs[docKey] = struct{}{}
 
+		source, _ := doc.Metadata["source"].(string)
 		contextBuilder.WriteString("---\n")
 		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", source))
 
@@ -1007,17 +996,14 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 			contextBuilder.WriteString(fmt.Sprintf("Package: %s\n", pkg))
 		}
 
-		if identifier != "" && parentID == "" {
-			contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
+		if identifier, _ := doc.Metadata["identifier"].(string); identifier != "" {
+			if parentID, _ := doc.Metadata["parent_id"].(string); parentID == "" {
+				contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
+			}
 		}
 
 		contextBuilder.WriteString("\n")
-		// Swap snippet with full parent text if available
-		content := doc.PageContent
-		if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
-			content = parentText
-		}
-		contextBuilder.WriteString(content)
+		contextBuilder.WriteString(r.getDocContent(doc))
 		contextBuilder.WriteString("\n---\n\n")
 	}
 	return contextBuilder.String()
@@ -1137,7 +1123,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			descriptionContext = r.gatherDescriptionContext(ctx, collectionName, embedderModelName, prDescription)
+			descriptionContext = r.gatherDescriptionContext(ctx, collectionName, embedderModelName, prDescription, seenDocs, &seenDocsMu)
 		}()
 	}
 
@@ -1151,7 +1137,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 // gatherDescriptionContext uses MultiQuery retrieval to find code related to the PR description.
 // It generates 3 query variations via a small LLM, searches for each, deduplicates results,
 // and validates each snippet's relevance before including it.
-func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, embedder, description string) string {
+func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, embedder, description string, seen map[string]struct{}, mu *sync.RWMutex) string {
 	r.logger.Info("stage started", "name", "DescriptionContext")
 
 	scopedStore := r.vectorStore.ForRepo(collection, embedder)
@@ -1185,42 +1171,16 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 		allDocs = append(allDocs, docs...)
 	}
 
-	// Deduplicate by content hash
+	// Deduplicate by parent-aware key
 	uniqueDocs := make(map[string]schema.Document)
 	for _, d := range allDocs {
-		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(d.PageContent)))
-		uniqueDocs[hash] = d
+		uniqueDocs[r.getDocKey(d)] = d
 	}
 
 	var builder strings.Builder
 	if len(uniqueDocs) > 0 {
 		builder.WriteString("# Related to PR Description\n\n")
-
-		// Validate snippets in parallel to avoid sequential LLM latency
-		type validatedSnippet struct {
-			text string
-		}
-		var validated []validatedSnippet
-		var validMu sync.Mutex
-		var valWg sync.WaitGroup
-
-		for _, d := range uniqueDocs {
-			valWg.Add(1)
-			go func() {
-				defer valWg.Done()
-				if r.validateSnippetRelevance(ctx, d.PageContent, description) {
-					snip := fmt.Sprintf("File: %s\n```\n%s\n```\n\n", d.Metadata["source"], d.PageContent)
-					validMu.Lock()
-					validated = append(validated, validatedSnippet{text: snip})
-					validMu.Unlock()
-				}
-			}()
-		}
-		valWg.Wait()
-
-		for _, v := range validated {
-			builder.WriteString(v.text)
-		}
+		builder.WriteString(r.validateAndFormatSnippets(ctx, description, uniqueDocs, seen, mu))
 	}
 
 	r.logger.Info("stage completed", "name", "DescriptionContext", "unique_snippets", len(uniqueDocs))
@@ -1482,9 +1442,6 @@ func (r *ragService) assembleContext(arch, impact, description string, hyde [][]
 		contextBuilder.WriteString("# Related Code Snippets\n\n")
 		contextBuilder.WriteString("The following code snippets might be relevant to the changes being reviewed:\n\n")
 
-		mu.Lock()
-		defer mu.Unlock()
-
 		for i, docs := range hyde {
 			if i >= len(indices) { // Safety check
 				continue
@@ -1495,17 +1452,18 @@ func (r *ragService) assembleContext(arch, impact, description string, hyde [][]
 			}
 			filePath := files[originalIdx].Filename
 			for _, doc := range docs {
-				// Use a content hash for deduplication to avoid adding the same snippet multiple times
-				// even if it comes from different HyDE queries.
-				contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(doc.PageContent)))
-				if _, exists := seen[contentHash]; exists {
+				docKey := r.getDocKey(doc)
+				mu.Lock()
+				if _, exists := seen[docKey]; exists {
+					mu.Unlock()
 					continue
 				}
-				seen[contentHash] = struct{}{}
+				seen[docKey] = struct{}{}
+				mu.Unlock()
 
 				contextBuilder.WriteString(fmt.Sprintf("## Related to: %s\n", filePath))
 				contextBuilder.WriteString("```\n")
-				contextBuilder.WriteString(doc.PageContent)
+				contextBuilder.WriteString(r.getDocContent(doc))
 				contextBuilder.WriteString("\n```\n\n")
 			}
 		}
@@ -1773,4 +1731,93 @@ func preFilterBM25(query string, docs []schema.Document, topK int) []schema.Docu
 		result[i] = scored[i].doc
 	}
 	return result
+}
+
+func (r *ragService) getDocKey(doc schema.Document) string {
+	source, _ := doc.Metadata["source"].(string)
+	identifier, _ := doc.Metadata["identifier"].(string)
+	parentID, ok := doc.Metadata["parent_id"].(string)
+	if ok && parentID != "" {
+		return parentID
+	}
+	if identifier != "" && source != "" {
+		return fmt.Sprintf("%s-%s", source, identifier)
+	}
+	if source != "" {
+		return source
+	}
+	h := sha256.Sum256([]byte(doc.PageContent))
+	return hex.EncodeToString(h[:])
+}
+
+func (r *ragService) getDocContent(doc schema.Document) string {
+	if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
+		return parentText
+	}
+	if parentID, ok := doc.Metadata["parent_id"].(string); ok && parentID != "" {
+		r.logger.Debug("parent_id present but full_parent_text missing", "parent_id", parentID, "source", doc.Metadata["source"])
+	}
+	return doc.PageContent
+}
+
+func (r *ragService) validateAndFormatSnippets(ctx context.Context, description string, uniqueDocs map[string]schema.Document, seen map[string]struct{}, mu *sync.RWMutex) string {
+	const maxConcurrentValidations = 10
+	sem := make(chan struct{}, maxConcurrentValidations)
+	var validated []string
+	var validMu sync.Mutex
+	var valWg sync.WaitGroup
+
+	for _, d := range uniqueDocs {
+		valWg.Add(1)
+		go func(doc schema.Document) {
+			defer valWg.Done()
+
+			// Concurrency control
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			content := r.getDocContent(doc)
+			docKey := r.getDocKey(doc)
+
+			if ctx.Err() != nil {
+				return
+			}
+
+			// First check: fast path with read lock
+			mu.RLock()
+			_, exists := seen[docKey]
+			mu.RUnlock()
+			if exists {
+				return
+			}
+
+			// Perform expensive validation only if potentially new
+			if !r.validateSnippetRelevance(ctx, content, description) {
+				return
+			}
+
+			// Second check: verify still absent under write lock before adding
+			mu.Lock()
+			if _, exists := seen[docKey]; !exists {
+				seen[docKey] = struct{}{}
+				source, _ := doc.Metadata["source"].(string)
+				snip := fmt.Sprintf("File: %s\n```\n%s\n```\n\n", source, content)
+				validMu.Lock()
+				validated = append(validated, snip)
+				validMu.Unlock()
+			}
+			mu.Unlock()
+		}(d)
+	}
+	valWg.Wait()
+
+	var builder strings.Builder
+	for _, v := range validated {
+		builder.WriteString(v)
+	}
+	return builder.String()
 }
