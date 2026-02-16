@@ -100,6 +100,12 @@ func (r *ragService) processImpactResults(depResults map[string][]schema.Documen
 			}
 
 			docKey := r.getDocKey(doc)
+			source, ok := doc.Metadata["source"].(string)
+			if !ok || source == "" {
+				r.logger.Debug("skipping impact doc with missing source", "docKey", docKey)
+				continue
+			}
+
 			mu.Lock()
 			if _, exists := seen[docKey]; exists {
 				mu.Unlock()
@@ -108,7 +114,6 @@ func (r *ragService) processImpactResults(depResults map[string][]schema.Documen
 			seen[docKey] = struct{}{}
 			mu.Unlock()
 
-			source, _ := doc.Metadata["source"].(string)
 			_, _ = impactBuilder.WriteString(fmt.Sprintf("File: %s (potential ripple effect from %s)\n---\n%s\n\n",
 				source, filename, r.getDocContent(doc)))
 			totalSnippets++

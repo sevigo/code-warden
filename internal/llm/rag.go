@@ -1442,9 +1442,6 @@ func (r *ragService) assembleContext(arch, impact, description string, hyde [][]
 		contextBuilder.WriteString("# Related Code Snippets\n\n")
 		contextBuilder.WriteString("The following code snippets might be relevant to the changes being reviewed:\n\n")
 
-		mu.Lock()
-		defer mu.Unlock()
-
 		for i, docs := range hyde {
 			if i >= len(indices) { // Safety check
 				continue
@@ -1456,10 +1453,13 @@ func (r *ragService) assembleContext(arch, impact, description string, hyde [][]
 			filePath := files[originalIdx].Filename
 			for _, doc := range docs {
 				docKey := r.getDocKey(doc)
+				mu.Lock()
 				if _, exists := seen[docKey]; exists {
+					mu.Unlock()
 					continue
 				}
 				seen[docKey] = struct{}{}
+				mu.Unlock()
 
 				contextBuilder.WriteString(fmt.Sprintf("## Related to: %s\n", filePath))
 				contextBuilder.WriteString("```\n")
@@ -1734,13 +1734,13 @@ func preFilterBM25(query string, docs []schema.Document, topK int) []schema.Docu
 }
 
 func (r *ragService) getDocKey(doc schema.Document) string {
+	source, _ := doc.Metadata["source"].(string)
+	identifier, _ := doc.Metadata["identifier"].(string)
 	parentID, ok := doc.Metadata["parent_id"].(string)
 	if ok && parentID != "" {
 		return parentID
 	}
-	source, _ := doc.Metadata["source"].(string)
-	identifier, _ := doc.Metadata["identifier"].(string)
-	if identifier != "" {
+	if identifier != "" && source != "" {
 		return fmt.Sprintf("%s-%s", source, identifier)
 	}
 	if source != "" {
@@ -1754,10 +1754,15 @@ func (r *ragService) getDocContent(doc schema.Document) string {
 	if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
 		return parentText
 	}
+	if parentID, ok := doc.Metadata["parent_id"].(string); ok && parentID != "" {
+		r.logger.Debug("parent_id present but full_parent_text missing", "parent_id", parentID, "source", doc.Metadata["source"])
+	}
 	return doc.PageContent
 }
 
 func (r *ragService) validateAndFormatSnippets(ctx context.Context, description string, uniqueDocs map[string]schema.Document, seen map[string]struct{}, mu *sync.RWMutex) string {
+	const maxConcurrentValidations = 10
+	sem := make(chan struct{}, maxConcurrentValidations)
 	var validated []string
 	var validMu sync.Mutex
 	var valWg sync.WaitGroup
@@ -1766,10 +1771,23 @@ func (r *ragService) validateAndFormatSnippets(ctx context.Context, description 
 		valWg.Add(1)
 		go func(doc schema.Document) {
 			defer valWg.Done()
+
+			// Concurrency control
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
 			content := r.getDocContent(doc)
 			docKey := r.getDocKey(doc)
 
-			// Global deduplication check
+			if ctx.Err() != nil {
+				return
+			}
+
+			// First check: fast path with read lock
 			mu.RLock()
 			_, exists := seen[docKey]
 			mu.RUnlock()
@@ -1777,16 +1795,22 @@ func (r *ragService) validateAndFormatSnippets(ctx context.Context, description 
 				return
 			}
 
-			if r.validateSnippetRelevance(ctx, content, description) {
-				snip := fmt.Sprintf("File: %s\n```\n%s\n```\n\n", doc.Metadata["source"], content)
+			// Perform expensive validation only if potentially new
+			if !r.validateSnippetRelevance(ctx, content, description) {
+				return
+			}
+
+			// Second check: verify still absent under write lock before adding
+			mu.Lock()
+			if _, exists := seen[docKey]; !exists {
+				seen[docKey] = struct{}{}
+				source, _ := doc.Metadata["source"].(string)
+				snip := fmt.Sprintf("File: %s\n```\n%s\n```\n\n", source, content)
 				validMu.Lock()
 				validated = append(validated, snip)
 				validMu.Unlock()
-
-				mu.Lock()
-				seen[docKey] = struct{}{}
-				mu.Unlock()
 			}
+			mu.Unlock()
 		}(d)
 	}
 	valWg.Wait()
