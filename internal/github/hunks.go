@@ -63,7 +63,7 @@ func ParseValidLinesFromPatch(patch string, logger *slog.Logger) (map[int]struct
 		if logger != nil {
 			logger.Error("patch scanning failed", "error", err)
 		}
-		return nil, fmt.Errorf("failed to scan patch: %w", err)
+		return validLines, fmt.Errorf("failed to scan patch: %w", err)
 	}
 
 	return validLines, nil
