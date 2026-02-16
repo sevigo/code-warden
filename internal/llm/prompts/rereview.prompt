@@ -50,6 +50,7 @@ Here is the review you provided previously:
 <review>
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>95</confidence>
+  <summary>
     <!-- Concise summary. State clearly whether all original issues were addressed. -->
     
     ---
@@ -63,6 +64,7 @@ Here is the review you provided previously:
       <file>path/to/filename.go</file>
       <line>10</line>
       <severity>Critical | High | Medium</severity>
+      <comment>
         **Observation:**
         <!-- Why this feedback from the original review is still an issue -->
 
@@ -84,6 +86,12 @@ Here is the review you provided previously:
     </suggestion>
   </suggestions>
 </review>
+
+**TAGGING RULES:**
+1.  `<comment>` MUST be closed with `</comment>`.
+2.  `<code_suggestion>` MUST be closed with `</code_suggestion>`.
+3.  DO NOT nest tags incorrectly.
+4.  DO NOT use markdown backticks inside `<code_suggestion>`.
 ```
 
 If no remaining issues are found, the `<suggestions>` tag should be empty or omitted.

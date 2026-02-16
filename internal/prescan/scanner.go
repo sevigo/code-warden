@@ -173,7 +173,10 @@ func (s *Scanner) printMetadata(repoFullName, localPath string) {
 	if s.Verbose {
 		fmt.Printf("🚀 Starting Pre-scan for %s\n", repoFullName)
 		fmt.Printf("   📁 Local Path: %s\n", localPath)
-		fmt.Printf("   🧠 Embedder:   %s\n", s.Manager.cfg.AI.EmbedderModel)
+		fmt.Printf("   🧠 Embedder:   %s (%s)\n", s.Manager.cfg.AI.EmbedderModel, s.Manager.cfg.AI.EmbedderProvider)
+		fmt.Printf("   🤖 Generator:  %s (%s)\n", s.Manager.cfg.AI.GeneratorModel, s.Manager.cfg.AI.LLMProvider)
+		fmt.Printf("   🔍 Features:   Hybrid=%v, Rerank=%v, HyDE=%v\n",
+			s.Manager.cfg.AI.EnableHybrid, s.Manager.cfg.AI.EnableReranking, s.Manager.cfg.AI.EnableHyDE)
 	}
 }
 
@@ -250,7 +253,23 @@ func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repo
 
 	if s.Verbose {
 		avgPerFile := batchDuration / time.Duration(len(*batch))
-		fmt.Printf("   ⚡ Batch finish: %s (avg %s/file)\n", batchDuration.Round(time.Millisecond), avgPerFile.Round(time.Millisecond))
+		processed := progress.ProcessedFiles
+		total := progress.TotalFiles
+		remaining := total - processed
+
+		var eta string
+		if processed > 0 {
+			// Use a more holistic ETA (not just this batch)
+			// But since we don't track totalStartTime here, we'll just show batch stats
+			eta = fmt.Sprintf(" (avg %s/file)", avgPerFile.Round(time.Millisecond))
+		}
+
+		fmt.Printf("   ⚡ Batch finish: %s%s\n", batchDuration.Round(time.Millisecond), eta)
+		if remaining > 0 && processed > 0 {
+			// Very basic ETA based on last batch
+			totalRemainingTime := avgPerFile * time.Duration(remaining)
+			fmt.Printf("   ⏳ Est. Remaining: %s\n", totalRemainingTime.Round(time.Second))
+		}
 	}
 	progress.LastUpdated = time.Now()
 	if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {

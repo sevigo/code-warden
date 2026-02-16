@@ -32,10 +32,11 @@ func TestExtractTag_Security(t *testing.T) {
 			ok:      false,
 		},
 		{
-			name:    "unclosed tag",
-			content: "<foo>bar",
-			tag:     "foo",
-			ok:      false,
+			name:     "unclosed tag",
+			content:  "<foo>bar",
+			tag:      "foo",
+			expected: "bar",
+			ok:       true, // Lenient parsing captures until end
 		},
 		{
 			name:     "nested tags (should return outer content)",
@@ -45,10 +46,11 @@ func TestExtractTag_Security(t *testing.T) {
 			ok:       true,
 		},
 		{
-			name:    "malformed end tag",
-			content: "<foo>bar</ wrong>",
-			tag:     "foo",
-			ok:      false,
+			name:     "malformed end tag",
+			content:  "<foo>bar</ wrong>",
+			tag:      "foo",
+			expected: "bar</ wrong>",
+			ok:       true, // Lenient parsing captures until end/next tag
 		},
 	}
 

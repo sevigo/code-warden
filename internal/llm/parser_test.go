@@ -365,7 +365,8 @@ func main() {
 			verifyReviewResults(t, tt.name, got, tt.wantSummary, tt.wantVerdict, tt.wantCount)
 
 			if tt.name == "Reproduction: Missing Inline Comments" {
-				assert.Equal(t, "", got.Suggestions[2].Comment, "3rd suggestion should have empty comment due to malformed XML")
+				assert.NotEmpty(t, got.Suggestions[2].Comment, "3rd suggestion should now have a comment thanks to robust parsing")
+				assert.Contains(t, got.Suggestions[2].Comment, "ReDoS", "3rd suggestion comment should contain 'ReDoS'")
 				assert.NotEmpty(t, got.Suggestions[0].Comment, "1st suggestion should have comment")
 			}
 		})
