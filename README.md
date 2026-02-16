@@ -163,8 +163,8 @@ The `prescan` command is a "heavyweight" tool designed for initial ingestion and
 | **Docs** | Vector store only | Structure + Arch Comparisons |
 
 ```sh
-# Scan a remote repository (clones to managed storage)
-./bin/warden-cli prescan https://github.com/owner/repo
+# Scan a remote repository with verbose output
+./bin/warden-cli prescan --verbose https://github.com/owner/repo
 
 # Scan a local repository with resume/documentation support
 ./bin/warden-cli prescan /path/to/local/repo

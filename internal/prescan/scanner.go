@@ -18,6 +18,7 @@ import (
 type Scanner struct {
 	Manager    *Manager
 	RAGService llm.RAGService
+	Verbose    bool
 }
 
 func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
@@ -53,7 +54,8 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 }
 
 //nolint:gocognit,nestif // Core scanning loop with state management
-func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
+func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bool) error {
+	s.Verbose = verbose
 	// 1. Prepare Repo (Clone if needed)
 	localPath, owner, repo, err := s.Manager.PrepareRepo(ctx, input)
 	if err != nil {
@@ -206,6 +208,9 @@ func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repo
 
 	// Update Progress
 	for _, f := range *batch {
+		if s.Verbose {
+			fmt.Printf("   [%d/%d] Indexing %s\n", progress.ProcessedFiles+1, progress.TotalFiles, f)
+		}
 		progress.Files[f] = true
 		progress.ProcessedFiles++
 	}
