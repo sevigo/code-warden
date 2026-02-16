@@ -244,7 +244,12 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 	validLineMaps := make(map[string]map[int]struct{})
 	for _, f := range changedFiles {
-		validLineMaps[f.Filename] = github.ParseValidLinesFromPatch(f.Patch, j.logger)
+		lines, err := github.ParseValidLinesFromPatch(f.Patch, j.logger)
+		if err != nil {
+			j.logger.Error("failed to parse valid lines from patch", "file", f.Filename, "error", err)
+			continue
+		}
+		validLineMaps[f.Filename] = lines
 	}
 
 	var structuredReview *core.StructuredReview

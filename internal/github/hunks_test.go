@@ -1,7 +1,9 @@
 package github
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -64,11 +66,31 @@ index 123..456 100644
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ParseValidLinesFromPatch(tt.patch, nil)
+			got, err := ParseValidLinesFromPatch(tt.patch, nil)
+			if err != nil {
+				t.Errorf("ParseValidLinesFromPatch() error = %v", err)
+				return
+			}
 			if !reflect.DeepEqual(got, tt.expected) {
 				t.Errorf("ParseValidLinesFromPatch() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestParseValidLinesFromPatch_LargeLine(t *testing.T) {
+	// Line size 70KB (exceeds default 64KB bufio.Scanner limit)
+	largeLine := strings.Repeat("x", 70*1024)
+	patch := fmt.Sprintf("@@ -1,1 +1,2 @@\n %s\n+new line", largeLine)
+
+	got, err := ParseValidLinesFromPatch(patch, nil)
+	if err != nil {
+		t.Fatalf("ParseValidLinesFromPatch should handle >64KB lines, got error: %v", err)
+	}
+
+	expectedLine := 2 // The "+new line" is line 2 on the new side
+	if _, ok := got[expectedLine]; !ok {
+		t.Errorf("Expected line %d to be valid, but it was not found in %v", expectedLine, got)
 	}
 }
 

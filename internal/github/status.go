@@ -159,7 +159,7 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 
 	// 1. Severity Header
 	emoji := SeverityEmoji(sug.Severity)
-	sb.WriteString(fmt.Sprintf("**%s %s**", emoji, sug.Severity))
+	fmt.Fprintf(&sb, "**%s %s**", emoji, sug.Severity)
 	if sug.Category != "" {
 		fmt.Fprintf(&sb, " — %s", sug.Category)
 	}
@@ -253,13 +253,14 @@ func preprocessComment(comment string) string {
 }
 
 // shouldUseAlert determines if a severity level should use GitHub Alerts
-func shouldUseAlert(severity string) bool {
-	switch severity {
-	case SeverityCritical, SeverityHigh:
-		return true
-	default:
-		return false
-	}
+func shouldUseAlert(_ string) bool {
+	return false
+	// switch severity {
+	// case SeverityCritical, SeverityHigh:
+	//	return true
+	// default:
+	//	return false
+	// }
 }
 
 // splitTextAndCode separates text content from code blocks

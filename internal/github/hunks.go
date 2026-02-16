@@ -13,9 +13,13 @@ var hunkHeaderRegex = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@`
 
 // ParseValidLinesFromPatch parses a git patch and returns a map of line numbers
 // that are valid for inline comments on the "new" side of the diff.
-func ParseValidLinesFromPatch(patch string, logger *slog.Logger) map[int]struct{} {
+func ParseValidLinesFromPatch(patch string, logger *slog.Logger) (map[int]struct{}, error) {
 	validLines := make(map[int]struct{})
 	scanner := bufio.NewScanner(strings.NewReader(patch))
+
+	// Increase buffer to handle minified/generated files with long lines (up to 1MB)
+	buf := make([]byte, 4096)
+	scanner.Buffer(buf, 1024*1024)
 
 	currentLine := -1 // Initialize to -1 to indicate we are not yet in a hunk
 
@@ -55,11 +59,14 @@ func ParseValidLinesFromPatch(patch string, logger *slog.Logger) map[int]struct{
 		}
 	}
 
-	if err := scanner.Err(); err != nil && logger != nil {
-		logger.Error("patch scanning failed", "error", err)
+	if err := scanner.Err(); err != nil {
+		if logger != nil {
+			logger.Error("patch scanning failed", "error", err)
+		}
+		return nil, fmt.Errorf("failed to scan patch: %w", err)
 	}
 
-	return validLines
+	return validLines, nil
 }
 
 func parseHunkHeader(header string) (int, error) {

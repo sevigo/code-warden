@@ -27,12 +27,12 @@ func TestFormatInlineComment(t *testing.T) {
 			},
 			contains: []string{
 				"**🔴 Critical** — Security",
-				"> [!CAUTION]",
 				"This is a security issue",
 			},
 			excludes: []string{
 				"### 🛡️",
 				"| _Security_",
+				"> [!CAUTION]",
 			},
 		},
 		{
@@ -46,10 +46,11 @@ func TestFormatInlineComment(t *testing.T) {
 			},
 			contains: []string{
 				"**🟠 High** — Bug",
-				"> [!WARNING]",
+				"Potential nil pointer dereference.",
 			},
 			excludes: []string{
 				"### 🛡️",
+				"> [!WARNING]",
 			},
 		},
 		{
@@ -98,11 +99,11 @@ func TestFormatInlineComment(t *testing.T) {
 			},
 			contains: []string{
 				"**🟠 High**",
-				"> [!WARNING]",
 				"```go",
 				"fmt.Println",
 			},
 			excludes: []string{
+				"> [!WARNING]",
 				"> ```go",
 				">     fmt.Println",
 			},
@@ -117,10 +118,10 @@ func TestFormatInlineComment(t *testing.T) {
 			},
 			contains: []string{
 				"**🔴 Critical**",
-				"> [!CAUTION]",
 				"This is the content.",
 			},
 			excludes: []string{
+				"> [!CAUTION]",
 				"### Old Style Title",
 				"### 🛡️",
 			},
@@ -167,10 +168,10 @@ func TestFormatInlineComment(t *testing.T) {
 			},
 			contains: []string{
 				"**🟠 High**\n\n",
-				"> [!WARNING]",
 			},
 			excludes: []string{
 				" — ",
+				"> [!WARNING]",
 			},
 		},
 		{
