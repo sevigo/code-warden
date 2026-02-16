@@ -1163,9 +1163,18 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 		if q == "" {
 			continue
 		}
-		docs, err := scopedStore.SimilaritySearch(ctx, q, 3)
+
+		var searchOpts []vectorstores.Option
+		sparseVec, err := sparse.GenerateSparseVector(ctx, q)
 		if err != nil {
-			r.logger.Warn("similarity search failed for query variation", "query", q, "error", err)
+			r.logger.Warn("sparse vector generation failed for description query variation, falling back to dense", "query", q, "error", err)
+		} else {
+			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
+		}
+
+		docs, err := scopedStore.SimilaritySearch(ctx, q, 3, searchOpts...)
+		if err != nil {
+			r.logger.Warn("similarity hybrid search failed for query variation", "query", q, "error", err)
 			continue
 		}
 		allDocs = append(allDocs, docs...)
@@ -1327,10 +1336,10 @@ func (r *ragService) performSingleHyDEJob(ctx context.Context, scopedStore stora
 	cleanQuery := stripPatchNoise(query)
 
 	var searchOpts []vectorstores.Option
-	// Key Change: Use un-stripped query for Sparse Vector to capture exact CamelCase identifiers
-	// that might be present in the diff metadata or deleted lines.
-	sparseVec, err := sparse.GenerateSparseVector(ctx, query)
-	if err == nil {
+	sparseVec, err := sparse.GenerateSparseVector(ctx, cleanQuery)
+	if err != nil {
+		r.logger.Warn("sparse vector generation failed for HyDE query, falling back to dense", "query", cleanQuery, "error", err)
+	} else {
 		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 	}
 
