@@ -364,7 +364,6 @@ func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) e
 
 	rows, err := s.db.NamedQueryContext(ctx, query, state)
 	if err != nil {
-		// Checks for specific pq errors if needed, but for now generic error
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) {
 			slog.Error("postgres error during upsert scan state", "code", pqErr.Code, "message", pqErr.Message)

@@ -13,9 +13,10 @@ import (
 	context "context"
 	reflect "reflect"
 
+	gomock "go.uber.org/mock/gomock"
+
 	core "github.com/sevigo/code-warden/internal/core"
 	storage "github.com/sevigo/code-warden/internal/storage"
-	gomock "go.uber.org/mock/gomock"
 )
 
 // MockStore is a mock of Store interface.
@@ -200,4 +201,33 @@ func (m *MockStore) UpsertFiles(ctx context.Context, repoID int64, files []stora
 func (mr *MockStoreMockRecorder) UpsertFiles(ctx, repoID, files any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertFiles", reflect.TypeOf((*MockStore)(nil).UpsertFiles), ctx, repoID, files)
+}
+
+// GetScanState mocks base method.
+func (m *MockStore) GetScanState(ctx context.Context, repoID int64) (*storage.ScanState, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetScanState", ctx, repoID)
+	ret0, _ := ret[0].(*storage.ScanState)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetScanState indicates an expected call of GetScanState.
+func (mr *MockStoreMockRecorder) GetScanState(ctx, repoID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetScanState", reflect.TypeOf((*MockStore)(nil).GetScanState), ctx, repoID)
+}
+
+// UpsertScanState mocks base method.
+func (m *MockStore) UpsertScanState(ctx context.Context, state *storage.ScanState) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertScanState", ctx, state)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertScanState indicates an expected call of UpsertScanState.
+func (mr *MockStoreMockRecorder) UpsertScanState(ctx, state any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertScanState", reflect.TypeOf((*MockStore)(nil).UpsertScanState), ctx, state)
 }

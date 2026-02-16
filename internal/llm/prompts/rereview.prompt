@@ -78,6 +78,8 @@ Here is the review you provided previously:
         1. ONLY provide this if you are highly confident (90%+).
         2. Provide RAW CODE only. Do NOT use markdown backticks (```) inside this tag.
         3. Ensure indentation matches the surrounding code exactly.
+        4. Define EXACT line range in the <suggestion line=".."> attribute. If multiple lines are replaced, use 10-15 format.
+        5. DO NOT include unchanged surrounding code context; only include the replacement code.
       </code_suggestion>
     </suggestion>
   </suggestions>

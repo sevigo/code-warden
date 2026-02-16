@@ -235,6 +235,8 @@ Some models suggested [approach A] while others preferred [approach B]. Consider
 // ONLY include if confidence ≥ 90% AND fix is straightforward
 // Must be drop-in replacement with correct variable names from context
 // NO markdown backticks - raw code only
+// Define EXACT line range in the <suggestion line=".."> attribute. If multiple lines are replaced, use 10-15 format.
+// DO NOT include unchanged surrounding code context; only include the replacement code.
 if err := validatePath(userInput); err != nil {
     return fmt.Errorf("invalid path: %w", err)
 }

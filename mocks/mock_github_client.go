@@ -14,8 +14,9 @@ import (
 	reflect "reflect"
 
 	github "github.com/google/go-github/v73/github"
-	github0 "github.com/sevigo/code-warden/internal/github"
 	gomock "go.uber.org/mock/gomock"
+
+	github0 "github.com/sevigo/code-warden/internal/github"
 )
 
 // MockClient is a mock of Client interface.
