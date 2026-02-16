@@ -92,7 +92,7 @@ Use this repository context to verify cross-file dependencies or type definition
    - **NO** formatting syntax
    - Plain, executable code only
 
-4. **SUMMARY**: The summary MUST include a "📋 Status of Previous Suggestions" section using a bulleted list.
+4. **SUMMARY**: The summary MUST include a "📊 Issue Status Table" section using a Markdown table.
 
 ### Example of Valid XML Structure:
 
@@ -125,17 +125,21 @@ safeCopy := data.Clone()
 <review>
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>1-100</confidence>
-
   <summary>
 ## Re-Review Audit Summary
 
 [1-2 sentences on overall fix quality and developer responsiveness]
 
-## 📋 Status of Previous Suggestions
+### 📊 Issue Status Table
 
-* **[Fixed/Unresolved/Partial]** - [Brief title of original issue]: [Result description]
-* **[Fixed/Unresolved/Partial]** - [Brief title of original issue]: [Result description]
-* **[Fixed/Unresolved/Partial]** - [Brief title of original issue]: [Result description]
+| Issue | Previous Status | Current Status | Blocking? |
+| :--- | :--- | :--- | :--- |
+| [Brief title] | [Indicator] [Severity] | [Icon] [Status] | [Yes/No] |
+| [Brief title] | [Indicator] [Severity] | [Icon] [Status] | [Yes/No] |
+
+#### Status Legend:
+- **Previous Status**: 🔴 Critical, 🟡 High, 🟡 Medium, 🟢 Low
+- **Current Status**: ✅ Fixed, ✅ Acceptable, 🔴 Still Open (Blocking), ⚠️ Still Open (Non-Blocking)
 
 ## Overall Assessment
 
@@ -222,12 +226,14 @@ safeCopy := data.Clone()
 
 The developer addressed 3 out of 4 original suggestions. The null pointer fix in `handler.go` is well-implemented, but the race condition in `cache.go` requires additional synchronization.
 
-## 📋 Status of Previous Suggestions
+### 📊 Issue Status Table
 
-* **Fixed** - Null pointer dereference in handler: Proper nil check added with early return
-* **Fixed** - Missing error propagation: Errors now wrapped with context
-* **Unresolved** - Race condition in cache access: Mutex added but critical section incomplete
-* **Fixed** - SQL injection risk: Prepared statements now used consistently
+| Issue | Previous Status | Current Status | Blocking? |
+| :--- | :--- | :--- | :--- |
+| Null pointer dereference | 🔴 Critical | ✅ Fixed | No |
+| Missing error propagation | 🟡 High | ✅ Fixed | No |
+| Race condition in cache | 🔴 Critical | 🔴 Still Open | **Yes** |
+| SQL injection risk | 🔴 Critical | ✅ Fixed | No |
 
 ## Overall Assessment
 
