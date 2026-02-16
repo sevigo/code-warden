@@ -79,6 +79,10 @@ func (g *gitHubClient) CreateReview(ctx context.Context, owner, repo string, num
 			side := diffSideRight
 			comment.StartSide = &side
 			comment.Side = &side
+		} else {
+			// Explicitly set Side to RIGHT for single line comments as well
+			side := diffSideRight
+			comment.Side = &side
 		}
 		ghComments = append(ghComments, comment)
 	}

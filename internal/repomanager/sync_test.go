@@ -71,6 +71,10 @@ func (s *mockStore) GetScanState(_ context.Context, _ int64) (*storage.ScanState
 	return nil, nil
 }
 func (s *mockStore) UpsertScanState(_ context.Context, _ *storage.ScanState) error { return nil }
+func (s *mockStore) ListReposOlderThan(_ context.Context, _ time.Time) ([]*storage.Repository, error) {
+	return nil, nil
+}
+func (s *mockStore) DeleteRepository(_ context.Context, _ int64) error { return nil }
 
 // Mock VectorStore
 type mockVectorStore struct{}

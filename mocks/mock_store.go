@@ -12,6 +12,7 @@ package mocks
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	core "github.com/sevigo/code-warden/internal/core"
 	storage "github.com/sevigo/code-warden/internal/storage"
@@ -200,4 +201,62 @@ func (m *MockStore) UpsertFiles(ctx context.Context, repoID int64, files []stora
 func (mr *MockStoreMockRecorder) UpsertFiles(ctx, repoID, files any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertFiles", reflect.TypeOf((*MockStore)(nil).UpsertFiles), ctx, repoID, files)
+}
+
+// DeleteRepository mocks base method.
+func (m *MockStore) DeleteRepository(ctx context.Context, repoID int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteRepository", ctx, repoID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteRepository indicates an expected call of DeleteRepository.
+func (mr *MockStoreMockRecorder) DeleteRepository(ctx, repoID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteRepository", reflect.TypeOf((*MockStore)(nil).DeleteRepository), ctx, repoID)
+}
+
+// ListReposOlderThan mocks base method.
+func (m *MockStore) ListReposOlderThan(ctx context.Context, olderThan time.Time) ([]*storage.Repository, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListReposOlderThan", ctx, olderThan)
+	ret0, _ := ret[0].([]*storage.Repository)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListReposOlderThan indicates an expected call of ListReposOlderThan.
+func (mr *MockStoreMockRecorder) ListReposOlderThan(ctx, olderThan any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListReposOlderThan", reflect.TypeOf((*MockStore)(nil).ListReposOlderThan), ctx, olderThan)
+}
+
+// GetScanState mocks base method.
+func (m *MockStore) GetScanState(ctx context.Context, repoID int64) (*storage.ScanState, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetScanState", ctx, repoID)
+	ret0, _ := ret[0].(*storage.ScanState)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetScanState indicates an expected call of GetScanState.
+func (mr *MockStoreMockRecorder) GetScanState(ctx, repoID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetScanState", reflect.TypeOf((*MockStore)(nil).GetScanState), ctx, repoID)
+}
+
+// UpsertScanState mocks base method.
+func (m *MockStore) UpsertScanState(ctx context.Context, state *storage.ScanState) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertScanState", ctx, state)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpsertScanState indicates an expected call of UpsertScanState.
+func (mr *MockStoreMockRecorder) UpsertScanState(ctx, state any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertScanState", reflect.TypeOf((*MockStore)(nil).UpsertScanState), ctx, state)
 }

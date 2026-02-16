@@ -65,8 +65,10 @@ type Store interface {
 	GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error)
 	GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error)
 	UpdateRepository(ctx context.Context, repo *Repository) error
+	DeleteRepository(ctx context.Context, repoID int64) error
 
 	GetAllRepositories(ctx context.Context) ([]*Repository, error)
+	ListReposOlderThan(ctx context.Context, olderThan time.Time) ([]*Repository, error)
 
 	// File tracking
 	GetFilesForRepo(ctx context.Context, repoID int64) (map[string]FileRecord, error)
@@ -383,5 +385,30 @@ func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) e
 		return fmt.Errorf("error iterating rows: %w", err)
 	}
 
+	return nil
+}
+
+// ListReposOlderThan retrieves repositories not updated since the specified time.
+func (s *postgresStore) ListReposOlderThan(ctx context.Context, olderThan time.Time) ([]*Repository, error) {
+	query := `
+		SELECT id, full_name, clone_path, qdrant_collection_name, embedder_model_name, last_indexed_sha, created_at, updated_at
+		FROM repositories
+		WHERE updated_at < $1`
+
+	var repos []*Repository
+	err := s.db.SelectContext(ctx, &repos, query, olderThan)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list old repos: %w", err)
+	}
+	return repos, nil
+}
+
+// DeleteRepository removes a repository record from the database.
+func (s *postgresStore) DeleteRepository(ctx context.Context, repoID int64) error {
+	query := `DELETE FROM repositories WHERE id = $1`
+	_, err := s.db.ExecContext(ctx, query, repoID)
+	if err != nil {
+		return fmt.Errorf("failed to delete repository %d: %w", repoID, err)
+	}
 	return nil
 }
