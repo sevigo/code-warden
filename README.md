@@ -108,16 +108,13 @@ make build
 ./bin/warden-cli --help
 ```
 
-* Run the preload for large repo:
+* **Update** a local repository (Incremental):
 ```sh
-export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
-./bin/warden-cli preload --repo-url https://github.com/owner/repo.git
+# Performs an efficient incremental update using Git diffs.
+# Best for rapid updates after code changes.
+./bin/warden-cli update /path/to/your/local/repo
 ```
 
-* Run a scan for a local repository:
-```sh
-./bin/warden-cli scan /path/to/your/local/repo
-```
 
 ### 7. CLI Review Command
 
@@ -156,17 +153,21 @@ export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
 
 ### 8. CLI Prescan Command
 
-The `prescan` command allows you to pre-process a repository (local or remote) to populate the vector store and generate documentation. It supports resumable scans, meaning if the process is interrupted, it can pick up where it left off.
+The `prescan` command is a "heavyweight" tool designed for initial ingestion and large repositories. It processes one file at a time and supports **resumability**.
+
+| Feature | `update` | `prescan` |
+| :--- | :--- | :--- |
+| **Strategy** | Git-based Incremental | File-based Full Walk |
+| **Best For** | Daily development updates | Initial ingestion, Large repos |
+| **Resumable** | No (but fast) | **Yes** (tracks progress) |
+| **Docs** | Vector store only | Structure + Arch Comparisons |
 
 ```sh
-# Scan a remote repository (will be cloned to your configured repo_path)
-./bin/warden-cli prescan https://github.com/owner/repo
+# Scan a remote repository with verbose output
+./bin/warden-cli prescan --verbose https://github.com/owner/repo
 
-# Scan a local repository
+# Scan a local repository with resume/documentation support
 ./bin/warden-cli prescan /path/to/local/repo
-
-# Force a fresh scan (ignoring previous progress)
-./bin/warden-cli prescan --force https://github.com/owner/repo
 ```
 
 **Key Features:**

@@ -18,6 +18,7 @@ import (
 type Scanner struct {
 	Manager    *Manager
 	RAGService llm.RAGService
+	Verbose    bool
 }
 
 func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
@@ -53,13 +54,18 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 }
 
 //nolint:gocognit,nestif // Core scanning loop with state management
-func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
+func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bool) error {
+	s.Verbose = verbose
+	startTime := time.Now()
+
 	// 1. Prepare Repo (Clone if needed)
 	localPath, owner, repo, err := s.Manager.PrepareRepo(ctx, input)
 	if err != nil {
 		return err
 	}
 	repoFullName := fmt.Sprintf("%s/%s", owner, repo)
+
+	s.printMetadata(repoFullName, localPath)
 	s.Manager.logger.Info("Starting scan", "repo", repoFullName, "path", localPath)
 
 	// 2. Ensure Repo Record in DB
@@ -67,6 +73,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	if err != nil {
 		return err
 	}
+	s.printCollection(repoRecord.QdrantCollectionName)
 
 	// 3. Load State
 	stateMgr := NewStateManager(s.Manager.store, repoRecord.ID)
@@ -155,9 +162,35 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool) error {
 	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, docMap); err != nil {
 		return err
 	}
+
+	s.printSummary(startTime, progress.ProcessedFiles)
 	s.Manager.logger.Info("Scan completed successfully")
 
 	return s.updateRepoIndexVersion(ctx, localPath, repoRecord)
+}
+
+func (s *Scanner) printMetadata(repoFullName, localPath string) {
+	if s.Verbose {
+		fmt.Printf("🚀 Starting Pre-scan for %s\n", repoFullName)
+		fmt.Printf("   📁 Local Path: %s\n", localPath)
+		fmt.Printf("   🧠 Embedder:   %s\n", s.Manager.cfg.AI.EmbedderModel)
+	}
+}
+
+func (s *Scanner) printCollection(collectionName string) {
+	if s.Verbose {
+		fmt.Printf("   📊 Collection: %s\n\n", collectionName)
+	}
+}
+
+func (s *Scanner) printSummary(startTime time.Time, processedFiles int) {
+	if s.Verbose {
+		duration := time.Since(startTime)
+		filesPerMin := float64(processedFiles) / duration.Minutes()
+		fmt.Printf("\n✨ Scan complete in %s\n", duration.Round(time.Second))
+		fmt.Printf("   Total Files: %d\n", processedFiles)
+		fmt.Printf("   Performance: %.1f files/min\n", filesPerMin)
+	}
 }
 
 func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, files []string, progress *Progress) error {
@@ -198,16 +231,26 @@ func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repo
 		s.Manager.logger.Warn("Failed to load .code-warden.yml", "error", configErr)
 	}
 
+	batchStartTime := time.Now()
 	err := s.RAGService.UpdateRepoContext(ctx, repoConfig, repoRecord, localPath, *batch, nil)
 	if err != nil {
 		s.Manager.logger.Error("Failed to process batch", "error", err)
 		return err
 	}
+	batchDuration := time.Since(batchStartTime)
 
 	// Update Progress
 	for _, f := range *batch {
+		if s.Verbose {
+			fmt.Printf("   [%d/%d] Indexing %s\n", progress.ProcessedFiles+1, progress.TotalFiles, f)
+		}
 		progress.Files[f] = true
 		progress.ProcessedFiles++
+	}
+
+	if s.Verbose {
+		avgPerFile := batchDuration / time.Duration(len(*batch))
+		fmt.Printf("   ⚡ Batch finish: %s (avg %s/file)\n", batchDuration.Round(time.Millisecond), avgPerFile.Round(time.Millisecond))
 	}
 	progress.LastUpdated = time.Now()
 	if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {

@@ -49,7 +49,7 @@ docker-compose -f docker-compose.setup.yml up --build --remove-orphans
 ### Core Components
 
 - **`cmd/server`**: GitHub App webhook server entry point
-- **`cmd/cli`**: Administrative CLI (`warden-cli`) for preload, scan, review operations
+- **`cmd/cli`**: Administrative CLI (`warden-cli`) for update, prescan, review operations
 - **`cmd/terminal`**: Terminal UI for local/debug interaction
 - **`internal/core`**: Domain entities (`Review`, `Repository`, `PullRequest`, `JobQueue`, interfaces)
 - **`internal/jobs`**: Background job execution (ReviewJob, Dispatcher)
