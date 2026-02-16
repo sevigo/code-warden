@@ -33,21 +33,21 @@ Combine independent reviews of the same Pull Request into a single, high-quality
 
 ---
 
-## PHASE 2: XML GENERATION PROTOCOL
+## PHASE 3: XML GENERATION PROTOCOL
 
 **You are acting as a data serializer. The XML structure is NOT decorative; it is a strict schema. Violations will break the downstream parser.**
 
 ### 1. ABSOLUTE REQUIREMENT: TAG CLOSURE DISCIPLINE
 You MUST follow this sequence EXACTLY for every suggestion:
 1. Write the opening `<suggestion>` tag.
-2. Fill in `<file>`, `<line>`, `<severity>`, `<category>`, `<confidence>`, `<estimated_fix_time>`, `<reproducibility>`.
+2. Fill in metadata tags: `<file>`, `<line>`, etc.
 3. Open `<comment>`.
-4. Write your detailed observation and fix recommendation.
+4. Write your detailed observation.
 5. **Type `</comment>` IMMEDIATELY after the last word of your comment.**
 6. **Type `<code_suggestion>` on the NEXT line.**
-7. Write ONLY RAW CODE inside `<code_suggestion>` (No backticks!).
-8. **Type `</code_suggestion>` IMMEDIATELY after the code code.**
-9. Close the `<suggestion>` block with `</suggestion>`.
+7. Write only raw code (no markdown).
+8. **Type `</code_suggestion>` IMMEDIATELY after the last character of code.**
+9. Close with `</suggestion>`.
 
 ### 2. TAG STACK MENTAL MODEL
 When you open a tag, imagine pushing it onto a stack:
@@ -56,13 +56,13 @@ When you open a tag, imagine pushing it onto a stack:
 - Open `<code_suggestion>` → Stack: `[code_suggestion]`
 - Close with `</code_suggestion>` → Stack: `[]`
 
-If your stack shows `[comment]` and you are about to write code, you **MUST** pop `[comment]` with `</comment>` first.
+If your stack shows `[comment]` and you're about to write code, you **MUST** pop `[comment]` with `</comment>` first. NEVER mix or nest these siblings.
 
 ---
 
-## PHASE 3: OUTPUT FORMAT
+## PHASE 4: OUTPUT FORMAT
 
-**CRITICAL: You MUST wrap your entire response in `<review>` tags. Core structured fields MUST be strictly tagged. VIOLATION = PARSER FAILURE. There are NO EXCEPTIONS.**
+**CRITICAL: You MUST wrap your entire response in `<review>` tags. Every field MUST be strictly tagged. Ensure every opening tag has a matching closing tag.**
 
 ```xml
 <review>
@@ -70,48 +70,24 @@ If your stack shows `[comment]` and you are about to write code, you **MUST** po
   <confidence>85</confidence>
   <summary>
 # Consensus Review Summary
-
-[2-3 sentences describing overall code health, key strengths, and critical weaknesses]
-
-**Verdict Rationale:** [1 sentence explaining why APPROVE/REQUEST_CHANGES/COMMENT based on issue count]
-
-**Key Findings:**
-- [Most critical issue if any]
-- [Second most important issue if any]
-
-**Model Agreement:** [e.g., "Strong consensus across models on security concerns"]
+...
   </summary>
   
   <suggestions>
     <suggestion>
-      <file>internal/llm/rag.go</file>
-      <line>142</line>
-      <severity>Critical</severity>
-      <category>Security</category>
-      <confidence>90</confidence>
-      <estimated_fix_time>15m</estimated_fix_time>
-      <reproducibility>Always</reproducibility>
+      <file>path/to/file.go</file>
+      <line>42</line>
+      ...
       <comment>
-**Observation:**
-[Clear technical description]
-
-**Rationale:**
-[Why this matters]
-
-**Fix:**
-[Recommendation]
-
-**Model Agreement:** [Identified by: gemma3 (95%)]
+[Technical description]
       </comment>  <!-- CLOSE COMMENT HERE, BEFORE NEXT TAG -->
       <code_suggestion>
-// RAW CODE ONLY - NO markdown backticks
-if err := validatePath(userInput); err != nil {
-    return fmt.Errorf("invalid path: %w", err)
+// RAW CODE ONLY - NO BACKTICKS
+if (x == nil) {
+    return err
 }
       </code_suggestion>  <!-- CLOSE CODE_SUGGESTION HERE -->
     </suggestion>
-    
-    <!-- Repeat <suggestion> blocks as needed -->
   </suggestions>
 </review>
 ```

@@ -19,6 +19,7 @@ type Scanner struct {
 	Manager    *Manager
 	RAGService llm.RAGService
 	Verbose    bool
+	startTime  time.Time
 }
 
 func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
@@ -56,7 +57,7 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 //nolint:gocognit,nestif // Core scanning loop with state management
 func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bool) error {
 	s.Verbose = verbose
-	startTime := time.Now()
+	s.startTime = time.Now()
 
 	// 1. Prepare Repo (Clone if needed)
 	localPath, owner, repo, err := s.Manager.PrepareRepo(ctx, input)
@@ -163,7 +164,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 		return err
 	}
 
-	s.printSummary(startTime, progress.ProcessedFiles)
+	s.printSummary(s.startTime, progress.ProcessedFiles)
 	s.Manager.logger.Info("Scan completed successfully")
 
 	return s.updateRepoIndexVersion(ctx, localPath, repoRecord)
@@ -171,12 +172,17 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 
 func (s *Scanner) printMetadata(repoFullName, localPath string) {
 	if s.Verbose {
-		fmt.Printf("🚀 Starting Pre-scan for %s\n", repoFullName)
-		fmt.Printf("   📁 Local Path: %s\n", localPath)
-		fmt.Printf("   🧠 Embedder:   %s (%s)\n", s.Manager.cfg.AI.EmbedderModel, s.Manager.cfg.AI.EmbedderProvider)
-		fmt.Printf("   🤖 Generator:  %s (%s)\n", s.Manager.cfg.AI.GeneratorModel, s.Manager.cfg.AI.LLMProvider)
-		fmt.Printf("   🔍 Features:   Hybrid=%v, Rerank=%v, HyDE=%v\n",
-			s.Manager.cfg.AI.EnableHybrid, s.Manager.cfg.AI.EnableReranking, s.Manager.cfg.AI.EnableHyDE)
+		s.Manager.logger.Info("Starting Pre-scan",
+			"repo", repoFullName,
+			"path", localPath,
+			"embedder", s.Manager.cfg.AI.EmbedderModel,
+			"generator", s.Manager.cfg.AI.GeneratorModel,
+			"features", map[string]bool{
+				"Hybrid": s.Manager.cfg.AI.EnableHybrid,
+				"Rerank": s.Manager.cfg.AI.EnableReranking,
+				"HyDE":   s.Manager.cfg.AI.EnableHyDE,
+			},
+		)
 	}
 }
 
@@ -252,24 +258,15 @@ func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repo
 	}
 
 	if s.Verbose {
-		avgPerFile := batchDuration / time.Duration(len(*batch))
-		processed := progress.ProcessedFiles
-		total := progress.TotalFiles
-		remaining := total - processed
-
-		var eta string
-		if processed > 0 {
-			// Use a more holistic ETA (not just this batch)
-			// But since we don't track totalStartTime here, we'll just show batch stats
-			eta = fmt.Sprintf(" (avg %s/file)", avgPerFile.Round(time.Millisecond))
+		fmt.Printf("   ⚡ Batch finish: %s", batchDuration.Round(time.Millisecond))
+		if progress.ProcessedFiles > 0 {
+			elapsed := time.Since(s.startTime)
+			avgPerFileOverall := elapsed / time.Duration(progress.ProcessedFiles)
+			remaining := progress.TotalFiles - progress.ProcessedFiles
+			totalRemainingTime := avgPerFileOverall * time.Duration(remaining)
+			fmt.Printf(" (ETA: %s)", totalRemainingTime.Round(time.Second))
 		}
-
-		fmt.Printf("   ⚡ Batch finish: %s%s\n", batchDuration.Round(time.Millisecond), eta)
-		if remaining > 0 && processed > 0 {
-			// Very basic ETA based on last batch
-			totalRemainingTime := avgPerFile * time.Duration(remaining)
-			fmt.Printf("   ⏳ Est. Remaining: %s\n", totalRemainingTime.Round(time.Second))
-		}
+		fmt.Println()
 	}
 	progress.LastUpdated = time.Now()
 	if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {
