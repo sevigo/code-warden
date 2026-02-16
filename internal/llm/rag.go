@@ -1027,6 +1027,7 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 
 	docs := r.performSearch(ctx, scopedStore, query, queryType)
 	if len(docs) == 0 {
+		r.logger.Debug("no documents found for query", "query", query[:min(50, len(query))], "type", queryType)
 		return
 	}
 
@@ -1956,7 +1957,7 @@ func (r *ragService) cleanCommentForQuery(comment string) string {
 
 	// Normalize structural headers to separators for semantic retention
 	// This preserves the semantic meaning (e.g., "Observation:", "Fix:") while reducing noise
-	comment = statusRegex.ReplaceAllString(comment, " ")
+	comment = statusRegex.ReplaceAllString(comment, "STATUS: $1 | ")
 	comment = obsRegex.ReplaceAllString(comment, " | Observation: ")
 	comment = rootCauseRegex.ReplaceAllString(comment, " | Root Cause: ")
 	comment = fixRegex.ReplaceAllString(comment, " | Fix: ")
@@ -1968,7 +1969,11 @@ func (r *ragService) cleanCommentForQuery(comment string) string {
 	// Limit query length to avoid overly long searches
 	const maxQueryLen = 500
 	if len(comment) > maxQueryLen {
-		comment = comment[:maxQueryLen]
+		if idx := strings.LastIndex(comment[:maxQueryLen], " "); idx > 400 {
+			comment = comment[:idx]
+		} else {
+			comment = comment[:maxQueryLen]
+		}
 	}
 
 	return comment
