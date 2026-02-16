@@ -1,120 +1,123 @@
 package github
 
 import (
-	"log/slog"
-	"os"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func TestParseValidLinesFromPatch(t *testing.T) {
-	// Create a silent logger for tests
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-
 	tests := []struct {
 		name     string
 		patch    string
-		expected []int // Expected keys in the map
+		expected map[int]struct{}
 	}{
 		{
-			name: "Simple addition with context",
+			name: "Basic added lines",
 			patch: `@@ -1,3 +1,4 @@
-  context_line_1
-+ added_line_2
-- removed_line
-  context_line_3`,
-			// New side lines:
-			// 1 (context), 2 (added), 3 (context)
-			// removed_line is skipped and doesn't increment the counter
-			expected: []int{1, 2, 3},
+ line1
++line2
+ line3
++line4`,
+			expected: map[int]struct{}{
+				1: {}, 2: {}, 3: {}, 4: {},
+			},
+		},
+		{
+			name: "Deleted lines only",
+			patch: `@@ -1,3 +1,1 @@
+-line1
+-line2
+ line3`,
+			expected: map[int]struct{}{
+				1: {},
+			},
 		},
 		{
 			name: "Multiple hunks",
-			patch: `@@ -1,2 +1,2 @@
-  line_1
-+ line_2
-@@ -10,1 +10,3 @@
-  line_10
-+ line_11
-+ line_12`,
-			// Hunk 1: 1, 2
-			// Hunk 2: 10, 11, 12
-			expected: []int{1, 2, 10, 11, 12},
-		},
-		{
-			name: "Only deletions",
-			patch: `@@ -1,3 +1,0 @@
-- line_1
-- line_2
-- line_3`,
-			// No lines in the new side exist to be commented on
-			expected: []int{},
+			patch: `@@ -10,2 +10,3 @@
+ line10
++line11
+ line12
+@@ -20,1 +23,2 @@
+ line20
++line21`,
+			expected: map[int]struct{}{
+				10: {}, 11: {}, 12: {},
+				23: {}, 24: {},
+			},
 		},
 		{
 			name: "Malformed hunk header",
-			patch: `@@ invalid header @@
-+ added_line_1`,
-			// Should reset currentLine to -1 and skip the added line
-			expected: []int{},
+			patch: `@@ -bad +header @@
++line1`,
+			expected: map[int]struct{}{},
 		},
 		{
-			name: "Hunk with no comma in range",
-			patch: `@@ -1 +1 @@
-+ single_line_change`,
-			// Regex handles \d+ without (,\d+)?
-			expected: []int{1},
-		},
-		{
-			name:     "Empty patch",
-			patch:    "",
-			expected: []int{},
-		},
-		{
-			name: "Patch with leading noise",
-			patch: `diff --git a/file.go b/file.go
+			name: "No hunks",
+			patch: `diff --git a/file b/file
 index 123..456 100644
---- a/file.go
-+++ b/file.go
-@@ -1,1 +1,1 @@
-+ actual_change`,
-			expected: []int{1},
+--- a/file
++++ b/file`,
+			expected: map[int]struct{}{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ParseValidLinesFromPatch(tt.patch, logger)
-
-			assert.Equal(t, len(tt.expected), len(got), "Map size mismatch")
-			for _, line := range tt.expected {
-				_, exists := got[line]
-				assert.True(t, exists, "Expected line %d to be valid", line)
+			got, err := ParseValidLinesFromPatch(tt.patch, nil)
+			if err != nil {
+				t.Errorf("ParseValidLinesFromPatch() error = %v", err)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("ParseValidLinesFromPatch() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
 }
 
+func TestParseValidLinesFromPatch_LargeLine(t *testing.T) {
+	// Line size 70KB (exceeds default 64KB bufio.Scanner limit)
+	largeLine := strings.Repeat("x", 70*1024)
+	patch := fmt.Sprintf("@@ -1,1 +1,2 @@\n %s\n+new line", largeLine)
+
+	got, err := ParseValidLinesFromPatch(patch, nil)
+	if err != nil {
+		t.Fatalf("ParseValidLinesFromPatch should handle >64KB lines, got error: %v", err)
+	}
+
+	expectedLine := 2 // The "+new line" is line 2 on the new side
+	if _, ok := got[expectedLine]; !ok {
+		t.Errorf("Expected line %d to be valid, but it was not found in %v", expectedLine, got)
+	}
+}
+
 func TestParseHunkHeader(t *testing.T) {
 	tests := []struct {
-		header string
-		want   int
-		err    bool
+		name      string
+		header    string
+		wantStart int
+		wantErr   bool
 	}{
-		{"@@ -1,3 +1,4 @@", 1, false},
-		{"@@ -10,5 +20,5 @@", 20, false},
-		{"@@ -1 +5 @@", 5, false},
-		{"@@ malformed @@", -1, true},
-		{"no header at all", -1, true},
+		{"Single line range", "@@ -1 +1 @@", 1, false},
+		{"Multi line range", "@@ -1,3 +1,4 @@", 1, false},
+		{"Mixed range", "@@ -10,2 +20,3 @@", 20, false},
+		{"Invalid format", "@@ -1 +1", -1, true},
+		{"Non-numeric", "@@ -a +b @@", -1, true},
 	}
 
 	for _, tt := range tests {
-		got, err := parseHunkHeader(tt.header)
-		if tt.err {
-			assert.Error(t, err)
-		} else {
-			assert.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseHunkHeader(tt.header)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseHunkHeader() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.wantStart {
+				t.Errorf("parseHunkHeader() = %v, want %v", got, tt.wantStart)
+			}
+		})
 	}
 }

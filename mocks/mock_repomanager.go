@@ -13,9 +13,10 @@ import (
 	context "context"
 	reflect "reflect"
 
+	gomock "go.uber.org/mock/gomock"
+
 	core "github.com/sevigo/code-warden/internal/core"
 	storage "github.com/sevigo/code-warden/internal/storage"
-	gomock "go.uber.org/mock/gomock"
 )
 
 // MockRepoManager is a mock of RepoManager interface.
