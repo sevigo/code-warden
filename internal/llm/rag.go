@@ -1161,6 +1161,7 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 	for _, q := range variations {
 		select {
 		case <-ctx.Done():
+			r.logger.Warn("description context gathering cancelled", "error", ctx.Err())
 			return ""
 		default:
 		}
@@ -1170,22 +1171,17 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 			continue
 		}
 
-		cleanQ := stripPatchNoise(q)
-		if cleanQ == "" {
-			continue
-		}
-
 		var searchOpts []vectorstores.Option
-		sparseVec, err := sparse.GenerateSparseVector(ctx, cleanQ)
+		sparseVec, err := sparse.GenerateSparseVector(ctx, q)
 		if err != nil {
-			r.logger.Warn("sparse vector generation failed for description query variation, falling back to dense", "query", cleanQ, "error", err)
+			r.logger.Warn("sparse vector generation failed for description query variation, falling back to dense", "query", q, "error", err)
 		} else {
 			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 		}
 
-		docs, err := scopedStore.SimilaritySearch(ctx, cleanQ, 3, searchOpts...)
+		docs, err := scopedStore.SimilaritySearch(ctx, q, 3, searchOpts...)
 		if err != nil {
-			r.logger.Warn("similarity hybrid search failed for query variation", "query", cleanQ, "error", err)
+			r.logger.Warn("similarity hybrid search failed for query variation", "query", q, "error", err)
 			continue
 		}
 		allDocs = append(allDocs, docs...)
@@ -1342,31 +1338,31 @@ func (r *ragService) collectHyDEResults(ctx context.Context, resultsChan <-chan 
 	}
 }
 
-func (r *ragService) performSingleHyDEJob(ctx context.Context, scopedStore storage.ScopedVectorStore, query string) []schema.Document {
+func (r *ragService) performSingleHyDEJob(ctx context.Context, scopedStore storage.ScopedVectorStore, rawQuery string) []schema.Document {
 	// 1. Clean the Query (Bottleneck #5: Strip diff noise)
-	cleanQuery := stripPatchNoise(query)
+	semanticQuery := stripPatchNoise(rawQuery)
 
 	var searchOpts []vectorstores.Option
 	// Use un-stripped query for Sparse Vector to capture exact identifiers in diff
-	sparseVec, err := sparse.GenerateSparseVector(ctx, query)
+	sparseVec, err := sparse.GenerateSparseVector(ctx, rawQuery)
 	if err != nil {
-		r.logger.Warn("sparse vector generation failed for HyDE query, falling back to dense", "query", cleanQuery, "error", err)
+		r.logger.Warn("sparse vector generation failed for HyDE query, falling back to dense", "query", semanticQuery, "error", err)
 	} else {
 		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 	}
 
 	// Recall
-	baseDocs, err := scopedStore.SimilaritySearch(ctx, cleanQuery, 20, searchOpts...)
+	baseDocs, err := scopedStore.SimilaritySearch(ctx, semanticQuery, 20, searchOpts...)
 	if err != nil {
 		r.logger.Warn("base hybrid search failed", "error", err)
 		return nil
 	}
 
 	// 2. Pre-filter by Keyword Score (Bottleneck #2: N+1 Reranking)
-	preFilteredDocs := preFilterBM25(cleanQuery, baseDocs, 10)
+	preFilteredDocs := preFilterBM25(semanticQuery, baseDocs, 10)
 
 	// Precision (Rerank)
-	scoredDocs, err := r.reranker.Rerank(ctx, cleanQuery, preFilteredDocs)
+	scoredDocs, err := r.reranker.Rerank(ctx, semanticQuery, preFilteredDocs)
 	if err != nil {
 		r.logger.Warn("reranking failed, falling back", "error", err)
 		return r.fallbackDocs(preFilteredDocs, 5)
