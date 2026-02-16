@@ -958,19 +958,33 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 	// Channel to collect results from goroutines
 	resultChan := make(chan string, len(feedbackQueries)+1)
 
+	// Limit concurrent searches to prevent resource exhaustion
+	const maxConcurrentSearches = 10
+	semaphore := make(chan struct{}, maxConcurrentSearches)
+
 	// Search for each feedback query
 	for _, query := range feedbackQueries {
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
 		wg.Add(1)
-		go r.searchFeedbackQuery(ctx, scopedStore, query, resultChan, seenDocs, &mu, &wg)
+		semaphore <- struct{}{} // Acquire slot
+		go func(q string) {
+			defer wg.Done()
+			defer func() { <-semaphore }() // Release slot
+			r.searchFeedbackQuery(ctx, scopedStore, q, resultChan, seenDocs, &mu, &wg)
+		}(query)
 	}
 
 	// If user provided specific instructions, search for those too
 	if userInstructions != "" {
 		wg.Add(1)
-		go r.searchUserInstructions(ctx, scopedStore, userInstructions, resultChan, seenDocs, &mu, &wg)
+		semaphore <- struct{}{} // Acquire slot
+		go func() {
+			defer wg.Done()
+			defer func() { <-semaphore }() // Release slot
+			r.searchUserInstructions(ctx, scopedStore, userInstructions, resultChan, seenDocs, &mu, &wg)
+		}()
 	}
 
 	// Wait for all searches to complete, then close the channel
