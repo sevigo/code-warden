@@ -232,6 +232,7 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 	// Verify that it fell back to cloneAndIndex.
 	if res == nil {
 		t.Fatal("Expected result to be non-nil")
+		return
 	}
 	if !res.IsInitialClone {
 		t.Error("Expected IsInitialClone to be true (indicating fallback to full clone)")

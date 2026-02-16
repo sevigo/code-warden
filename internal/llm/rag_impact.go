@@ -99,20 +99,18 @@ func (r *ragService) processImpactResults(depResults map[string][]schema.Documen
 				return impactBuilder.String()
 			}
 
-			source, ok := doc.Metadata["source"].(string)
-			if !ok || source == "" {
-				continue
-			}
+			docKey := r.getDocKey(doc)
 			mu.Lock()
-			if _, exists := seen[source]; exists {
+			if _, exists := seen[docKey]; exists {
 				mu.Unlock()
 				continue
 			}
-			seen[source] = struct{}{}
+			seen[docKey] = struct{}{}
 			mu.Unlock()
 
+			source, _ := doc.Metadata["source"].(string)
 			_, _ = impactBuilder.WriteString(fmt.Sprintf("File: %s (potential ripple effect from %s)\n---\n%s\n\n",
-				source, filename, doc.PageContent))
+				source, filename, r.getDocContent(doc)))
 			totalSnippets++
 		}
 	}
