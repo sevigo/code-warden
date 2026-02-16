@@ -27,7 +27,7 @@ func ParseValidLinesFromPatch(patch string, logger *slog.Logger) map[int]struct{
 			startLine, err := parseHunkHeader(line)
 			if err != nil {
 				if logger != nil {
-					logger.Error("failed to parse hunk header", "header", line, "error", err)
+					logger.Warn("failed to parse hunk header", "header", line, "error", err)
 				}
 				currentLine = -1 // Reset on error to avoid processing subsequent lines incorrectly
 				continue
@@ -41,6 +41,9 @@ func ParseValidLinesFromPatch(patch string, logger *slog.Logger) map[int]struct{
 			continue
 		}
 
+		// We only care about added lines (+) and context lines ( ) on the new side.
+		// Deleted lines (-) and other diff metadata are ignored and do not
+		// increment the line counter for the new version of the file.
 		if strings.HasPrefix(line, "+") {
 			// Added line
 			validLines[currentLine] = struct{}{}
@@ -50,6 +53,10 @@ func ParseValidLinesFromPatch(patch string, logger *slog.Logger) map[int]struct{
 			validLines[currentLine] = struct{}{}
 			currentLine++
 		}
+	}
+
+	if err := scanner.Err(); err != nil && logger != nil {
+		logger.Error("patch scanning failed", "error", err)
 	}
 
 	return validLines
