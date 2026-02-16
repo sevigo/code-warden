@@ -108,16 +108,12 @@ make build
 ./bin/warden-cli --help
 ```
 
-* Run the preload for large repo:
+* Update a local repository (Incremental):
 ```sh
-export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
-./bin/warden-cli preload --repo-url https://github.com/owner/repo.git
+# Performs an efficient incremental update using Git diffs
+./bin/warden-cli update /path/to/your/local/repo
 ```
 
-* Run a scan for a local repository:
-```sh
-./bin/warden-cli scan /path/to/your/local/repo
-```
 
 ### 7. CLI Review Command
 
