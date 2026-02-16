@@ -970,9 +970,8 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 		wg.Add(1)
 		semaphore <- struct{}{} // Acquire slot
 		go func(q string) {
-			defer wg.Done()
 			defer func() { <-semaphore }() // Release slot
-			r.searchFeedbackQuery(ctx, scopedStore, q, resultChan, seenDocs, &mu, &wg)
+			r.performReReviewSearch(ctx, scopedStore, q, "feedback query", "Relevant to", resultChan, seenDocs, &mu, &wg)
 		}(query)
 	}
 
@@ -981,9 +980,8 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 		wg.Add(1)
 		semaphore <- struct{}{} // Acquire slot
 		go func() {
-			defer wg.Done()
 			defer func() { <-semaphore }() // Release slot
-			r.searchUserInstructions(ctx, scopedStore, userInstructions, resultChan, seenDocs, &mu, &wg)
+			r.performReReviewSearch(ctx, scopedStore, userInstructions, "user instructions", "Relevant to user focus", resultChan, seenDocs, &mu, &wg)
 		}()
 	}
 
@@ -1011,8 +1009,9 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 	return contextBuilder.String()
 }
 
-// searchFeedbackQuery performs a single feedback query search and sends results to the channel.
-func (r *ragService) searchFeedbackQuery(ctx context.Context, scopedStore storage.ScopedVectorStore, query string, resultChan chan<- string, seenDocs map[string]struct{}, mu *sync.Mutex, wg *sync.WaitGroup) {
+// performReReviewSearch executes a single search query (either from feedback or user instructions)
+// and handles deduplication and result formatting for the re-review context.
+func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType, headerPrefix string, resultChan chan<- string, seenDocs map[string]struct{}, mu *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	// Check for cancellation before starting work
@@ -1022,7 +1021,11 @@ func (r *ragService) searchFeedbackQuery(ctx context.Context, scopedStore storag
 	default:
 	}
 
-	docs := r.performSearch(ctx, scopedStore, query, "feedback query")
+	if queryType == "user instructions" {
+		r.logger.Info("performing targeted search for user instructions", "instructions", query)
+	}
+
+	docs := r.performSearch(ctx, scopedStore, query, queryType)
 	if len(docs) == 0 {
 		return
 	}
@@ -1050,59 +1053,7 @@ func (r *ragService) searchFeedbackQuery(ctx context.Context, scopedStore storag
 		source, _ := doc.Metadata["source"].(string)
 		content := r.getDocContent(doc)
 
-		_, _ = fmt.Fprintf(&builder, "## Relevant to: %s\n", source)
-		builder.WriteString("```\n")
-		builder.WriteString(content)
-		builder.WriteString("\n```\n\n")
-	}
-
-	if builder.Len() > 0 {
-		resultChan <- builder.String()
-	}
-}
-
-// searchUserInstructions searches for user-provided instructions and sends results to the channel.
-func (r *ragService) searchUserInstructions(ctx context.Context, scopedStore storage.ScopedVectorStore, instructions string, resultChan chan<- string, seenDocs map[string]struct{}, mu *sync.Mutex, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	// Check for cancellation before starting work
-	select {
-	case <-ctx.Done():
-		return
-	default:
-	}
-
-	r.logger.Info("performing targeted search for user instructions", "instructions", instructions)
-
-	docs := r.performSearch(ctx, scopedStore, instructions, "user instructions")
-	if len(docs) == 0 {
-		return
-	}
-
-	var builder strings.Builder
-
-	for _, doc := range docs {
-		// Check for cancellation during processing
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		docKey := r.getDocKey(doc)
-
-		mu.Lock()
-		if _, exists := seenDocs[docKey]; exists {
-			mu.Unlock()
-			continue
-		}
-		seenDocs[docKey] = struct{}{}
-		mu.Unlock()
-
-		source, _ := doc.Metadata["source"].(string)
-		content := r.getDocContent(doc)
-
-		_, _ = fmt.Fprintf(&builder, "## Relevant to user focus: %s\n", source)
+		_, _ = fmt.Fprintf(&builder, "## %s: %s\n", headerPrefix, source)
 		builder.WriteString("```\n")
 		builder.WriteString(content)
 		builder.WriteString("\n```\n\n")
