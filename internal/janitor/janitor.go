@@ -39,7 +39,11 @@ func NewService(store storage.Store, vectorStore storage.VectorStore, basePath s
 func (s *Service) CleanOldRepos(ctx context.Context, dryRun bool, maxAge time.Duration) (int, []string, error) {
 	// Sanitize base path once
 	absPath, err := filepath.Abs(s.BasePath)
-	if err != nil {
+absPath, err := filepath.Abs(s.BasePath)
+if err != nil {
+	return 0, nil, fmt.Errorf("failed to resolve base path: %w", err)
+}
+cleanBasePath := filepath.Clean(absPath)
 		return 0, nil, fmt.Errorf("failed to resolve base path: %w", err)
 	}
 	s.BasePath = filepath.Clean(absPath)
