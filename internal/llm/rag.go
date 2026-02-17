@@ -441,7 +441,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		return noChangesReview, noChangesReview.Summary, nil
 	}
 
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
@@ -450,6 +450,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 		"ChangedFiles":       r.formatChangedFiles(changedFiles),
 		"Context":            contextString,
+		"Definitions":        definitionsContext,
 		"Diff":               diff,
 	}
 
@@ -503,8 +504,9 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	}
 
 	contextString := preComputedContext
+	definitionsContext := ""
 	if contextString == "" {
-		contextString = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+		contextString, definitionsContext = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 	}
 
 	// Reuse repoConfig logic
@@ -519,6 +521,7 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 		"ChangedFiles":       r.formatChangedFiles(changedFiles),
 		"Context":            contextString,
+		"Definitions":        definitionsContext,
 		"Diff":               diff,
 	}
 
@@ -682,7 +685,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 3. Centralized Context Building (The "Context Foundation")
-	contextString := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString, _ := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, nil, models, diff, changedFiles, contextString)
 	if err != nil {
@@ -901,8 +904,8 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 		}, "This pull request contains no new code changes to re-review.", nil
 	}
 
-	// Step 1: Build standard context (Arch + Impact + HyDE) for the changed files
-	standardContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	// Step 1: Build standard context (Arch + Impact + HyDE + Definitions) for the changed files
+	standardContext, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	// Step 2: Extract feedback-driven search queries from original review
 	feedbackQueries := r.extractCommentsFromReview(ctx, originalReview.ReviewContent)
@@ -920,6 +923,7 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 		NewDiff:          newDiff,
 		UserInstructions: event.UserInstructions,
 		Context:          combinedContext,
+		Definitions:      definitionsContext,
 	}
 
 	rawReview, err := r.generateResponseWithPrompt(ctx, event, ReReviewPrompt, promptData)
@@ -1244,13 +1248,159 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 	return builder.String()
 }
 
+// extractSymbolsFromPatch extracts potential type/function names from a git patch.
+// This is a simple regex-based extraction until ExtractUsedSymbols is available in GoFrame.
+func extractSymbolsFromPatch(patch string) []string {
+	symbols := make(map[string]struct{})
+
+	// Pattern to match type definitions, function declarations, and struct fields
+	// Matches patterns like "type Foo struct", "func (t *Type) Method", etc.
+	patterns := []*regexp.Regexp{
+		// Type definitions: type Foo struct, type Bar interface
+		regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`),
+		// Function/method definitions
+		regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`),
+		// Variable declarations with types
+		regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`),
+		// Type assertions and conversions
+		regexp.MustCompile(`\.(\w+)\{`),
+		// Common patterns in Go
+		regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`),
+	}
+
+	for _, re := range patterns {
+		matches := re.FindAllStringSubmatch(patch, -1)
+		for _, match := range matches {
+			if len(match) > 1 && len(match[1]) > 1 {
+				symbols[match[1]] = struct{}{}
+			}
+		}
+	}
+
+	result := make([]string, 0, len(symbols))
+	for sym := range symbols {
+		result = append(result, sym)
+	}
+	return result
+}
+
+// gatherDefinitionsContext extracts symbols from the changed files and retrieves their definitions.
+// This helps the LLM understand type definitions, method signatures, and field names.
+func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, mu *sync.RWMutex) string {
+	if len(changedFiles) == 0 {
+		return ""
+	}
+
+	// Extract unique symbols from all changed files
+	symbols := make(map[string]struct{})
+	for _, f := range changedFiles {
+		if f.Patch == "" {
+			continue
+		}
+
+		// Try to extract symbols from the patch using regex
+		extracted := extractSymbolsFromPatch(f.Patch)
+		for _, sym := range extracted {
+			symbols[sym] = struct{}{}
+		}
+	}
+
+	if len(symbols) == 0 {
+		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
+		return ""
+	}
+
+	r.logger.Info("stage started", "name", "SymbolResolution", "symbols_found", len(symbols))
+
+	// Convert to slice and limit to top 15
+	var symbolList []string
+	for sym := range symbols {
+		symbolList = append(symbolList, sym)
+		if len(symbolList) >= 15 {
+			break
+		}
+	}
+
+	var builder strings.Builder
+	builder.WriteString("# Resolved Type Definitions\n\n")
+	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
+
+	resolvedCount := 0
+	for _, symbol := range symbolList {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return builder.String()
+		default:
+		}
+
+		// Use similarity search to find the definition
+		var searchOpts []vectorstores.Option
+		sparseVec, err := sparse.GenerateSparseVector(ctx, "type "+symbol+" struct")
+		if err != nil {
+			r.logger.Debug("sparse vector generation failed", "symbol", symbol, "error", err)
+		} else {
+			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
+		}
+
+		docs, err := scopedStore.SimilaritySearch(ctx, "type "+symbol+" struct", 3, searchOpts...)
+		if err != nil {
+			r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
+			continue
+		}
+
+		// Also search for interface definitions
+		if len(docs) == 0 {
+			docs, err = scopedStore.SimilaritySearch(ctx, "type "+symbol+" interface", 3, searchOpts...)
+			if err != nil {
+				r.logger.Debug("failed to search for interface", "symbol", symbol, "error", err)
+				continue
+			}
+		}
+
+		if len(docs) == 0 {
+			continue
+		}
+
+		// Take the first match as the definition
+		def := docs[0]
+		docKey := r.getDocKey(def)
+
+		mu.RLock()
+		_, exists := seenDocs[docKey]
+		mu.RUnlock()
+		if exists {
+			continue
+		}
+
+		mu.Lock()
+		seenDocs[docKey] = struct{}{}
+		mu.Unlock()
+
+		source, _ := def.Metadata["source"].(string)
+		content := r.getDocContent(def)
+
+		_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, source, content)
+		resolvedCount++
+	}
+
+	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount)
+
+	if resolvedCount == 0 {
+		return ""
+	}
+
+	return builder.String()
+}
+
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes. Duplicate entries are avoided.
 // It also fetches architectural summaries for the affected directories.
-func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) string {
+// Returns the combined context string and the definitions context separately.
+func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string) {
 	if len(changedFiles) == 0 {
-		return ""
+		return "", ""
 	}
 
 	// Bound the number of files processed to prevent OOM/DoS
@@ -1304,11 +1454,20 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		}()
 	}
 
+	// 5. Symbol Resolution (Definitions)
+	var definitionsContext string
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, seenDocs, &seenDocsMu)
+	}()
+
 	wg.Wait()
 
 	// Assemble and return the combined context from all stages.
 	// Validation happens per-snippet inside gatherDescriptionContext via validateSnippetRelevance.
-	return r.assembleContext(archContext, impactContext, descriptionContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
+	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
+	return fullContext, definitionsContext
 }
 
 // gatherDescriptionContext uses MultiQuery retrieval to find code related to the PR description.
@@ -1609,7 +1768,7 @@ func (r *ragService) gatherImpactContext(ctx context.Context, store storage.Scop
 	return ic
 }
 
-func (r *ragService) assembleContext(arch, impact, description string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+func (r *ragService) assembleContext(arch, impact, description, definitions string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
 	var contextBuilder strings.Builder
 
 	if arch != "" {
@@ -1621,6 +1780,11 @@ func (r *ragService) assembleContext(arch, impact, description string, hyde [][]
 
 	if description != "" {
 		contextBuilder.WriteString(description) // Already formatted in gatherDescriptionContext
+		contextBuilder.WriteString("\n---\n\n")
+	}
+
+	if definitions != "" {
+		contextBuilder.WriteString(definitions) // Already formatted in gatherDefinitionsContext
 		contextBuilder.WriteString("\n---\n\n")
 	}
 
@@ -1667,6 +1831,7 @@ func (r *ragService) assembleContext(arch, impact, description string, hyde [][]
 		"changed_files", len(files),
 		"arch_len", len(arch),
 		"impact_len", len(impact),
+		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
 	)
 

@@ -57,6 +57,24 @@ Use this repository context to verify cross-file dependencies or type definition
 ```
 {{end}}
 
+### RESOLVED TYPE DEFINITIONS
+{{if .Definitions}}
+The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:
+
+```
+{{.Definitions}}
+```
+{{end}}
+
+### RESOLVED TYPE DEFINITIONS
+{{if .Definitions}}
+The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:
+
+```
+{{.Definitions}}
+```
+{{end}}
+
 ---
 
 ## Input: Original Review Feedback

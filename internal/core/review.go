@@ -26,4 +26,5 @@ type ReReviewData struct {
 	NewDiff          string
 	UserInstructions string
 	Context          string
+	Definitions      string
 }
