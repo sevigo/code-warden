@@ -32,13 +32,20 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// Pre-compiled regexes for comment cleaning to avoid recompilation on each call
+// Pre-compiled regexes for comment cleaning and symbol extraction to avoid recompilation on each call
 var (
 	statusRegex     = regexp.MustCompile(`(?i)\*\*status:\*\*\s*(unresolved|partial|fixed|new critical bug)\s*`)
 	obsRegex        = regexp.MustCompile(`(?i)\*\*observation:\*\*`)
 	rootCauseRegex  = regexp.MustCompile(`(?i)\*\*root cause:\*\*`)
 	fixRegex        = regexp.MustCompile(`(?i)\*\*fix:\*\*`)
 	whitespaceRegex = regexp.MustCompile(`\s+`)
+
+	// Symbol extraction patterns for Go code
+	symbolTypeDefRegex     = regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`)
+	symbolFuncDefRegex     = regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`)
+	symbolVarDeclRegex     = regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`)
+	symbolTypeAssertRegex  = regexp.MustCompile(`\.(\w+)\{`)
+	symbolExportedTypeRegex = regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`)
 )
 
 type ComparisonResult struct {
@@ -1249,23 +1256,18 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 }
 
 // extractSymbolsFromPatch extracts potential type/function names from a git patch.
-// This is a simple regex-based extraction until ExtractUsedSymbols is available in GoFrame.
+// Uses pre-compiled regexes for performance. This is a simple regex-based extraction
+// until ExtractUsedSymbols is available in GoFrame.
 func extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
 
-	// Pattern to match type definitions, function declarations, and struct fields
-	// Matches patterns like "type Foo struct", "func (t *Type) Method", etc.
+	// Use pre-compiled regexes from package level
 	patterns := []*regexp.Regexp{
-		// Type definitions: type Foo struct, type Bar interface
-		regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`),
-		// Function/method definitions
-		regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`),
-		// Variable declarations with types
-		regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`),
-		// Type assertions and conversions
-		regexp.MustCompile(`\.(\w+)\{`),
-		// Common patterns in Go
-		regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`),
+		symbolTypeDefRegex,
+		symbolFuncDefRegex,
+		symbolVarDeclRegex,
+		symbolTypeAssertRegex,
+		symbolExportedTypeRegex,
 	}
 
 	for _, re := range patterns {
