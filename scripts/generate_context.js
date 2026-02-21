@@ -4,7 +4,7 @@ const path = require('path');
 // Configuration
 const allowedExtensions = new Set(['.go', '.md', '.yml', '.yaml', '.json', '.prompt', '.txt']);
 const excludedDirs = new Set(['.git', 'node_modules', 'bin', '.vscode', '.agent', 'venv']);
-const excludedFiles = new Set(['go.sum', 'package-lock.json']);
+const excludedFiles = new Set(['go.sum', 'package-lock.json', 'config.yaml']);
 
 function walkDir(dir, callback) {
     const files = fs.readdirSync(dir);
