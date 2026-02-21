@@ -53,7 +53,8 @@ func (j *ReviewJob) getRepoMutex(repoFullName string) *sync.Mutex {
 	mutex, _ := j.repoMutexes.LoadOrStore(repoFullName, &sync.Mutex{})
 	m, ok := mutex.(*sync.Mutex)
 	if !ok {
-		// This should never happen as we store *sync.Mutex
+		// This should never happen as we store *sync.Mutex, but log and recover
+		j.logger.Error("type assertion failed for repo mutex", "repo", repoFullName, "type", fmt.Sprintf("%T", mutex))
 		return &sync.Mutex{}
 	}
 	return m

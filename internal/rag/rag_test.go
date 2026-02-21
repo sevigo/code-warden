@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"github.com/sevigo/goframe/schema"
+	"go.uber.org/mock/gomock"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/mocks"
 )
 
 func TestSanitizeModelForFilename(t *testing.T) {
@@ -362,11 +364,78 @@ func TestExtractSymbolsFromPatch(t *testing.T) {
 }
 
 func TestGatherDefinitionsContext_EmptyInput(t *testing.T) {
-	// Skipped - would need mock logger and vector store to test properly
-	t.Skip("Skipping - requires mock logger and vector store")
+	r := &ragService{
+		logger: slog.Default(),
+	}
+
+	seenDocs := make(map[string]struct{})
+	var mu sync.RWMutex
+
+	result := r.gatherDefinitionsContext(t.Context(), nil, []internalgithub.ChangedFile{}, seenDocs, &mu)
+
+	if result != "" {
+		t.Errorf("expected empty string for empty input, got %q", result)
+	}
 }
 
 func TestGatherDefinitionsContext_NoPatch(t *testing.T) {
-	// Skipped - would need mock logger and vector store to test properly
-	t.Skip("Skipping - requires mock logger and vector store")
+	r := &ragService{
+		logger: slog.Default(),
+	}
+
+	seenDocs := make(map[string]struct{})
+	var mu sync.RWMutex
+
+	// Files without patches should be skipped, resulting in no symbols
+	changedFiles := []internalgithub.ChangedFile{
+		{Filename: "main.go", Patch: ""},
+		{Filename: "utils.go", Patch: ""},
+	}
+
+	result := r.gatherDefinitionsContext(t.Context(), nil, changedFiles, seenDocs, &mu)
+
+	if result != "" {
+		t.Errorf("expected empty string when no patches, got %q", result)
+	}
+}
+
+func TestGatherDefinitionsContext_WithSymbols(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockSVS := mocks.NewMockScopedVectorStore(ctrl)
+
+	// Expect definition lookups for extracted symbols
+	mockSVS.EXPECT().
+		SimilaritySearch(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return([]schema.Document{
+			{
+				PageContent: "type Config struct { Timeout int }",
+				Metadata:    map[string]any{"source": "config.go"},
+			},
+		}, nil).
+		AnyTimes()
+
+	r := &ragService{
+		logger: slog.Default(),
+	}
+
+	seenDocs := make(map[string]struct{})
+	var mu sync.RWMutex
+
+	changedFiles := []internalgithub.ChangedFile{
+		{
+			Filename: "main.go",
+			Patch:    "+type Config struct { Timeout int }\n+func Process() {}",
+		},
+	}
+
+	result := r.gatherDefinitionsContext(t.Context(), mockSVS, changedFiles, seenDocs, &mu)
+
+	// Should contain the header and possibly definitions
+	if result != "" {
+		if !strings.Contains(result, "Resolved Type Definitions") {
+			t.Errorf("expected result to contain 'Resolved Type Definitions', got %q", result)
+		}
+	}
 }

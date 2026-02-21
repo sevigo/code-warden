@@ -118,9 +118,8 @@ func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core
 	// Try using the main generator first
 	llmModel, err := r.getOrCreateLLM(r.cfg.AI.GeneratorModel)
 	if err != nil {
-		r.logger.Error("failed to get generator LLM, falling back to legacy config", "error", err)
-		// Fallback to legacy if new config fails
-		llmModel = r.generatorLLM
+		r.logger.Error("failed to get generator LLM", "error", err)
+		return "", fmt.Errorf("failed to get LLM model: %w", err)
 	}
 
 	prompt, err := r.promptMgr.Render(promptKey, promptData)
