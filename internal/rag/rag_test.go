@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -111,7 +112,9 @@ func TestCleanCommentForQuery(t *testing.T) {
 }
 
 func TestExtractCommentsFromReview(t *testing.T) {
-	r := &ragService{}
+	r := &ragService{
+		logger: slog.Default(),
+	}
 
 	tests := []struct {
 		name     string
@@ -125,42 +128,58 @@ func TestExtractCommentsFromReview(t *testing.T) {
 		},
 		{
 			name: "single suggestion with comment",
-			review: `<suggestion>
-	<file>test.go</file>
-	<line>10</line>
-	<comment>Fix the nil pointer dereference</comment>
-</suggestion>`,
+			review: `<review>
+  <suggestions>
+    <suggestion>
+      <file>test.go</file>
+      <line>10</line>
+      <comment>Fix the nil pointer dereference</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
 			expected: 1,
 		},
 		{
 			name: "multiple suggestions",
-			review: `<suggestion>
-	<file>a.go</file>
-	<line>1</line>
-	<comment>First issue</comment>
-</suggestion>
-<suggestion>
-	<file>b.go</file>
-	<line>2</line>
-	<comment>Second issue</comment>
-</suggestion>`,
+			review: `<review>
+  <suggestions>
+    <suggestion>
+      <file>a.go</file>
+      <line>1</line>
+      <comment>First issue</comment>
+    </suggestion>
+    <suggestion>
+      <file>b.go</file>
+      <line>2</line>
+      <comment>Second issue</comment>
+    </suggestion>
+  </suggestions>
+</review>`,
 			expected: 2,
 		},
 		{
 			name: "suggestion without comment tag",
-			review: `<suggestion>
-	<file>test.go</file>
-	<line>10</line>
-</suggestion>`,
+			review: `<review>
+  <suggestions>
+    <suggestion>
+      <file>test.go</file>
+      <line>10</line>
+    </suggestion>
+  </suggestions>
+</review>`,
 			expected: 0,
 		},
 		{
 			name: "empty comment",
-			review: `<suggestion>
-	<file>test.go</file>
-	<line>10</line>
-	<comment>   </comment>
-</suggestion>`,
+			review: `<review>
+  <suggestions>
+    <suggestion>
+      <file>test.go</file>
+      <line>10</line>
+      <comment>   </comment>
+    </suggestion>
+  </suggestions>
+</review>`,
 			expected: 0,
 		},
 	}
