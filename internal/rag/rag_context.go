@@ -148,27 +148,12 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 }
 
 func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, scopedStore storage.ScopedVectorStore, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
-	var searchOpts []vectorstores.Option
-	sparseVec, err := sparse.GenerateSparseVector(ctx, "type "+symbol+" struct")
-	if err != nil {
-		r.logger.Debug("sparse vector generation failed", "symbol", symbol, "error", err)
-	} else {
-		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
-	}
+	defRetriever := vectorstores.NewDefinitionRetriever(scopedStore)
+	docs, err := defRetriever.GetDefinition(ctx, symbol)
 
-	docs, err := scopedStore.SimilaritySearch(ctx, "type "+symbol+" struct", 3, searchOpts...)
 	if err != nil {
 		r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
 		return "", "", false
-	}
-
-	// Also search for interface definitions
-	if len(docs) == 0 {
-		docs, err = scopedStore.SimilaritySearch(ctx, "type "+symbol+" interface", 3, searchOpts...)
-		if err != nil {
-			r.logger.Debug("failed to search for interface", "symbol", symbol, "error", err)
-			return "", "", false
-		}
 	}
 
 	if len(docs) == 0 {
