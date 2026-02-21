@@ -48,7 +48,6 @@ type Service interface {
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
-	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GetTextSplitter() textsplitter.TextSplitter
 }
