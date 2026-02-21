@@ -42,13 +42,22 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 		searchWg.Add(1)
 		go func() {
 			defer searchWg.Done()
-			for work := range workChan {
-				docs := r.performSingleHyDEJob(ctx, scopedStore, work.query)
-				if len(docs) > 0 {
-					resultsChan <- struct {
-						idx  int
-						docs []schema.Document
-					}{work.originalIdx, docs}
+			for {
+				select {
+				case <-ctx.Done():
+					r.logger.Debug("HyDE search worker cancelled", "error", ctx.Err())
+					return
+				case work, ok := <-workChan:
+					if !ok {
+						return
+					}
+					docs := r.performSingleHyDEJob(ctx, scopedStore, work.query)
+					if len(docs) > 0 {
+						resultsChan <- struct {
+							idx  int
+							docs []schema.Document
+						}{work.originalIdx, docs}
+					}
 				}
 			}
 		}()

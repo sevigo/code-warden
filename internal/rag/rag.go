@@ -35,7 +35,7 @@ var (
 	symbolTypeDefRegex      = regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`)
 	symbolFuncDefRegex      = regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`)
 	symbolVarDeclRegex      = regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`)
-	symbolTypeAssertRegex   = regexp.MustCompile(`\.(\w+)\{`)
+	symbolTypeAssertRegex   = regexp.MustCompile(`(?m)\b([A-Z]\w*)\{`)
 	symbolExportedTypeRegex = regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`)
 )
 
