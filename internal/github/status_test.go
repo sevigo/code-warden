@@ -187,7 +187,6 @@ func TestFormatInlineComment(t *testing.T) {
 				"**🟡 Medium**",
 				"Use a faster algorithm.",
 				"```suggestion\nfunc fast() {\n  // optimized\n}\n```",
-				"> 💡 Reply with `/rereview` to trigger a new review.",
 			},
 		},
 	}
@@ -233,6 +232,7 @@ func TestFormatReviewSummary(t *testing.T) {
 				"🔴 2 Critical",
 				"🟠 1 High",
 				"🟡 1 Medium",
+				"> 💡 Reply with `/rereview` to trigger a new review.",
 			},
 			excludes: []string{
 				"### 📊 Issue Statistics",

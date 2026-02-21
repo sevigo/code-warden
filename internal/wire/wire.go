@@ -22,6 +22,7 @@ import (
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
+	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -48,7 +49,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		jobs.NewDispatcher,
 		jobs.NewReviewJob,
 		llm.NewPromptManager,
-		llm.NewRAGService,
+		rag.NewService,
 		provideVectorStore,
 		provideGeneratorLLM,
 		provideEmbedder,

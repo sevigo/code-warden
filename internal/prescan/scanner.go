@@ -10,19 +10,19 @@ import (
 	"time"
 
 	"github.com/sevigo/code-warden/internal/config"
-	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // Scanner handles the resumable scanning process.
 type Scanner struct {
 	Manager    *Manager
-	RAGService llm.RAGService
+	RAGService rag.Service
 	Verbose    bool
 	startTime  time.Time
 }
 
-func NewScanner(m *Manager, rag llm.RAGService) *Scanner {
+func NewScanner(m *Manager, rag rag.Service) *Scanner {
 	return &Scanner{
 		Manager:    m,
 		RAGService: rag,
@@ -142,7 +142,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 		} else {
 			for modelName, summaries := range results {
 				// potential path traversal: strictly replace invalid chars
-				sanitizedModel := llm.SanitizeModelForFilename(modelName)
+				sanitizedModel := rag.SanitizeModelForFilename(modelName)
 				fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
 				filePath := filepath.Join(localPath, fileName)
 

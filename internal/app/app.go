@@ -7,7 +7,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
-	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -22,7 +22,7 @@ type App struct {
 	Dispatcher  core.JobDispatcher
 	Logger      *slog.Logger
 	DB          *db.DB
-	RAGService  llm.RAGService
+	RAGService  rag.Service
 	Server      *server.Server
 	GitClient   *gitutil.Client
 }
@@ -35,7 +35,7 @@ func NewApp(
 	vs storage.VectorStore,
 	repoMgr repomanager.RepoManager,
 	dispatcher core.JobDispatcher,
-	rag llm.RAGService,
+	rag rag.Service,
 	srv *server.Server,
 	gitClient *gitutil.Client,
 	logger *slog.Logger,
