@@ -210,7 +210,7 @@ func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logg
 	return s
 }
 
-// ExtractTag finds the content between <tag> and the corresponding </tag> or the next sibling tag.
+// ExtractTag finds the content between <tag> and the corresponding </tag> or the next sibling <tag>.
 func ExtractTag(content, tag string) (string, bool) {
 	reOpen := getTagRegex(tag)
 	openMatch := reOpen.FindStringIndex(content)
@@ -228,8 +228,8 @@ func ExtractTag(content, tag string) (string, bool) {
 		return remaining[:closeMatch[0]], true
 	}
 
-	// 2. Lenient Fallback: Find the next opening tag of any type
-	nextMatch := reAnyNextTag.FindStringIndex(remaining)
+	// 2. Lenient Fallback: Find the next opening tag of the SAME type
+	nextMatch := reOpen.FindStringIndex(remaining)
 	if nextMatch != nil {
 		// Return content but we might want to signal leniency in the future
 		return remaining[:nextMatch[0]], true
@@ -266,8 +266,8 @@ func ExtractMultipleTags(ctx context.Context, content, tag string) []string {
 			// Advance to after the closing tag
 			remaining = searchSpace[closeMatch[1]:]
 		} else {
-			// 2. Lenient Fallback: Find the next opening tag
-			nextMatch := reAnyNextTag.FindStringIndex(searchSpace)
+			// 2. Lenient Fallback: Find the next opening tag OF THE SAME TYPE
+			nextMatch := reOpen.FindStringIndex(searchSpace)
 			if nextMatch != nil {
 				contentEnd = nextMatch[0]
 				foundEnd = true
