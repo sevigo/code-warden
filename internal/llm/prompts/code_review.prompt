@@ -21,6 +21,15 @@ Primary Language Context: {{.Language}}
 No architectural context available. Review based solely on the diff.
 {{end}}
 
+### RESOLVED TYPE DEFINITIONS
+{{if .Definitions}}
+The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:
+
+{{.Definitions}}
+{{else}}
+No type definitions resolved.
+{{end}}
+
 ### THE DIFF (The changes to review)
 ```diff
 {{.Diff}}
