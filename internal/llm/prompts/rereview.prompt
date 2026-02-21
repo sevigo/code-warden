@@ -135,8 +135,6 @@ safeCopy := data.Clone()
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>1-100</confidence>
   <summary>
-## Re-Review Audit Summary
-
 [1-2 sentences on overall fix quality and developer responsiveness]
 
 ### 📊 Issue Status Table
@@ -231,8 +229,6 @@ safeCopy := data.Clone()
   <confidence>85</confidence>
 
   <summary>
-## Re-Review Audit Summary
-
 The developer addressed 3 out of 4 original suggestions. The null pointer fix in `handler.go` is well-implemented, but the race condition in `cache.go` requires additional synchronization.
 
 ### 📊 Issue Status Table

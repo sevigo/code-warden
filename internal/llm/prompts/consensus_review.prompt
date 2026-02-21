@@ -8,6 +8,7 @@ Combine independent reviews of the same Pull Request into a single, high-quality
 - **Architectural Context:** `{{.Context}}`
 - **Changed Files:** `{{.ChangedFiles}}`
 - **Repository-Specific Instructions:** `{{.CustomInstructions}}`
+- **Resolved Type Definitions:** `{{.Definitions}}`
 
 ---
 
@@ -17,7 +18,7 @@ Combine independent reviews of the same Pull Request into a single, high-quality
 - **Identify Consensus:** Group issues found by 2+ models.
 - **Flag "Lone Wolf" Criticals:** Retain critical issues (security, data loss) even if only 1 model found them.
 - **Merge Identical Findings:** Same file + Same line + Same issue = 1 suggestion. Use the most technically accurate explanation.
-- **Detect Hallucinations:** If a model references code that is NOT in the `{{.ChangedFiles}}` diff or the `{{.Context}}`, **discard it immediately.**
+- **Detect Hallucinations:** If a model references code that is NOT in the `{{.ChangedFiles}}` diff, the `{{.Context}}`, or the `{{.Definitions}}`, **discard it immediately.**
 
 ### 2. Confidence & Severity Calibration
 **Confidence Scoring Rule:**

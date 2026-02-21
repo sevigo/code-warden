@@ -704,7 +704,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 4. Synthesize the final review
-	rawConsensus, validReviews, err := r.synthesizeConsensus(ctx, repoConfig, event, comparisonResults, contextString, changedFiles)
+	rawConsensus, validReviews, err := r.synthesizeConsensus(ctx, repoConfig, event, comparisonResults, contextString, definitionsContext, changedFiles)
 	if err != nil {
 		return nil, "", err
 	}
@@ -755,7 +755,7 @@ func (r *ragService) validateConsensusParams(repo *storage.Repository, event *co
 	return nil
 }
 
-func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.RepoConfig, event *core.GitHubEvent, results []ComparisonResult, context string, changedFiles []internalgithub.ChangedFile) (string, []string, error) {
+func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.RepoConfig, event *core.GitHubEvent, results []ComparisonResult, context string, definitions string, changedFiles []internalgithub.ChangedFile) (string, []string, error) {
 	var validReviews []string
 	var reviewsBuilder strings.Builder
 	timestamp := time.Now().Format("20060102_150405_000000000")
@@ -788,6 +788,7 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 	promptData := map[string]string{
 		"Reviews":            reviewsBuilder.String(),
 		"Context":            context,
+		"Definitions":        definitions,
 		"ChangedFiles":       r.formatChangedFiles(changedFiles),
 		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 	}
@@ -1801,7 +1802,9 @@ func (r *ragService) gatherImpactContext(ctx context.Context, store storage.Scop
 	return ic
 }
 
-// assembleContext merges all gathered context types into a single markdown string.
+// assembleContext merges architectural, impact, and description context into a single markdown string.
+// Note: Symbol definitions are NOT included here; they are returned separately by buildRelevantContext
+// to allow prompts to handle them via dedicated variables (e.g., {{.Definitions}}).
 func (r *ragService) assembleContext(arch, impact, description string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
 	var contextBuilder strings.Builder
 
