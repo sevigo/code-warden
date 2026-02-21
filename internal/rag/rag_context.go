@@ -272,8 +272,10 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 	}
 
 	retriever := vectorstores.MultiQueryRetriever{
-		Store: scopedStore,
-		LLM:   queryLLM,
+		Store:        scopedStore,
+		LLM:          queryLLM,
+		NumDocuments: 10,
+		Count:        3,
 		SparseGenFunc: func(ctx context.Context, queries []string) ([]*schema.SparseVector, error) {
 			var vecs []*schema.SparseVector
 			for _, q := range queries {
