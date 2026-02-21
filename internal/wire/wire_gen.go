@@ -9,13 +9,6 @@ package wire
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
-	"net"
-	"net/http"
-	"os"
-	"time"
-
 	"github.com/jmoiron/sqlx"
 	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/config"
@@ -37,6 +30,12 @@ import (
 	"github.com/sevigo/goframe/textsplitter"
 	"github.com/sevigo/goframe/vectorstores"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"time"
 )
 
 // Injectors from wire.go:
@@ -89,11 +88,11 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	ragService := rag.NewService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
-	job := jobs.NewReviewJob(configConfig, ragService, store, repoManager, logger)
+	service := rag.NewService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
+	job := jobs.NewReviewJob(configConfig, service, store, repoManager, logger)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
 	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)
-	appApp := app.NewApp(configConfig, dbDB, store, vectorStore, repoManager, jobDispatcher, ragService, serverServer, client, logger)
+	appApp := app.NewApp(configConfig, dbDB, store, vectorStore, repoManager, jobDispatcher, service, serverServer, client, logger)
 	return appApp, func() {
 		cleanup()
 	}, nil
@@ -181,10 +180,7 @@ func provideTextSplitter(registry parsers.ParserRegistry, model llms.Model, logg
 	splitter, err := textsplitter.NewCodeAware(
 		registry,
 		tokenizer,
-		logger,
-		textsplitter.WithChunkSize(2000),
-		textsplitter.WithChunkOverlap(200),
-		textsplitter.WithParentContextConfig(textsplitter.ParentContextConfig{Enabled: true}),
+		logger, textsplitter.WithChunkSize(2000), textsplitter.WithChunkOverlap(200), textsplitter.WithParentContextConfig(textsplitter.ParentContextConfig{Enabled: true}),
 	)
 	if err != nil {
 		return nil, err
@@ -223,7 +219,11 @@ func provideLogWriter(cfg *config.Config) io.Writer {
 	case "stderr":
 		return os.Stderr
 	case "file":
-		f, _ := os.OpenFile("code-warden.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+		f, err := os.OpenFile("code-warden.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open log file: %v, falling back to stdout\n", err)
+			return os.Stdout
+		}
 		return f
 	default:
 		return os.Stdout

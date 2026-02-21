@@ -202,7 +202,12 @@ func provideLogWriter(cfg *config.Config) io.Writer {
 	case "stderr":
 		return os.Stderr
 	case "file":
-		f, _ := os.OpenFile("code-warden.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+		f, err := os.OpenFile("code-warden.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+		if err != nil {
+			// Log to stderr since we don't have a logger yet
+			fmt.Fprintf(os.Stderr, "failed to open log file: %v, falling back to stdout\n", err)
+			return os.Stdout
+		}
 		return f
 	default:
 		return os.Stdout
