@@ -253,14 +253,11 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	wg.Wait()
 
 	// Assemble and return the combined context from all stages.
-	// Validation happens per-snippet inside gatherDescriptionContext via validateSnippetRelevance.
 	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
 	return fullContext, definitionsContext
 }
 
 // gatherDescriptionContext uses MultiQuery retrieval to find code related to the PR description.
-// It generates 3 query variations via a small LLM, searches for each, deduplicates results,
-// and validates each snippet's relevance before including it.
 func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, embedder, description string, seen map[string]struct{}, mu *sync.RWMutex) string {
 	r.logger.Info("stage started", "name", "DescriptionContext")
 
