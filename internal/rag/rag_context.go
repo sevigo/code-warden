@@ -279,6 +279,7 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 			for _, q := range queries {
 				v, err := sparse.GenerateSparseVector(ctx, q)
 				if err != nil {
+					r.logger.Warn("Failed to generate sparse vector for MultiQuery fallback", "query", q, "error", err)
 					return nil, err
 				}
 				vecs = append(vecs, v)

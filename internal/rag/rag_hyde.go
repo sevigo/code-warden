@@ -2,12 +2,16 @@ package rag
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 
+	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 type HyDEData struct {
@@ -16,19 +20,64 @@ type HyDEData struct {
 
 const hydeBaseQueryPrompt = "To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s"
 
+type dynamicSparseRetriever struct {
+	store   storage.ScopedVectorStore
+	numDocs int
+	logger  *slog.Logger
+}
+
+func (d dynamicSparseRetriever) GetRelevantDocuments(ctx context.Context, query string) ([]schema.Document, error) {
+	semanticQuery := stripPatchNoise(query)
+	var searchOpts []vectorstores.Option
+	sparseVec, err := sparse.GenerateSparseVector(ctx, query)
+	if err != nil {
+		d.logger.Warn("sparse vector generation failed, falling back to dense", "error", err)
+	} else {
+		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
+	}
+	return d.store.SimilaritySearch(ctx, semanticQuery, d.numDocs, searchOpts...)
+}
+
 func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder string, files []internalgithub.ChangedFile) ([][]schema.Document, []int) {
 	r.logger.Info("stage started", "name", "HyDE")
 
 	scopedStore := r.vectorStore.ForRepo(collection, embedder)
 
+	baseRetriever := dynamicSparseRetriever{
+		store:   scopedStore,
+		numDocs: 20,
+		logger:  r.logger,
+	}
+
+	rerankingRetriever := vectorstores.RerankingRetriever{
+		Retriever: baseRetriever,
+		Reranker:  r.reranker,
+		TopK:      5,
+		CandidateFilter: func(query string, docs []schema.Document) []schema.Document {
+			return preFilterBM25(stripPatchNoise(query), docs, 10)
+		},
+	}
+
 	retriever := vectorstores.NewHyDERetriever(
-		vectorstores.ToRetriever(scopedStore, 5),
+		rerankingRetriever,
 		func(ctx context.Context, q string) (string, error) {
+			patchHash := r.hashPatch(q)
+			if cached, ok := r.hydeCache.Load(patchHash); ok {
+				if snippet, valid := cached.(string); valid {
+					return snippet, nil
+				}
+			}
+
 			prompt, err := r.promptMgr.Render(llm.HyDEPrompt, HyDEData{Patch: q})
 			if err != nil {
 				return "", err
 			}
-			return r.generatorLLM.Call(ctx, prompt)
+
+			snippet, err := r.generatorLLM.Call(ctx, prompt)
+			if snippet != "" {
+				r.hydeCache.Store(patchHash, snippet)
+			}
+			return snippet, err
 		},
 		vectorstores.WithNumGenerations(3),
 	)
@@ -40,9 +89,6 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 		if file.Patch == "" {
 			continue
 		}
-		if !isLogicFile(file.Filename) {
-			continue
-		}
 
 		select {
 		case <-ctx.Done():
@@ -51,9 +97,18 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 		default:
 		}
 
-		docs, err := retriever.GetRelevantDocuments(ctx, file.Patch)
+		var docs []schema.Document
+		var err error
+
+		if isLogicFile(file.Filename) {
+			docs, err = retriever.GetRelevantDocuments(ctx, file.Patch)
+		} else {
+			baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, file.Filename, file.Patch)
+			docs, err = rerankingRetriever.GetRelevantDocuments(ctx, baseQuery)
+		}
+
 		if err != nil {
-			r.logger.Warn("HyDE generation failed for file", "file", file.Filename, "error", err)
+			r.logger.Warn("HyDE generation/retrieval failed for file", "file", file.Filename, "error", err)
 			continue
 		}
 
