@@ -6,24 +6,40 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/sevigo/goframe/llms"
-
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
+	"github.com/sevigo/goframe/chains"
+	"github.com/sevigo/goframe/prompts"
 )
 
 type ComparisonResult struct {
 	Model  string
 	Review string
 	Error  error
+}
+
+type structuredReviewParser struct {
+	logger *slog.Logger
+	raw    string
+}
+
+func (p *structuredReviewParser) Parse(ctx context.Context, output string) (*core.StructuredReview, error) {
+	p.raw = output
+	parsed, err := llm.ParseMarkdownReview(ctx, output, p.logger)
+	if err != nil {
+		p.logger.Warn("failed to parse markdown review, using raw output as fallback", "error", err)
+		return &core.StructuredReview{Summary: output}, nil
+	}
+	return parsed, nil
 }
 
 // GenerateReview builds the review using pre-fetched diff and changed files.
@@ -55,222 +71,28 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		"Diff":               diff,
 	}
 
-	rawReview, err := r.generateResponseWithPrompt(ctx, event, llm.CodeReviewPrompt, promptData)
+	promptStr, err := r.promptMgr.Render(llm.CodeReviewPrompt, promptData)
 	if err != nil {
-		return nil, err.Error(), err
+		return nil, "", err
 	}
 
-	// Parse Markdown Review
-	structuredReview, err := llm.ParseMarkdownReview(ctx, rawReview, r.logger)
+	parser := &structuredReviewParser{logger: r.logger}
+	chain := chains.NewLLMChain[*core.StructuredReview](
+		r.generatorLLM,
+		prompts.NewPromptTemplate(promptStr),
+		chains.WithOutputParser[*core.StructuredReview](parser),
+	)
+
+	structuredReview, err := chain.Call(ctx, nil)
 	if err != nil {
-		r.logger.Warn("failed to parse markdown review, using raw output as fallback", "error", err)
-		// Fallback: Use raw output as summary
-		structuredReview = &core.StructuredReview{
-			Summary: rawReview,
-		}
+		return nil, "", err
 	}
 
 	if structuredReview.Verdict == "" {
 		structuredReview.Verdict = core.VerdictComment // Default if missing
 	}
-	return structuredReview, rawReview, nil
+	return structuredReview, parser.raw, nil
 }
-
-// GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
-func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error) {
-	if repoConfig == nil {
-		repoConfig = core.DefaultRepoConfig()
-	}
-
-	diff := preFetchedDiff
-	var changedFiles []internalgithub.ChangedFile
-	if len(preFetchedFiles) > 0 {
-		changedFiles = preFetchedFiles
-	}
-
-	// If data wasn't provided, fetch it (fallback for direct calls)
-	if diff == "" {
-		var err error
-		diff, err = ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get PR diff: %w", err)
-		}
-	}
-	if len(changedFiles) == 0 {
-		var err error
-		changedFiles, err = ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get changed files: %w", err)
-		}
-	}
-
-	contextString := preComputedContext
-	definitionsContext := ""
-	if contextString == "" {
-		contextString, definitionsContext = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
-	}
-
-	// Reuse repoConfig logic
-	if repoConfig == nil {
-		repoConfig = core.DefaultRepoConfig()
-	}
-
-	promptData := map[string]string{
-		"Title":              event.PRTitle,
-		"Description":        event.PRBody,
-		"Language":           event.Language,
-		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
-		"ChangedFiles":       r.formatChangedFiles(changedFiles),
-		"Context":            contextString,
-		"Definitions":        definitionsContext,
-		"Diff":               diff,
-	}
-
-	resultsChan := make(chan ComparisonResult, len(models))
-	workerCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Limit concurrency to avoid rate limits
-	const maxConcurrentModels = 5
-	sem := make(chan struct{}, maxConcurrentModels)
-
-	for _, modelName := range models {
-		r.spawnReviewWorker(workerCtx, modelName, promptData, sem, resultsChan)
-	}
-
-	results, err := r.waitForQuorumResults(ctx, models, resultsChan)
-	if err != nil {
-		return nil, err
-	}
-
-	return results, nil
-}
-
-//nolint:gocognit // Worker coordination with semaphore, context, and cleanup is inherently complex
-func (r *ragService) spawnReviewWorker(ctx context.Context, m string, promptData map[string]string, sem chan struct{}, resultsChan chan<- ComparisonResult) {
-	go func() {
-		result := ComparisonResult{Model: m}
-		sent := false
-		defer func() {
-			if !sent {
-				select {
-				case resultsChan <- result:
-				case <-time.After(100 * time.Millisecond):
-					// Prevent indefinite block if collector already exited (though unlikely given the design)
-				}
-			}
-		}()
-
-		select {
-		case <-ctx.Done():
-			result.Error = ctx.Err()
-			return
-		default:
-		}
-
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-		case <-ctx.Done():
-			result.Error = ctx.Err()
-			return
-		}
-
-		localPromptData := make(map[string]string, len(promptData))
-		for k, v := range promptData {
-			localPromptData[k] = v
-		}
-
-		llmModel, err := r.getOrCreateLLM(m)
-		if err != nil {
-			result.Error = fmt.Errorf("failed to create LLM: %w", err)
-			return
-		}
-
-		prompt, err := r.promptMgr.Render(llm.CodeReviewPrompt, localPromptData)
-		if err != nil {
-			result.Error = fmt.Errorf("failed to render prompt: %w", err)
-			return
-		}
-
-		response, err := r.generateWithTimeout(ctx, llmModel, prompt, 5*time.Minute)
-		if err != nil {
-			result.Error = fmt.Errorf("generation failed: %w", err)
-			return
-		}
-
-		result.Review = response
-
-		select {
-		case resultsChan <- result:
-			sent = true
-		case <-ctx.Done():
-			result.Error = ctx.Err()
-		}
-	}()
-}
-
-func (r *ragService) waitForQuorumResults(ctx context.Context, models []string, resultsChan <-chan ComparisonResult) ([]ComparisonResult, error) {
-	results := make([]ComparisonResult, 0, len(models))
-	// Use ceiling division to ensure for N=2 we wait for 2, not 1.
-	// (N*2 + 2) / 3 implements ceil(N*2/3) using integer arithmetic.
-	quorumThreshold := (len(models)*2 + 2) / 3
-	if quorumThreshold < 1 {
-		quorumThreshold = 1
-	}
-
-	quorumTimer := time.NewTimer(24 * time.Hour)
-	quorumTimer.Stop()
-	quorumTimerStarted := false
-
-	for range models {
-		select {
-		case res := <-resultsChan:
-			results = append(results, res)
-			if len(results) >= quorumThreshold && !quorumTimerStarted && len(results) < len(models) {
-				const stragglerTimeout = 30 * time.Second
-				quorumTimer.Reset(stragglerTimeout)
-				quorumTimerStarted = true
-			}
-		case <-quorumTimer.C:
-			return results, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	return results, nil
-}
-
-// generateWithTimeout wraps LLM generation with a hard timeout.
-func (r *ragService) generateWithTimeout(ctx context.Context, llm llms.Model, prompt string, timeout time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	type result struct {
-		resp string
-		err  error
-	}
-	resultCh := make(chan result, 1)
-
-	go func() {
-		resp, err := llm.Call(ctx, prompt)
-		select {
-		case resultCh <- result{resp, err}:
-		case <-ctx.Done():
-			// Do not block the goroutine if parent timed out/cancelled
-		}
-	}()
-
-	select {
-	case res := <-resultCh:
-		return res.resp, res.err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-}
-
-// GenerateConsensusReview runs a multi-model review and then synthesizes the results into a single consensus review.
-//
 
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
@@ -280,26 +102,55 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, "", err
 	}
 
-	// 1. Get independent reviews from all models (The "Committee")
 	if len(models) < 1 {
 		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
 
-	// 3. Centralized Context Building (The "Context Foundation")
 	contextString, _ := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, nil, models, diff, changedFiles, contextString)
+	promptData := map[string]string{
+		"Title":              event.PRTitle,
+		"Description":        event.PRBody,
+		"Language":           event.Language,
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+		"ChangedFiles":       r.formatChangedFiles(changedFiles),
+		"Context":            contextString,
+		"Diff":               diff,
+	}
+
+	chain := chains.NewMapReduceChain[string, ComparisonResult, string](
+		func(ctx context.Context, modelName string) (ComparisonResult, error) {
+			llmModel, err := r.getOrCreateLLM(modelName)
+			if err != nil {
+				return ComparisonResult{Model: modelName, Error: err}, nil
+			}
+			prompt, err := r.promptMgr.Render(llm.CodeReviewPrompt, promptData)
+			if err != nil {
+				return ComparisonResult{Model: modelName, Error: err}, nil
+			}
+			tCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+
+			resp, err := llmModel.Call(tCtx, prompt)
+			return ComparisonResult{Model: modelName, Review: resp, Error: err}, nil
+		},
+		func(ctx context.Context, results []ComparisonResult) (string, error) {
+			rawConsensus, validReviews, err := r.synthesizeConsensus(ctx, repoConfig, event, results, contextString, changedFiles)
+			if err != nil {
+				return "", err
+			}
+			disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by synthesizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(validReviews, ", "))
+			return rawConsensus + disclaimer, nil
+		},
+		chains.WithMaxConcurrency[string, ComparisonResult, string](5),
+		chains.WithQuorum[string, ComparisonResult, string](0.66),
+	)
+
+	rawConsensus, err := chain.Call(ctx, models)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
 
-	// 4. Synthesize the final review
-	rawConsensus, validReviews, err := r.synthesizeConsensus(ctx, repoConfig, event, comparisonResults, contextString, changedFiles)
-	if err != nil {
-		return nil, "", err
-	}
-
-	// 5. Parse and Add Disclaimer
 	structuredReview, err := llm.ParseMarkdownReview(ctx, rawConsensus, r.logger)
 	if err != nil {
 		r.logger.Error("FATAL: failed to parse consensus review - final report structure is broken. Check LLM output for tagging errors.", "error", err, "pr", event.PRNumber)
@@ -307,9 +158,6 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	} else if err := r.validateStructuredReview(ctx, event, structuredReview); err != nil {
 		return nil, "", err
 	}
-
-	disclaimer := fmt.Sprintf("\n\n> 🤖 **AI Consensus Review**\n> Generated by synthesizing findings from: %s. \n> *Mistakes are possible. Please verify critical issues.*", strings.Join(validReviews, ", "))
-	structuredReview.Summary += disclaimer
 
 	return structuredReview, rawConsensus, nil
 }

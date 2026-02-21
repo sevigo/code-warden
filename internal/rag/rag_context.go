@@ -266,49 +266,31 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 
 	scopedStore := r.vectorStore.ForRepo(collection, embedder)
 
-	// Use a fast model for generating query variations
 	queryLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
 	if err != nil {
 		queryLLM = r.generatorLLM
 	}
 
-	// Generate 3 search queries from the PR description for broader recall
-	prompt := fmt.Sprintf("Generate 3 different search queries to find code relevant to this PR description:\n%s\nReturn only the queries, one per line.", description)
-	variationResp, err := queryLLM.Call(ctx, prompt)
-	if err != nil {
-		r.logger.Warn("query variation generation failed, falling back to raw description", "error", err)
-		variationResp = description
+	retriever := vectorstores.MultiQueryRetriever{
+		Store: scopedStore,
+		LLM:   queryLLM,
+		SparseGenFunc: func(ctx context.Context, queries []string) ([]*schema.SparseVector, error) {
+			var vecs []*schema.SparseVector
+			for _, q := range queries {
+				v, err := sparse.GenerateSparseVector(ctx, q)
+				if err != nil {
+					return nil, err
+				}
+				vecs = append(vecs, v)
+			}
+			return vecs, nil
+		},
 	}
-	variations := strings.Split(variationResp, "\n")
 
-	var allDocs []schema.Document
-	for _, q := range variations {
-		select {
-		case <-ctx.Done():
-			r.logger.Warn("description context gathering cancelled", "error", ctx.Err())
-			return ""
-		default:
-		}
-
-		q = strings.TrimSpace(q)
-		if q == "" {
-			continue
-		}
-
-		var searchOpts []vectorstores.Option
-		sparseVec, err := sparse.GenerateSparseVector(ctx, q)
-		if err != nil {
-			r.logger.Warn("sparse vector generation failed for description query variation, falling back to dense", "query", q, "error", err)
-		} else {
-			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
-		}
-
-		docs, err := scopedStore.SimilaritySearch(ctx, q, 3, searchOpts...)
-		if err != nil {
-			r.logger.Warn("similarity hybrid search failed for query variation", "query", q, "error", err)
-			continue
-		}
-		allDocs = append(allDocs, docs...)
+	allDocs, err := retriever.GetRelevantDocuments(ctx, description)
+	if err != nil {
+		r.logger.Warn("multi-query retrieval failed", "error", err)
+		return ""
 	}
 
 	// Deduplicate by parent-aware key
