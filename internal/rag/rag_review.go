@@ -13,12 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sevigo/goframe/chains"
+	"github.com/sevigo/goframe/prompts"
+
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
-	"github.com/sevigo/goframe/chains"
-	"github.com/sevigo/goframe/prompts"
 )
 
 type ComparisonResult struct {

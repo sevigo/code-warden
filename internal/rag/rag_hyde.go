@@ -60,25 +60,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 
 	retriever := vectorstores.NewHyDERetriever(
 		rerankingRetriever,
-		func(ctx context.Context, q string) (string, error) {
-			patchHash := r.hashPatch(q)
-			if cached, ok := r.hydeCache.Load(patchHash); ok {
-				if snippet, valid := cached.(string); valid {
-					return snippet, nil
-				}
-			}
-
-			prompt, err := r.promptMgr.Render(llm.HyDEPrompt, HyDEData{Patch: q})
-			if err != nil {
-				return "", err
-			}
-
-			snippet, err := r.generatorLLM.Call(ctx, prompt)
-			if snippet != "" {
-				r.hydeCache.Store(patchHash, snippet)
-			}
-			return snippet, err
-		},
+		r.generateHyDESnippet,
 		vectorstores.WithNumGenerations(3),
 	)
 
@@ -120,4 +102,24 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 
 	r.logger.Info("stage completed", "name", "HyDE")
 	return finalResults, finalIndices
+}
+
+func (r *ragService) generateHyDESnippet(ctx context.Context, q string) (string, error) {
+	patchHash := r.hashPatch(q)
+	if cached, ok := r.hydeCache.Load(patchHash); ok {
+		if snippet, valid := cached.(string); valid {
+			return snippet, nil
+		}
+	}
+
+	prompt, err := r.promptMgr.Render(llm.HyDEPrompt, HyDEData{Patch: q})
+	if err != nil {
+		return "", err
+	}
+
+	snippet, err := r.generatorLLM.Call(ctx, prompt)
+	if snippet != "" {
+		r.hydeCache.Store(patchHash, snippet)
+	}
+	return snippet, err
 }
