@@ -197,10 +197,6 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 		sb.WriteString("\n```")
 	}
 
-	// 5. Footer
-	sb.WriteString("\n\n---\n")
-	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
-
 	return sb.String()
 }
 
@@ -324,6 +320,9 @@ func formatReviewSummary(review *core.StructuredReview) string {
 		stats := buildCompactStats(review.Suggestions)
 		sb.WriteString(stats)
 	}
+
+	sb.WriteString("\n\n---\n")
+	sb.WriteString("> 💡 Reply with `/rereview` to trigger a new review.")
 
 	return sb.String()
 }
