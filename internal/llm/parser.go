@@ -65,9 +65,13 @@ func decodeXMLReview(ctx context.Context, markdown string, logger *slog.Logger) 
 	// Pre-process markdown to fix common LLM XML hallucinations
 	markdown = strings.ReplaceAll(markdown, "</ ", "</")
 
-	// If it looks like it's missing closing tags due to truncation, append them
+	// Count open tags vs closed tags for standard elements to handle truncation robustly
 	if strings.Contains(markdown, "<review>") && !strings.Contains(markdown, "</review>") {
-		markdown += "</summary></review>"
+		// Identify the last opened tag that wasn't closed
+		// Typical structure: <review><summary>... or <review><suggestions><suggestion><comment>...
+		// We can just append all the most common closing tags in order from deeply nested to root
+		// The lenient XML decoder ignores trailing closing tags that don't match, so it's safe to append a superset!
+		markdown += "</code_suggestion></fix_code></comment></suggestion></suggestions></summary></review>"
 	}
 
 	reader := strings.NewReader(markdown)
@@ -75,6 +79,11 @@ func decodeXMLReview(ctx context.Context, markdown string, logger *slog.Logger) 
 	decoder.Strict = false
 	decoder.AutoClose = xml.HTMLAutoClose
 
+	return decodeXMLReviewLoop(ctx, decoder, logger)
+}
+
+// decodeXMLReviewLoop abstracts the tokenizer loop to reduce cognitive complexity
+func decodeXMLReviewLoop(ctx context.Context, decoder *xml.Decoder, logger *slog.Logger) (*xmlReview, bool) {
 	var xr xmlReview
 	for {
 		// Respect context cancellation
@@ -86,14 +95,22 @@ func decodeXMLReview(ctx context.Context, markdown string, logger *slog.Logger) 
 
 		t, err := decoder.Token()
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
+			if !errors.Is(err, io.EOF) && !strings.Contains(err.Error(), "XML syntax error") {
 				logger.Warn("XML token decoding error", "error", err)
 			}
 			return nil, false
 		}
 		if se, ok := t.(xml.StartElement); ok && strings.EqualFold(se.Name.Local, "review") {
 			// Found <review>, now decode into xr
-			if err := decoder.DecodeElement(&xr, &se); err != nil {
+			err := decoder.DecodeElement(&xr, &se)
+			if err != nil {
+				// If we get an EOF or unexpected EOF while decoding a truncated XML string,
+				// the struct `xr` still contains whatever was successfully decoded up to that point!
+				// We can just log it and return `xr` safely.
+				if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "unexpected EOF") || strings.Contains(err.Error(), "expected element name after </") {
+					logger.Warn("XML decoding reached early EOF; returning partial struct", "error", err)
+					return &xr, true
+				}
 				logger.Warn("XML decoding failed", "error", err)
 				return nil, false
 			}
