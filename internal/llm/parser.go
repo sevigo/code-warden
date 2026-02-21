@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,8 +60,8 @@ type xmlSuggestion struct {
 	FixCode          innerXMLString `xml:"fix_code"` // Legacy syntax fallback
 }
 
-// parseXMLReview implements the core XML-tagged parsing logic.
-func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*core.StructuredReview, bool) {
+// decodeXMLReview handles the raw XML extraction and structured decoding
+func decodeXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*xmlReview, bool) {
 	// Pre-process markdown to fix common LLM XML hallucinations
 	markdown = strings.ReplaceAll(markdown, "</ ", "</")
 
@@ -74,10 +75,7 @@ func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (
 	decoder.Strict = false
 	decoder.AutoClose = xml.HTMLAutoClose
 
-	// Look for the <review> start tag, ignoring surrounding markdown
 	var xr xmlReview
-	foundReview := false
-
 	for {
 		// Respect context cancellation
 		select {
@@ -88,10 +86,10 @@ func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (
 
 		t, err := decoder.Token()
 		if err != nil {
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				logger.Warn("XML token decoding error", "error", err)
 			}
-			break
+			return nil, false
 		}
 		if se, ok := t.(xml.StartElement); ok && strings.EqualFold(se.Name.Local, "review") {
 			// Found <review>, now decode into xr
@@ -99,12 +97,15 @@ func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (
 				logger.Warn("XML decoding failed", "error", err)
 				return nil, false
 			}
-			foundReview = true
-			break
+			return &xr, true
 		}
 	}
+}
 
-	if !foundReview {
+// parseXMLReview implements the core XML-tagged parsing logic.
+func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*core.StructuredReview, bool) {
+	xr, ok := decodeXMLReview(ctx, markdown, logger)
+	if !ok {
 		return nil, false
 	}
 
