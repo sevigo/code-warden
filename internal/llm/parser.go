@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,11 @@ import (
 	"unicode"
 
 	"github.com/sevigo/code-warden/internal/core"
+)
+
+var (
+	reFixCodeCleanup = regexp.MustCompile(`(?is)<fix_code>.*?</fix_code>`)
+	reCodeSugCleanup = regexp.MustCompile(`(?is)<code_suggestion>.*?</code_suggestion>`)
 )
 
 // ParseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
@@ -55,6 +61,14 @@ type xmlSuggestion struct {
 
 // parseXMLReview implements the core XML-tagged parsing logic.
 func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*core.StructuredReview, bool) {
+	// Pre-process markdown to fix common LLM XML hallucinations
+	markdown = strings.ReplaceAll(markdown, "</ ", "</")
+
+	// If it looks like it's missing closing tags due to truncation, append them
+	if strings.Contains(markdown, "<review>") && !strings.Contains(markdown, "</review>") {
+		markdown += "</summary></review>"
+	}
+
 	reader := strings.NewReader(markdown)
 	decoder := xml.NewDecoder(reader)
 	decoder.Strict = false
@@ -65,8 +79,18 @@ func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (
 	foundReview := false
 
 	for {
+		// Respect context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, false
+		default:
+		}
+
 		t, err := decoder.Token()
 		if err != nil {
+			if err != io.EOF {
+				logger.Warn("XML token decoding error", "error", err)
+			}
 			break
 		}
 		if se, ok := t.(xml.StartElement); ok && strings.EqualFold(se.Name.Local, "review") {
@@ -157,11 +181,8 @@ func parseXMLSuggestion(xs *xmlSuggestion, logger *slog.Logger) *core.Suggestion
 		// Let's strip the known suggestion blocks from the comment entirely using regex
 		cleaned := xs.Comment.Content
 
-		reFixCode := regexp.MustCompile(`(?is)<fix_code>.*?</fix_code>`)
-		cleaned = reFixCode.ReplaceAllString(cleaned, "")
-
-		reCodeSug := regexp.MustCompile(`(?is)<code_suggestion>.*?</code_suggestion>`)
-		cleaned = reCodeSug.ReplaceAllString(cleaned, "")
+		cleaned = reFixCodeCleanup.ReplaceAllString(cleaned, "")
+		cleaned = reCodeSugCleanup.ReplaceAllString(cleaned, "")
 		s.Comment = unindent(cleaned)
 	}
 
