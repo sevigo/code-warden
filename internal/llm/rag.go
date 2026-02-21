@@ -41,10 +41,10 @@ var (
 	whitespaceRegex = regexp.MustCompile(`\s+`)
 
 	// Symbol extraction patterns for Go code
-	symbolTypeDefRegex     = regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`)
-	symbolFuncDefRegex     = regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`)
-	symbolVarDeclRegex     = regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`)
-	symbolTypeAssertRegex  = regexp.MustCompile(`\.(\w+)\{`)
+	symbolTypeDefRegex      = regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`)
+	symbolFuncDefRegex      = regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`)
+	symbolVarDeclRegex      = regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`)
+	symbolTypeAssertRegex   = regexp.MustCompile(`\.(\w+)\{`)
 	symbolExportedTypeRegex = regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`)
 )
 
@@ -1293,20 +1293,7 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 		return ""
 	}
 
-	// Extract unique symbols from all changed files
-	symbols := make(map[string]struct{})
-	for _, f := range changedFiles {
-		if f.Patch == "" {
-			continue
-		}
-
-		// Try to extract symbols from the patch using regex
-		extracted := extractSymbolsFromPatch(f.Patch)
-		for _, sym := range extracted {
-			symbols[sym] = struct{}{}
-		}
-	}
-
+	symbols := r.extractUniqueSymbols(changedFiles)
 	if len(symbols) == 0 {
 		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
 		return ""
@@ -1314,60 +1301,63 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 
 	r.logger.Info("stage started", "name", "SymbolResolution", "symbols_found", len(symbols))
 
-	// Convert to slice and limit to top 15
-	var symbolList []string
-	for sym := range symbols {
-		symbolList = append(symbolList, sym)
-		if len(symbolList) >= 15 {
-			break
+	// Limit to top 15 symbols to keep context size manageable
+	symbolList := symbols
+	if len(symbolList) > 15 {
+		symbolList = symbolList[:15]
+	}
+
+	builder, resolvedCount := r.resolveDefinitions(ctx, scopedStore, symbolList, seenDocs, mu)
+
+	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount)
+
+	if resolvedCount == 0 {
+		return ""
+	}
+
+	return builder
+}
+
+// extractUniqueSymbols pulls out potential type and function names from git patches.
+func (r *ragService) extractUniqueSymbols(changedFiles []internalgithub.ChangedFile) []string {
+	symbols := make(map[string]struct{})
+	for _, f := range changedFiles {
+		if f.Patch == "" {
+			continue
+		}
+		extracted := extractSymbolsFromPatch(f.Patch)
+		for _, sym := range extracted {
+			symbols[sym] = struct{}{}
 		}
 	}
 
+	symbolList := make([]string, 0, len(symbols))
+	for sym := range symbols {
+		symbolList = append(symbolList, sym)
+	}
+	return symbolList
+}
+
+// resolveDefinitions searches for definitions of the given symbols and formats them as markdown.
+func (r *ragService) resolveDefinitions(ctx context.Context, scopedStore storage.ScopedVectorStore, symbolList []string, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, int) {
 	var builder strings.Builder
 	builder.WriteString("# Resolved Type Definitions\n\n")
 	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
 
 	resolvedCount := 0
 	for _, symbol := range symbolList {
-		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			return builder.String()
+			return builder.String(), resolvedCount
 		default:
 		}
 
-		// Use similarity search to find the definition
-		var searchOpts []vectorstores.Option
-		sparseVec, err := sparse.GenerateSparseVector(ctx, "type "+symbol+" struct")
-		if err != nil {
-			r.logger.Debug("sparse vector generation failed", "symbol", symbol, "error", err)
-		} else {
-			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
-		}
-
-		docs, err := scopedStore.SimilaritySearch(ctx, "type "+symbol+" struct", 3, searchOpts...)
-		if err != nil {
-			r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
+		def, found := r.searchSymbolDefinition(ctx, scopedStore, symbol)
+		if !found {
 			continue
 		}
 
-		// Also search for interface definitions
-		if len(docs) == 0 {
-			docs, err = scopedStore.SimilaritySearch(ctx, "type "+symbol+" interface", 3, searchOpts...)
-			if err != nil {
-				r.logger.Debug("failed to search for interface", "symbol", symbol, "error", err)
-				continue
-			}
-		}
-
-		if len(docs) == 0 {
-			continue
-		}
-
-		// Take the first match as the definition
-		def := docs[0]
 		docKey := r.getDocKey(def)
-
 		mu.RLock()
 		_, exists := seenDocs[docKey]
 		mu.RUnlock()
@@ -1381,18 +1371,38 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 
 		source, _ := def.Metadata["source"].(string)
 		content := r.getDocContent(def)
-
 		_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, source, content)
 		resolvedCount++
 	}
+	return builder.String(), resolvedCount
+}
 
-	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount)
-
-	if resolvedCount == 0 {
-		return ""
+// searchSymbolDefinition attempts to find a struct or interface definition for a symbol.
+func (r *ragService) searchSymbolDefinition(ctx context.Context, scopedStore storage.ScopedVectorStore, symbol string) (schema.Document, bool) {
+	// Try searching for a struct first
+	docs, err := r.performDefinitionSearch(ctx, scopedStore, "type "+symbol+" struct")
+	if err == nil && len(docs) > 0 {
+		return docs[0], true
 	}
 
-	return builder.String()
+	// Fallback to interface search
+	docs, err = r.performDefinitionSearch(ctx, scopedStore, "type "+symbol+" interface")
+	if err == nil && len(docs) > 0 {
+		return docs[0], true
+	}
+
+	return schema.Document{}, false
+}
+
+// performDefinitionSearch executes a similarity search for a symbol definition.
+func (r *ragService) performDefinitionSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query string) ([]schema.Document, error) {
+	var searchOpts []vectorstores.Option
+	sparseVec, err := sparse.GenerateSparseVector(ctx, query)
+	if err == nil {
+		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
+	}
+
+	return scopedStore.SimilaritySearch(ctx, query, 3, searchOpts...)
 }
 
 // buildRelevantContext performs similarity searches using file diffs to find related

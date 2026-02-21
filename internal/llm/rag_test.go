@@ -302,8 +302,8 @@ func TestExtractSymbolsFromPatch(t *testing.T) {
 			expected: []string{"ProcessData"},
 		},
 		{
-			name: "struct instantiation",
-			patch: `+cfg := Config{Timeout: 30}`,
+			name:     "struct instantiation",
+			patch:    `+cfg := Config{Timeout: 30}`,
 			expected: []string{"Config"},
 		},
 		{
