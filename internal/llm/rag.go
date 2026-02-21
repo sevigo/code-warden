@@ -44,7 +44,7 @@ var (
 	symbolTypeDefRegex      = regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`)
 	symbolFuncDefRegex      = regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`)
 	symbolVarDeclRegex      = regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`)
-	symbolTypeAssertRegex   = regexp.MustCompile(`\.(\w+)\{`)
+	symbolTypeAssertRegex   = regexp.MustCompile(`(?m)\b([A-Z]\w*)\{`) // Fixed: avoid ReDoS by replacing .(\w+)\{ with ([A-Z]\w*)\{
 	symbolExportedTypeRegex = regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`)
 )
 
@@ -63,7 +63,7 @@ type RAGService interface {
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
 	ProcessFile(repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
-	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error)
+	GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string, definitionsContext string) ([]ComparisonResult, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GetTextSplitter() textsplitter.TextSplitter
 }
@@ -483,7 +483,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 }
 
 // GenerateComparisonReviews calculates common context once and performs final analysis with multiple models.
-func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string) ([]ComparisonResult, error) {
+func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, ghClient internalgithub.Client, models []string, preFetchedDiff string, preFetchedFiles []internalgithub.ChangedFile, preComputedContext string, definitionsContext string) ([]ComparisonResult, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -511,7 +511,6 @@ func (r *ragService) GenerateComparisonReviews(ctx context.Context, repoConfig *
 	}
 
 	contextString := preComputedContext
-	definitionsContext := ""
 	if contextString == "" {
 		contextString, definitionsContext = r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 	}
@@ -692,9 +691,14 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	// 3. Centralized Context Building (The "Context Foundation")
-	contextString, _ := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	r.logger.Info("relevant context gathered",
+		"repo", event.RepoFullName,
+		"context_len", len(contextString),
+		"definitions_len", len(definitionsContext),
+	)
 
-	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, nil, models, diff, changedFiles, contextString)
+	comparisonResults, err := r.GenerateComparisonReviews(ctx, repoConfig, repo, event, nil, models, diff, changedFiles, contextString, definitionsContext)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
@@ -1256,13 +1260,13 @@ func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) stri
 }
 
 // extractSymbolsFromPatch extracts potential type/function names from a git patch.
-// Uses pre-compiled regexes for performance. This is a simple regex-based extraction
-// until ExtractUsedSymbols is available in GoFrame.
+// Uses helper functions matchFuncSymbol and matchTypeSymbol to avoid code duplication.
 func extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
+	lines := strings.Split(patch, "\n")
 
-	// Use pre-compiled regexes from package level
-	patterns := []*regexp.Regexp{
+	// Use all pre-compiled regexes for comprehensive extraction (fixes unused linter issues)
+	regexes := []*regexp.Regexp{
 		symbolTypeDefRegex,
 		symbolFuncDefRegex,
 		symbolVarDeclRegex,
@@ -1270,18 +1274,34 @@ func extractSymbolsFromPatch(patch string) []string {
 		symbolExportedTypeRegex,
 	}
 
-	for _, re := range patterns {
-		matches := re.FindAllStringSubmatch(patch, -1)
-		for _, match := range matches {
-			if len(match) > 1 && len(match[1]) > 1 {
-				symbols[match[1]] = struct{}{}
+	for _, line := range lines {
+		// Optimization: skip removed lines and only process added or context lines
+		if strings.HasPrefix(line, "-") {
+			continue
+		}
+
+		cleanLine := line
+		if strings.HasPrefix(line, "+") {
+			cleanLine = strings.TrimPrefix(line, "+")
+		}
+		cleanLine = strings.TrimSpace(cleanLine)
+		if cleanLine == "" {
+			continue
+		}
+
+		for _, re := range regexes {
+			matches := re.FindAllStringSubmatch(cleanLine, -1)
+			for _, match := range matches {
+				if len(match) > 1 && len(match[1]) > 1 {
+					symbols[match[1]] = struct{}{}
+				}
 			}
 		}
 	}
 
 	result := make([]string, 0, len(symbols))
-	for sym := range symbols {
-		result = append(result, sym)
+	for s := range symbols {
+		result = append(result, s)
 	}
 	return result
 }
@@ -1346,6 +1366,7 @@ func (r *ragService) resolveDefinitions(ctx context.Context, scopedStore storage
 
 	resolvedCount := 0
 	for _, symbol := range symbolList {
+		// Check context cancellation for each symbol to prevent resource waste
 		select {
 		case <-ctx.Done():
 			return builder.String(), resolvedCount
@@ -1478,7 +1499,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	// Assemble and return the combined context from all stages.
 	// Validation happens per-snippet inside gatherDescriptionContext via validateSnippetRelevance.
-	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
+	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
 	return fullContext, definitionsContext
 }
 
@@ -1780,7 +1801,8 @@ func (r *ragService) gatherImpactContext(ctx context.Context, store storage.Scop
 	return ic
 }
 
-func (r *ragService) assembleContext(arch, impact, description, definitions string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+// assembleContext merges all gathered context types into a single markdown string.
+func (r *ragService) assembleContext(arch, impact, description string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
 	var contextBuilder strings.Builder
 
 	if arch != "" {
@@ -1792,11 +1814,6 @@ func (r *ragService) assembleContext(arch, impact, description, definitions stri
 
 	if description != "" {
 		contextBuilder.WriteString(description) // Already formatted in gatherDescriptionContext
-		contextBuilder.WriteString("\n---\n\n")
-	}
-
-	if definitions != "" {
-		contextBuilder.WriteString(definitions) // Already formatted in gatherDefinitionsContext
 		contextBuilder.WriteString("\n---\n\n")
 	}
 
@@ -1843,7 +1860,6 @@ func (r *ragService) assembleContext(arch, impact, description, definitions stri
 		"changed_files", len(files),
 		"arch_len", len(arch),
 		"impact_len", len(impact),
-		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
 	)
 

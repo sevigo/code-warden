@@ -69,7 +69,6 @@ If your stack shows `[comment]` and you're about to write code, you **MUST** pop
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>85</confidence>
   <summary>
-# Consensus Review Summary
 ...
   </summary>
   
