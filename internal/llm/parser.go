@@ -2,57 +2,17 @@ package llm
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode"
 
 	"github.com/sevigo/code-warden/internal/core"
 )
-
-var (
-	tagRegexCache = make(map[string]*regexp.Regexp)
-	cacheMu       sync.RWMutex
-	reAnyNextTag  = regexp.MustCompile(`(?i)<[a-z_]+\b[^>]*>`)
-)
-
-// getTagRegex returns a pre-compiled regex for the given XML tag.
-// It uses a memoization cache to avoid repeated compilation overhead.
-func getTagRegex(tag string) *regexp.Regexp {
-	return getCachedRegex(tag, func(quoted string) string {
-		return `(?is)<` + quoted + `\b[^>]*>`
-	})
-}
-
-// getCloseTagRegex returns a pre-compiled regex for the closing XML tag.
-func getCloseTagRegex(tag string) *regexp.Regexp {
-	return getCachedRegex("/"+tag, func(quoted string) string {
-		return `(?is)</` + quoted[1:] + `\s*>`
-	})
-}
-
-func getCachedRegex(key string, patternBuilder func(string) string) *regexp.Regexp {
-	cacheMu.RLock()
-	re, ok := tagRegexCache[key]
-	cacheMu.RUnlock()
-	if ok {
-		return re
-	}
-
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
-	if re, ok = tagRegexCache[key]; ok {
-		return re
-	}
-	quoted := regexp.QuoteMeta(key)
-	re = regexp.MustCompile(patternBuilder(quoted))
-	tagRegexCache[key] = re
-	return re
-}
 
 // ParseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
 // It handles preambles gracefully and maintains a fallback for legacy markdown formats.
@@ -69,45 +29,75 @@ func ParseMarkdownReview(ctx context.Context, markdown string, logger *slog.Logg
 	return parseLegacyMarkdownReview(markdown)
 }
 
+type innerXMLString struct {
+	Content string `xml:",innerxml"`
+}
+
+type xmlReview struct {
+	Verdict     string          `xml:"verdict"`
+	Confidence  int             `xml:"confidence"`
+	Summary     innerXMLString  `xml:"summary"`
+	Suggestions []xmlSuggestion `xml:"suggestions>suggestion"`
+}
+
+type xmlSuggestion struct {
+	File             string         `xml:"file"`
+	Line             string         `xml:"line"`
+	Severity         string         `xml:"severity"`
+	Category         string         `xml:"category"`
+	Confidence       int            `xml:"confidence"`
+	EstimatedFixTime string         `xml:"estimated_fix_time"`
+	Reproducibility  string         `xml:"reproducibility"`
+	Comment          innerXMLString `xml:"comment"`
+	CodeSuggestion   innerXMLString `xml:"code_suggestion"`
+	FixCode          innerXMLString `xml:"fix_code"` // Legacy syntax fallback
+}
+
 // parseXMLReview implements the core XML-tagged parsing logic.
 func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*core.StructuredReview, bool) {
-	reviewContent, ok := ExtractTag(markdown, "review")
-	if !ok {
+	reader := strings.NewReader(markdown)
+	decoder := xml.NewDecoder(reader)
+	decoder.Strict = false
+	decoder.AutoClose = xml.HTMLAutoClose
+
+	// Look for the <review> start tag, ignoring surrounding markdown
+	var xr xmlReview
+	foundReview := false
+
+	for {
+		t, err := decoder.Token()
+		if err != nil {
+			break
+		}
+		if se, ok := t.(xml.StartElement); ok && strings.EqualFold(se.Name.Local, "review") {
+			// Found <review>, now decode into xr
+			if err := decoder.DecodeElement(&xr, &se); err != nil {
+				logger.Warn("XML decoding failed", "error", err)
+				return nil, false
+			}
+			foundReview = true
+			break
+		}
+	}
+
+	if !foundReview {
 		return nil, false
 	}
 
-	review := &core.StructuredReview{}
-
-	// Extract Verdict
-	if v, ok := ExtractTag(reviewContent, "verdict"); ok {
-		review.Verdict = normalizeVerdict(v)
+	review := &core.StructuredReview{
+		Verdict:    normalizeVerdict(xr.Verdict),
+		Confidence: xr.Confidence,
+		Summary:    unindent(xr.Summary.Content),
 	}
 
-	// Extract Confidence
-	if c, ok := ExtractTag(reviewContent, "confidence"); ok {
-		review.Confidence = parseInt(c)
-	}
-
-	// Extract Summary
-	if s, ok := ExtractTag(reviewContent, "summary"); ok {
-		review.Summary = unindent(s)
-	}
-
-	// Extract Suggestions
-	suggestionsContent, _ := ExtractTag(reviewContent, "suggestions")
-	sourceForSuggestions := suggestionsContent
-	if sourceForSuggestions == "" {
-		sourceForSuggestions = reviewContent
-	}
-
-	suggestionBlocks := ExtractMultipleTags(ctx, sourceForSuggestions, "suggestion")
-	for _, block := range suggestionBlocks {
+	for _, xs := range xr.Suggestions {
 		if ctx.Err() != nil {
 			return nil, false
 		}
-		s := parseSuggestionBlock(ctx, block, logger)
-		if s != nil {
-			review.Suggestions = append(review.Suggestions, *s)
+
+		suggestion := parseXMLSuggestion(&xs, logger)
+		if suggestion != nil {
+			review.Suggestions = append(review.Suggestions, *suggestion)
 		}
 	}
 
@@ -119,33 +109,20 @@ func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (
 	return review, true
 }
 
-// parseSuggestionBlock extracts fields from a single <suggestion> block.
-//
-//nolint:gocognit // This function has necessary complexity to handle multiple fields and legacy tags.
-func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logger) *core.Suggestion {
-	if ctx.Err() != nil {
-		return nil
-	}
-
-	const maxBlockBytes = 100_000 // 100KB limit for a single suggestion block
-	if len(content) > maxBlockBytes {
-		logger.WarnContext(ctx, "suggestion block exceeds max allowed size", "size", len(content))
-		return nil
-	}
-
-	file, fileOk := ExtractTag(content, "file")
-	lineStr, lineOk := ExtractTag(content, "line")
-	if !fileOk || !lineOk {
+// parseXMLSuggestion converts an unmarshaled xmlSuggestion back into the domain core.Suggestion struct
+func parseXMLSuggestion(xs *xmlSuggestion, logger *slog.Logger) *core.Suggestion {
+	if xs.File == "" || xs.Line == "" {
 		return nil
 	}
 
 	s := &core.Suggestion{
-		FilePath: sanitizePath(file),
+		FilePath: sanitizePath(xs.File),
 	}
 	if s.FilePath == "" {
 		return nil
 	}
 
+	lineStr := xs.Line
 	// Normalize typographic dashes (En/Em) before splitting
 	lineStr = strings.ReplaceAll(lineStr, "–", "-") // En dash
 	lineStr = strings.ReplaceAll(lineStr, "—", "-") // Em dash
@@ -167,151 +144,39 @@ func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logg
 		return nil
 	}
 
-	if sev, ok := ExtractTag(content, "severity"); ok {
-		s.Severity = strings.TrimSpace(sev)
-	}
-	if cat, ok := ExtractTag(content, "category"); ok {
-		s.Category = strings.TrimSpace(cat)
-	}
-	if comm, ok := ExtractTag(content, "comment"); ok {
+	s.Severity = strings.TrimSpace(xs.Severity)
+	s.Category = strings.TrimSpace(xs.Category)
+	s.Confidence = xs.Confidence
+	s.EstimatedFixTime = strings.TrimSpace(xs.EstimatedFixTime)
+	s.Reproducibility = strings.TrimSpace(xs.Reproducibility)
+
+	if xs.Comment.Content != "" {
 		// Clean up the comment by removing any embedded <fix_code> or <code_suggestion> tags
 		// ensuring they don't leak into the visible GitHub comment body.
-		cleaned := removeTag(comm, "fix_code")
-		cleaned = removeTag(cleaned, "code_suggestion")
+		// Because xs.Comment is an innerXML field, it retains the raw tags.
+		// Let's strip the known suggestion blocks from the comment entirely using regex
+		cleaned := xs.Comment.Content
+
+		reFixCode := regexp.MustCompile(`(?is)<fix_code>.*?</fix_code>`)
+		cleaned = reFixCode.ReplaceAllString(cleaned, "")
+
+		reCodeSug := regexp.MustCompile(`(?is)<code_suggestion>.*?</code_suggestion>`)
+		cleaned = reCodeSug.ReplaceAllString(cleaned, "")
 		s.Comment = unindent(cleaned)
 	}
-	if conf, ok := ExtractTag(content, "confidence"); ok {
-		s.Confidence = parseInt(conf)
-	}
-	if eft, ok := ExtractTag(content, "estimated_fix_time"); ok {
-		s.EstimatedFixTime = strings.TrimSpace(eft)
-	}
-	if repro, ok := ExtractTag(content, "reproducibility"); ok {
-		s.Reproducibility = strings.TrimSpace(repro)
-	}
-	// Prioritize <code_suggestion>
-	codeTag, codeOk := ExtractTag(content, "code_suggestion")
 
-	if codeOk {
+	if xs.CodeSuggestion.Content != "" {
 		const maxCodeBytes = 10_000
-		if len(codeTag) > maxCodeBytes {
-			logger.WarnContext(ctx, "code suggestion exceeds safe size", "size", len(codeTag))
+		if len(xs.CodeSuggestion.Content) > maxCodeBytes {
+			logger.Warn("code suggestion exceeds safe size", "size", len(xs.CodeSuggestion.Content))
 		}
-		s.CodeSuggestion = stripMarkdownFence(unindent(codeTag))
-	} else {
-		// Fallback to <fix_code> with warning
-		fix, fixOk := ExtractTag(content, "fix_code")
-		if fixOk {
-			logger.WarnContext(ctx, "using deprecated <fix_code> tag")
-			s.CodeSuggestion = stripMarkdownFence(unindent(fix))
-		}
+		s.CodeSuggestion = stripMarkdownFence(unindent(xs.CodeSuggestion.Content))
+	} else if xs.FixCode.Content != "" {
+		logger.Warn("using deprecated <fix_code> tag")
+		s.CodeSuggestion = stripMarkdownFence(unindent(xs.FixCode.Content))
 	}
 
 	return s
-}
-
-// ExtractTag finds the content between <tag> and the corresponding </tag> or the next sibling <tag>.
-func ExtractTag(content, tag string) (string, bool) {
-	reOpen := getTagRegex(tag)
-	openMatch := reOpen.FindStringIndex(content)
-	if openMatch == nil {
-		return "", false
-	}
-
-	startContent := openMatch[1]
-	remaining := content[startContent:]
-
-	// 1. Try to find the correct closing tag
-	reClose := getCloseTagRegex(tag)
-	closeMatch := reClose.FindStringIndex(remaining)
-	if closeMatch != nil {
-		return remaining[:closeMatch[0]], true
-	}
-
-	// 2. Lenient Fallback: Find the next opening tag of the SAME type
-	nextMatch := reOpen.FindStringIndex(remaining)
-	if nextMatch != nil {
-		// Return content but we might want to signal leniency in the future
-		return remaining[:nextMatch[0]], true
-	}
-
-	return remaining, true
-}
-
-// ExtractMultipleTags finds all occurrences of content between <tag> and </tag>.
-func ExtractMultipleTags(ctx context.Context, content, tag string) []string {
-	var results []string
-	reOpen := getTagRegex(tag)
-	remaining := content
-
-	for ctx.Err() == nil {
-		openMatch := reOpen.FindStringIndex(remaining)
-		if openMatch == nil {
-			break
-		}
-
-		startContent := openMatch[1]
-		searchSpace := remaining[startContent:]
-
-		// Find end of this tag
-		var contentEnd int
-		var foundEnd bool
-
-		// 1. Try to find the correct closing tag
-		reClose := getCloseTagRegex(tag)
-		closeMatch := reClose.FindStringIndex(searchSpace)
-		if closeMatch != nil {
-			contentEnd = closeMatch[0]
-			foundEnd = true
-			// Advance to after the closing tag
-			remaining = searchSpace[closeMatch[1]:]
-		} else {
-			// 2. Lenient Fallback: Find the next opening tag OF THE SAME TYPE
-			nextMatch := reOpen.FindStringIndex(searchSpace)
-			if nextMatch != nil {
-				contentEnd = nextMatch[0]
-				foundEnd = true
-				// Advance to the next opening tag (don't skip it!)
-				remaining = searchSpace[nextMatch[0]:]
-			} else {
-				// No more tags at all, consume until the end
-				results = append(results, searchSpace)
-				break
-			}
-		}
-
-		if foundEnd {
-			results = append(results, searchSpace[:contentEnd])
-		}
-	}
-
-	return results
-}
-
-// removeTag removes the <tag>...</tag> block from the content.
-func removeTag(content, tag string) string {
-	reOpen := getTagRegex(tag)
-	openMatch := reOpen.FindStringIndex(content)
-	if openMatch == nil {
-		return content
-	}
-
-	reClose := getCloseTagRegex(tag)
-	closeMatch := reClose.FindStringIndex(content[openMatch[1]:])
-	if closeMatch != nil {
-		// Strict removal
-		fullEnd := openMatch[1] + closeMatch[1]
-		return content[:openMatch[0]] + content[fullEnd:]
-	}
-
-	// Lenient removal (up to next tag or end)
-	nextMatch := reAnyNextTag.FindStringIndex(content[openMatch[1]:])
-	if nextMatch != nil {
-		fullEnd := openMatch[1] + nextMatch[0]
-		return content[:openMatch[0]] + content[fullEnd:]
-	}
-
-	return content[:openMatch[0]]
 }
 
 // parseInt safely converts string to int, returning 0 on error.

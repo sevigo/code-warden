@@ -10,61 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestExtractTag_Security(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		tag      string
-		expected string
-		ok       bool
-	}{
-		{
-			name:     "simple extraction",
-			content:  "<foo>bar</foo>",
-			tag:      "foo",
-			expected: "bar",
-			ok:       true,
-		},
-		{
-			name:    "no tags",
-			content: "just some text",
-			tag:     "foo",
-			ok:      false,
-		},
-		{
-			name:     "unclosed tag",
-			content:  "<foo>bar",
-			tag:      "foo",
-			expected: "bar",
-			ok:       true, // Lenient parsing captures until end
-		},
-		{
-			name:     "nested tags (should return outer content)",
-			content:  "<review><summary>fine</summary></review>",
-			tag:      "review",
-			expected: "<summary>fine</summary>",
-			ok:       true,
-		},
-		{
-			name:     "malformed end tag",
-			content:  "<foo>bar</ wrong>",
-			tag:      "foo",
-			expected: "bar</ wrong>",
-			ok:       true, // Lenient parsing captures until end/next tag
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := ExtractTag(tt.content, tt.tag)
-			assert.Equal(t, tt.ok, ok)
-			if ok {
-				assert.Equal(t, tt.expected, got)
-			}
-		})
-	}
-}
-
 func TestSanitizePath_Security(t *testing.T) {
 	tests := []struct {
 		input    string

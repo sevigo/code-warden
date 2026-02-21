@@ -232,17 +232,21 @@ func (r *ragService) combineReReviewContext(standardContext, feedbackContext str
 }
 
 // extractCommentsFromReview parses the original review content and extracts
-// all <comment> tag contents to use as feedback-driven search queries.
+// all comment contents to use as feedback-driven search queries.
 func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewContent string) []string {
 	var queries []string
 
-	// Use the existing extractMultipleTags helper from parser.go
-	suggestionBlocks := llm.ExtractMultipleTags(ctx, reviewContent, "suggestion")
+	// Use the new parser to properly unmarshal the LLM review
+	parsedReview, err := llm.ParseMarkdownReview(ctx, reviewContent, r.logger)
+	if err != nil {
+		r.logger.Warn("extractCommentsFromReview: failed to parse review content", "error", err)
+		return queries
+	}
 
-	for _, block := range suggestionBlocks {
-		if comment, ok := llm.ExtractTag(block, "comment"); ok && strings.TrimSpace(comment) != "" {
+	for _, s := range parsedReview.Suggestions {
+		if strings.TrimSpace(s.Comment) != "" {
 			// Clean up the comment for use as a search query
-			cleaned := r.cleanCommentForQuery(comment)
+			cleaned := r.cleanCommentForQuery(s.Comment)
 			if cleaned != "" {
 				queries = append(queries, cleaned)
 			}
