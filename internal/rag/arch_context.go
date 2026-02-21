@@ -1,4 +1,4 @@
-package llm
+package rag
 
 import (
 	"context"
@@ -18,6 +18,7 @@ import (
 	"github.com/sevigo/goframe/vectorstores"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -315,7 +316,7 @@ func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *Dire
 		Imports: strings.Join(info.Imports, "\n"),
 	}
 
-	prompt, err := r.promptMgr.Render(ArchSummaryPrompt, promptData)
+	prompt, err := r.promptMgr.Render(llm.ArchSummaryPrompt, promptData)
 	if err != nil {
 		return schema.Document{}, fmt.Errorf("failed to render arch summary prompt: %w", err)
 	}
@@ -429,7 +430,7 @@ func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*Director
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(entry.Name()))
-		if !isCodeExtension(ext) {
+		if !llm.IsCodeExtension(ext) {
 			continue
 		}
 
@@ -598,8 +599,8 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 	return resolvedPath, nil
 }
 
-func (r *ragService) generateSingleSummary(ctx context.Context, info *DirectoryInfo, llm llms.Model) string {
-	if llm == nil {
+func (r *ragService) generateSingleSummary(ctx context.Context, info *DirectoryInfo, generator llms.Model) string {
+	if generator == nil {
 		return "Error: LLM not initialized"
 	}
 
@@ -610,12 +611,12 @@ func (r *ragService) generateSingleSummary(ctx context.Context, info *DirectoryI
 		Imports: "N/A (Comparison Mode)",
 	}
 
-	prompt, err := r.promptMgr.Render(ArchSummaryPrompt, promptData)
+	prompt, err := r.promptMgr.Render(llm.ArchSummaryPrompt, promptData)
 	if err != nil {
 		return fmt.Sprintf("Error rendering prompt: %v", err)
 	}
 
-	summary, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt)
+	summary, err := llms.GenerateFromSinglePrompt(ctx, generator, prompt)
 	if err != nil {
 		return fmt.Sprintf("Generation Error: %v", err)
 	}

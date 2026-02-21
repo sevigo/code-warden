@@ -11,7 +11,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
-	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -23,7 +23,7 @@ var (
 
 type ReviewJob struct {
 	cfg         *config.Config
-	ragService  llm.RAGService
+	ragService  rag.Service
 	store       storage.Store
 	repoMgr     repomanager.RepoManager
 	logger      *slog.Logger
@@ -33,7 +33,7 @@ type ReviewJob struct {
 // NewReviewJob creates a new ReviewJob.
 func NewReviewJob(
 	cfg *config.Config,
-	rag llm.RAGService,
+	rag rag.Service,
 	store storage.Store,
 	repoMgr repomanager.RepoManager,
 	logger *slog.Logger,

@@ -21,7 +21,8 @@ const (
 	extensionScala = ".scala"
 )
 
-func isCodeExtension(ext string) bool {
+// IsCodeExtension returns true if the typical code extension passes
+func IsCodeExtension(ext string) bool {
 	switch ext {
 	case extensionGo, extensionJS, extensionTS, extensionTSX, extensionJSX,
 		extensionPy, extensionJava, extensionC, extensionCpp, extensionH,

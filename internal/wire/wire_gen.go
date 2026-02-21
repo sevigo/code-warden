@@ -24,6 +24,7 @@ import (
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
+	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -88,7 +89,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	ragService := llm.NewRAGService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
+	ragService := rag.NewService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
 	job := jobs.NewReviewJob(configConfig, ragService, store, repoManager, logger)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
 	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)

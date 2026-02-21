@@ -71,7 +71,7 @@ func ParseMarkdownReview(ctx context.Context, markdown string, logger *slog.Logg
 
 // parseXMLReview implements the core XML-tagged parsing logic.
 func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*core.StructuredReview, bool) {
-	reviewContent, ok := extractTag(markdown, "review")
+	reviewContent, ok := ExtractTag(markdown, "review")
 	if !ok {
 		return nil, false
 	}
@@ -79,28 +79,28 @@ func parseXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (
 	review := &core.StructuredReview{}
 
 	// Extract Verdict
-	if v, ok := extractTag(reviewContent, "verdict"); ok {
+	if v, ok := ExtractTag(reviewContent, "verdict"); ok {
 		review.Verdict = normalizeVerdict(v)
 	}
 
 	// Extract Confidence
-	if c, ok := extractTag(reviewContent, "confidence"); ok {
+	if c, ok := ExtractTag(reviewContent, "confidence"); ok {
 		review.Confidence = parseInt(c)
 	}
 
 	// Extract Summary
-	if s, ok := extractTag(reviewContent, "summary"); ok {
+	if s, ok := ExtractTag(reviewContent, "summary"); ok {
 		review.Summary = unindent(s)
 	}
 
 	// Extract Suggestions
-	suggestionsContent, _ := extractTag(reviewContent, "suggestions")
+	suggestionsContent, _ := ExtractTag(reviewContent, "suggestions")
 	sourceForSuggestions := suggestionsContent
 	if sourceForSuggestions == "" {
 		sourceForSuggestions = reviewContent
 	}
 
-	suggestionBlocks := extractMultipleTags(ctx, sourceForSuggestions, "suggestion")
+	suggestionBlocks := ExtractMultipleTags(ctx, sourceForSuggestions, "suggestion")
 	for _, block := range suggestionBlocks {
 		if ctx.Err() != nil {
 			return nil, false
@@ -133,8 +133,8 @@ func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logg
 		return nil
 	}
 
-	file, fileOk := extractTag(content, "file")
-	lineStr, lineOk := extractTag(content, "line")
+	file, fileOk := ExtractTag(content, "file")
+	lineStr, lineOk := ExtractTag(content, "line")
 	if !fileOk || !lineOk {
 		return nil
 	}
@@ -167,30 +167,30 @@ func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logg
 		return nil
 	}
 
-	if sev, ok := extractTag(content, "severity"); ok {
+	if sev, ok := ExtractTag(content, "severity"); ok {
 		s.Severity = strings.TrimSpace(sev)
 	}
-	if cat, ok := extractTag(content, "category"); ok {
+	if cat, ok := ExtractTag(content, "category"); ok {
 		s.Category = strings.TrimSpace(cat)
 	}
-	if comm, ok := extractTag(content, "comment"); ok {
+	if comm, ok := ExtractTag(content, "comment"); ok {
 		// Clean up the comment by removing any embedded <fix_code> or <code_suggestion> tags
 		// ensuring they don't leak into the visible GitHub comment body.
 		cleaned := removeTag(comm, "fix_code")
 		cleaned = removeTag(cleaned, "code_suggestion")
 		s.Comment = unindent(cleaned)
 	}
-	if conf, ok := extractTag(content, "confidence"); ok {
+	if conf, ok := ExtractTag(content, "confidence"); ok {
 		s.Confidence = parseInt(conf)
 	}
-	if eft, ok := extractTag(content, "estimated_fix_time"); ok {
+	if eft, ok := ExtractTag(content, "estimated_fix_time"); ok {
 		s.EstimatedFixTime = strings.TrimSpace(eft)
 	}
-	if repro, ok := extractTag(content, "reproducibility"); ok {
+	if repro, ok := ExtractTag(content, "reproducibility"); ok {
 		s.Reproducibility = strings.TrimSpace(repro)
 	}
 	// Prioritize <code_suggestion>
-	codeTag, codeOk := extractTag(content, "code_suggestion")
+	codeTag, codeOk := ExtractTag(content, "code_suggestion")
 
 	if codeOk {
 		const maxCodeBytes = 10_000
@@ -200,7 +200,7 @@ func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logg
 		s.CodeSuggestion = stripMarkdownFence(unindent(codeTag))
 	} else {
 		// Fallback to <fix_code> with warning
-		fix, fixOk := extractTag(content, "fix_code")
+		fix, fixOk := ExtractTag(content, "fix_code")
 		if fixOk {
 			logger.WarnContext(ctx, "using deprecated <fix_code> tag")
 			s.CodeSuggestion = stripMarkdownFence(unindent(fix))
@@ -210,8 +210,8 @@ func parseSuggestionBlock(ctx context.Context, content string, logger *slog.Logg
 	return s
 }
 
-// extractTag finds the content between <tag> and the corresponding </tag> or the next sibling tag.
-func extractTag(content, tag string) (string, bool) {
+// ExtractTag finds the content between <tag> and the corresponding </tag> or the next sibling tag.
+func ExtractTag(content, tag string) (string, bool) {
 	reOpen := getTagRegex(tag)
 	openMatch := reOpen.FindStringIndex(content)
 	if openMatch == nil {
@@ -238,8 +238,8 @@ func extractTag(content, tag string) (string, bool) {
 	return remaining, true
 }
 
-// extractMultipleTags finds all occurrences of content between <tag> and </tag>.
-func extractMultipleTags(ctx context.Context, content, tag string) []string {
+// ExtractMultipleTags finds all occurrences of content between <tag> and </tag>.
+func ExtractMultipleTags(ctx context.Context, content, tag string) []string {
 	var results []string
 	reOpen := getTagRegex(tag)
 	remaining := content
