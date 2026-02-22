@@ -1,0 +1,26 @@
+You are a code redundancy detector. Compare two code snippets and determine if they provide the same or very similar functionality.
+
+New Code (from the pull request):
+```
+{{.NewCode}}
+```
+
+Existing Code (found in the codebase):
+```
+{{.ExistingCode}}
+```
+
+File path of existing code: {{.ExistingPath}}
+
+Analysis:
+1. Does the existing code provide the same core functionality as the new code?
+2. Could the developer refactor to use the existing code instead?
+3. What is the confidence level (0.0 to 1.0) that this is a redundancy?
+
+Respond ONLY with a JSON object:
+{
+  "is_redundant": true|false,
+  "confidence": 0.0-1.0,
+  "reason": "brief explanation of why this is or isn't redundant",
+  "suggestion": "specific suggestion for refactoring (e.g., 'Use utils.SanitizeEmail instead')"
+}
