@@ -28,7 +28,7 @@ type validateSnippetResult struct {
 // snippetOutputParser implements output parsing for validation results.
 type snippetOutputParser struct{}
 
-func (p *snippetOutputParser) Parse(ctx context.Context, output string) (*validateSnippetResult, error) {
+func (p *snippetOutputParser) Parse(_ context.Context, output string) (*validateSnippetResult, error) {
 	// Try to extract JSON from the response
 	start := strings.Index(output, "{")
 	end := strings.LastIndex(output, "}")
@@ -43,6 +43,8 @@ func (p *snippetOutputParser) Parse(ctx context.Context, output string) (*valida
 	jsonStr := output[start : end+1]
 	var result validateSnippetResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		// Log parse error but return result with reason (intentional fail-open behavior)
+		//nolint:nilerr // Intentional: fail-open design, error is captured in Reason field
 		return &validateSnippetResult{Relevant: false, Reason: "parse error: " + err.Error()}, nil
 	}
 	return &result, nil
@@ -75,10 +77,10 @@ func (v *snippetValidator) validate(ctx context.Context, snippet, context string
 	}
 
 	parser := &snippetOutputParser{}
-	chain := chains.NewLLMChain[*validateSnippetResult](
+	chain := chains.NewLLMChain(
 		v.validatorLLM,
 		prompts.NewPromptTemplate(prompt),
-		chains.WithOutputParser[*validateSnippetResult](parser),
+		chains.WithOutputParser(parser),
 	)
 
 	result, err := chain.Call(ctx, nil)
