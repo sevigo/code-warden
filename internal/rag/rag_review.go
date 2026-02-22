@@ -74,16 +74,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		definitionsContext = "**WARNING: No type definitions resolved. Verify types are defined outside this diff.**"
 	}
 
-	promptData := map[string]string{
-		"Title":              event.PRTitle,
-		"Description":        event.PRBody,
-		"Language":           event.Language,
-		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
-		"ChangedFiles":       r.formatChangedFiles(changedFiles),
-		"Context":            contextString,
-		"Definitions":        definitionsContext,
-		"Diff":               diff,
-	}
+	promptData := r.buildReviewPromptData(event, repoConfig, contextString, definitionsContext, diff, changedFiles)
 
 	promptStr, err := r.promptMgr.Render(llm.CodeReviewPrompt, promptData)
 	if err != nil {
@@ -112,6 +103,19 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	return structuredReview, parser.raw, nil
+}
+
+func (r *ragService) buildReviewPromptData(event *core.GitHubEvent, repoConfig *core.RepoConfig, contextString, definitionsContext, diff string, changedFiles []internalgithub.ChangedFile) map[string]string {
+	return map[string]string{
+		"Title":              event.PRTitle,
+		"Description":        event.PRBody,
+		"Language":           event.Language,
+		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+		"ChangedFiles":       r.formatChangedFiles(changedFiles),
+		"Context":            contextString,
+		"Definitions":        definitionsContext,
+		"Diff":               diff,
+	}
 }
 
 // contextIsEmpty checks if both context strings are empty, indicating no repository context was retrieved.
@@ -146,16 +150,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		definitionsContext = "**WARNING: No type definitions resolved.**"
 	}
 
-	promptData := map[string]string{
-		"Title":              event.PRTitle,
-		"Description":        event.PRBody,
-		"Language":           event.Language,
-		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
-		"ChangedFiles":       r.formatChangedFiles(changedFiles),
-		"Context":            contextString,
-		"Definitions":        definitionsContext,
-		"Diff":               diff,
-	}
+	promptData := r.buildReviewPromptData(event, repoConfig, contextString, definitionsContext, diff, changedFiles)
 
 	chain := chains.NewMapReduceChain[string, ComparisonResult, string](
 		func(ctx context.Context, modelName string) (ComparisonResult, error) {
