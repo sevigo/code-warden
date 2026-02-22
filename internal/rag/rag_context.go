@@ -423,17 +423,11 @@ func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string,
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
 // better understand the scope and impact of the changes.
-//
-// Design note (Issue #4 fix): gatherers now return []schema.Document instead of
-// pre-formatted strings. Deduplication and formatting happen in a single-threaded
-// pass after wg.Wait(), making the output fully deterministic regardless of which
-// goroutine wins a race to a shared doc.
 func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string) {
 	if len(changedFiles) == 0 {
 		return "", ""
 	}
 
-	// Bound the number of files processed to prevent OOM/DoS
 	const defaultMaxContextFiles = 20
 	if len(changedFiles) > defaultMaxContextFiles {
 		r.logger.Warn("truncating context files", "total", len(changedFiles), "limit", defaultMaxContextFiles)
@@ -442,35 +436,42 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 
-	// Run context gathering concurrently. Each gatherer returns raw docs or a
-	// self-contained string (for arch and definitions which have their own
-	// dedup/formatting logic that doesn't share state with other stages).
+	archContext, definitionsContext, impactDocs, descDocs, hydeResults, indices := r.buildContextConcurrently(
+		ctx, collectionName, embedderModelName, repoPath, prDescription, changedFiles, scopedStore)
+
+	allDocs := mergeAndDedup(append(impactDocs, descDocs...), r.getDocKey)
+
+	var impactContext, descriptionContext string
+	if len(allDocs) > 0 {
+		var seenDocs sync.Map
+		impactContext, descriptionContext = r.splitAndFormatDocs(allDocs, descDocs, prDescription, &seenDocs)
+	}
+
+	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles)
+	return fullContext, definitionsContext
+}
+
+func (r *ragService) buildContextConcurrently(
+	ctx context.Context, collectionName, embedderModelName, repoPath, prDescription string,
+	changedFiles []internalgithub.ChangedFile, scopedStore storage.ScopedVectorStore,
+) (archContext, definitionsContext string, impactDocs, descDocs []schema.Document, hydeResults [][]schema.Document, indices []int) {
 	var wg sync.WaitGroup
-	var archContext, definitionsContext string
-	var impactDocs, descDocs []schema.Document
-	var hydeResults [][]schema.Document
-	var indices []int
 	var impactMu, descMu sync.Mutex
 
-	// 1. Architectural Context (returns formatted string — no shared state)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		archContext = r.gatherArchContext(ctx, scopedStore, changedFiles)
+		archContext = r.gatherArchContextSafe(ctx, scopedStore, changedFiles)
 	}()
 
-	// 2. HyDE Snippets
 	if r.cfg.AI.EnableHyDE {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			hydeResults, indices = r.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
 		}()
-	} else {
-		r.logger.Info("stage skipped", "name", "HyDE", "reason", "disabled_in_config")
 	}
 
-	// 3. Impact Context — returns []schema.Document (no shared seenDocs)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -480,7 +481,6 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		impactMu.Unlock()
 	}()
 
-	// 4. Description Context — returns []schema.Document (no shared seenDocs)
 	if prDescription != "" {
 		wg.Add(1)
 		go func() {
@@ -492,34 +492,23 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		}()
 	}
 
-	// 5. Symbol Resolution — returns formatted string (its own internal dedup)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// gatherDefinitionsContext owns its seenDocs internally
 		seenDocs := make(map[string]struct{})
 		var mu sync.RWMutex
 		definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, seenDocs, &mu)
 	}()
 
 	wg.Wait()
+	return
+}
 
-	// ── Single-threaded deterministic dedup & formatting ──────────────────────
-	// Merge impact + description docs, deduplicate by key (sorted for determinism),
-	// then validate snippets against the PR description in one batch call.
-	allDocs := mergeAndDedup(append(impactDocs, descDocs...), r.getDocKey)
-
-	// Validate description-relevant docs in a single batch LLM call (Issue #6 fix
-	// is applied here via validateAndFormatSnippets which now uses batch validation).
-	var impactContext, descriptionContext string
-	if len(allDocs) > 0 {
-		var seenDocs sync.Map
-		impactContext, descriptionContext = r.splitAndFormatDocs(ctx, allDocs, impactDocs, descDocs, prDescription, &seenDocs)
-	}
-
-	// Assemble the final context string with token budget enforcement.
-	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles)
-	return fullContext, definitionsContext
+func (r *ragService) gatherArchContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+	r.logger.Info("stage started", "name", "ArchitecturalContext")
+	ac := r.getArchContext(ctx, store, files)
+	r.logger.Info("stage completed", "name", "ArchitecturalContext")
+	return ac
 }
 
 // mergeAndDedup merges document slices and deduplicates them by a key function.
@@ -546,44 +535,88 @@ func mergeAndDedup(docs []schema.Document, keyFn func(schema.Document) string) [
 
 // splitAndFormatDocs splits merged docs back into impact/description buckets and formats them.
 func (r *ragService) splitAndFormatDocs(
-	ctx context.Context,
 	allDocs []schema.Document,
-	impactDocs, descDocs []schema.Document,
+	descDocs []schema.Document,
 	prDescription string,
 	seen *sync.Map,
 ) (impactContext, descriptionContext string) {
-	// Build a quick lookup of which keys were originally in descDocs.
-	descKeys := make(map[string]struct{}, len(descDocs))
+	descKeys := make(map[string]schema.Document, len(descDocs))
 	for _, d := range descDocs {
 		source, _ := d.Metadata["source"].(string)
-		descKeys[source] = struct{}{}
+		descKeys[source] = d
 	}
 
-	var impactBuilder, descBuilder strings.Builder
+	validDescSources := r.filterValidDescriptionDocs(descKeys, seen, prDescription)
+	return r.formatSplitDocs(allDocs, descKeys, validDescSources, seen, prDescription)
+}
 
+func (r *ragService) filterValidDescriptionDocs(descKeys map[string]schema.Document, seen *sync.Map, prDescription string) map[string]bool {
+	var toValidate []schema.Document
+	var snippets []string
+	for source, d := range descKeys {
+		if _, loaded := seen.Load(source); !loaded {
+			toValidate = append(toValidate, d)
+			snippets = append(snippets, r.getDocContent(d))
+		}
+	}
+
+	relevanceMap := make(map[int]bool, len(toValidate))
+	if len(snippets) > 0 && prDescription != "" {
+		validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
+		if err == nil {
+			v := newSnippetValidator(validatorLLM, r.promptMgr)
+			relevanceMap = v.validateBatch(context.Background(), snippets, prDescription)
+		} else {
+			for i := range snippets {
+				relevanceMap[i] = true
+			}
+		}
+	}
+
+	validSources := make(map[string]bool, len(toValidate))
+	for i, doc := range toValidate {
+		if relevanceMap[i] {
+			source, _ := doc.Metadata["source"].(string)
+			validSources[source] = true
+		}
+	}
+	return validSources
+}
+
+func (r *ragService) formatSplitDocs(
+	allDocs []schema.Document,
+	descKeys map[string]schema.Document,
+	validDescSources map[string]bool,
+	seen *sync.Map,
+	prDescription string,
+) (string, string) {
+	var impactBuilder, descBuilder strings.Builder
 	for _, doc := range allDocs {
 		source, _ := doc.Metadata["source"].(string)
+
+		if _, isDesc := descKeys[source]; isDesc && prDescription != "" {
+			if !validDescSources[source] {
+				continue
+			}
+		}
+
 		if _, loaded := seen.LoadOrStore(source, struct{}{}); loaded {
 			continue
 		}
+
 		content := r.getDocContent(doc)
-		if _, inDesc := descKeys[source]; inDesc && prDescription != "" {
+		if _, isDesc := descKeys[source]; isDesc && prDescription != "" {
 			descBuilder.WriteString(fmt.Sprintf("File: %s\n```\n%s\n```\n\n", source, content))
 		} else {
-			_ = impactDocs // suppress unused warning
 			fmt.Fprintf(&impactBuilder, "**%s**:\n```\n%s\n```\n\n", source, content)
 		}
 	}
 
+	var descCtx string
 	if descBuilder.Len() > 0 {
-		var h strings.Builder
-		h.WriteString("# Related to PR Description\n\n")
-		h.WriteString(descBuilder.String())
-		descriptionContext = h.String()
+		descCtx = "# Related to PR Description\n\n" + descBuilder.String()
 	}
-
-	impactContext = impactBuilder.String()
-	return
+	return impactBuilder.String(), descCtx
 }
 
 // gatherDescriptionDocs uses MultiQuery retrieval to find documents related to the PR description.
@@ -625,26 +658,6 @@ func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embe
 
 	r.logger.Info("stage completed", "name", "DescriptionContext", "retrieved", len(allDocs))
 	return allDocs
-}
-
-// validateSnippetRelevance uses a fast LLM to check if a retrieved snippet
-// is actually relevant to the given context. Fails open (returns true) if
-// the validator model is unavailable or returns an error.
-func (r *ragService) validateSnippetRelevance(ctx context.Context, snippet, prContext string) bool {
-	validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
-	if err != nil {
-		return true // Fail open: if no validator available, include the snippet
-	}
-
-	validator := newSnippetValidator(validatorLLM, r.promptMgr)
-	return validator.validate(ctx, snippet, prContext)
-}
-
-func (r *ragService) gatherArchContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string { //nolint:unused
-	r.logger.Info("stage started", "name", "ArchitecturalContext")
-	ac := r.getArchContext(ctx, store, files)
-	r.logger.Info("stage completed", "name", "ArchitecturalContext")
-	return ac
 }
 
 // gatherImpactDocs returns raw impact docs without formatting or shared seenDocs.
@@ -763,11 +776,14 @@ func (p *tokenContextPacker) build() string {
 
 	for _, sec := range p.sections {
 		tokens := estimateTokens(sec.content)
-		if tokens <= remaining {
+
+		switch {
+		case tokens <= remaining:
 			out.WriteString(sec.content)
 			out.WriteString("\n---\n\n")
 			remaining -= tokens
-		} else if remaining > 50 { // Only truncate if there's meaningful space left
+
+		case remaining > 50: // Only truncate if there's meaningful space left
 			// Truncate to remaining budget
 			maxChars := remaining * 3
 			truncated := sec.content[:maxChars]
@@ -778,8 +794,8 @@ func (p *tokenContextPacker) build() string {
 			out.WriteString(truncated)
 			out.WriteString(fmt.Sprintf("\n[%s context truncated due to length]\n\n---\n\n", sec.name))
 			remaining = 0
-		} else {
-			// Budget exhausted
+
+		default: // Budget exhausted
 			out.WriteString(fmt.Sprintf("[%s context omitted — token budget exhausted]\n\n---\n\n", sec.name))
 		}
 	}
@@ -971,68 +987,4 @@ func (r *ragService) getDocContent(doc schema.Document) string {
 		r.logger.Debug("parent_id present but full_parent_text missing", "parent_id", parentID, "source", doc.Metadata["source"])
 	}
 	return doc.PageContent
-}
-
-// validateAndFormatSnippets remains for internal use by the snippet_validator.
-// Note: the primary description-docs path now uses gatherDescriptionDocs + batch
-// validation in snippet_validator.go instead of per-snippet LLM calls.
-func (r *ragService) validateAndFormatSnippets(ctx context.Context, description string, uniqueDocs map[string]schema.Document, seen map[string]struct{}, mu *sync.RWMutex) string {
-	if len(uniqueDocs) == 0 {
-		return ""
-	}
-
-	// Build ordered list of (key, doc, content) for batch validation
-	type entry struct {
-		key     string
-		doc     schema.Document
-		content string
-	}
-	entries := make([]entry, 0, len(uniqueDocs))
-	for key, doc := range uniqueDocs {
-		mu.RLock()
-		_, exists := seen[key]
-		mu.RUnlock()
-		if exists {
-			continue
-		}
-		entries = append(entries, entry{key: key, doc: doc, content: r.getDocContent(doc)})
-	}
-	if len(entries) == 0 {
-		return ""
-	}
-
-	// Build snippet slice for batch validation
-	snippets := make([]string, len(entries))
-	for i, e := range entries {
-		snippets[i] = e.content
-	}
-
-	// Single batch LLM call to validate all snippets at once (Issue #6 fix)
-	validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
-	var relevanceMap map[int]bool
-	if err == nil {
-		v := newSnippetValidator(validatorLLM, r.promptMgr)
-		relevanceMap = v.validateBatch(ctx, snippets, description)
-	} else {
-		// Fail open: include all snippets if validator unavailable
-		relevanceMap = make(map[int]bool, len(entries))
-		for i := range entries {
-			relevanceMap[i] = true
-		}
-	}
-
-	var builder strings.Builder
-	for i, e := range entries {
-		if !relevanceMap[i] {
-			continue
-		}
-		mu.Lock()
-		if _, exists := seen[e.key]; !exists {
-			seen[e.key] = struct{}{}
-			source, _ := e.doc.Metadata["source"].(string)
-			builder.WriteString(fmt.Sprintf("File: %s\n```\n%s\n```\n\n", source, e.content))
-		}
-		mu.Unlock()
-	}
-	return builder.String()
 }

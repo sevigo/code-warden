@@ -2,9 +2,7 @@ package rag
 
 import (
 	"context"
-	"fmt"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/sevigo/goframe/schema"
@@ -18,14 +16,6 @@ type depRequest struct {
 	Pkg     string
 	Imports []string
 	File    internalgithub.ChangedFile
-}
-
-func (r *ragService) getImpactContext(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
-	retriever := vectorstores.NewDependencyRetriever(store)
-
-	reqs := r.buildImpactRequests(repoPath, files)
-	depResults := r.fetchImpactResults(ctx, retriever, reqs)
-	return r.processImpactResults(depResults, seen, mu)
 }
 
 // getImpactDocs returns raw impact documents without formatting or deduplication.
@@ -111,38 +101,4 @@ func (r *ragService) fetchImpactResults(ctx context.Context, retriever *vectorst
 	}
 	wg.Wait()
 	return depResults
-}
-
-func (r *ragService) processImpactResults(depResults map[string][]schema.Document, seen map[string]struct{}, mu *sync.RWMutex) string {
-	var impactBuilder strings.Builder
-	const maxImpactSnippets = 10
-	totalSnippets := 0
-
-	for filename, dependents := range depResults {
-		for _, doc := range dependents {
-			if totalSnippets >= maxImpactSnippets {
-				return impactBuilder.String()
-			}
-
-			docKey := r.getDocKey(doc)
-			source, ok := doc.Metadata["source"].(string)
-			if !ok || source == "" {
-				r.logger.Debug("skipping impact doc with missing source", "docKey", docKey)
-				continue
-			}
-
-			mu.Lock()
-			if _, exists := seen[docKey]; exists {
-				mu.Unlock()
-				continue
-			}
-			seen[docKey] = struct{}{}
-			mu.Unlock()
-
-			_, _ = impactBuilder.WriteString(fmt.Sprintf("File: %s (potential ripple effect from %s)\n---\n%s\n\n",
-				source, filename, r.getDocContent(doc)))
-			totalSnippets++
-		}
-	}
-	return impactBuilder.String()
 }
