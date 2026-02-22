@@ -13,6 +13,7 @@ import (
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
+	"golang.org/x/sync/errgroup"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -81,104 +82,276 @@ func extractSymbolsFromPatch(patch string) []string {
 	return result
 }
 
-// gatherDefinitionsContext extracts symbols from the changed files and retrieves their definitions.
-// This helps the LLM understand type definitions, method signatures, and field names.
-func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, mu *sync.RWMutex) string {
+// definitionResult holds the result of a symbol definition lookup.
+type definitionResult struct {
+	symbol  string
+	source  string
+	content string
+	found   bool
+}
+
+// symbolResolution tracks the resolution state for recursive symbol lookup.
+type symbolResolution struct {
+	mu              sync.RWMutex
+	resolvedSymbols map[string]struct{} // Symbols we've already looked up
+	resolvedDefs    []definitionResult  // Successfully resolved definitions
+	totalResolved   int
+}
+
+// gatherDefinitionsContext extracts symbols from the changed files and retrieves their definitions
+// using a recursive depth-2 resolution strategy.
+//
+// Resolution algorithm:
+//   - Depth 0: Extract symbols from the git diff
+//   - Depth 1: Retrieve definitions for diff symbols (concurrent)
+//   - Depth 2: Parse definitions with ExtractUsedSymbols and fetch their definitions (concurrent)
+//
+// This prevents LLM hallucinations by providing complete type dependency context.
+func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, seenDocsMu *sync.RWMutex) string {
 	if len(changedFiles) == 0 {
 		return ""
 	}
 
-	// Extract unique symbols from all changed files
-	symbols := make(map[string]struct{})
-	for _, f := range changedFiles {
-		if f.Patch == "" {
-			continue
-		}
-
-		// Try to extract symbols from the patch using regex
-		extracted := extractSymbolsFromPatch(f.Patch)
-		for _, sym := range extracted {
-			symbols[sym] = struct{}{}
-		}
-	}
-
-	if len(symbols) == 0 {
+	// Depth 0: Extract unique symbols from all changed files
+	depth0Symbols := r.extractSymbolsFromChangedFiles(changedFiles)
+	if len(depth0Symbols) == 0 {
 		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
 		return ""
 	}
 
-	r.logger.Info("stage started", "name", "SymbolResolution", "symbols_found", len(symbols))
+	r.logger.Info("stage started", "name", "SymbolResolution", "depth0_symbols", len(depth0Symbols))
 
-	// Convert to slice and limit to top 15
-	var symbolList []string
-	for sym := range symbols {
-		symbolList = append(symbolList, sym)
-		if len(symbolList) >= 15 {
-			break
-		}
+	// Initialize resolution state with thread-safe tracking
+	resolution := &symbolResolution{
+		resolvedSymbols: make(map[string]struct{}),
+		resolvedDefs:    make([]definitionResult, 0),
+		totalResolved:   0,
 	}
 
+	// Mark all depth-0 symbols as seen to avoid duplicate lookups
+	for sym := range depth0Symbols {
+		resolution.resolvedSymbols[sym] = struct{}{}
+	}
+
+	// Depth 1: Fetch definitions for symbols found in the diff
+	const maxWorkers = 10
+	depth1Defs := r.fetchDefinitionsConcurrently(ctx, scopedStore, depth0Symbols, resolution, maxWorkers)
+
+	// Depth 2: Parse depth-1 definitions to find their dependencies
+	depth2Symbols := r.extractSymbolsFromDefinitions(depth1Defs, changedFiles, resolution)
+
+	var depth2Defs []definitionResult
+	if len(depth2Symbols) > 0 {
+		r.logger.Info("depth 2 symbol resolution", "symbols_found", len(depth2Symbols))
+		depth2Defs = r.fetchDefinitionsConcurrently(ctx, scopedStore, depth2Symbols, resolution, maxWorkers)
+	}
+
+	// Build the output, filtering against global seenDocs
 	var builder strings.Builder
 	builder.WriteString("# Resolved Type Definitions\n\n")
 	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
 
-	resolvedCount := 0
-	for _, symbol := range symbolList {
-		// Check for context cancellation
-		select {
-		case <-ctx.Done():
-			return builder.String()
-		default:
+	// Process all resolved definitions (create new slice to avoid appendAssign linter warning)
+	allDefs := make([]definitionResult, 0, len(depth1Defs)+len(depth2Defs))
+	allDefs = append(allDefs, depth1Defs...)
+	allDefs = append(allDefs, depth2Defs...)
+	outputCount := 0
+	for _, def := range allDefs {
+		if !def.found {
+			continue
 		}
 
-		source, content, ok := r.resolveSymbolDefinition(ctx, symbol, scopedStore, seenDocs, mu)
-		if ok {
-			_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, source, content)
-			resolvedCount++
+		// Check global seenDocs to avoid duplicates with other context stages
+		docKey := fmt.Sprintf("%s-%s", def.source, def.symbol)
+		seenDocsMu.Lock()
+		if _, exists := seenDocs[docKey]; exists {
+			seenDocsMu.Unlock()
+			continue
 		}
+		seenDocs[docKey] = struct{}{}
+		seenDocsMu.Unlock()
+
+		_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", def.symbol, def.source, def.content)
+		outputCount++
 	}
 
-	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount)
+	r.logger.Info("stage completed", "name", "SymbolResolution",
+		"depth1_resolved", len(depth1Defs),
+		"depth2_symbols", len(depth2Symbols),
+		"depth2_resolved", len(depth2Defs),
+		"total_output", outputCount)
 
-	if resolvedCount == 0 {
+	if outputCount == 0 {
 		return ""
 	}
 
 	return builder.String()
 }
 
-func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, scopedStore storage.ScopedVectorStore, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
+// extractSymbolsFromChangedFiles extracts unique symbols from git patches.
+func (r *ragService) extractSymbolsFromChangedFiles(changedFiles []internalgithub.ChangedFile) map[string]struct{} {
+	symbols := make(map[string]struct{})
+	for _, f := range changedFiles {
+		if f.Patch == "" {
+			continue
+		}
+		extracted := extractSymbolsFromPatch(f.Patch)
+		for _, sym := range extracted {
+			symbols[sym] = struct{}{}
+		}
+	}
+
+	// Limit to prevent context explosion
+	return limitSymbols(symbols, 20)
+}
+
+// fetchDefinitionsConcurrently retrieves definitions for a set of symbols using bounded parallelism.
+func (r *ragService) fetchDefinitionsConcurrently(ctx context.Context, scopedStore storage.ScopedVectorStore, symbols map[string]struct{}, resolution *symbolResolution, maxWorkers int) []definitionResult {
+	if len(symbols) == 0 {
+		return nil
+	}
+
+	// Convert symbols to slice for iteration
+	symbolList := make([]string, 0, len(symbols))
+	for sym := range symbols {
+		symbolList = append(symbolList, sym)
+	}
+
 	defRetriever := vectorstores.NewDefinitionRetriever(scopedStore)
-	docs, err := defRetriever.GetDefinition(ctx, symbol)
+	results := make([]definitionResult, 0, len(symbolList))
+	var resultsMu sync.Mutex
 
+	// Use errgroup with bounded parallelism
+	g, gctx := errgroup.WithContext(ctx)
+	sem := make(chan struct{}, maxWorkers)
+
+	for _, symbol := range symbolList {
+		sym := symbol // Capture loop variable
+		g.Go(func() error {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-gctx.Done():
+				return gctx.Err()
+			}
+
+			// Double-check we haven't already resolved this symbol
+			resolution.mu.RLock()
+			_, alreadyResolved := resolution.resolvedSymbols[sym]
+			resolution.mu.RUnlock()
+			if alreadyResolved {
+				// Already processed, skip but don't return error
+				return nil
+			}
+
+			// Mark as being processed
+			resolution.mu.Lock()
+			resolution.resolvedSymbols[sym] = struct{}{}
+			resolution.mu.Unlock()
+
+			// Fetch definition from vector store
+			docs, err := defRetriever.GetDefinition(gctx, sym)
+			if err != nil {
+				r.logger.Debug("failed to fetch definition", "symbol", sym, "error", err)
+				return nil // Don't fail the group for individual lookup failures
+			}
+
+			if len(docs) == 0 {
+				return nil
+			}
+
+			// Take the first match as the definition
+			def := docs[0]
+			source, _ := def.Metadata["source"].(string)
+			content := r.getDocContent(def)
+
+			result := definitionResult{
+				symbol:  sym,
+				source:  source,
+				content: content,
+				found:   true,
+			}
+
+			resultsMu.Lock()
+			results = append(results, result)
+			resultsMu.Unlock()
+
+			return nil
+		})
+	}
+
+	// Wait for all lookups to complete (ignoring errors since we handle them individually)
+	_ = g.Wait()
+
+	return results
+}
+
+// extractSymbolsFromDefinitions parses resolved definitions to find their dependencies.
+// This implements depth-2 symbol resolution by using the parser's ExtractUsedSymbols method.
+func (r *ragService) extractSymbolsFromDefinitions(definitions []definitionResult, _ []internalgithub.ChangedFile, resolution *symbolResolution) map[string]struct{} {
+	depth2Symbols := make(map[string]struct{})
+
+	for _, def := range definitions {
+		if !def.found || def.content == "" {
+			continue
+		}
+		r.extractSymbolsFromDefinition(def, depth2Symbols, resolution)
+	}
+
+	return limitSymbols(depth2Symbols, 15)
+}
+
+// extractSymbolsFromDefinition extracts symbols from a single definition content.
+func (r *ragService) extractSymbolsFromDefinition(def definitionResult, symbols map[string]struct{}, resolution *symbolResolution) {
+	parser, err := r.parserRegistry.GetParserForFile(def.source, nil)
 	if err != nil {
-		r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
-		return "", "", false
+		// Fallback to regex-based extraction if no parser available
+		r.addSymbolsFromRegex(def.content, symbols, resolution)
+		return
 	}
 
-	if len(docs) == 0 {
-		return "", "", false
+	// Use parser's ExtractUsedSymbols for more accurate extraction
+	usedSymbols := parser.ExtractUsedSymbols(def.content)
+	for _, sym := range usedSymbols {
+		if !r.isSymbolAlreadyResolved(sym, resolution) {
+			symbols[sym] = struct{}{}
+		}
 	}
+}
 
-	// Take the first match as the definition
-	def := docs[0]
-	docKey := r.getDocKey(def)
-
-	mu.RLock()
-	_, exists := seenDocs[docKey]
-	mu.RUnlock()
-	if exists {
-		return "", "", false
+// addSymbolsFromRegex extracts symbols using regex patterns and adds them to the map.
+func (r *ragService) addSymbolsFromRegex(content string, symbols map[string]struct{}, resolution *symbolResolution) {
+	extracted := extractSymbolsFromPatch(content)
+	for _, sym := range extracted {
+		if !r.isSymbolAlreadyResolved(sym, resolution) {
+			symbols[sym] = struct{}{}
+		}
 	}
+}
 
-	mu.Lock()
-	seenDocs[docKey] = struct{}{}
-	mu.Unlock()
+// limitSymbols truncates a symbol map to a maximum size.
+func limitSymbols(symbols map[string]struct{}, maxSize int) map[string]struct{} {
+	if len(symbols) <= maxSize {
+		return symbols
+	}
+	limited := make(map[string]struct{}, maxSize)
+	count := 0
+	for sym := range symbols {
+		limited[sym] = struct{}{}
+		count++
+		if count >= maxSize {
+			break
+		}
+	}
+	return limited
+}
 
-	source, _ := def.Metadata["source"].(string)
-	content := r.getDocContent(def)
-
-	return source, content, true
+// isSymbolAlreadyResolved checks if a symbol has already been processed.
+func (r *ragService) isSymbolAlreadyResolved(symbol string, resolution *symbolResolution) bool {
+	resolution.mu.RLock()
+	defer resolution.mu.RUnlock()
+	_, exists := resolution.resolvedSymbols[symbol]
+	return exists
 }
 
 // buildRelevantContext performs similarity searches using file diffs to find related
