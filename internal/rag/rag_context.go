@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
@@ -17,6 +19,12 @@ import (
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/storage"
 )
+
+// definition holds retrieved definition data for a symbol.
+type definition struct {
+	source  string
+	content string
+}
 
 func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	var contextBuilder strings.Builder
@@ -81,64 +89,119 @@ func extractSymbolsFromPatch(patch string) []string {
 	return result
 }
 
-// gatherDefinitionsContext extracts symbols from the changed files and retrieves their definitions.
-// This helps the LLM understand type definitions, method signatures, and field names.
+// gatherDefinitionsContext performs recursive symbol resolution (Depth-2 Graph-RAG).
+// It extracts symbols from changed files (Depth 0), retrieves their definitions (Depth 1),
+// parses those definitions to find additional symbols, and retrieves definitions for those
+// as well (Depth 2). This provides the LLM with complete context about type dependencies.
+//
+//nolint:gocognit,funlen // Cognitive complexity and function length are justified by the multi-stage algorithm
 func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, mu *sync.RWMutex) string {
 	if len(changedFiles) == 0 {
 		return ""
 	}
 
-	// Extract unique symbols from all changed files
-	symbols := make(map[string]struct{})
+	// Extract unique symbols from all changed files (Depth 0)
+	depth0Symbols := make(map[string]struct{})
 	for _, f := range changedFiles {
 		if f.Patch == "" {
 			continue
 		}
-
-		// Try to extract symbols from the patch using regex
 		extracted := extractSymbolsFromPatch(f.Patch)
 		for _, sym := range extracted {
-			symbols[sym] = struct{}{}
+			depth0Symbols[sym] = struct{}{}
 		}
 	}
 
-	if len(symbols) == 0 {
+	if len(depth0Symbols) == 0 {
 		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
 		return ""
 	}
 
-	r.logger.Info("stage started", "name", "SymbolResolution", "symbols_found", len(symbols))
+	r.logger.Info("stage started", "name", "SymbolResolution", "depth_0_symbols", len(depth0Symbols))
 
-	// Convert to slice and limit to top 15
-	var symbolList []string
-	for sym := range symbols {
-		symbolList = append(symbolList, sym)
-		if len(symbolList) >= 15 {
+	// Track all symbols we've already looked up (across all depths) to avoid duplicate queries
+	// This map is protected by mu (same lock as seenDocs for simplicity)
+	lookedUpSymbols := make(map[string]struct{})
+
+	// Store retrieved definitions: symbol -> (source, content)
+	definitions := make(map[string]*definition)
+	var defMu sync.Mutex
+
+	// Limit Depth-0 symbols to prevent excessive lookups
+	const maxDepth0 = 15
+	var depth0List []string
+	for sym := range depth0Symbols {
+		depth0List = append(depth0List, sym)
+		if len(depth0List) >= maxDepth0 {
 			break
 		}
 	}
 
-	var builder strings.Builder
-	builder.WriteString("# Resolved Type Definitions\n\n")
-	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
+	// ========== DEPTH 1: Retrieve definitions for symbols from diff ==========
+	r.logger.Debug("fetching depth-1 definitions", "count", len(depth0List))
 
-	resolvedCount := 0
-	for _, symbol := range symbolList {
-		// Check for context cancellation
-		select {
-		case <-ctx.Done():
-			return builder.String()
-		default:
+	defRetriever := vectorstores.NewDefinitionRetriever(scopedStore)
+	r.fetchDefinitionsConcurrently(ctx, defRetriever, depth0List, lookedUpSymbols, definitions, &defMu, mu, seenDocs)
+
+	// ========== DEPTH 2: Parse Depth-1 definitions and fetch their symbols ==========
+	// Collect all unique symbols found in Depth-1 definitions
+	depth2Symbols := make(map[string]struct{})
+
+	for _, def := range definitions {
+		if def == nil {
+			continue
 		}
 
-		source, content, ok := r.resolveSymbolDefinition(ctx, symbol, scopedStore, seenDocs, mu)
-		if ok {
-			_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, source, content)
-			resolvedCount++
+		// Use parser registry to extract symbols from the retrieved definition content
+		parser := r.getParserForContent(def.source)
+		if parser == nil {
+			continue
+		}
+
+		// Extract symbols used in this definition
+		usedSymbols := parser.ExtractUsedSymbols(def.content)
+		for _, sym := range usedSymbols {
+			// Don't look up symbols we already have or are in Depth-0
+			if _, exists := lookedUpSymbols[sym]; exists {
+				continue
+			}
+			if _, exists := depth0Symbols[sym]; exists {
+				continue
+			}
+			depth2Symbols[sym] = struct{}{}
 		}
 	}
 
-	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount)
+	// Limit Depth-2 symbols
+	const maxDepth2 = 30
+	var depth2List []string
+	for sym := range depth2Symbols {
+		depth2List = append(depth2List, sym)
+		if len(depth2List) >= maxDepth2 {
+			break
+		}
+	}
+
+	if len(depth2List) > 0 {
+		r.logger.Debug("fetching depth-2 definitions", "count", len(depth2List))
+		r.fetchDefinitionsConcurrently(ctx, defRetriever, depth2List, lookedUpSymbols, definitions, &defMu, mu, seenDocs)
+	}
+
+	// ========== Build output context ==========
+	var builder strings.Builder
+	builder.WriteString("# Resolved Type Definitions (Graph-RAG)\n\n")
+	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
+
+	resolvedCount := 0
+	for symbol, def := range definitions {
+		if def == nil {
+			continue
+		}
+		_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, def.source, def.content)
+		resolvedCount++
+	}
+
+	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount, "depth_1_queried", len(depth0List), "depth_2_queried", len(depth2List))
 
 	if resolvedCount == 0 {
 		return ""
@@ -147,38 +210,103 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 	return builder.String()
 }
 
-func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, scopedStore storage.ScopedVectorStore, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
-	defRetriever := vectorstores.NewDefinitionRetriever(scopedStore)
-	docs, err := defRetriever.GetDefinition(ctx, symbol)
+// fetchDefinitionsConcurrently fetches definitions for a list of symbols in parallel.
+// It uses errgroup for concurrency control and proper error handling.
+// Thread safety: uses lookedUpSymbols (protected by mu) for deduplication and
+// definitions (protected by defMu) for storing results.
+func (r *ragService) fetchDefinitionsConcurrently(
+	ctx context.Context,
+	defRetriever *vectorstores.DefinitionRetriever,
+	symbols []string,
+	lookedUpSymbols map[string]struct{},
+	definitions map[string]*definition,
+	defMu *sync.Mutex,
+	mu *sync.RWMutex,
+	seenDocs map[string]struct{},
+) {
+	// Use errgroup for bounded concurrency
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(10) // Max 10 concurrent lookups
 
+	for _, symbol := range symbols {
+		g.Go(func() error {
+			// Check for context cancellation
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			// Check if already looked up (thread-safe)
+			mu.Lock()
+			if _, exists := lookedUpSymbols[symbol]; exists {
+				mu.Unlock()
+				return nil
+			}
+			lookedUpSymbols[symbol] = struct{}{}
+			mu.Unlock()
+
+			// Fetch definition from vector store
+			docs, err := defRetriever.GetDefinition(ctx, symbol)
+			if err != nil {
+				r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
+				return nil // Don't fail the group, just skip this symbol
+			}
+
+			if len(docs) == 0 {
+				return nil
+			}
+
+			// Take the first match as the definition
+			def := docs[0]
+			docKey := r.getDocKey(def)
+
+			// Check if document already seen (thread-safe)
+			mu.RLock()
+			_, exists := seenDocs[docKey]
+			mu.RUnlock()
+			if exists {
+				return nil
+			}
+
+			mu.Lock()
+			seenDocs[docKey] = struct{}{}
+			mu.Unlock()
+
+			source, _ := def.Metadata["source"].(string)
+			content := r.getDocContent(def)
+
+			// Store the definition (thread-safe)
+			defMu.Lock()
+			definitions[symbol] = &definition{
+				source:  source,
+				content: content,
+			}
+			defMu.Unlock()
+
+			return nil
+		})
+	}
+
+	// Wait for all fetches to complete (errors are handled individually)
+	_ = g.Wait()
+}
+
+// getParserForContent returns a parser suitable for the given file source.
+// It uses the parser registry to get a parser based on file extension.
+func (r *ragService) getParserForContent(source string) interface {
+	schema.ParserPlugin
+} {
+	if source == "" {
+		return nil
+	}
+
+	// Create a dummy FileInfo for the parser registry
+	parser, err := r.parserRegistry.GetParserForFile(source, nil)
 	if err != nil {
-		r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
-		return "", "", false
+		return nil
 	}
-
-	if len(docs) == 0 {
-		return "", "", false
-	}
-
-	// Take the first match as the definition
-	def := docs[0]
-	docKey := r.getDocKey(def)
-
-	mu.RLock()
-	_, exists := seenDocs[docKey]
-	mu.RUnlock()
-	if exists {
-		return "", "", false
-	}
-
-	mu.Lock()
-	seenDocs[docKey] = struct{}{}
-	mu.Unlock()
-
-	source, _ := def.Metadata["source"].(string)
-	content := r.getDocContent(def)
-
-	return source, content, true
+	return parser
 }
 
 // buildRelevantContext performs similarity searches using file diffs to find related
