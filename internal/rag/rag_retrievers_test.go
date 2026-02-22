@@ -126,14 +126,15 @@ func TestBuildContextForPrompt_Deduplication(t *testing.T) {
 
 	context := service.buildContextForPrompt(docs)
 
-	// Should contain 3 unique entries, not 4
+	// Should contain all 3 unique functions
 	assert.Contains(t, context, "func A()")
 	assert.Contains(t, context, "func B()")
 	assert.Contains(t, context, "func C()")
 
-	// Count file occurrences - should be exactly 3 files mentioned
+	// All 3 unique docs share the same source file, so they are grouped into
+	// one file block (chunk splicing). File: file.go should appear exactly once.
 	fileCount := strings.Count(context, "File: file.go")
-	assert.Equal(t, 3, fileCount, "Expected 3 unique file entries")
+	assert.Equal(t, 1, fileCount, "Expected docs from the same source to be grouped into 1 file block")
 }
 
 // TestBuildContextForPrompt_WithParentText tests that full_parent_text is preferred

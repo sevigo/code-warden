@@ -329,9 +329,9 @@ func TestExtractSymbolsFromPatch(t *testing.T) {
 		},
 		{
 			name: "method definition",
-			patch: `func (c *Config) GetTimeout() int {
-	return c.Timeout
-}`,
+			patch: `+func (c *Config) GetTimeout() int {
++	return c.Timeout
++}`,
 			expected: []string{"GetTimeout"}, // The receiver type Config is not captured by current regex
 		},
 		{

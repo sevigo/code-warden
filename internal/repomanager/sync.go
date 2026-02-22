@@ -17,6 +17,9 @@ import (
 const cloneTimeout = 5 * time.Minute
 
 // syncRepo decides whether we need a fresh clone or an incremental update.
+// IMPORTANT: This function only ever syncs the repository's *default branch* (main/master).
+// PR head SHAs are never checked out here; they are used only for logging and DB records.
+// This prevents the "linear indexing" corruption where parallel PR webhooks thrash Qdrant.
 func (m *manager) syncRepo(ctx context.Context, ev *core.GitHubEvent, token string) (*core.UpdateResult, error) {
 	repoRec, err := m.store.GetRepositoryByFullName(ctx, ev.RepoFullName)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
@@ -61,7 +64,7 @@ func (m *manager) cloneAndIndex(
 	ev *core.GitHubEvent,
 	token, clonePath string,
 ) (*core.UpdateResult, error) {
-	m.logger.Info("initial clone", "repo", ev.RepoFullName)
+	m.logger.Info("initial clone of default branch", "repo", ev.RepoFullName)
 	if err := os.MkdirAll(filepath.Dir(clonePath), 0o750); err != nil {
 		return nil, fmt.Errorf("create parent dir: %w", err)
 	}
@@ -70,24 +73,19 @@ func (m *manager) cloneAndIndex(
 	cloneCtx, cancel := context.WithTimeout(ctx, cloneTimeout)
 	defer cancel()
 
+	// Clone the default branch only — never the PR head.
+	// The PR diff is fetched separately via the GitHub API and passed in-memory to the LLM.
 	_, err := m.gitClient.Clone(cloneCtx, ev.RepoCloneURL, clonePath, token)
 	if err != nil {
 		m.cleanupRepoDir(clonePath)
 		return nil, err
 	}
 
-	// Fetch PR specific reference to ensure we have the commit (handling forks)
-	// Fetch PR specific reference only if it's a PR event
-	if ev.PRNumber > 0 {
-		prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
-		if err := m.gitClient.Fetch(cloneCtx, clonePath, token, prRefSpec); err != nil {
-			m.cleanupRepoDir(clonePath)
-			return nil, fmt.Errorf("git fetch pr: %w", err)
-		}
-	}
-	if err = m.gitClient.Checkout(cloneCtx, clonePath, ev.HeadSHA); err != nil {
+	// Read what HEAD resolved to (the default branch tip).
+	defaultBranchSHA, err := m.gitClient.GetHeadSHA(cloneCtx, clonePath)
+	if err != nil {
 		m.cleanupRepoDir(clonePath)
-		return nil, err
+		return nil, fmt.Errorf("get default branch SHA after clone: %w", err)
 	}
 
 	files, err := m.listRepoFiles(clonePath)
@@ -108,6 +106,7 @@ func (m *manager) cloneAndIndex(
 		ClonePath:            clonePath,
 		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel),
 		EmbedderModelName:    m.cfg.AI.EmbedderModel,
+		// LastIndexedSHA is zeroed here; it is set by the job once Qdrant indexing succeeds.
 	}
 
 	if existing != nil {
@@ -126,10 +125,12 @@ func (m *manager) cloneAndIndex(
 	}
 
 	return &core.UpdateResult{
-		FilesToAddOrUpdate: files,
-		RepoPath:           clonePath,
-		HeadSHA:            ev.HeadSHA,
-		IsInitialClone:     true,
+		FilesToAddOrUpdate:   files,
+		RepoPath:             clonePath,
+		HeadSHA:              ev.HeadSHA,       // PR head — for logging/DB only
+		DefaultBranchSHA:     defaultBranchSHA, // Default branch tip — persisted to LastIndexedSHA
+		DefaultBranchChanged: true,             // Always need a full index on initial clone
+		IsInitialClone:       true,
 	}, nil
 }
 
@@ -148,32 +149,56 @@ func (m *manager) incrementalUpdate(
 		return nil, err
 	}
 
-	// 1. Check if we are already at the target SHA (Bottleneck #3: Excessive Fetching)
-	if err := m.ensureTargetSHA(ctx, ev, token, rec.ClonePath); err != nil {
+	// Fetch and checkout the DEFAULT BRANCH ONLY — not the PR's HeadSHA.
+	// This keeps the on-disk working tree and the Qdrant index in sync with main.
+	if err := m.ensureDefaultBranch(ctx, ev, token, rec.ClonePath); err != nil {
 		return nil, err
+	}
+
+	// Get the current default branch SHA after fetch.
+	defaultBranchSHA, err := m.gitClient.GetHeadSHA(ctx, rec.ClonePath)
+	if err != nil {
+		return nil, fmt.Errorf("get default branch SHA: %w", err)
 	}
 
 	// If no previous SHA recorded, treat as full re-index
 	if rec.LastIndexedSHA == "" {
-		m.logger.Info("no previous index SHA, listing all files", "repo", ev.RepoFullName)
+		m.logger.Info("no previous index SHA, listing all files for full re-index", "repo", ev.RepoFullName)
 		files, err := m.listRepoFiles(rec.ClonePath)
 		if err != nil {
 			return nil, fmt.Errorf("list files: %w", err)
 		}
 		return &core.UpdateResult{
-			FilesToAddOrUpdate: files,
-			RepoPath:           rec.ClonePath,
-			HeadSHA:            ev.HeadSHA,
-			IsInitialClone:     true, // Force full re-index
+			FilesToAddOrUpdate:   files,
+			RepoPath:             rec.ClonePath,
+			HeadSHA:              ev.HeadSHA,
+			DefaultBranchSHA:     defaultBranchSHA,
+			DefaultBranchChanged: true, // Force full re-index
+			IsInitialClone:       true,
 		}, nil
 	}
 
-	added, modified, deleted, err := m.gitClient.Diff(gitRepo, rec.LastIndexedSHA, ev.HeadSHA)
+	// Check if the default branch has actually moved since our last index.
+	if rec.LastIndexedSHA == defaultBranchSHA {
+		m.logger.Info("default branch unchanged, no Qdrant update needed",
+			"repo", ev.RepoFullName,
+			"sha", defaultBranchSHA,
+		)
+		return &core.UpdateResult{
+			RepoPath:             rec.ClonePath,
+			HeadSHA:              ev.HeadSHA,
+			DefaultBranchSHA:     defaultBranchSHA,
+			DefaultBranchChanged: false, // No vector update needed
+		}, nil
+	}
+
+	// Default branch moved: compute the incremental diff (LastIndexedSHA → defaultBranchSHA).
+	added, modified, deleted, err := m.gitClient.Diff(gitRepo, rec.LastIndexedSHA, defaultBranchSHA)
 	if err != nil {
 		m.logger.Warn("git diff failed, falling back to full re-index",
 			"repo", ev.RepoFullName,
 			"last_indexed_sha", rec.LastIndexedSHA,
-			"head_sha", ev.HeadSHA,
+			"default_branch_sha", defaultBranchSHA,
 			"error", err,
 		)
 		// Cleanup corrupted state before re-cloning
@@ -185,11 +210,13 @@ func (m *manager) incrementalUpdate(
 	}
 
 	return &core.UpdateResult{
-		FilesToAddOrUpdate: append(added, modified...),
-		FilesToDelete:      deleted,
-		RepoPath:           rec.ClonePath,
-		HeadSHA:            ev.HeadSHA,
-		IsInitialClone:     false,
+		FilesToAddOrUpdate:   append(added, modified...),
+		FilesToDelete:        deleted,
+		RepoPath:             rec.ClonePath,
+		HeadSHA:              ev.HeadSHA,
+		DefaultBranchSHA:     defaultBranchSHA,
+		DefaultBranchChanged: true,
+		IsInitialClone:       false,
 	}, nil
 }
 
@@ -199,26 +226,27 @@ func (m *manager) cleanupRepoDir(path string) {
 	}
 }
 
-func (m *manager) ensureTargetSHA(ctx context.Context, ev *core.GitHubEvent, token, clonePath string) error {
+// ensureDefaultBranch fetches origin and checks out the default branch ref (HEAD).
+// It does NOT check out the PR's HeadSHA — that is intentional.
+func (m *manager) ensureDefaultBranch(ctx context.Context, ev *core.GitHubEvent, token, clonePath string) error {
 	currentSHA, err := m.gitClient.GetHeadSHA(ctx, clonePath)
-	if err == nil && currentSHA == ev.HeadSHA {
-		m.logger.Info("repository already at target SHA, skipping git fetch", "repo", ev.RepoFullName, "sha", ev.HeadSHA)
-		return nil
+	if err != nil {
+		m.logger.Warn("failed to get current HEAD SHA, forcing fetch", "repo", ev.RepoFullName, "err", err)
 	}
 
-	if ev.PRNumber > 0 {
-		prRefSpec := fmt.Sprintf("+refs/pull/%d/head:refs/remotes/origin/pr/%d", ev.PRNumber, ev.PRNumber)
-		if err = m.gitClient.Fetch(ctx, clonePath, token, prRefSpec); err != nil {
-			return fmt.Errorf("git fetch pr: %w", err)
+	// Only fetch if we don't have a valid HEAD yet (handles edge cases like a wiped working tree).
+	if currentSHA == "" || err != nil {
+		if fetchErr := m.gitClient.Fetch(ctx, clonePath, token); fetchErr != nil {
+			return fmt.Errorf("git fetch default branch: %w", fetchErr)
 		}
 	} else {
-		if err = m.gitClient.Fetch(ctx, clonePath, token); err != nil {
-			return fmt.Errorf("git fetch: %w", err)
+		// Always fetch to pick up any new commits on the default branch.
+		if fetchErr := m.gitClient.Fetch(ctx, clonePath, token); fetchErr != nil {
+			// Non-fatal: we may still have a usable local state.
+			m.logger.Warn("git fetch failed, using existing local state", "repo", ev.RepoFullName, "err", fetchErr)
 		}
 	}
 
-	if err = m.gitClient.Checkout(ctx, clonePath, ev.HeadSHA); err != nil {
-		return err
-	}
+	// We don't call Checkout(HeadSHA) here — the working tree stays on the default branch.
 	return nil
 }

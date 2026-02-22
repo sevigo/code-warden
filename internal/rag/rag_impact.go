@@ -28,6 +28,31 @@ func (r *ragService) getImpactContext(ctx context.Context, store storage.ScopedV
 	return r.processImpactResults(depResults, seen, mu)
 }
 
+// getImpactDocs returns raw impact documents without formatting or deduplication.
+// Deduplication is handled by the caller (buildRelevantContext) after all goroutines
+// complete, ensuring deterministic output.
+func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) []schema.Document {
+	retriever := vectorstores.NewDependencyRetriever(store)
+	reqs := r.buildImpactRequests(repoPath, files)
+	depResults := r.fetchImpactResults(ctx, retriever, reqs)
+
+	const maxImpactSnippets = 10
+	var docs []schema.Document
+	for _, dependents := range depResults {
+		for _, doc := range dependents {
+			source, ok := doc.Metadata["source"].(string)
+			if !ok || source == "" {
+				continue
+			}
+			docs = append(docs, doc)
+			if len(docs) >= maxImpactSnippets {
+				return docs
+			}
+		}
+	}
+	return docs
+}
+
 func (r *ragService) buildImpactRequests(repoPath string, files []internalgithub.ChangedFile) []depRequest {
 	reqs := make([]depRequest, 0, len(files))
 	for _, f := range files {

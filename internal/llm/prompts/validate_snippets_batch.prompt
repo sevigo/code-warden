@@ -1,0 +1,15 @@
+You are a code relevance validator. Evaluate each numbered snippet below.
+
+PR Description / Context:
+{{.context}}
+
+Snippets to evaluate ({{.count}} total):
+{{.snippets}}
+
+For EACH snippet, decide: does it contain code relevant to the PR context?
+- Consider: Does it interact with changed functionality? Show related types/patterns? Would a developer need it to understand the changes?
+
+Respond ONLY with a JSON object mapping snippet index (as string) to boolean:
+{"0": true, "1": false, "2": true, ...}
+
+Include an entry for every index from 0 to {{.count}} minus 1.

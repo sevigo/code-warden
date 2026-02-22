@@ -91,3 +91,101 @@ func (v *snippetValidator) validate(ctx context.Context, snippet, context string
 
 	return result.Relevant
 }
+
+// batchValidationResult is the parsed JSON result from a batch validation call.
+// The LLM returns a map of string-index to bool relevance, e.g. {"0": true, "1": false}.
+type batchValidationResult map[string]bool
+
+// validateBatch sends all snippets to the LLM in a single call and returns a map
+// of snippet index → relevant. Fails open (all true) on any error.
+// This is Issue #6's fix: replaces N sequential LLM calls with one batched call.
+func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string, prContext string) map[int]bool {
+	result := make(map[int]bool, len(snippets))
+	// Default: fail open — include all snippets
+	for i := range snippets {
+		result[i] = true
+	}
+
+	if v.validatorLLM == nil || len(snippets) == 0 {
+		return result
+	}
+
+	// Build a numbered list of snippets for the LLM
+	var snippetList strings.Builder
+	for i, s := range snippets {
+		// Truncate long snippets to keep the prompt manageable
+		preview := s
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		snippetList.WriteString("--- Snippet ")
+		snippetList.WriteString(strings.TrimSpace(strings.Repeat(" ", 0)))
+		snippetList.WriteString(itoa(i))
+		snippetList.WriteString(" ---\n")
+		snippetList.WriteString(preview)
+		snippetList.WriteString("\n\n")
+	}
+
+	promptData := map[string]string{
+		"context":  prContext,
+		"snippets": snippetList.String(),
+		"count":    itoa(len(snippets)),
+	}
+
+	prompt, err := v.promptMgr.Render(llm.ValidateSnippetsBatchPrompt, promptData)
+	if err != nil {
+		// Fail open: prompt template not found or render error
+		return result
+	}
+
+	// Use GenerateFromSinglePrompt to get a raw text response — no output parser needed,
+	// we parse the JSON ourselves. This also avoids the generic type inference issue with
+	// chains.NewLLMChain when no typed output parser is provided.
+	raw, llmErr := llms.GenerateFromSinglePrompt(ctx, v.validatorLLM, prompt)
+	if llmErr != nil {
+		return result // Fail open
+	}
+
+	// Parse JSON response: expects {"0": true, "1": false, ...}
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start == -1 || end == -1 || end < start {
+		return result // Fail open: malformed response
+	}
+
+	var parsed batchValidationResult
+	if err := json.Unmarshal([]byte(raw[start:end+1]), &parsed); err != nil {
+		return result // Fail open: JSON parse error
+	}
+
+	// Apply parsed results — only override where we got a definitive answer
+	for k, v := range parsed {
+		idx := 0
+		fmt := strings.TrimSpace(k)
+		for _, c := range fmt {
+			if c >= '0' && c <= '9' {
+				idx = idx*10 + int(c-'0')
+			}
+		}
+		if idx >= 0 && idx < len(snippets) {
+			result[idx] = v
+		}
+	}
+
+	return result
+}
+
+// itoa converts an int to string without importing strconv.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[pos:])
+}

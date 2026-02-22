@@ -67,10 +67,6 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 		return err
 	}
 
-	mutex := j.getRepoMutex(event.RepoFullName)
-	mutex.Lock()
-	defer mutex.Unlock()
-
 	switch event.Type {
 	case core.FullReview:
 		return j.runFullReview(ctx, event)
@@ -135,8 +131,7 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 	// Update reReviewContent for DB save
 	reReviewContent := structuredReview.Summary
 
-	// 5. Save the re-review as a new review record?
-	// Yes, to maintain history.
+	// 5. Save the re-review as a new review record? Yes, to maintain history.
 	dbReview := &core.Review{
 		RepoFullName:  event.RepoFullName,
 		PRNumber:      event.PRNumber,
@@ -193,26 +188,55 @@ type reviewEnvironment struct {
 	repoConfig    *core.RepoConfig
 }
 
-// setupReviewEnvironment initializes clients, syncs the repo, and loads all necessary configs.
+// setupReviewEnvironment initializes clients, syncs the repo to the default branch,
+// and loads all necessary configs. The repo mutex is held only for this phase to
+// prevent concurrent git operations on the same repo. It is released before any
+// LLM call so multiple PRs can generate reviews concurrently.
 func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent, title, summary string) (*reviewEnvironment, error) {
 	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, title, summary)
 	if err != nil {
 		return nil, err
 	}
 
-	updateResult, err := j.repoMgr.SyncRepo(ctx, event, ghToken)
-	if err != nil {
-		err = fmt.Errorf("failed to sync repository: %w", err)
-		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
-		return nil, err
+	// ── Mutex: protect only the Git sync + optional Qdrant update phase ──────
+	// The lock is acquired here and released at the end of this function.
+	// GenerateReview (LLM call) runs completely outside the lock.
+	mutex := j.getRepoMutex(event.RepoFullName)
+	mutex.Lock()
+
+	updateResult, syncErr := j.repoMgr.SyncRepo(ctx, event, ghToken)
+	if syncErr != nil {
+		mutex.Unlock() // release before error return
+		syncErr = fmt.Errorf("failed to sync repository: %w", syncErr)
+		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, syncErr)
+		return nil, syncErr
 	}
 
-	repo, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
-	if err != nil || repo == nil {
-		err = fmt.Errorf("failed to retrieve repository record after sync for %s: %w", event.RepoFullName, err)
-		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, err)
-		return nil, err
+	repo, repoErr := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if repoErr != nil || repo == nil {
+		mutex.Unlock()
+		repoErr = fmt.Errorf("failed to retrieve repository record after sync for %s: %w", event.RepoFullName, repoErr)
+		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, repoErr)
+		return nil, repoErr
 	}
+
+	// Update vector store only when the default branch has new commits.
+	// PR diffs are NEVER written to Qdrant; they are passed in-memory to the LLM.
+	if updateResult.IsInitialClone || updateResult.DefaultBranchChanged {
+		if vsErr := j.updateVectorStoreAndSHA(ctx, j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName), repo, updateResult); vsErr != nil {
+			mutex.Unlock()
+			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, vsErr)
+			return nil, vsErr
+		}
+	} else {
+		j.logger.Info("default branch unchanged — skipping Qdrant update, running review off existing index",
+			"repo", event.RepoFullName,
+			"default_branch_sha", updateResult.DefaultBranchSHA,
+		)
+	}
+
+	// ── Release lock before any LLM call ─────────────────────────────────────
+	mutex.Unlock()
 
 	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
 
@@ -226,12 +250,9 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 	}, nil
 }
 
-// processRepository handles vector store updates and the actual review generation.
+// processRepository fetches the PR diff and changed files from GitHub, validates them,
+// and runs the LLM-based review. The Qdrant index is NOT modified here.
 func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]map[int]struct{}, error) {
-	if err := j.updateVectorStoreAndSHA(ctx, env.repoConfig, env.repo, env.updateResult); err != nil {
-		return nil, "", nil, err
-	}
-
 	// Fetch diff and changed files once — used for both validation and review generation
 	diff, err := env.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
@@ -376,7 +397,9 @@ func truncateTitle(title string, maxLen int) string {
 	return title[:maxLen-3] + "..."
 }
 
-// updateVectorStoreAndSHA performs the indexing of changed files.
+// updateVectorStoreAndSHA performs incremental indexing of the default branch changes.
+// It persists DefaultBranchSHA (not the PR HeadSHA) as LastIndexedSHA to keep
+// the Qdrant baseline aligned with main.
 func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, updateResult *core.UpdateResult) error {
 	switch {
 	case updateResult.IsInitialClone:
@@ -387,7 +410,11 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *cor
 		}
 
 	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
-		j.logger.Info("⚡ Incremental update required", "repo", repo.FullName, "changed_files", len(updateResult.FilesToAddOrUpdate))
+		j.logger.Info("⚡ Incremental update required (default branch advanced)",
+			"repo", repo.FullName,
+			"changed_files", len(updateResult.FilesToAddOrUpdate),
+			"deleted_files", len(updateResult.FilesToDelete),
+		)
 		err := j.ragService.UpdateRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
 		if err != nil {
 			return fmt.Errorf("failed to update repository context in vector store: %w", err)
@@ -397,9 +424,20 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *cor
 		j.logger.Info("✅ Repository up-to-date. Skipping Scan.", "repo", repo.FullName)
 	}
 
-	if err := j.repoMgr.UpdateRepoSHA(ctx, repo.FullName, updateResult.HeadSHA); err != nil {
+	// Persist the DEFAULT BRANCH SHA (not the PR HeadSHA) so the next sync
+	// correctly computes the incremental diff against main.
+	shaToStore := updateResult.DefaultBranchSHA
+	if shaToStore == "" {
+		// Defensive fallback — should not happen with the new sync logic
+		shaToStore = updateResult.HeadSHA
+		j.logger.Warn("DefaultBranchSHA was empty, falling back to HeadSHA for persistence",
+			"repo", repo.FullName,
+		)
+	}
+
+	if err := j.repoMgr.UpdateRepoSHA(ctx, repo.FullName, shaToStore); err != nil {
 		j.logger.Error("CRITICAL: Vector store updated but failed to persist new SHA in database.",
-			"error", err, "repo", repo.FullName, "new_sha", updateResult.HeadSHA)
+			"error", err, "repo", repo.FullName, "new_sha", shaToStore)
 		return fmt.Errorf("CRITICAL: failed to update last indexed SHA after vector store update: %w", err)
 	}
 
