@@ -223,4 +223,3 @@ Key log messages to monitor:
 1. Integrate `chains.ValidatingRetrievalQA` for consistent validation
 2. Add metrics for sparse vector failure rate
 3. Increase HyDE cache hash from 8 to 16 bytes
-4. Add citation requirements to code review prompt
