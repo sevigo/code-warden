@@ -61,6 +61,19 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 
 	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
+	// HIGH PRIORITY: Check for empty context to warn about hallucination risk
+	contextIsEmpty := contextIsEmpty(contextString, definitionsContext)
+	if contextIsEmpty {
+		r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - review will be based solely on diff without repository context",
+			"repo", event.RepoFullName,
+			"pr", event.PRNumber,
+			"changed_files", len(changedFiles),
+		)
+		// Inject warning messages into context for the LLM
+		contextString = "**WARNING: No repository context available. Review based solely on the provided diff. Do not assume external code structure.**"
+		definitionsContext = "**WARNING: No type definitions resolved. Verify types are defined outside this diff.**"
+	}
+
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
 		"Description":        event.PRBody,
@@ -92,7 +105,19 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	if structuredReview.Verdict == "" {
 		structuredReview.Verdict = core.VerdictComment // Default if missing
 	}
+
+	// Add disclaimer to summary if context was empty
+	if contextIsEmpty {
+		structuredReview.Summary = "**Note:** This review was generated without repository context. Verify findings against actual codebase.\n\n" + structuredReview.Summary
+	}
+
 	return structuredReview, parser.raw, nil
+}
+
+// contextIsEmpty checks if both context strings are empty, indicating no repository context was retrieved.
+// This is used to detect high hallucination risk scenarios.
+func contextIsEmpty(contextString, definitionsContext string) bool {
+	return contextString == "" && definitionsContext == ""
 }
 
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
@@ -107,7 +132,18 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
 
-	contextString, _ := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+
+	// HIGH PRIORITY: Check for empty context to warn about hallucination risk
+	if contextIsEmpty(contextString, definitionsContext) {
+		r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - consensus review will be based solely on diff",
+			"repo", event.RepoFullName,
+			"pr", event.PRNumber,
+			"changed_files", len(changedFiles),
+		)
+		contextString = "**WARNING: No repository context available. Reviews based solely on diff without repository context. Verify findings against actual codebase.**"
+		definitionsContext = "**WARNING: No type definitions resolved.**"
+	}
 
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
@@ -116,6 +152,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 		"ChangedFiles":       r.formatChangedFiles(changedFiles),
 		"Context":            contextString,
+		"Definitions":        definitionsContext,
 		"Diff":               diff,
 	}
 
