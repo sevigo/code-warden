@@ -1,0 +1,12 @@
+Analyze the following code. Write a single short sentence describing WHAT it does, not HOW it does it. Focus on the business-level purpose or the abstract operation.
+
+Examples:
+- "Validates an email address format"
+- "Sorts a collection of items by date"
+- "Computes the SHA-256 hash of a byte slice"
+- "Retries a failed HTTP request with exponential backoff"
+
+Code:
+{{.Code}}
+
+Intent (one sentence):

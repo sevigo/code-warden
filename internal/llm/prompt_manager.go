@@ -23,6 +23,8 @@ const (
 	HyDEPrompt            PromptKey = "hyde_code"
 	ConsensusReviewPrompt PromptKey = "consensus_review"
 	ValidateSnippetPrompt PromptKey = "validate_snippet"
+	ReuseIntentPrompt     PromptKey = "reuse_intent"
+	ReuseJudgePrompt      PromptKey = "reuse_judge"
 )
 
 type PromptManager struct {

@@ -1,0 +1,14 @@
+You are comparing two code snippets to determine if they provide the same functionality.
+
+**New Code (A):**
+{{.NewCode}}
+
+**Existing Code (B):**
+File: {{.ExistingFile}}
+{{.ExistingCode}}
+
+Does the existing code B provide the same functionality as the new code A?
+If yes, should the developer refactor to use B instead of writing A?
+
+Respond ONLY with valid JSON, no other text:
+{"duplicate": true/false, "confidence": 0.0-1.0, "reason": "one sentence explanation"}
