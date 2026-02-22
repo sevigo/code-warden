@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sevigo/code-warden/internal/github"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/sevigo/code-warden/internal/github"
 )
 
 func TestParseHunkStartLine(t *testing.T) {

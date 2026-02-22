@@ -23,12 +23,12 @@ import (
 
 // ReuseSuggestion represents a detected potential code redundancy.
 type ReuseSuggestion struct {
-	FilePath      string  `json:"file_path"`
-	LineNumber    int     `json:"line_number"`
-	Message       string  `json:"message"`
-	Confidence    float64 `json:"confidence"`
-	ExistingFile  string  `json:"existing_file"`
-	ExistingCode  string  `json:"existing_code,omitempty"`
+	FilePath     string  `json:"file_path"`
+	LineNumber   int     `json:"line_number"`
+	Message      string  `json:"message"`
+	Confidence   float64 `json:"confidence"`
+	ExistingFile string  `json:"existing_file"`
+	ExistingCode string  `json:"existing_code,omitempty"`
 }
 
 // Function represents an extracted function from a code diff.
@@ -75,6 +75,7 @@ func (p *verificationOutputParser) Parse(_ context.Context, output string) (veri
 	jsonStr := output[start : end+1]
 	var result verificationResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		//nolint:nilerr // Intentional: fail-open design, parse error captured in Reason field
 		return verificationResult{
 			IsRedundant: false,
 			Confidence:  0,
@@ -131,7 +132,6 @@ func (d *ReuseDetector) DetectRedundancies(
 	g.SetLimit(5)
 
 	for _, fn := range newFunctions {
-		fn := fn // capture loop variable for goroutine
 		g.Go(func() error {
 			suggestion, err := d.processFunction(ctx, collectionName, embedderModel, fn)
 			if err != nil {
