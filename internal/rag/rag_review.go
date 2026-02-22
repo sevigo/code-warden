@@ -61,6 +61,46 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 
 	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
+	// HIGH PRIORITY: Check for empty context to warn about hallucination risk
+	if contextString == "" && definitionsContext == "" {
+		r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - review will be based solely on diff without repository context",
+			"repo", event.RepoFullName,
+			"pr", event.PRNumber,
+			"changed_files", len(changedFiles),
+		)
+		// Add a disclaimer to the prompt data to inform the LLM
+		promptData := map[string]string{
+			"Title":              event.PRTitle,
+			"Description":        event.PRBody,
+			"Language":           event.Language,
+			"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
+			"ChangedFiles":       r.formatChangedFiles(changedFiles),
+			"Context":            "**WARNING: No repository context available. Review based solely on the provided diff. Do not assume external code structure.**",
+			"Definitions":        "**WARNING: No type definitions resolved. Verify types are defined outside this diff.**",
+			"Diff":               diff,
+		}
+		promptStr, err := r.promptMgr.Render(llm.CodeReviewPrompt, promptData)
+		if err != nil {
+			return nil, "", err
+		}
+		parser := &structuredReviewParser{logger: r.logger}
+		chain := chains.NewLLMChain[*core.StructuredReview](
+			r.generatorLLM,
+			prompts.NewPromptTemplate(promptStr),
+			chains.WithOutputParser[*core.StructuredReview](parser),
+		)
+		structuredReview, err := chain.Call(ctx, nil)
+		if err != nil {
+			return nil, "", err
+		}
+		if structuredReview.Verdict == "" {
+			structuredReview.Verdict = core.VerdictComment
+		}
+		// Add disclaimer to summary about missing context
+		structuredReview.Summary = "**Note:** This review was generated without repository context. Verify findings against actual codebase.\n\n" + structuredReview.Summary
+		return structuredReview, parser.raw, nil
+	}
+
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
 		"Description":        event.PRBody,
@@ -107,7 +147,18 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
 
-	contextString, _ := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+
+	// HIGH PRIORITY: Check for empty context to warn about hallucination risk
+	if contextString == "" && definitionsContext == "" {
+		r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - consensus review will be based solely on diff",
+			"repo", event.RepoFullName,
+			"pr", event.PRNumber,
+			"changed_files", len(changedFiles),
+		)
+		contextString = "**WARNING: No repository context available. Reviews based solely on diff without repository context. Verify findings against actual codebase.**"
+		definitionsContext = "**WARNING: No type definitions resolved.**"
+	}
 
 	promptData := map[string]string{
 		"Title":              event.PRTitle,
@@ -116,6 +167,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		"CustomInstructions": strings.Join(repoConfig.CustomInstructions, "\n"),
 		"ChangedFiles":       r.formatChangedFiles(changedFiles),
 		"Context":            contextString,
+		"Definitions":        definitionsContext,
 		"Diff":               diff,
 	}
 
