@@ -21,42 +21,138 @@ import (
 )
 
 func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
-	var contextBuilder strings.Builder
-	seenDocs := make(map[string]struct{})
+	if len(docs) == 0 {
+		return ""
+	}
 
+	// ── Dedup by key ─────────────────────────────────────────────────────────
+	seenDocs := make(map[string]struct{})
+	unique := docs[:0]
 	for _, doc := range docs {
-		docKey := r.getDocKey(doc)
-		if _, exists := seenDocs[docKey]; exists {
+		key := r.getDocKey(doc)
+		if _, exists := seenDocs[key]; exists {
 			continue
 		}
-		seenDocs[docKey] = struct{}{}
+		seenDocs[key] = struct{}{}
+		unique = append(unique, doc)
+	}
 
+	// ── Group by source file ──────────────────────────────────────────────────
+	type fileEntry struct {
+		source string
+		docs   []schema.Document
+	}
+	order := make([]string, 0, len(unique))
+	groups := make(map[string]*fileEntry)
+	for _, doc := range unique {
 		source, _ := doc.Metadata["source"].(string)
-		contextBuilder.WriteString("---\n")
-		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", source))
+		if _, seen := groups[source]; !seen {
+			order = append(order, source)
+			groups[source] = &fileEntry{source: source}
+		}
+		groups[source].docs = append(groups[source].docs, doc)
+	}
 
-		if pkg, ok := doc.Metadata["package_name"].(string); ok && pkg != "" {
+	var contextBuilder strings.Builder
+	for _, src := range order {
+		entry := groups[src]
+		contextBuilder.WriteString("---\n")
+		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", src))
+
+		// Print package/identifier from the first doc in the group
+		first := entry.docs[0]
+		if pkg, ok := first.Metadata["package_name"].(string); ok && pkg != "" {
 			contextBuilder.WriteString(fmt.Sprintf("Package: %s\n", pkg))
 		}
-
-		if identifier, _ := doc.Metadata["identifier"].(string); identifier != "" {
-			if parentID, _ := doc.Metadata["parent_id"].(string); parentID == "" {
+		if identifier, _ := first.Metadata["identifier"].(string); identifier != "" {
+			if parentID, _ := first.Metadata["parent_id"].(string); parentID == "" {
 				contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
 			}
 		}
 
 		contextBuilder.WriteString("\n")
-		contextBuilder.WriteString(r.getDocContent(doc))
+		contextBuilder.WriteString(mergeChunksForFile(entry.docs, r))
 		contextBuilder.WriteString("\n---\n\n")
 	}
 	return contextBuilder.String()
 }
 
+// mergeChunksForFile merges consecutive chunks from the same source file,
+// removing overlapping text to produce a single continuous code block.
+// This prevents token waste and confusing duplicate snippets for the LLM.
+func mergeChunksForFile(docs []schema.Document, r *ragService) string {
+	if len(docs) == 1 {
+		return r.getDocContent(docs[0])
+	}
+
+	var merged strings.Builder
+	merged.WriteString(r.getDocContent(docs[0]))
+
+	for i := 1; i < len(docs); i++ {
+		prev := merged.String()
+		curr := r.getDocContent(docs[i])
+
+		// Try to detect and remove the overlapping prefix
+		overlapStart := findOverlapStart(prev, curr)
+		if overlapStart > 0 {
+			// curr[0:overlapStart] is already present at the end of prev
+			merged.WriteString(curr[overlapStart:])
+		} else {
+			merged.WriteString("\n")
+			merged.WriteString(curr)
+		}
+	}
+	return merged.String()
+}
+
+// findOverlapStart returns the length of the longest suffix of prev that is
+// also a prefix of curr. Checks overlaps of up to 300 characters.
+func findOverlapStart(prev, curr string) int {
+	const maxOverlap = 300
+	overlap := len(prev)
+	if overlap > maxOverlap {
+		overlap = maxOverlap
+		prev = prev[len(prev)-overlap:]
+	}
+	// Also cap at len(curr) to avoid out-of-bounds on curr[:size]
+	if overlap > len(curr) {
+		overlap = len(curr)
+	}
+	// Walk from largest possible overlap down to min 10 chars
+	for size := overlap; size >= 10; size-- {
+		if strings.HasSuffix(prev, curr[:size]) {
+			return size
+		}
+	}
+	return 0
+}
+
+// filterAddedLines extracts only the added ('+') lines from a git patch string,
+// stripping the leading '+' character. Lines starting with '+++' (file header) are excluded.
+// This prevents regex symbol extraction from matching deleted ('-') lines, which could
+// produce stale or incorrect symbol names.
+func filterAddedLines(patch string) string {
+	lines := strings.Split(patch, "\n")
+	var added []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			added = append(added, line[1:]) // Strip the leading '+'
+		}
+	}
+	return strings.Join(added, "\n")
+}
+
 // extractSymbolsFromPatch extracts potential type/function names from a git patch.
-// Uses pre-compiled regexes for performance. This is a simple regex-based extraction
-// until ExtractUsedSymbols is available in GoFrame.
+// IMPORTANT: Only added lines ('+') are processed to avoid matching deleted symbols.
+// Uses pre-compiled regexes for performance.
 func extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
+
+	// Only extract from added lines — never from deleted lines.
+	addedOnly := filterAddedLines(patch)
+	if addedOnly == "" {
+		return nil
+	}
 
 	// Use pre-compiled regexes from package level
 	patterns := []*regexp.Regexp{
@@ -68,7 +164,7 @@ func extractSymbolsFromPatch(patch string) []string {
 	}
 
 	for _, re := range patterns {
-		matches := re.FindAllStringSubmatch(patch, -1)
+		matches := re.FindAllStringSubmatch(addedOnly, -1)
 		for _, match := range matches {
 			if len(match) > 1 && len(match[1]) > 1 {
 				symbols[match[1]] = struct{}{}
@@ -326,15 +422,12 @@ func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string,
 
 // buildRelevantContext performs similarity searches using file diffs to find related
 // code snippets from the repository. These results provide context to help the LLM
-// better understand the scope and impact of the changes. Duplicate entries are avoided.
-// It also fetches architectural summaries for the affected directories.
-// Returns the combined context string and the definitions context separately.
+// better understand the scope and impact of the changes.
 func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string) {
 	if len(changedFiles) == 0 {
 		return "", ""
 	}
 
-	// Bound the number of files processed to prevent OOM/DoS
 	const defaultMaxContextFiles = 20
 	if len(changedFiles) > defaultMaxContextFiles {
 		r.logger.Warn("truncating context files", "total", len(changedFiles), "limit", defaultMaxContextFiles)
@@ -342,66 +435,193 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	}
 
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
-	var seenDocsMu sync.RWMutex
-	seenDocs := make(map[string]struct{})
 
-	// Run context gathering in parallel for lower latency
+	archContext, definitionsContext, impactDocs, descDocs, hydeResults, indices := r.buildContextConcurrently(
+		ctx, collectionName, embedderModelName, repoPath, prDescription, changedFiles, scopedStore)
+
+	allDocs := mergeAndDedup(append(impactDocs, descDocs...), r.getDocKey)
+
+	var impactContext, descriptionContext string
+	if len(allDocs) > 0 {
+		var seenDocs sync.Map
+		impactContext, descriptionContext = r.splitAndFormatDocs(allDocs, descDocs, prDescription, &seenDocs)
+	}
+
+	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles)
+	return fullContext, definitionsContext
+}
+
+func (r *ragService) buildContextConcurrently(
+	ctx context.Context, collectionName, embedderModelName, repoPath, prDescription string,
+	changedFiles []internalgithub.ChangedFile, scopedStore storage.ScopedVectorStore,
+) (archContext, definitionsContext string, impactDocs, descDocs []schema.Document, hydeResults [][]schema.Document, indices []int) {
 	var wg sync.WaitGroup
-	var archContext, impactContext, descriptionContext string
-	var hydeResults [][]schema.Document
-	var indices []int
+	var impactMu, descMu sync.Mutex
 
-	// 1. Architectural Context
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		archContext = r.gatherArchContext(ctx, scopedStore, changedFiles)
+		archContext = r.gatherArchContextSafe(ctx, scopedStore, changedFiles)
 	}()
 
-	// 2. HyDE Snippets
 	if r.cfg.AI.EnableHyDE {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			hydeResults, indices = r.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
 		}()
-	} else {
-		r.logger.Info("stage skipped", "name", "HyDE", "reason", "disabled_in_config")
 	}
 
-	// 3. Impact Context
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		impactContext = r.gatherImpactContext(ctx, scopedStore, repoPath, changedFiles, seenDocs, &seenDocsMu)
+		docs := r.gatherImpactDocs(ctx, scopedStore, repoPath, changedFiles)
+		impactMu.Lock()
+		impactDocs = append(impactDocs, docs...)
+		impactMu.Unlock()
 	}()
 
-	// 4. Description Context (MultiQuery)
 	if prDescription != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			descriptionContext = r.gatherDescriptionContext(ctx, collectionName, embedderModelName, prDescription, seenDocs, &seenDocsMu)
+			docs := r.gatherDescriptionDocs(ctx, collectionName, embedderModelName, prDescription)
+			descMu.Lock()
+			descDocs = append(descDocs, docs...)
+			descMu.Unlock()
 		}()
 	}
 
-	// 5. Symbol Resolution (Definitions)
-	var definitionsContext string
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, seenDocs, &seenDocsMu)
+		seenDocs := make(map[string]struct{})
+		var mu sync.RWMutex
+		definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, seenDocs, &mu)
 	}()
 
 	wg.Wait()
-
-	// Assemble and return the combined context from all stages.
-	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles, seenDocs, &seenDocsMu)
-	return fullContext, definitionsContext
+	return
 }
 
-// gatherDescriptionContext uses MultiQuery retrieval to find code related to the PR description.
-func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, embedder, description string, seen map[string]struct{}, mu *sync.RWMutex) string {
+func (r *ragService) gatherArchContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+	r.logger.Info("stage started", "name", "ArchitecturalContext")
+	ac := r.getArchContext(ctx, store, files)
+	r.logger.Info("stage completed", "name", "ArchitecturalContext")
+	return ac
+}
+
+// mergeAndDedup merges document slices and deduplicates them by a key function.
+// The output order is deterministic: docs are sorted by key after dedup.
+func mergeAndDedup(docs []schema.Document, keyFn func(schema.Document) string) []schema.Document {
+	seen := make(map[string]schema.Document, len(docs))
+	for _, d := range docs {
+		key := keyFn(d)
+		if _, exists := seen[key]; !exists {
+			seen[key] = d
+		}
+	}
+	unique := make([]schema.Document, 0, len(seen))
+	for _, d := range seen {
+		unique = append(unique, d)
+	}
+	sort.Slice(unique, func(i, j int) bool {
+		si, _ := unique[i].Metadata["source"].(string)
+		sj, _ := unique[j].Metadata["source"].(string)
+		return si < sj
+	})
+	return unique
+}
+
+// splitAndFormatDocs splits merged docs back into impact/description buckets and formats them.
+func (r *ragService) splitAndFormatDocs(
+	allDocs []schema.Document,
+	descDocs []schema.Document,
+	prDescription string,
+	seen *sync.Map,
+) (impactContext, descriptionContext string) {
+	descKeys := make(map[string]schema.Document, len(descDocs))
+	for _, d := range descDocs {
+		source, _ := d.Metadata["source"].(string)
+		descKeys[source] = d
+	}
+
+	validDescSources := r.filterValidDescriptionDocs(descKeys, seen, prDescription)
+	return r.formatSplitDocs(allDocs, descKeys, validDescSources, seen, prDescription)
+}
+
+func (r *ragService) filterValidDescriptionDocs(descKeys map[string]schema.Document, seen *sync.Map, prDescription string) map[string]bool {
+	var toValidate []schema.Document
+	var snippets []string
+	for source, d := range descKeys {
+		if _, loaded := seen.Load(source); !loaded {
+			toValidate = append(toValidate, d)
+			snippets = append(snippets, r.getDocContent(d))
+		}
+	}
+
+	relevanceMap := make(map[int]bool, len(toValidate))
+	if len(snippets) > 0 && prDescription != "" {
+		validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
+		if err == nil {
+			v := newSnippetValidator(validatorLLM, r.promptMgr)
+			relevanceMap = v.validateBatch(context.Background(), snippets, prDescription)
+		} else {
+			for i := range snippets {
+				relevanceMap[i] = true
+			}
+		}
+	}
+
+	validSources := make(map[string]bool, len(toValidate))
+	for i, doc := range toValidate {
+		if relevanceMap[i] {
+			source, _ := doc.Metadata["source"].(string)
+			validSources[source] = true
+		}
+	}
+	return validSources
+}
+
+func (r *ragService) formatSplitDocs(
+	allDocs []schema.Document,
+	descKeys map[string]schema.Document,
+	validDescSources map[string]bool,
+	seen *sync.Map,
+	prDescription string,
+) (string, string) {
+	var impactBuilder, descBuilder strings.Builder
+	for _, doc := range allDocs {
+		source, _ := doc.Metadata["source"].(string)
+
+		if _, isDesc := descKeys[source]; isDesc && prDescription != "" {
+			if !validDescSources[source] {
+				continue
+			}
+		}
+
+		if _, loaded := seen.LoadOrStore(source, struct{}{}); loaded {
+			continue
+		}
+
+		content := r.getDocContent(doc)
+		if _, isDesc := descKeys[source]; isDesc && prDescription != "" {
+			descBuilder.WriteString(fmt.Sprintf("File: %s\n```\n%s\n```\n\n", source, content))
+		} else {
+			fmt.Fprintf(&impactBuilder, "**%s**:\n```\n%s\n```\n\n", source, content)
+		}
+	}
+
+	var descCtx string
+	if descBuilder.Len() > 0 {
+		descCtx = "# Related to PR Description\n\n" + descBuilder.String()
+	}
+	return impactBuilder.String(), descCtx
+}
+
+// gatherDescriptionDocs uses MultiQuery retrieval to find documents related to the PR description.
+// Returns raw []schema.Document for deterministic dedup in the caller.
+func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embedder, description string) []schema.Document {
 	r.logger.Info("stage started", "name", "DescriptionContext")
 
 	scopedStore := r.vectorStore.ForRepo(collection, embedder)
@@ -433,111 +653,79 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 	allDocs, err := retriever.GetRelevantDocuments(ctx, description)
 	if err != nil {
 		r.logger.Warn("multi-query retrieval failed", "error", err)
-		return ""
+		return nil
 	}
 
-	// Deduplicate by parent-aware key
-	uniqueDocs := make(map[string]schema.Document)
-	for _, d := range allDocs {
-		uniqueDocs[r.getDocKey(d)] = d
-	}
-
-	var builder strings.Builder
-	if len(uniqueDocs) > 0 {
-		builder.WriteString("# Related to PR Description\n\n")
-		builder.WriteString(r.validateAndFormatSnippets(ctx, description, uniqueDocs, seen, mu))
-	}
-
-	r.logger.Info("stage completed", "name", "DescriptionContext", "unique_snippets", len(uniqueDocs))
-	return builder.String()
+	r.logger.Info("stage completed", "name", "DescriptionContext", "retrieved", len(allDocs))
+	return allDocs
 }
 
-// validateSnippetRelevance uses a fast LLM to check if a retrieved snippet
-// is actually relevant to the given context. Fails open (returns true) if
-// the validator model is unavailable or returns an error.
-// Uses goframe's LLMChain pattern with structured JSON output parsing.
-func (r *ragService) validateSnippetRelevance(ctx context.Context, snippet, prContext string) bool {
-	validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
-	if err != nil {
-		return true // Fail open: if no validator available, include the snippet
-	}
-
-	validator := newSnippetValidator(validatorLLM, r.promptMgr)
-	return validator.validate(ctx, snippet, prContext)
-}
-
-func (r *ragService) gatherArchContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
-	r.logger.Info("stage started", "name", "ArchitecturalContext")
-	ac := r.getArchContext(ctx, store, files)
-	r.logger.Info("stage completed", "name", "ArchitecturalContext")
-	return ac
-}
-
-func (r *ragService) gatherImpactContext(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
+// gatherImpactDocs returns raw impact docs without formatting or shared seenDocs.
+// Replaces gatherImpactContext: dedup now happens after wg.Wait() in the caller.
+func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) []schema.Document {
 	r.logger.Info("stage started", "name", "ImpactAnalysis")
-	ic := r.getImpactContext(ctx, store, repoPath, files, seen, mu)
-	r.logger.Info("stage completed", "name", "ImpactAnalysis")
-	return ic
+	docs := r.getImpactDocs(ctx, store, repoPath, files)
+	r.logger.Info("stage completed", "name", "ImpactAnalysis", "docs", len(docs))
+	return docs
 }
 
-func (r *ragService) assembleContext(arch, impact, description, definitions string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile, seen map[string]struct{}, mu *sync.RWMutex) string {
-	var contextBuilder strings.Builder
+// assembleContext assembles the final prompt context from all gathered sections,
+// applying a token budget to prevent context window overflow (Issue #3).
+// Priority order (high → low): definitions → description → impact → arch → hyde.
+func (r *ragService) assembleContext(
+	arch, impact, description, definitions string,
+	hyde [][]schema.Document, indices []int,
+	files []internalgithub.ChangedFile,
+) string {
+	const tokenBudget = 6000
+	packer := newTokenContextPacker(tokenBudget)
 
-	if arch != "" {
-		contextBuilder.WriteString("# Architectural Context\n\n")
-		contextBuilder.WriteString("The following describes the purpose of the affected modules:\n\n")
-		contextBuilder.WriteString(arch)
-		contextBuilder.WriteString("\n---\n\n")
-	}
-
-	if description != "" {
-		contextBuilder.WriteString(description) // Already formatted in gatherDescriptionContext
-		contextBuilder.WriteString("\n---\n\n")
-	}
-
+	// Priority 1: Definitions (type context is most critical for accuracy)
 	if definitions != "" {
-		contextBuilder.WriteString(definitions) // Already formatted in gatherDefinitionsContext
-		contextBuilder.WriteString("\n---\n\n")
+		packer.add("Definitions", definitions)
 	}
-
+	// Priority 2: Description-related snippets
+	if description != "" {
+		packer.add("Description", description)
+	}
+	// Priority 3: Impact analysis
 	if impact != "" {
-		r.logger.Info("impact analysis identified potential ripple effects", "context_length", len(impact))
-		contextBuilder.WriteString("# Potential Impacted Callers & Usages\n\n")
-		contextBuilder.WriteString("The following code snippets may be affected by the changes in modified symbols:\n\n")
-		contextBuilder.WriteString(impact)
-		contextBuilder.WriteString("\n---\n\n")
+		packer.add("Impact", fmt.Sprintf("# Potential Impacted Callers & Usages\n\nThe following code snippets may be affected by the changes in modified symbols:\n\n%s", impact))
 	}
-
+	// Priority 4: Architectural context
+	if arch != "" {
+		packer.add("Arch", fmt.Sprintf("# Architectural Context\n\nThe following describes the purpose of the affected modules:\n\n%s", arch))
+	}
+	// Priority 5: HyDE snippets (may be redundant if impact/description already covered)
 	if len(hyde) > 0 {
-		contextBuilder.WriteString("# Related Code Snippets\n\n")
-		contextBuilder.WriteString("The following code snippets might be relevant to the changes being reviewed:\n\n")
-
+		var hydeBuilder strings.Builder
+		hydeBuilder.WriteString("# Related Code Snippets\n\nThe following code snippets might be relevant to the changes being reviewed:\n\n")
+		hydeSeenKeys := make(map[string]struct{})
 		for i, docs := range hyde {
-			if i >= len(indices) { // Safety check
+			if i >= len(indices) {
 				continue
 			}
 			originalIdx := indices[i]
-			if originalIdx >= len(files) { // Safety check
+			if originalIdx >= len(files) {
 				continue
 			}
 			filePath := files[originalIdx].Filename
 			for _, doc := range docs {
-				docKey := r.getDocKey(doc)
-				mu.Lock()
-				if _, exists := seen[docKey]; exists {
-					mu.Unlock()
+				key := r.getDocKey(doc)
+				if _, exists := hydeSeenKeys[key]; exists {
 					continue
 				}
-				seen[docKey] = struct{}{}
-				mu.Unlock()
-
-				contextBuilder.WriteString(fmt.Sprintf("## Related to: %s\n", filePath))
-				contextBuilder.WriteString("```\n")
-				contextBuilder.WriteString(r.getDocContent(doc))
-				contextBuilder.WriteString("\n```\n\n")
+				hydeSeenKeys[key] = struct{}{}
+				hydeBuilder.WriteString(fmt.Sprintf("## Related to: %s\n", filePath))
+				hydeBuilder.WriteString("```\n")
+				hydeBuilder.WriteString(r.getDocContent(doc))
+				hydeBuilder.WriteString("\n```\n\n")
 			}
 		}
+		packer.add("HyDE", hydeBuilder.String())
 	}
+
+	result := packer.build()
 
 	r.logger.Info("relevant context built",
 		"changed_files", len(files),
@@ -545,9 +733,74 @@ func (r *ragService) assembleContext(arch, impact, description, definitions stri
 		"impact_len", len(impact),
 		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
+		"packed_len", len(result),
 	)
 
-	return contextBuilder.String()
+	return result
+}
+
+// tokenContextSection represents a named section in the context packer.
+type tokenContextSection struct {
+	name    string
+	content string
+}
+
+// tokenContextPacker packs context sections into a token budget, truncating
+// lower-priority sections first. It uses a simple character-based estimate
+// (1 token ≈ 3 characters) for speed — no extra LLM calls needed.
+type tokenContextPacker struct {
+	budget   int
+	sections []tokenContextSection
+}
+
+func newTokenContextPacker(tokenBudget int) *tokenContextPacker {
+	return &tokenContextPacker{budget: tokenBudget}
+}
+
+// add appends a named section. Sections are packed in the order they are added
+// (first added = highest priority).
+func (p *tokenContextPacker) add(name, content string) {
+	if content != "" {
+		p.sections = append(p.sections, tokenContextSection{name: name, content: content})
+	}
+}
+
+// estimateTokens returns a fast character-based token estimate (1 token ≈ 3 chars).
+func estimateTokens(s string) int { return len(s) / 3 }
+
+// build assembles sections into a single string, truncating lower-priority
+// sections when the total would exceed the token budget.
+func (p *tokenContextPacker) build() string {
+	var out strings.Builder
+	remaining := p.budget
+
+	for _, sec := range p.sections {
+		tokens := estimateTokens(sec.content)
+
+		switch {
+		case tokens <= remaining:
+			out.WriteString(sec.content)
+			out.WriteString("\n---\n\n")
+			remaining -= tokens
+
+		case remaining > 50: // Only truncate if there's meaningful space left
+			// Truncate to remaining budget
+			maxChars := remaining * 3
+			truncated := sec.content[:maxChars]
+			// Try to cut at a newline boundary
+			if idx := strings.LastIndex(truncated, "\n"); idx > maxChars/2 {
+				truncated = truncated[:idx]
+			}
+			out.WriteString(truncated)
+			out.WriteString(fmt.Sprintf("\n[%s context truncated due to length]\n\n---\n\n", sec.name))
+			remaining = 0
+
+		default: // Budget exhausted
+			out.WriteString(fmt.Sprintf("[%s context omitted — token budget exhausted]\n\n---\n\n", sec.name))
+		}
+	}
+
+	return out.String()
 }
 
 func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {
@@ -734,66 +987,4 @@ func (r *ragService) getDocContent(doc schema.Document) string {
 		r.logger.Debug("parent_id present but full_parent_text missing", "parent_id", parentID, "source", doc.Metadata["source"])
 	}
 	return doc.PageContent
-}
-
-func (r *ragService) validateAndFormatSnippets(ctx context.Context, description string, uniqueDocs map[string]schema.Document, seen map[string]struct{}, mu *sync.RWMutex) string {
-	const maxConcurrentValidations = 10
-	sem := make(chan struct{}, maxConcurrentValidations)
-	var validated []string
-	var validMu sync.Mutex
-	var valWg sync.WaitGroup
-
-	for _, d := range uniqueDocs {
-		valWg.Add(1)
-		go func(doc schema.Document) {
-			defer valWg.Done()
-
-			// Concurrency control
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-
-			content := r.getDocContent(doc)
-			docKey := r.getDocKey(doc)
-
-			if ctx.Err() != nil {
-				return
-			}
-
-			// First check: fast path with read lock
-			mu.RLock()
-			_, exists := seen[docKey]
-			mu.RUnlock()
-			if exists {
-				return
-			}
-
-			// Perform expensive validation only if potentially new
-			if !r.validateSnippetRelevance(ctx, content, description) {
-				return
-			}
-
-			// Second check: verify still absent under write lock before adding
-			mu.Lock()
-			if _, exists := seen[docKey]; !exists {
-				seen[docKey] = struct{}{}
-				source, _ := doc.Metadata["source"].(string)
-				snip := fmt.Sprintf("File: %s\n```\n%s\n```\n\n", source, content)
-				validMu.Lock()
-				validated = append(validated, snip)
-				validMu.Unlock()
-			}
-			mu.Unlock()
-		}(d)
-	}
-	valWg.Wait()
-
-	var builder strings.Builder
-	for _, v := range validated {
-		builder.WriteString(v)
-	}
-	return builder.String()
 }

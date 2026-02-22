@@ -3,54 +3,22 @@ package rag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
-	"github.com/sevigo/goframe/chains"
 	"github.com/sevigo/goframe/llms"
-	"github.com/sevigo/goframe/prompts"
 
 	"github.com/sevigo/code-warden/internal/llm"
 )
 
-// snippetValidator uses goframe's LLMChain pattern to validate
-// if a code snippet is relevant to a given context/query.
+// snippetValidator uses a fast LLM to validate whether code snippets are
+// relevant to a PR description. All validation is done in a single batch call.
 type snippetValidator struct {
 	validatorLLM llms.Model
 	promptMgr    *llm.PromptManager
 }
 
-// validateSnippetResult is the parsed result from the validation LLM.
-type validateSnippetResult struct {
-	Relevant bool   `json:"relevant"`
-	Reason   string `json:"reason"`
-}
-
-// snippetOutputParser implements output parsing for validation results.
-type snippetOutputParser struct{}
-
-func (p *snippetOutputParser) Parse(_ context.Context, output string) (*validateSnippetResult, error) {
-	// Try to extract JSON from the response
-	start := strings.Index(output, "{")
-	end := strings.LastIndex(output, "}")
-	if start == -1 || end == -1 || end < start {
-		// Fallback: check for YES/NO pattern
-		if strings.Contains(strings.ToUpper(output), "YES") {
-			return &validateSnippetResult{Relevant: true, Reason: "positive response detected"}, nil
-		}
-		return &validateSnippetResult{Relevant: false, Reason: "no valid response"}, nil
-	}
-
-	jsonStr := output[start : end+1]
-	var result validateSnippetResult
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		// Log parse error but return result with reason (intentional fail-open behavior)
-		//nolint:nilerr // Intentional: fail-open design, error is captured in Reason field
-		return &validateSnippetResult{Relevant: false, Reason: "parse error: " + err.Error()}, nil
-	}
-	return &result, nil
-}
-
-// newSnippetValidator creates a new snippet validator using the provided LLM.
+// newSnippetValidator creates a validator backed by the provided LLM.
 func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) *snippetValidator {
 	return &snippetValidator{
 		validatorLLM: validatorLLM,
@@ -58,36 +26,119 @@ func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) 
 	}
 }
 
-// validate checks if a snippet is relevant to the given context.
-// Returns true if relevant, false otherwise. Fails open (returns true) on errors.
-func (v *snippetValidator) validate(ctx context.Context, snippet, context string) bool {
-	if v.validatorLLM == nil {
-		return true // Fail open: if no validator available, include the snippet
+// batchValidationResult is the parsed JSON result from a batch validation call:
+// {"0": true, "1": false, ...}
+type batchValidationResult map[string]bool
+
+// validateBatch sends all snippets to the LLM in a single call and returns a
+// map of snippet-index → relevant. Fails open (all true) on any error.
+// This is Issue #6's fix: replaces N sequential per-snippet LLM calls with one
+// batched call.
+func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string, prContext string) map[int]bool {
+	result := make(map[int]bool, len(snippets))
+	for i := range snippets {
+		result[i] = true // fail-open default
 	}
 
-	promptData := map[string]string{
-		"context": context,
-		"snippet": snippet,
+	if v.validatorLLM == nil || len(snippets) == 0 {
+		return result
 	}
 
-	prompt, err := v.promptMgr.Render(llm.ValidateSnippetPrompt, promptData)
+	prompt, err := v.buildBatchPrompt(snippets, prContext)
 	if err != nil {
-		// Fail open on prompt rendering errors
-		return true
+		return result
 	}
 
-	parser := &snippetOutputParser{}
-	chain := chains.NewLLMChain(
-		v.validatorLLM,
-		prompts.NewPromptTemplate(prompt),
-		chains.WithOutputParser(parser),
-	)
-
-	result, err := chain.Call(ctx, nil)
-	if err != nil {
-		// Fail open on LLM errors
-		return true
+	raw, llmErr := llms.GenerateFromSinglePrompt(ctx, v.validatorLLM, prompt)
+	if llmErr != nil {
+		return result
 	}
 
-	return result.Relevant
+	parsed, parseErr := parseBatchResponse(raw)
+	if parseErr != nil {
+		return result
+	}
+
+	applyParsedResults(parsed, len(snippets), result)
+	return result
+}
+
+// buildBatchPrompt constructs the numbered-snippet prompt for batch validation.
+func (v *snippetValidator) buildBatchPrompt(snippets []string, prContext string) (string, error) {
+	var snippetList strings.Builder
+	for i, s := range snippets {
+		preview := s
+		if len(preview) > 500 {
+			preview = preview[:500] + "..."
+		}
+		snippetList.WriteString("--- Snippet ")
+		snippetList.WriteString(itoa(i))
+		snippetList.WriteString(" ---\n")
+		snippetList.WriteString(preview)
+		snippetList.WriteString("\n\n")
+	}
+
+	return v.promptMgr.Render(llm.ValidateSnippetsBatchPrompt, map[string]string{
+		"context":  prContext,
+		"snippets": snippetList.String(),
+		"count":    itoa(len(snippets)),
+	})
+}
+
+// parseBatchResponse extracts JSON from the LLM's raw response.
+func parseBatchResponse(raw string) (batchValidationResult, error) {
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start == -1 || end == -1 || end < start {
+		return nil, errNoJSON
+	}
+	var parsed batchValidationResult
+	if err := json.Unmarshal([]byte(raw[start:end+1]), &parsed); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
+// applyParsedResults writes the LLM's relevance decisions onto the result map.
+func applyParsedResults(parsed batchValidationResult, snippetCount int, result map[int]bool) {
+	for k, relevant := range parsed {
+		idx := atoiSafe(k)
+		if idx >= 0 && idx < snippetCount {
+			result[idx] = relevant
+		}
+	}
+}
+
+// errNoJSON is returned when the LLM response contains no JSON object.
+var errNoJSON = errors.New("no JSON object found in response")
+
+// itoa converts a non-negative int to string without importing strconv.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	pos := len(buf)
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[pos:])
+}
+
+// atoiSafe converts a decimal string to int, returning -1 on any invalid input.
+func atoiSafe(s string) int {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return -1
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return -1
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
