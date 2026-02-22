@@ -50,6 +50,7 @@ type Service interface {
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GetTextSplitter() textsplitter.TextSplitter
+	GetReuseDetector() ReuseDetector
 }
 
 type ragService struct {
@@ -63,6 +64,7 @@ type ragService struct {
 	splitter       textsplitter.TextSplitter
 	logger         *slog.Logger
 	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
+	reuseDetector  ReuseDetector
 }
 
 // NewService creates a new Service instance with a vector store, LLM model,
@@ -88,11 +90,16 @@ func NewService(
 		parserRegistry: pr,
 		splitter:       splitter,
 		logger:         logger,
+		reuseDetector:  NewReuseDetector(gen, vs),
 	}
 }
 
 func (r *ragService) GetTextSplitter() textsplitter.TextSplitter {
 	return r.splitter
+}
+
+func (r *ragService) GetReuseDetector() ReuseDetector {
+	return r.reuseDetector
 }
 
 func (r *ragService) getOrCreateLLM(modelName string) (llms.Model, error) {
