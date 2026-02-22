@@ -10,41 +10,52 @@ import (
 	"github.com/google/go-github/v73/github"
 )
 
-// ReviewType distinguishes between a full review and a follow-up.
+// ReviewType distinguishes between a full review and a follow-up review.
 type ReviewType int
 
 const (
+	// FullReview indicates a complete code review should be performed.
 	FullReview ReviewType = iota
+	// ReReview indicates a follow-up review of changes since a previous review.
 	ReReview
 )
 
 // GitHubEvent represents a simplified, internal view of a GitHub webhook event.
+// It is constructed from raw GitHub webhook payloads and serves as the primary
+// data carrier for triggering code review jobs.
 type GitHubEvent struct {
 	// Repository details
-	RepoOwner    string
-	RepoName     string
-	RepoFullName string
-	RepoCloneURL string
-	Language     string
+	RepoOwner    string // The repository owner's login name
+	RepoName     string // The repository name
+	RepoFullName string // The full name in "owner/repo" format
+	RepoCloneURL string // The URL used to clone the repository
+	Language     string // The primary programming language of the repository
 
-	PRNumber int
-	PRTitle  string
-	PRBody   string
-	HeadSHA  string
-	Type     ReviewType
+	PRNumber int    // The pull request number
+	PRTitle  string // The title of the pull request
+	PRBody   string // The body/description of the pull request
+	HeadSHA  string // The HEAD commit SHA of the PR
 
-	// UserInstructions captures optional text provided with the command (e.g. "/rereview check security")
+	// Type specifies whether this is a FullReview or a ReReview request.
+	Type ReviewType
+
+	// UserInstructions captures optional text provided with the command
+	// (e.g., "/rereview check security"). This allows users to provide
+	// custom guidance to the code review process.
 	UserInstructions string
 
-	Commenter      string
-	InstallationID int64
+	Commenter      string // The GitHub username that triggered the review
+	InstallationID int64  // The GitHub App installation ID
 }
 
 // EventFromIssueComment transforms a raw GitHub IssueCommentEvent into the application's
-// internal GitHubEvent representation. It acts as an anti-corruption layer, ensuring
-// that the incoming webhook payload is valid and contains all necessary data before
-// it's processed by a job. It specifically filters for comments that are a "/review" command
-// on a pull request.
+// internal GitHubEvent representation. It acts as an anti-corruption layer, validating
+// the incoming webhook payload and extracting all necessary data before it's processed
+// by a job. It specifically filters for comments that are "/review" or "/rereview"
+// commands on pull requests.
+//
+// Returns an error if the comment is not on a pull request, the command is invalid,
+// or required information is missing from the event.
 func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error) {
 	if !event.GetIssue().IsPullRequest() {
 		return nil, fmt.Errorf("comment is not on a pull request")
@@ -92,6 +103,11 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 
 const reReviewCmd = "/rereview"
 
+// parseReviewCommand parses the comment body to determine the review type
+// and any user-provided instructions.
+//
+// Returns the ReviewType, instructions string, and an error if the command
+// is not recognized.
 func parseReviewCommand(commentBody string) (ReviewType, string, error) {
 	if commentBody == "/review" {
 		return FullReview, "", nil
@@ -109,7 +125,8 @@ func parseReviewCommand(commentBody string) (ReviewType, string, error) {
 	args := strings.TrimPrefix(commentBody, reReviewCmd)
 	instructions := strings.TrimSpace(args)
 
-	// Sanitize instructions
+	// Sanitize instructions by replacing whitespace characters with spaces
+	// and removing control characters.
 	instructions = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' || r == '\t' {
 			return ' '
