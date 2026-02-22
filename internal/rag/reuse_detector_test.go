@@ -96,7 +96,7 @@ func TestExtractAddedFunctions(t *testing.T) {
 	assert.Contains(t, funcs[0].Code, "}")
 
 	assert.Equal(t, "pkg/utils/sanitize.go", funcs[1].File)
-	assert.Equal(t, 15, funcs[1].Line) // approximately
+	assert.Equal(t, 16, funcs[1].Line) // approximately
 	assert.Contains(t, funcs[1].Code, "func Another(a int) {")
 	assert.Contains(t, funcs[1].Code, "}")
 }

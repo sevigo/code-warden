@@ -214,7 +214,9 @@ func (d *reuseDetector) extractAddedFunctions(changedFiles []internalgithub.Chan
 				continue
 			}
 
-			if !strings.HasPrefix(line, "-") {
+			// In unified diffs, lines starting with "-" are removed, so they don't count towards the *new* file's line numbers.
+			// Lines starting with "+" or " " (context) exist in the *new* file, so they increment the line number.
+			if !strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "\\") {
 				currentLineNumber++
 			}
 
