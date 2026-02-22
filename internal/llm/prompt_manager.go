@@ -22,6 +22,7 @@ const (
 	QuestionPrompt        PromptKey = "question"
 	HyDEPrompt            PromptKey = "hyde_code"
 	ConsensusReviewPrompt PromptKey = "consensus_review"
+	ValidateSnippetPrompt PromptKey = "validate_snippet"
 )
 
 type PromptManager struct {

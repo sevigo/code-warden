@@ -1,0 +1,14 @@
+You are a code relevance validator. Determine if the given code snippet is relevant to the provided context/query.
+
+Context/Query:
+{{.context}}
+
+Code Snippet:
+{{.snippet}}
+
+Is this snippet relevant to understanding or addressing the context? Consider:
+- Does it contain code that interacts with the described functionality?
+- Does it show patterns or types used in the context?
+- Would a developer need this snippet to understand the changes?
+
+Respond ONLY with a JSON object: {"relevant": true|false, "reason": "brief explanation"}
