@@ -135,7 +135,7 @@ func filterAddedLines(patch string) string {
 	lines := strings.Split(patch, "\n")
 	var added []string
 	for _, line := range lines {
-		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "++") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
 			added = append(added, line[1:]) // Strip the leading '+'
 		}
 	}

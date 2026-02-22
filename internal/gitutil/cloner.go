@@ -125,6 +125,21 @@ func (c *Client) Checkout(ctx context.Context, path string, sha string) error {
 	return nil
 }
 
+// ResetToUpstream forcefully resets the current branch to match its remote tracking branch.
+// This is necessary because Fetch only updates remote refs (like origin/main), while the
+// local working tree pointer remains unchanged until specifically moved via merge or reset.
+func (c *Client) ResetToUpstream(ctx context.Context, path string) error {
+	c.Logger.InfoContext(ctx, "resetting worktree to upstream tracking branch")
+
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "reset", "--hard", "@{u}")
+	cmd.Dir = path
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git reset --hard @{u} failed: %s: %w", string(out), err)
+	}
+	return nil
+}
+
 // GetRemoteHeadSHA fetches the HEAD commit SHA of a specific remote branch without cloning.
 func (c *Client) GetRemoteHeadSHA(repoURL, branch, token string) (string, error) {
 	authURL, err := c.getAuthenticatedURL(repoURL, token)

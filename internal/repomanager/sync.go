@@ -226,27 +226,37 @@ func (m *manager) cleanupRepoDir(path string) {
 	}
 }
 
-// ensureDefaultBranch fetches origin and checks out the default branch ref (HEAD).
+// ensureDefaultBranch fetches origin and resets the local branch to match the remote upstream.
 // It does NOT check out the PR's HeadSHA — that is intentional.
 func (m *manager) ensureDefaultBranch(ctx context.Context, ev *core.GitHubEvent, token, clonePath string) error {
 	currentSHA, err := m.gitClient.GetHeadSHA(ctx, clonePath)
-	if err != nil {
+	needsFullFetch := currentSHA == "" || err != nil
+
+	if needsFullFetch {
 		m.logger.Warn("failed to get current HEAD SHA, forcing fetch", "repo", ev.RepoFullName, "err", err)
 	}
 
-	// Only fetch if we don't have a valid HEAD yet (handles edge cases like a wiped working tree).
-	if currentSHA == "" || err != nil {
-		if fetchErr := m.gitClient.Fetch(ctx, clonePath, token); fetchErr != nil {
-			return fmt.Errorf("git fetch default branch: %w", fetchErr)
-		}
-	} else {
-		// Always fetch to pick up any new commits on the default branch.
-		if fetchErr := m.gitClient.Fetch(ctx, clonePath, token); fetchErr != nil {
-			// Non-fatal: we may still have a usable local state.
-			m.logger.Warn("git fetch failed, using existing local state", "repo", ev.RepoFullName, "err", fetchErr)
-		}
+	fetchErr := m.gitClient.Fetch(ctx, clonePath, token)
+
+	// If we don't have a valid working tree yet, fetch is mandatory.
+	if needsFullFetch && fetchErr != nil {
+		return fmt.Errorf("git fetch default branch: %w", fetchErr)
 	}
 
-	// We don't call Checkout(HeadSHA) here — the working tree stays on the default branch.
+	// If fetch failed but we already had a valid working tree, we can limp along with a warning.
+	if fetchErr != nil {
+		m.logger.Warn("git fetch failed, using existing local state", "repo", ev.RepoFullName, "err", fetchErr)
+		return nil
+	}
+
+	// Fetch succeeded. Ensure the working tree is advanced to the newly fetched upstream commit.
+	resetErr := m.gitClient.ResetToUpstream(ctx, clonePath)
+	if resetErr != nil {
+		if needsFullFetch {
+			return fmt.Errorf("git reset upstream: %w", resetErr)
+		}
+		m.logger.Warn("git reset upstream failed, index might be slightly stale", "repo", ev.RepoFullName, "err", resetErr)
+	}
+
 	return nil
 }
