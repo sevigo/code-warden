@@ -135,7 +135,8 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	// HIGH PRIORITY: Check for empty context to warn about hallucination risk
-	if contextIsEmpty(contextString, definitionsContext) {
+	contextWasEmpty := contextIsEmpty(contextString, definitionsContext)
+	if contextWasEmpty {
 		r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - consensus review will be based solely on diff",
 			"repo", event.RepoFullName,
 			"pr", event.PRNumber,
@@ -193,8 +194,14 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	if err != nil {
 		r.logger.Error("FATAL: failed to parse consensus review - final report structure is broken. Check LLM output for tagging errors.", "error", err, "pr", event.PRNumber)
 		structuredReview = &core.StructuredReview{Summary: rawConsensus}
-	} else if err := r.validateStructuredReview(ctx, event, structuredReview); err != nil {
-		return nil, "", err
+	} else {
+		if err := r.validateStructuredReview(ctx, event, structuredReview); err != nil {
+			return nil, "", err
+		}
+		// Add disclaimer to summary if context was empty (mirroring GenerateReview)
+		if contextWasEmpty {
+			structuredReview.Summary = "**Note:** This consensus review was generated without repository context. Verify findings against actual codebase.\n\n" + structuredReview.Summary
+		}
 	}
 
 	return structuredReview, rawConsensus, nil

@@ -15,13 +15,14 @@ var promptFiles embed.FS
 type PromptKey string
 
 const (
-	CodeReviewPrompt      PromptKey = "code_review"
-	CodeGenerationPrompt  PromptKey = "code_generation"
-	ReReviewPrompt        PromptKey = "rereview"
-	ArchSummaryPrompt     PromptKey = "arch_summary"
-	QuestionPrompt        PromptKey = "question"
-	HyDEPrompt            PromptKey = "hyde_code"
-	ConsensusReviewPrompt PromptKey = "consensus_review"
+	CodeReviewPrompt       PromptKey = "code_review"
+	CodeGenerationPrompt   PromptKey = "code_generation"
+	ReReviewPrompt         PromptKey = "rereview"
+	ArchSummaryPrompt      PromptKey = "arch_summary"
+	QuestionPrompt         PromptKey = "question"
+	HyDEPrompt             PromptKey = "hyde_code"
+	ConsensusReviewPrompt  PromptKey = "consensus_review"
+	ValidateSnippetPrompt  PromptKey = "validate_snippet"
 )
 
 type PromptManager struct {

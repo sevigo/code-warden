@@ -312,18 +312,15 @@ func (r *ragService) gatherDescriptionContext(ctx context.Context, collection, e
 // validateSnippetRelevance uses a fast LLM to check if a retrieved snippet
 // is actually relevant to the given context. Fails open (returns true) if
 // the validator model is unavailable or returns an error.
+// Uses goframe's LLMChain pattern with structured JSON output parsing.
 func (r *ragService) validateSnippetRelevance(ctx context.Context, snippet, prContext string) bool {
 	validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
 	if err != nil {
 		return true // Fail open: if no validator available, include the snippet
 	}
 
-	prompt := fmt.Sprintf("Is the following code snippet relevant to this context?\nContext: %s\nSnippet:\n%s\n\nReply with YES or NO.", prContext, snippet)
-	resp, err := validatorLLM.Call(ctx, prompt)
-	if err != nil {
-		return true
-	}
-	return strings.Contains(strings.ToUpper(resp), "YES")
+	validator := newSnippetValidator(validatorLLM, r.promptMgr)
+	return validator.validate(ctx, snippet, prContext)
 }
 
 func (r *ragService) gatherArchContext(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
