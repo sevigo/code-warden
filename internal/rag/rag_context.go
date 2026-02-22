@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
+	"golang.org/x/sync/errgroup"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -81,70 +83,211 @@ func extractSymbolsFromPatch(patch string) []string {
 	return result
 }
 
-// gatherDefinitionsContext extracts symbols from the changed files and retrieves their definitions.
-// This helps the LLM understand type definitions, method signatures, and field names.
+// resolvedDefinition holds a resolved symbol definition for building the output.
+type resolvedDefinition struct {
+	Symbol  string
+	Source  string
+	Content string
+}
+
+// maxDepth0Symbols caps the number of symbols from Depth-0 (diff extraction).
+const maxDepth0Symbols = 25
+
+// maxDepth2Symbols caps the number of transitive symbols resolved at Depth-2.
+const maxDepth2Symbols = 15
+
+// maxSymbolWorkers limits concurrent DefinitionRetriever lookups at each depth.
+const maxSymbolWorkers = 10
+
+// gatherDefinitionsContext extracts symbols from the changed files and retrieves their definitions
+// using a two-depth recursive resolution strategy:
+//
+//	Depth 0: Extract symbols from git diff patches (regex-based).
+//	Depth 1: Concurrently retrieve definitions for those symbols from the vector store.
+//	Depth 2: Parse retrieved definitions for transitive symbol references (via ExtractUsedSymbols)
+//	          and concurrently retrieve those as well.
+//
+// This ensures the LLM has complete type dependency context (e.g., User → Address → Address.Validate).
 func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, mu *sync.RWMutex) string {
 	if len(changedFiles) == 0 {
 		return ""
 	}
 
-	// Extract unique symbols from all changed files
-	symbols := make(map[string]struct{})
-	for _, f := range changedFiles {
-		if f.Patch == "" {
-			continue
-		}
-
-		// Try to extract symbols from the patch using regex
-		extracted := extractSymbolsFromPatch(f.Patch)
-		for _, sym := range extracted {
-			symbols[sym] = struct{}{}
-		}
-	}
-
-	if len(symbols) == 0 {
+	// ── Depth 0: Extract symbols from diff ──────────────────────────────
+	symbolList := r.extractDepth0Symbols(changedFiles)
+	if len(symbolList) == 0 {
 		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
 		return ""
 	}
 
-	r.logger.Info("stage started", "name", "SymbolResolution", "symbols_found", len(symbols))
+	r.logger.Info("stage started", "name", "SymbolResolution", "depth0_symbols", len(symbolList))
 
-	// Convert to slice and limit to top 15
-	var symbolList []string
-	for sym := range symbols {
-		symbolList = append(symbolList, sym)
-		if len(symbolList) >= 15 {
+	seenSymbols := make(map[string]struct{})
+	for _, s := range symbolList {
+		seenSymbols[s] = struct{}{}
+	}
+
+	// ── Depth 1: Concurrently resolve Depth-0 symbols ───────────────────
+	depth1Defs := r.resolveSymbolsConcurrently(ctx, symbolList, scopedStore, seenDocs, mu)
+	r.logger.Info("depth-1 resolution complete", "resolved", len(depth1Defs))
+
+	// ── Depth 2: Resolve transitive symbols found inside Depth-1 definitions ──
+	depth2Defs := r.resolveDepth2Symbols(ctx, depth1Defs, seenSymbols, scopedStore, seenDocs, mu)
+
+	// ── Format output ───────────────────────────────────────────────────
+	return r.formatResolvedDefinitions(depth1Defs, depth2Defs)
+}
+
+// extractDepth0Symbols extracts unique symbols from all changed file patches.
+func (r *ragService) extractDepth0Symbols(changedFiles []internalgithub.ChangedFile) []string {
+	depth0Symbols := make(map[string]struct{})
+	for _, f := range changedFiles {
+		if f.Patch == "" {
+			continue
+		}
+		for _, sym := range extractSymbolsFromPatch(f.Patch) {
+			depth0Symbols[sym] = struct{}{}
+		}
+	}
+	return mapKeysToSlice(depth0Symbols, maxDepth0Symbols)
+}
+
+// resolveDepth2Symbols extracts transitive symbols from Depth-1 definitions,
+// deduplicates them, and resolves the new ones concurrently.
+func (r *ragService) resolveDepth2Symbols(
+	ctx context.Context,
+	depth1Defs []resolvedDefinition,
+	seenSymbols map[string]struct{},
+	scopedStore storage.ScopedVectorStore,
+	seenDocs map[string]struct{}, mu *sync.RWMutex,
+) []resolvedDefinition {
+	var candidates []string
+	for _, def := range depth1Defs {
+		for _, sym := range r.extractTransitiveSymbols(def.Source, def.Content) {
+			if _, seen := seenSymbols[sym]; !seen {
+				seenSymbols[sym] = struct{}{}
+				candidates = append(candidates, sym)
+				if len(candidates) >= maxDepth2Symbols {
+					break
+				}
+			}
+		}
+		if len(candidates) >= maxDepth2Symbols {
 			break
 		}
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	r.logger.Info("depth-2 resolution started", "transitive_symbols", len(candidates))
+	results := r.resolveSymbolsConcurrently(ctx, candidates, scopedStore, seenDocs, mu)
+	r.logger.Info("depth-2 resolution complete", "resolved", len(results))
+	return results
+}
+
+// formatResolvedDefinitions builds the markdown output from all resolved definitions.
+func (r *ragService) formatResolvedDefinitions(depth1Defs, depth2Defs []resolvedDefinition) string {
+	allDefs := make([]resolvedDefinition, 0, len(depth1Defs)+len(depth2Defs))
+	allDefs = append(allDefs, depth1Defs...)
+	allDefs = append(allDefs, depth2Defs...)
+
+	if len(allDefs) == 0 {
+		r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", 0)
+		return ""
 	}
 
 	var builder strings.Builder
 	builder.WriteString("# Resolved Type Definitions\n\n")
 	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
 
-	resolvedCount := 0
-	for _, symbol := range symbolList {
-		// Check for context cancellation
-		select {
-		case <-ctx.Done():
-			return builder.String()
-		default:
-		}
-
-		source, content, ok := r.resolveSymbolDefinition(ctx, symbol, scopedStore, seenDocs, mu)
-		if ok {
-			_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, source, content)
-			resolvedCount++
-		}
+	for _, def := range allDefs {
+		_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", def.Symbol, def.Source, def.Content)
 	}
 
-	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount)
-
-	if resolvedCount == 0 {
-		return ""
-	}
+	r.logger.Info("stage completed", "name", "SymbolResolution",
+		"depth1_resolved", len(depth1Defs),
+		"depth2_resolved", len(depth2Defs),
+	)
 
 	return builder.String()
+}
+
+// resolveSymbolsConcurrently resolves a list of symbols in parallel using errgroup.
+// Returns the successfully resolved definitions.
+func (r *ragService) resolveSymbolsConcurrently(
+	ctx context.Context, symbols []string,
+	scopedStore storage.ScopedVectorStore,
+	seenDocs map[string]struct{}, mu *sync.RWMutex,
+) []resolvedDefinition {
+	var (
+		resultMu sync.Mutex
+		results  []resolvedDefinition
+	)
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(maxSymbolWorkers)
+
+	for _, sym := range symbols {
+		g.Go(func() error {
+			source, content, ok := r.resolveSymbolDefinition(gCtx, sym, scopedStore, seenDocs, mu)
+			if ok {
+				resultMu.Lock()
+				results = append(results, resolvedDefinition{
+					Symbol:  sym,
+					Source:  source,
+					Content: content,
+				})
+				resultMu.Unlock()
+			}
+			return nil // Non-fatal: continue even if individual lookups fail
+		})
+	}
+
+	_ = g.Wait() // Errors are handled per-symbol above
+	return results
+}
+
+// extractTransitiveSymbols parses a resolved definition's content to find
+// additional symbols referenced within it (e.g., field types, method parameters).
+// Uses the language-aware parser from the registry when available, falling back
+// to the regex-based extractor.
+func (r *ragService) extractTransitiveSymbols(source, content string) []string {
+	if r.parserRegistry == nil {
+		return extractSymbolsFromPatch(content) // Fallback to regex
+	}
+
+	ext := filepath.Ext(source)
+	if ext == "" {
+		return extractSymbolsFromPatch(content)
+	}
+
+	parser, err := r.parserRegistry.GetParserForExtension(ext)
+	if err != nil {
+		r.logger.Debug("no parser for extension, using regex fallback",
+			"source", source, "ext", ext, "error", err,
+		)
+		return extractSymbolsFromPatch(content)
+	}
+
+	symbols := parser.ExtractUsedSymbols(content)
+	if len(symbols) == 0 {
+		return extractSymbolsFromPatch(content)
+	}
+	return symbols
+}
+
+// mapKeysToSlice converts a map's keys to a slice, capping at maxLen.
+func mapKeysToSlice(m map[string]struct{}, maxLen int) []string {
+	result := make([]string, 0, min(len(m), maxLen))
+	for k := range m {
+		result = append(result, k)
+		if len(result) >= maxLen {
+			break
+		}
+	}
+	return result
 }
 
 func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, scopedStore storage.ScopedVectorStore, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
