@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
@@ -88,57 +90,95 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 		return ""
 	}
 
-	// Extract unique symbols from all changed files
-	symbols := make(map[string]struct{})
+	// Depth-0: Extract unique symbols from all changed files
+	depth0Symbols := make(map[string]struct{})
 	for _, f := range changedFiles {
 		if f.Patch == "" {
 			continue
 		}
-
-		// Try to extract symbols from the patch using regex
-		extracted := extractSymbolsFromPatch(f.Patch)
-		for _, sym := range extracted {
-			symbols[sym] = struct{}{}
+		for _, sym := range extractSymbolsFromPatch(f.Patch) {
+			depth0Symbols[sym] = struct{}{}
 		}
 	}
 
-	if len(symbols) == 0 {
+	if len(depth0Symbols) == 0 {
 		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
 		return ""
 	}
-
-	r.logger.Info("stage started", "name", "SymbolResolution", "symbols_found", len(symbols))
-
-	// Convert to slice and limit to top 15
-	var symbolList []string
-	for sym := range symbols {
-		symbolList = append(symbolList, sym)
-		if len(symbolList) >= 15 {
-			break
-		}
-	}
+	r.logger.Info("stage started", "name", "SymbolResolution", "depth0_symbols_found", len(depth0Symbols))
 
 	var builder strings.Builder
 	builder.WriteString("# Resolved Type Definitions\n\n")
-	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
+	builder.WriteString("The following types are referenced in the diff or in closely related dependencies. Use these definitions to verify field names, types, and method signatures:\n\n")
 
+	// seenSymbols tracks which symbols we have already looked up (across all depths)
+	// to prevent duplicate queries or endless loops
+	var seenSymbols sync.Map
+	var builderMu sync.Mutex
 	resolvedCount := 0
-	for _, symbol := range symbolList {
-		// Check for context cancellation
-		select {
-		case <-ctx.Done():
-			return builder.String()
-		default:
+
+	// We'll process definitions by resolving them concurrently. We limit parallelism to 10.
+	processSymbols := func(symbols map[string]struct{}) map[string]struct{} {
+		// New symbols found by parsing the returned definitions
+		newSymbols := make(map[string]struct{})
+		var newSymbolsMu sync.Mutex
+
+		g, gCtx := errgroup.WithContext(ctx)
+		g.SetLimit(10)
+
+		var symbolList []string
+		for sym := range symbols {
+			if _, loaded := seenSymbols.LoadOrStore(sym, struct{}{}); !loaded {
+				symbolList = append(symbolList, sym)
+				if len(symbolList) >= 15 {
+					// Hard limit the number of symbols *per depth level* to avoid excessive DB reads
+					break
+				}
+			}
 		}
 
-		source, content, ok := r.resolveSymbolDefinition(ctx, symbol, scopedStore, seenDocs, mu)
-		if ok {
-			_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, source, content)
-			resolvedCount++
+		for _, sym := range symbolList {
+			symbol := sym
+			g.Go(func() error {
+				source, content, ok := r.resolveSymbolDefinition(gCtx, symbol, scopedStore, seenDocs, mu)
+				if ok {
+					// We successfully resolved it!
+					// Find parser and grab Depth-2 symbols
+					if r.parserRegistry != nil {
+						parser, _ := r.parserRegistry.GetParserForFile(source, nil)
+						if ext, ok := parser.(interface{ ExtractUsedSymbols(string) []string }); ok {
+							used := ext.ExtractUsedSymbols(content)
+							newSymbolsMu.Lock()
+							for _, u := range used {
+								newSymbols[u] = struct{}{}
+							}
+							newSymbolsMu.Unlock()
+						}
+					}
+					// Append the result definition output
+					builderMu.Lock()
+					_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", symbol, source, content)
+					resolvedCount++
+					builderMu.Unlock()
+				}
+				return nil
+			})
 		}
+		_ = g.Wait() // Error ignored as resolveSymbolDefinition doesn't return errors
+
+		return newSymbols
 	}
 
-	r.logger.Info("stage completed", "name", "SymbolResolution", "symbols_resolved", resolvedCount)
+	// Depth-1: Look up symbols from Diff
+	depth1Symbols := processSymbols(depth0Symbols)
+
+	// Depth-2: Look up symbols extracted from the definitions discovered in Depth-1
+	if len(depth1Symbols) > 0 {
+		r.logger.Info("stage intermediate", "name", "SymbolResolution", "depth1_symbols_found", len(depth1Symbols))
+		_ = processSymbols(depth1Symbols)
+	}
+
+	r.logger.Info("stage completed", "name", "SymbolResolution", "total_symbols_resolved", resolvedCount)
 
 	if resolvedCount == 0 {
 		return ""
