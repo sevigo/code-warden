@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 
@@ -19,11 +20,10 @@ type depRequest struct {
 }
 
 // getImpactDocs returns related documents for impact analysis.
-func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) []schema.Document {
+func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) ([]schema.Document, error) {
 	retriever, err := vectorstores.NewDependencyRetriever(store)
 	if err != nil {
-		r.logger.Warn("failed to create dependency retriever", "error", err)
-		return nil
+		return nil, fmt.Errorf("failed to create dependency retriever: %w", err)
 	}
 	reqs := r.buildImpactRequests(repoPath, files)
 	depResults := r.fetchImpactResults(ctx, retriever, reqs)
@@ -38,11 +38,11 @@ func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVect
 			}
 			docs = append(docs, doc)
 			if len(docs) >= maxImpactSnippets {
-				return docs
+				return docs, nil
 			}
 		}
 	}
-	return docs
+	return docs, nil
 }
 
 func (r *ragService) buildImpactRequests(repoPath string, files []internalgithub.ChangedFile) []depRequest {
