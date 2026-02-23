@@ -642,14 +642,15 @@ func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embe
 		NumDocuments: 10,
 		Count:        3,
 		SparseGenFunc: func(ctx context.Context, queries []string) ([]*schema.SparseVector, error) {
-			var vecs []*schema.SparseVector
-			for _, q := range queries {
+			vecs := make([]*schema.SparseVector, len(queries))
+			for i, q := range queries {
 				v, err := sparse.GenerateSparseVector(ctx, q)
 				if err != nil {
-					r.logger.Warn("Failed to generate sparse vector for MultiQuery fallback", "query", q, "error", err)
-					return nil, err
+					r.logger.Warn("Failed to generate sparse vector for MultiQuery fallback, using dense only for this query", "query", q, "error", err)
+					vecs[i] = nil
+					continue
 				}
-				vecs = append(vecs, v)
+				vecs[i] = v
 			}
 			return vecs, nil
 		},
