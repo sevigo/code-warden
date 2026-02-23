@@ -110,3 +110,46 @@ Located in `embeddings/main.py` - a FastAPI service for generating code embeddin
 - `github.com/jmoiron/sqlx`: PostgreSQL access
 - `github.com/sevigo/goframe`: RAG framework (LLM, embeddings, vectorstores)
 - `go.uber.org/zap`: Structured logging (via internal logger wrapper)
+
+## GoFrame Integration
+
+Code-Warden uses goframe v0.23.2+ with the following patterns:
+
+### Chain Constructors (Return Errors)
+```go
+// All these constructors return errors as of goframe v0.23.2
+chain, err := chains.NewLLMChain[T](llm, prompt, opts...)
+qa, err := chains.NewRetrievalQA(retriever, llm, opts...)
+retriever, err := vectorstores.NewDependencyRetriever(store)
+defRetriever, err := vectorstores.NewDefinitionRetriever(store)
+```
+
+### Resource Cleanup
+```go
+// Always close VectorStore when done
+defer vectorStore.Close()
+```
+
+### Context Propagation
+```go
+// Always pass context through to GoFrame operations
+docs, err := store.SimilaritySearch(ctx, query, k)
+sparseVec, err := sparse.GenerateSparseVector(ctx, text)
+```
+
+## Common Tasks
+
+### Adding a New Prompt
+1. Create `internal/llm/prompts/my_prompt.prompt`
+2. Add prompt key to `internal/llm/keys.go`
+3. Use `promptMgr.Render(llm.MyPrompt, data)` in code
+
+### Adding a New RAG Context Stage
+1. Add method to `internal/rag/rag_context.go`
+2. Call from `buildContextConcurrently()` for parallel execution
+3. Include result in context assembly
+
+### Adding a New CLI Command
+1. Create command in `cmd/cli/`
+2. Register in `cmd/cli/root.go`
+3. Add any new dependencies to `internal/wire/wire.go`
