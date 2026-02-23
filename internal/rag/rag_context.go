@@ -387,9 +387,13 @@ func mapKeysToSlice(m map[string]struct{}, maxLen int) []string {
 }
 
 func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, scopedStore storage.ScopedVectorStore, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
-	defRetriever := vectorstores.NewDefinitionRetriever(scopedStore)
-	docs, err := defRetriever.GetDefinition(ctx, symbol)
+	defRetriever, err := vectorstores.NewDefinitionRetriever(scopedStore)
+	if err != nil {
+		r.logger.Debug("failed to create definition retriever", "symbol", symbol, "error", err)
+		return "", "", false
+	}
 
+	docs, err := defRetriever.GetDefinition(ctx, symbol)
 	if err != nil {
 		r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
 		return "", "", false

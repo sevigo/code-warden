@@ -296,11 +296,14 @@ func (d *ReuseDetector) extractIntent(ctx context.Context, fn extractedFunction)
 	}
 
 	parser := &intentOutputParser{}
-	chain := chains.NewLLMChain(
+	chain, err := chains.NewLLMChain(
 		d.llm,
 		prompts.NewPromptTemplate(prompt),
 		chains.WithOutputParser(parser),
 	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create LLM chain: %w", err)
+	}
 
 	result, err := chain.Call(ctx, nil)
 	if err != nil {
@@ -362,11 +365,15 @@ func (d *ReuseDetector) verifyRedundancy(
 			continue
 		}
 
-		chain := chains.NewLLMChain(
+		chain, err := chains.NewLLMChain(
 			d.llm,
 			prompts.NewPromptTemplate(prompt),
 			chains.WithOutputParser(parser),
 		)
+		if err != nil {
+			d.logger.Warn("failed to create LLM chain", "error", err)
+			continue
+		}
 
 		result, err := chain.Call(ctx, nil)
 		if err != nil {

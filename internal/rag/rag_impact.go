@@ -22,7 +22,11 @@ type depRequest struct {
 // Deduplication is handled by the caller (buildRelevantContext) after all goroutines
 // complete, ensuring deterministic output.
 func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) []schema.Document {
-	retriever := vectorstores.NewDependencyRetriever(store)
+	retriever, err := vectorstores.NewDependencyRetriever(store)
+	if err != nil {
+		r.logger.Warn("failed to create dependency retriever", "error", err)
+		return nil
+	}
 	reqs := r.buildImpactRequests(repoPath, files)
 	depResults := r.fetchImpactResults(ctx, retriever, reqs)
 
