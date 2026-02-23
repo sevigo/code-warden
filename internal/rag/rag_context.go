@@ -418,80 +418,78 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 
-	archContext, definitionsContext, impactDocs, descDocs, hydeResults, indices := r.buildContextConcurrently(
-		ctx, collectionName, embedderModelName, repoPath, prDescription, changedFiles, scopedStore)
+	results := r.buildContextConcurrently(ctx, collectionName, embedderModelName, repoPath, prDescription, changedFiles, scopedStore)
 
-	r.logger.Debug("raw context gathered",
-		"arch_found", archContext != "",
-		"definitions_found", definitionsContext != "",
-		"impact_docs_count", len(impactDocs),
-		"description_docs_count", len(descDocs),
-		"hyde_results_count", len(hydeResults),
-	)
-
-	allDocs := mergeAndDedup(append(impactDocs, descDocs...), r.getDocKey)
+	allDocs := mergeAndDedup(append(results.impactDocs, results.descriptionDocs...), r.getDocKey)
 
 	var impactContext, descriptionContext string
 	if len(allDocs) > 0 {
 		var seenDocs sync.Map
-		impactContext, descriptionContext = r.splitAndFormatDocs(ctx, allDocs, descDocs, prDescription, &seenDocs)
+		impactContext, descriptionContext = r.splitAndFormatDocs(ctx, allDocs, results.descriptionDocs, prDescription, &seenDocs)
 	}
 
-	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles)
-	return fullContext, definitionsContext
+	fullContext := r.assembleContext(results.archContext, impactContext, descriptionContext, results.definitionsContext, results.hydeResults, results.hydeIndices, changedFiles)
+	return fullContext, results.definitionsContext
+}
+
+type contextResults struct {
+	archContext        string
+	definitionsContext string
+	impactDocs         []schema.Document
+	descriptionDocs    []schema.Document
+	hydeResults        [][]schema.Document
+	hydeIndices        []int
 }
 
 func (r *ragService) buildContextConcurrently(
 	ctx context.Context, collectionName, embedderModelName, repoPath, prDescription string,
 	changedFiles []internalgithub.ChangedFile, scopedStore storage.ScopedVectorStore,
-) (archContext, definitionsContext string, impactDocs, descDocs []schema.Document, hydeResults [][]schema.Document, indices []int) {
-	var wg sync.WaitGroup
-	var impactMu, descMu sync.Mutex
+) *contextResults {
+	results := &contextResults{}
+	g, ctx := errgroup.WithContext(ctx)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		archContext = r.gatherArchContextSafe(ctx, scopedStore, changedFiles)
-	}()
+	g.Go(func() error {
+		results.archContext = r.gatherArchContextSafe(ctx, scopedStore, changedFiles)
+		return nil
+	})
 
 	if r.cfg.AI.EnableHyDE {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			hydeResults, indices = r.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
-		}()
+		g.Go(func() error {
+			results.hydeResults, results.hydeIndices = r.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
+			return nil
+		})
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		docs := r.gatherImpactDocs(ctx, scopedStore, repoPath, changedFiles)
-		impactMu.Lock()
-		impactDocs = append(impactDocs, docs...)
-		impactMu.Unlock()
-	}()
+	g.Go(func() error {
+		results.impactDocs = r.gatherImpactDocs(ctx, scopedStore, repoPath, changedFiles)
+		return nil
+	})
 
 	if prDescription != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			docs := r.gatherDescriptionDocs(ctx, collectionName, embedderModelName, prDescription)
-			descMu.Lock()
-			descDocs = append(descDocs, docs...)
-			descMu.Unlock()
-		}()
+		g.Go(func() error {
+			results.descriptionDocs = r.gatherDescriptionDocs(ctx, collectionName, embedderModelName, prDescription)
+			return nil
+		})
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	g.Go(func() error {
 		seenDocs := make(map[string]struct{})
 		var mu sync.RWMutex
-		definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, seenDocs, &mu)
-	}()
+		results.definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, seenDocs, &mu)
+		return nil
+	})
 
-	wg.Wait()
-	return
+	_ = g.Wait()
+
+	r.logger.Debug("raw context gathered",
+		"arch_found", results.archContext != "",
+		"definitions_found", results.definitionsContext != "",
+		"impact_docs_count", len(results.impactDocs),
+		"description_docs_count", len(results.descriptionDocs),
+		"hyde_results_count", len(results.hydeResults),
+	)
+
+	return results
 }
 
 func (r *ragService) gatherArchContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
