@@ -8,26 +8,36 @@ custom_instructions:
 # These are added to the application's built-in defaults like '.git' and 'node_modules'.
 exclude_dirs:
   - ".vscode"
-  - "keys"
-  - "reviews"
-  - ".agent"
-  - "bin"
-  - "vendor"
-  - "scripts" 
-  - "mocks"
+  - "keys"        # Private keys and certificates
+  - "reviews"     # Generated review history
+  - ".agent"      # Local agent/workflow state
+  - "bin"          # Compiled binaries
+  - "vendor"       # Dependency source code
+  - "scripts"      # Utility scripts, often not core logic
+  - "mocks"        # Generated mock code
+  - ".github"     # CI configuration
+  - "embeddings"   # Script service for local embeddings
 
 # File extensions to exclude from indexing.
 exclude_exts:
-  - ".sum"     # The go.sum file is not useful for code context.
-  - ".yml"     # Exclude Docker Compose and other YAML files.
-  - ".sql"     # Exclude raw SQL migration files.
-  - ".prompt"  # Exclude the LLM prompt template files.
-
+  - ".sum"         # Dependency checksums
+  - ".sql"         # Database migrations (unless needed for RAG)
+  - ".prompt"      # Prompt templates (can lead to confusing RAG results)
+  - ".log"         # Log files
+  - ".exe"         # Windows binaries
+  - ".dll"         # Windows libraries
+  - ".so"          # Linux libraries
+  - ".tmp"         # Temporary files
 
 # Specific files to exclude from indexing by their relative path.
 exclude_files:
-  - ".code-warden.yml"
-  - "config.yml"
+  - ".code-warden.yml" # The config itself
+  - "config.yaml"      # Secrets/Local config
+  - "config.yaml.example"
   - ".gitignore"
-  - "go.mod"
-  - "CLAUDE.md"
+  - "go.mod"           # Build metadata
+  - "CLAUDE.md"        # Local IDE instructions
+  - ".golangci.yml"    # Linter config
+  - "Dockerfile"
+  - "docker-compose.yml"
+  - "Makefile"

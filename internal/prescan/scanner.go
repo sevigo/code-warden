@@ -94,7 +94,15 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 	}
 
 	// 4. Discover Files (filtered by .code-warden.yml if present)
-	repoConfig, _ := config.LoadRepoConfig(localPath)
+	repoConfig, err := config.LoadRepoConfig(localPath)
+	if err != nil {
+		if errors.Is(err, config.ErrConfigNotFound) {
+			s.Manager.logger.Info("no .code-warden.yml found, using defaults")
+		} else {
+			s.Manager.logger.Warn("failed to parse .code-warden.yml, using defaults", "error", err)
+		}
+		repoConfig = core.DefaultRepoConfig()
+	}
 	files, err := s.listFiles(localPath, repoConfig)
 	if err != nil {
 		return fmt.Errorf("failed to list files: %w", err)
@@ -111,7 +119,11 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 	}
 
 	// 6. Post-processing: Documentation & Comparisons
-	docMap, _ := s.generateAndSaveDocumentation(localPath)
+	docMap, err := s.generateAndSaveDocumentation(localPath)
+	if err != nil {
+		s.Manager.logger.Warn("Failed to generate documentation artifacts", "error", err)
+		docMap = make(map[string]any)
+	}
 	s.generateArchitecturalComparisons(ctx, localPath)
 
 	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, docMap); err != nil {
@@ -202,6 +214,13 @@ func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoR
 	var batch []string
 
 	for i, file := range files {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if progress.Files[file] {
 			continue
 		}
@@ -369,9 +388,32 @@ func (s *Scanner) listFiles(root string, repoConfig *core.RepoConfig) ([]string,
 }
 
 func (s *Scanner) shouldExcludeDir(name string, repoConfig *core.RepoConfig) bool {
+	// Defensive guard to prevent panic on nil config
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	// Application default exclusions (same as rag_index.go buildExcludeDirs)
+	defaultExcludes := map[string]bool{
+		".git":         true,
+		".github":      true,
+		"vendor":       true,
+		"node_modules": true,
+		"target":       true,
+		"build":        true,
+	}
+
+	// Exclude hidden directories
 	if strings.HasPrefix(name, ".") && name != "." {
 		return true
 	}
+
+	// Check default exclusions
+	if defaultExcludes[name] {
+		return true
+	}
+
+	// Check user-configured exclusions
 	for _, excludeDir := range repoConfig.ExcludeDirs {
 		if name == excludeDir {
 			return true
@@ -381,6 +423,11 @@ func (s *Scanner) shouldExcludeDir(name string, repoConfig *core.RepoConfig) boo
 }
 
 func (s *Scanner) shouldExcludeFile(rel, absPath string, repoConfig *core.RepoConfig) bool {
+	// Defensive guard to prevent panic on nil config
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
 	ext := strings.ToLower(filepath.Ext(absPath))
 	if !validExt(ext) {
 		return true
