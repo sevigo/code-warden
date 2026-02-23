@@ -98,6 +98,7 @@ func (m *mockVectorStore) DeleteDocumentsFromCollectionByFilter(_ context.Contex
 func (m *mockVectorStore) DeleteCollection(_ context.Context, _ string) error {
 	return nil
 }
+func (m *mockVectorStore) Close() error { return nil }
 
 // vectorstores.VectorStore methods
 func (m *mockVectorStore) AddDocuments(_ context.Context, _ []schema.Document, _ ...vectorstores.Option) ([]string, error) {

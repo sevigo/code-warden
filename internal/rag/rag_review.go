@@ -82,11 +82,14 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	parser := &structuredReviewParser{logger: r.logger}
-	chain := chains.NewLLMChain[*core.StructuredReview](
+	chain, err := chains.NewLLMChain[*core.StructuredReview](
 		r.generatorLLM,
 		prompts.NewPromptTemplate(promptStr),
 		chains.WithOutputParser[*core.StructuredReview](parser),
 	)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create LLM chain: %w", err)
+	}
 
 	structuredReview, err := chain.Call(ctx, nil)
 	if err != nil {
@@ -154,7 +157,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	chain := chains.NewMapReduceChain[string, ComparisonResult, string](
 		func(ctx context.Context, modelName string) (ComparisonResult, error) {
-			llmModel, err := r.getOrCreateLLM(modelName)
+			llmModel, err := r.getOrCreateLLM(ctx, modelName)
 			if err != nil {
 				return ComparisonResult{Model: modelName, Error: err}, nil
 			}

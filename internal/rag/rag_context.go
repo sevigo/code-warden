@@ -387,9 +387,13 @@ func mapKeysToSlice(m map[string]struct{}, maxLen int) []string {
 }
 
 func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, scopedStore storage.ScopedVectorStore, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
-	defRetriever := vectorstores.NewDefinitionRetriever(scopedStore)
-	docs, err := defRetriever.GetDefinition(ctx, symbol)
+	defRetriever, err := vectorstores.NewDefinitionRetriever(scopedStore)
+	if err != nil {
+		r.logger.Debug("failed to create definition retriever", "symbol", symbol, "error", err)
+		return "", "", false
+	}
 
+	docs, err := defRetriever.GetDefinition(ctx, symbol)
 	if err != nil {
 		r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
 		return "", "", false
@@ -444,7 +448,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 	var impactContext, descriptionContext string
 	if len(allDocs) > 0 {
 		var seenDocs sync.Map
-		impactContext, descriptionContext = r.splitAndFormatDocs(allDocs, descDocs, prDescription, &seenDocs)
+		impactContext, descriptionContext = r.splitAndFormatDocs(ctx, allDocs, descDocs, prDescription, &seenDocs)
 	}
 
 	fullContext := r.assembleContext(archContext, impactContext, descriptionContext, definitionsContext, hydeResults, indices, changedFiles)
@@ -535,6 +539,7 @@ func mergeAndDedup(docs []schema.Document, keyFn func(schema.Document) string) [
 
 // splitAndFormatDocs splits merged docs back into impact/description buckets and formats them.
 func (r *ragService) splitAndFormatDocs(
+	ctx context.Context,
 	allDocs []schema.Document,
 	descDocs []schema.Document,
 	prDescription string,
@@ -546,11 +551,11 @@ func (r *ragService) splitAndFormatDocs(
 		descKeys[source] = d
 	}
 
-	validDescSources := r.filterValidDescriptionDocs(descKeys, seen, prDescription)
+	validDescSources := r.filterValidDescriptionDocs(ctx, descKeys, seen, prDescription)
 	return r.formatSplitDocs(allDocs, descKeys, validDescSources, seen, prDescription)
 }
 
-func (r *ragService) filterValidDescriptionDocs(descKeys map[string]schema.Document, seen *sync.Map, prDescription string) map[string]bool {
+func (r *ragService) filterValidDescriptionDocs(ctx context.Context, descKeys map[string]schema.Document, seen *sync.Map, prDescription string) map[string]bool {
 	var toValidate []schema.Document
 	var snippets []string
 	for source, d := range descKeys {
@@ -562,10 +567,10 @@ func (r *ragService) filterValidDescriptionDocs(descKeys map[string]schema.Docum
 
 	relevanceMap := make(map[int]bool, len(toValidate))
 	if len(snippets) > 0 && prDescription != "" {
-		validatorLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
+		validatorLLM, err := r.getOrCreateLLM(ctx, r.cfg.AI.FastModel)
 		if err == nil {
 			v := newSnippetValidator(validatorLLM, r.promptMgr)
-			relevanceMap = v.validateBatch(context.Background(), snippets, prDescription)
+			relevanceMap = v.validateBatch(ctx, snippets, prDescription)
 		} else {
 			for i := range snippets {
 				relevanceMap[i] = true
@@ -626,7 +631,7 @@ func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embe
 
 	scopedStore := r.vectorStore.ForRepo(collection, embedder)
 
-	queryLLM, err := r.getOrCreateLLM(r.cfg.AI.FastModel)
+	queryLLM, err := r.getOrCreateLLM(ctx, r.cfg.AI.FastModel)
 	if err != nil {
 		queryLLM = r.generatorLLM
 	}

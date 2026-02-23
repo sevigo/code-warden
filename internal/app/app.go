@@ -93,6 +93,16 @@ func (a *App) Stop() error {
 		}
 	}
 
+	// Close the vector store to release gRPC connections.
+	if a.VectorStore != nil {
+		if err := a.VectorStore.Close(); err != nil {
+			a.Logger.Error("error during vector store shutdown", "error", err)
+			if shutdownErr == nil {
+				shutdownErr = err
+			}
+		}
+	}
+
 	if shutdownErr != nil {
 		a.Logger.Error("Code Warden stopped with errors", "error", shutdownErr)
 	} else {

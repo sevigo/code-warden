@@ -33,7 +33,7 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 		retriever = vectorstores.ToRetriever(scopedStore, 5, vectorstores.WithSparseQuery(sparseQuery))
 	}
 
-	chain := chains.NewRetrievalQA(
+	chain, err := chains.NewRetrievalQA(
 		retriever,
 		r.generatorLLM,
 		chains.WithPromptBuilder(func(q string, docs []schema.Document) (string, error) {
@@ -51,6 +51,9 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 			return r.promptMgr.Render("question", promptData)
 		}),
 	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create retrieval QA chain: %w", err)
+	}
 
 	answer, err := chain.Call(ctx, question)
 	if err != nil {

@@ -28,7 +28,6 @@ import (
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
-	"github.com/sevigo/goframe/vectorstores"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
 	"io"
 	"log/slog"
@@ -165,10 +164,6 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
 	}
 	return embeddings.NewEmbedder(embedderLLM)
-}
-
-func provideDependencyRetriever(store storage.VectorStore) *vectorstores.DependencyRetriever {
-	return vectorstores.NewDependencyRetriever(store)
 }
 
 func provideParserRegistry(logger *slog.Logger) (parsers.ParserRegistry, error) {

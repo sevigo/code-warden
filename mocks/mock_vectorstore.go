@@ -14,12 +14,11 @@ import (
 	reflect "reflect"
 	time "time"
 
+	storage "github.com/sevigo/code-warden/internal/storage"
 	schema "github.com/sevigo/goframe/schema"
 	vectorstores "github.com/sevigo/goframe/vectorstores"
 	qdrant "github.com/sevigo/goframe/vectorstores/qdrant"
 	gomock "go.uber.org/mock/gomock"
-
-	storage "github.com/sevigo/code-warden/internal/storage"
 )
 
 // MockVectorStore is a mock of VectorStore interface.
@@ -78,6 +77,20 @@ func (m *MockVectorStore) AddDocumentsToCollection(ctx context.Context, collecti
 func (mr *MockVectorStoreMockRecorder) AddDocumentsToCollection(ctx, collectionName, embedderModelName, docs, progressFn any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddDocumentsToCollection", reflect.TypeOf((*MockVectorStore)(nil).AddDocumentsToCollection), ctx, collectionName, embedderModelName, docs, progressFn)
+}
+
+// Close mocks base method.
+func (m *MockVectorStore) Close() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Close")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Close indicates an expected call of Close.
+func (mr *MockVectorStoreMockRecorder) Close() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockVectorStore)(nil).Close))
 }
 
 // DeleteCollection mocks base method.

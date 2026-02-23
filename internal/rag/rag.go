@@ -46,7 +46,7 @@ type Service interface {
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
-	ProcessFile(repoPath, file string) []schema.Document
+	ProcessFile(ctx context.Context, repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GetTextSplitter() textsplitter.TextSplitter
@@ -95,7 +95,7 @@ func (r *ragService) GetTextSplitter() textsplitter.TextSplitter {
 	return r.splitter
 }
 
-func (r *ragService) getOrCreateLLM(modelName string) (llms.Model, error) {
+func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms.Model, error) {
 	// For now, just return the initialized generator if model matches or if we don't support dynamic switching yet.
 	// This is a simplification to fix the build.
 	if modelName == r.cfg.AI.GeneratorModel {
@@ -105,7 +105,7 @@ func (r *ragService) getOrCreateLLM(modelName string) (llms.Model, error) {
 	// Create new instance if needed (simplified fallback)
 	r.logger.Info("creating new LLM instance on the fly", "model", modelName)
 	if r.cfg.AI.LLMProvider == "gemini" {
-		return gemini.New(context.Background(), gemini.WithModel(modelName), gemini.WithAPIKey(r.cfg.AI.GeminiAPIKey))
+		return gemini.New(ctx, gemini.WithModel(modelName), gemini.WithAPIKey(r.cfg.AI.GeminiAPIKey))
 	}
 	// Fallback/Default to Ollama
 	return ollama.New(
@@ -116,7 +116,7 @@ func (r *ragService) getOrCreateLLM(modelName string) (llms.Model, error) {
 
 func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey llm.PromptKey, promptData any) (string, error) {
 	// Try using the main generator first
-	llmModel, err := r.getOrCreateLLM(r.cfg.AI.GeneratorModel)
+	llmModel, err := r.getOrCreateLLM(ctx, r.cfg.AI.GeneratorModel)
 	if err != nil {
 		r.logger.Error("failed to get generator LLM", "error", err)
 		return "", fmt.Errorf("failed to get LLM model: %w", err)
