@@ -1,198 +1,289 @@
 # Code-Warden
 
-An AI-powered code review assistant that runs locally.
+[![Go Reference](https://pkg.go.dev/badge/github.com/sevigo/code-warden.svg)](https://pkg.go.dev/github.com/sevigo/code-warden)
+[![Go Report Card](https://goreportcard.com/badge/github.com/sevigo/code-warden)](https://goreportcard.com/report/github.com/sevigo/code-warden)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Code-Warden is a GitHub App that uses a local Large Language Model (LLM) to perform code reviews. It is triggered by a simple command in a pull request comment, providing contextual feedback by analyzing the entire repository.
+An AI-powered code review assistant that runs locally with hallucination-resistant RAG.
+
+Code-Warden is a GitHub App that uses Large Language Models (LLMs) to perform intelligent code reviews. It leverages Retrieval-Augmented Generation (RAG) to understand your entire codebase, providing context-aware feedback that goes beyond simple diff analysis.
+
+## Overview
+
+Code-Warden is designed for development teams who want AI-assisted code reviews without sending their code to external services. It runs entirely on your infrastructure, using local models via [Ollama](https://ollama.com/) or cloud providers like Google [Gemini](https://deepmind.google/technologies/gemini/).
 
 ## Features
 
--   **Flexible LLM Providers**: Supports local models via [Ollama](https://ollama.com/) and cloud-based models like Google's [Gemini](https://deepmind.google/technologies/gemini/).
--   **Context-Aware Reviews**: Uses Retrieval-Augmented Generation (RAG) to understand the entire codebase, leading to more relevant feedback.
--   **Efficient Indexing**: Intelligently updates its context by performing incremental indexing based on file changes, avoiding full re-indexing of the entire repository on subsequent reviews.
--   **Repository-Specific Configuration**: Customize review behavior, excluded files/directories, and custom instructions via a `.code-warden.yml` file in your repository root.
--   **Simple Trigger**: Comment `/review` for a full review, or `/rereview` for a context-aware follow-up. Supports custom instructions like `/rereview check security`.
--   **GitHub Integration**: Posts reviews directly as PR comments and updates the check status.
--   **Enhanced Reporting**: Inline comments feature severity badges (🔴, 🟠, 🟡) and categories, while the review summary provides a clear statistical breakdown of issues.
+### Core Features
 
-## How It Works
+-   **Flexible LLM Providers**: Supports local models via Ollama and cloud models like Google Gemini
+-   **Context-Aware Reviews**: Uses RAG to understand the entire codebase, not just the diff
+-   **Incremental Indexing**: Smart updates based on `git diff`—only re-indexes changed files
+-   **Consensus Reviews**: Multi-model reviews with automatic synthesis for higher confidence
+-   **Repository Configuration**: Customize behavior via `.code-warden.yml` in your repository
 
-1.  A user comments `/review` or `/rereview <instructions>` on a pull request.
-2.  The Code-Warden server receives a webhook from GitHub.
-3.  A background job is dispatched to handle the review.
-4.  The job securely clones or updates the repository to the latest PR branch.
-5.  The codebase is parsed and converted into vector embeddings, which are stored in [Qdrant](https://qdrant.tech/). For existing repositories, it performs incremental indexing based on file changes, only processing new or modified files.
-6.  The job retrieves the code changes (diff) from the pull request.
-7.  The diff and other PR details are used to query the vector store for relevant context from the rest of the repository.
-8.  A prompt, including the diff, the retrieved context, and any custom instructions from `.code-warden.yml`, is sent to the configured LLM (e.g., a local `gemma3` via Ollama or a remote `gemini-1.5-flash` API).
-9.  The LLM generates a code review in Markdown format.
-10. The review is posted back to the pull request as a comment, and the GitHub check status is updated.
+### RAG Pipeline
 
-### Requested review
+-   **5-Stage Context Building**: Architectural, HyDE, Impact, Description, and Definitions context
+-   **Hybrid Search**: Dense + sparse vectors for semantic and exact matching
+-   **Hallucination Prevention**: Empty context detection with warning injection
+-   **Dependency Graph Traversal**: "Who uses this code?" impact analysis
+-   **Symbol Resolution**: Extracts and resolves type/function definitions from diffs
 
-<img width="613" height="794" alt="image" src="https://github.com/user-attachments/assets/9cc0a478-f942-4b7e-b2f6-0d913d1d83f9" />
+### Review Features
 
----
-### Requested re-review
+-   **Structured Output**: Reviews with severity badges (🔴, 🟠, 🟡) and categories
+-   **Inline Comments**: Line-specific feedback directly in the PR
+-   **Re-Review**: Follow-up reviews that validate previous suggestions
+-   **Custom Instructions**: Per-PR guidance like `/review focus on security`
 
-<img width="620" height="394" alt="image" src="https://github.com/user-attachments/assets/d3094a33-84e1-4ffa-bc05-e912dbc01bc0" />
+## Architecture
 
----
-## Setup & Running
+Code-Warden follows an event-driven architecture with a multi-stage RAG pipeline:
 
-### 1. Prerequisites
+```
+[GitHub Webhook] → [Job Dispatcher] → [Review Worker]
+                                           │
+                     ┌─────────────────────┼─────────────────────┐
+                     │                     │                     │
+               [Repo Manager]      [RAG Service]         [GitHub Client]
+                     │                     │                     │
+               [Git Operations]    [Vector Store]         [Post Comments]
+                     │                     │
+               [File Sync]         [5-Stage Context]
+                                         │
+                     ┌───────────────────┼───────────────────┐
+                     │                   │                   │
+              [Architecture]      [Impact Analysis]    [Definitions]
+               [Context]           [HyDE Context]       [Context]
+```
 
--   Go 1.22+
--   Docker & Docker Compose
--   A configured GitHub App (detailed steps for creating one are usually provided in a separate `CONTRIBUTING.md` or `DEVELOPER_GUIDE.md`).
+### RAG Pipeline Stages
 
-### 2. Configure Environment
+| Stage | Purpose | Source |
+|-------|---------|--------|
+| **Architectural** | High-level module understanding | Pre-computed directory summaries |
+| **HyDE** | Semantic code discovery | Hypothetical document embeddings |
+| **Impact** | Find affected downstream code | Dependency graph traversal |
+| **Description** | Code related to PR intent | MultiQuery retrieval |
+| **Definitions** | Type/function resolution | Symbol extraction + exact lookup |
 
-Copy the example environment file and update it with your credentials.
+### Data Flow
+
+```
+1. User comments /review on PR
+2. Webhook → Job Dispatcher → Worker Pool
+3. RepoManager syncs repo (clone or incremental update)
+4. RAG Service updates vector store with changed files
+5. 5-stage parallel context building
+6. Context assembly with deduplication & validation
+7. LLM generates structured review
+8. Post review as GitHub comments
+```
+
+### Package Layout
+
+| Directory | Purpose |
+|-----------|---------|
+| `internal/rag/` | Multi-stage RAG pipeline implementation |
+| `internal/jobs/` | Job dispatcher and review worker pool |
+| `internal/repomanager/` | Git repository lifecycle management |
+| `internal/storage/` | PostgreSQL and Qdrant abstractions |
+| `internal/llm/` | LLM client, prompts, and output parsing |
+| `internal/github/` | GitHub API client and webhook handling |
+| `internal/core/` | Domain types and interfaces |
+| `cmd/` | Server and CLI entry points |
+
+## Quick Start
+
+### Prerequisites
+
+- Go 1.22+
+- Docker & Docker Compose
+- GitHub App credentials
+
+### 1. Configure Environment
 
 ```sh
 cp .env.example .env
+# Edit .env with your credentials
 ```
 
-Update the `.env` file with the following:
+Key settings:
+```env
+GITHUB_APP_ID=your_app_id
+GITHUB_PRIVATE_KEY_PATH=keys/app.private-key.pem
+LLM_PROVIDER=ollama  # or gemini
+GENERATOR_MODEL_NAME=gemma3:latest
+EMBEDDER_MODEL_NAME=nomic-embed-text
+```
 
--   `GITHUB_APP_ID`: Your GitHub App's ID.
--   `GITHUB_WEBHOOK_SECRET`: The secret you configured for your webhook.
--   `GITHUB_PRIVATE_KEY_PATH`: Path to your app's private key (default is `keys/code-warden-app.private-key.pem`).
--   `LLM_PROVIDER`: The LLM provider to use. Supported values are `ollama` (default) and `gemini`.
--   `GENERATOR_MODEL_NAME`: The model to use for generating reviews (e.g., `gemma3:latest` for Ollama, `gemini-1.5-flash` for Gemini).
--   `EMBEDDER_MODEL_NAME`: The model used for creating embeddings (e.g., `nomic-embed-text`).
--   `GEMINI_API_KEY`: Your Google AI Studio API key (only required if `LLM_PROVIDER` is `gemini`).
--   `OLLAMA_HOST`: The URL for your Ollama instance (default: `http://localhost:11434`).
--   `QDRANT_HOST`: The URL for your Qdrant instance (default: `localhost:6334`).
--   `REPO_PATH`: The local directory where repositories will be cloned and managed (default: `./data/repos`).
--   `MAX_WORKERS`: The maximum number of concurrent review jobs (default: `5`).
--   `DB_DRIVER`: Database driver to use (default: `postgres`).
--   `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USERNAME`, `DB_PASSWORD`, `DB_SSL_MODE`: PostgreSQL connection details.
-
-### 3. Run Services
-
-Start Ollama, Qdrant, and PostgreSQL using Docker Compose.
+### 2. Start Services
 
 ```sh
 docker-compose up -d
+docker-compose -f docker-compose.setup.yml up --build  # Pull models
 ```
 
-### 4. Pull LLM Models (for Ollama)
-
-If you are using the `ollama` provider, pull the models specified in your `.env` file. This step uses a separate `docker-compose.setup.yml` to run a temporary container that pulls the models, ensuring they are available for the main application.
-
-```sh
-docker-compose -f docker-compose.setup.yml up --build --remove-orphans
-```
-
-### 5. Run the Application
-
-Finally, start the Code-Warden server.
+### 3. Run the Server
 
 ```sh
 go run ./cmd/server/main.go
+# Or build and run:
+make build && ./bin/code-warden
 ```
 
-The server will start on the port specified in your `.env` file (default is `8080`).
+## How It Works
 
-### 6. Building from Source
+### Review Generation
 
-Instead of running the application directly with `go run`, you can build the binaries for the server and the CLI using the provided `Makefile`.
+1. **Trigger**: Comment `/review` on a pull request
+2. **Sync**: Clone/update repository, calculate `git diff`
+3. **Index**: Update vector store with changed files
+4. **Context**: Build 5-stage RAG context in parallel
+5. **Generate**: LLM produces structured review with line-specific suggestions
+6. **Post**: Summary comment + inline code suggestions
+
+### Consensus Review
+
+When `comparison_models` are configured, Code-Warden:
+
+1. Queries all models in parallel
+2. Each model reviews independently
+3. Synthesizes findings into unified review
+4. Adds consensus disclaimer
+
+### Re-Review
+
+The `/rereview` command validates previous suggestions:
+
+1. Fetches original review from database
+2. Compares new diff against original suggestions
+3. Reports which issues were fixed, missed, or new
+
+## CLI Commands
+
+### Update Repository
 
 ```sh
-# Build both the 'code-warden' server and 'warden-cli' tool
-make build
-# Run the server from the built binary
-./bin/code-warden
-# Run the CLI tool
-./bin/warden-cli --help
+# Incremental update (fast, git-diff based)
+./bin/warden-cli update /path/to/repo
+
+# Full scan with resume support
+./bin/warden-cli prescan /path/to/repo
 ```
 
-* **Update** a local repository (Incremental):
-```sh
-# Performs an efficient incremental update using Git diffs.
-# Best for rapid updates after code changes.
-./bin/warden-cli update /path/to/your/local/repo
-```
-
-
-### 7. CLI Review Command
-
-Run a code review for any GitHub pull request directly from the command line:
+### Review Pull Request
 
 ```sh
-# Set your GitHub token (required for API access)
-export CW_GITHUB_TOKEN="ghp_YourPersonalAccessTokenGoesHere"
-
-# Basic usage
+export CW_GITHUB_TOKEN="ghp_xxx"
 ./bin/warden-cli review https://github.com/owner/repo/pull/123
-
-# With verbose output (shows timing and debug info)
 ./bin/warden-cli review --verbose https://github.com/owner/repo/pull/123
 ```
 
-**Verbose mode output includes:**
-- Step-by-step progress with timing for each phase
-- PR metadata (title, SHA, language)
-- Index update statistics
-- Suggestion count and severity breakdown
-- **Consensus Review**: If `comparison_models` are configured in `config.yaml`, the CLI will automatically trigger a **Multi-Model Consensus Review**.
-    1.  It queries all configured models + the generator model in parallel.
-    2.  It synthesizes their findings into a single, high-quality "Remix" review.
-    3.  Benefits: Drastically reduced hallucinations, higher confidence in critical issues, and "Safety in Numbers".
+## Configuration
 
-**Troubleshooting:**
-| Issue | Solution |
-|-------|----------|
-| `GITHUB_TOKEN is not set` | Set `CW_GITHUB_TOKEN` or `GITHUB_TOKEN` environment variable |
-| `failed to fetch PR` | Check PR URL format and token permissions |
-| `failed to sync repo` | Verify network connectivity and disk space |
-| `failed to generate review` | Ensure LLM service (Ollama/Gemini) is running |
+### Application Level (`.env`)
 
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLM_PROVIDER` | LLM provider (`ollama` or `gemini`) | `ollama` |
+| `GENERATOR_MODEL_NAME` | Model for review generation | `gemma3:latest` |
+| `FAST_MODEL_NAME` | Model for quick tasks | `gemma3:latest` |
+| `EMBEDDER_MODEL_NAME` | Model for embeddings | `nomic-embed-text` |
+| `OLLAMA_HOST` | Ollama server URL | `http://localhost:11434` |
+| `QDRANT_HOST` | Qdrant server URL | `localhost:6334` |
+| `MAX_WORKERS` | Concurrent review jobs | `5` |
+| `ENABLE_HYDE` | Enable HyDE context | `true` |
+| `ENABLE_RERANKING` | Enable LLM reranking | `true` |
 
+### Repository Level (`.code-warden.yml`)
 
-### 8. CLI Prescan Command
+```yaml
+# Place in repository root
+custom_instructions:
+  - "Focus on security vulnerabilities"
+  - "Check for proper error handling"
 
-The `prescan` command is a "heavyweight" tool designed for initial ingestion and large repositories. It processes one file at a time and supports **resumability**.
+exclude_dirs:
+  - vendor
+  - node_modules
+  - dist
 
-| Feature | `update` | `prescan` |
-| :--- | :--- | :--- |
-| **Strategy** | Git-based Incremental | File-based Full Walk |
-| **Best For** | Daily development updates | Initial ingestion, Large repos |
-| **Resumable** | No (but fast) | **Yes** (tracks progress) |
-| **Docs** | Vector store only | Structure + Arch Comparisons |
+exclude_exts:
+  - .md
+  - .txt
+```
+
+## Hallucination Prevention
+
+Code-Warden implements multiple safeguards against LLM hallucinations:
+
+1. **Empty Context Detection**: Warns when no relevant context is found
+2. **Snippet Validation**: Fast LLM validates retrieved snippets
+3. **Document Deduplication**: Parent-aware keys prevent duplicates
+4. **Hybrid Search**: Dense + sparse vectors improve recall
+5. **Symbol Resolution**: Exact-match filters for definitions
+
+## GoFrame Integration
+
+Code-Warden is built on [GoFrame](https://github.com/sevigo/goframe), utilizing:
+
+| Pattern | Usage |
+|---------|-------|
+| `chains.LLMChain[T]` | Typed LLM calls with output parsing |
+| `chains.RetrievalQA` | Question answering |
+| `chains.MapReduceChain` | Consensus review generation |
+| `vectorstores.VectorStore` | Qdrant operations |
+| `textsplitter.TextSplitter` | Code-aware chunking |
+| `documentloaders.GitLoader` | Streaming repository ingestion |
+| `parsers.ParserRegistry` | Multi-language AST parsing |
+
+## API Reference
+
+Full API documentation is available at [pkg.go.dev](https://pkg.go.dev/github.com/sevigo/code-warden).
+
+## Development
+
+### Running Tests
 
 ```sh
-# Scan a remote repository with verbose output
-./bin/warden-cli prescan --verbose https://github.com/owner/repo
-
-# Scan a local repository with resume/documentation support
-./bin/warden-cli prescan /path/to/local/repo
+make test        # Run all tests
+make test-race   # Run with race detector
+make lint        # Run linters
 ```
 
-**Key Features:**
-- **Auto-Resume**: Automatically tracks progress. Re-running the command resumes from the last processed file.
-- **Centralized Storage**: Remote URLs are cloned to the directory specified in `repo_path`.
-- **Documentation**: Generates project structure summaries.
-- **Architectural Comparison**: If `comparison_models` are configured, `prescan` will also generate `arch_comparison_<model>.md` files.
-    - These files contain high-level architectural summaries of the repository from the perspective of each model.
-    - Useful for evaluating which model understands your codebase best before setting it as the main reviewer.
-    - Configure specific directories to analyze via `comparison_paths` in `config.yaml`.
+### Project Structure
 
-## RunPod
-
-```bash
-apt update && apt install -y git python3-venv vim
-cd /workspace
-git clone https://github.com/sevigo/code-warden.git
-cd code-warden/embeddings
-python3 -m venv venv
-source venv/bin/activate
-
-export HF_HOME="/workspace/huggingface"
-export EMBEDDING_API_SECRET="YOUR_SECRET_KEY_HERE"
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
-
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 18000
 ```
+code-warden/
+├── cmd/
+│   ├── cli/          # CLI entry point
+│   └── server/       # Server entry point
+├── internal/
+│   ├── app/          # Application bootstrap
+│   ├── config/       # Configuration
+│   ├── core/         # Domain types
+│   ├── db/           # Database connection
+│   ├── github/       # GitHub API client
+│   ├── gitutil/      # Git operations
+│   ├── jobs/         # Job dispatcher
+│   ├── llm/          # LLM and prompts
+│   ├── logger/       # Logging setup
+│   ├── prescan/      # Pre-scanning logic
+│   ├── rag/          # RAG pipeline
+│   ├── repomanager/  # Repository management
+│   ├── server/       # HTTP server
+│   ├── storage/      # Data persistence
+│   └── wire/         # Dependency injection
+├── embeddings/       # FastAPI embedding service
+└── examples/         # Example configurations
+```
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

@@ -5,24 +5,36 @@ This document outlines the development roadmap for Code-Warden. It tracks comple
 ## ✅ Recently Completed
 
 -   **1. Structured, Line-Specific Reviews:** The review process has been fundamentally upgraded.
-    -   **Resolution:** The system now prompts the LLM for a structured JSON output. This JSON is parsed into `Suggestions` which are then posted as line-specific comments on the pull request using the GitHub Review API. This provides a vastly superior and more intuitive user experience.
-    -   **Benefit:** Feedback is now contextual, actionable, and appears exactly where it's relevant in the "Files Changed" tab.
+    -   **Resolution:** The system now prompts the LLM for a structured JSON output. This JSON is parsed into `Suggestions` which are then posted as line-specific comments on the pull request using the GitHub Review API.
+    -   **Benefit:** Feedback is now contextual, actionable, and appears exactly where it's relevant.
 
--   **2. Intelligent RAG Context Caching:** This was the most critical step to make the tool practical and efficient.
-    -   **Resolution:** The system now tracks repository state in the PostgreSQL database, storing `last_indexed_sha`. Subsequent reviews perform a `git diff` to incrementally update the vector store, avoiding costly full re-indexing.
-    -   **Benefit:** Reduces the time for subsequent reviews on the same repository from minutes to seconds.
+-   **2. Intelligent RAG Context Caching:** This was the most critical step to make the tool practical.
+    -   **Resolution:** The system tracks repository state in PostgreSQL (`last_indexed_sha`). Subsequent reviews perform a `git diff` to incrementally update the vector store.
+    -   **Benefit:** Reduces subsequent review time from minutes to seconds.
 
--   **3. Repository Configuration (`.code-warden.yml`):** Users can now customize behavior.
-    -   **Resolution:** A `.code-warden.yml` file in the repository root allows for `custom_instructions`, `exclude_dirs`, and `exclude_exts`. This configuration is loaded dynamically for each job.
-    -   **Benefit:** Makes the tool far more powerful and adaptable, allowing teams to tailor it to their specific needs.
+-   **3. Repository Configuration (`.code-warden.yml`):** Users can customize behavior.
+    -   **Resolution:** A `.code-warden.yml` file allows for `custom_instructions`, `exclude_dirs`, and `exclude_exts`.
+    -   **Benefit:** Makes the tool adaptable to team-specific needs.
 
 -   **4. Re-implemented the `/rereview` Command:**
-    -   **Resolution:** The `/rereview` command is now fully supported. It reuses the robust review pipeline but efficiently skips indexing if the repository content hasn't changed.
-    -   **Benefit:** Allows developers to request a fresh analysis after pushing fixes or changing prompt configurations.
+    -   **Resolution:** The `/rereview` command validates previous suggestions against new changes.
+    -   **Benefit:** Developers can request fresh analysis after pushing fixes.
 
 -   **5. Enhanced GitHub Comment Formatting:**
-    -   **Resolution:** Inline comments now feature severity badges (🔴, 🟠, 🟡, 🟢) and categories. The review summary includes a statistics table showing the breakdown of issues by severity. Comments are also tied to specific commit SHAs to ensure they persist correctly as the PR evolves.
-    -   **Benefit:** improved readability and professional look of the review.
+    -   **Resolution:** Inline comments feature severity badges (🔴, 🟠, 🟡, 🟢) and categories. Comments are tied to specific commit SHAs.
+    -   **Benefit:** Improved readability and professional look.
+
+-   **6. GoFrame v0.23.2 Compatibility (Feb 2025):**
+    -   **Resolution:** Updated all GoFrame API calls to handle new error returns from constructors (`NewLLMChain`, `NewRetrievalQA`, `NewDependencyRetriever`, `NewDefinitionRetriever`).
+    -   **Benefit:** Maintains compatibility with latest GoFrame features.
+
+-   **7. Resource Leak Fixes (Feb 2025):**
+    -   **Resolution:** Added `Close()` method to `VectorStore` interface, properly closing gRPC connections in `App.Stop()`.
+    -   **Benefit:** Prevents resource leaks on application shutdown.
+
+-   **8. Context Propagation Improvements (Feb 2025):**
+    -   **Resolution:** Fixed `context.Background()` usage throughout RAG pipeline. Context now properly propagates through `getOrCreateLLM`, `ProcessFile`, `SplitDocuments`, and `GenerateSparseVector`.
+    -   **Benefit:** Proper cancellation support for long-running operations.
 
 ## 🚀 Next Up: Immediate Priorities
 
@@ -30,33 +42,114 @@ This document outlines the development roadmap for Code-Warden. It tracks comple
 
 Provide a user-friendly way to see what the app is doing and what repositories are managed.
 
--   **Problem:** Currently, the only way to interact with the app is through GitHub comments. There's no central place to view the status of managed repositories or past jobs.
 -   **TODO:**
-    1.  **Add Frontend Routes:** In `internal/server/router.go`, add routes to serve a simple static HTML/JS frontend.
-    2.  **Build a Status Page:** Create a page that lists all repositories from the database (`GetAllRepositories`), showing their name, last indexed SHA, and last update time.
-    3.  **Show Job History:** Create a page that lists recent review jobs, showing their status (success/failure) and linking to the relevant PR.
--   **Benefit:** Improves transparency and makes the tool feel more like a complete product rather than just a backend service.
+    1.  Add frontend routes in `internal/server/router.go`
+    2.  Build a status page listing all repositories with last indexed SHA
+    3.  Show job history with status and PR links
+-   **Benefit:** Improves transparency and user experience.
+
+### 2. **Add Godoc Documentation**
+
+Improve package-level documentation for better discoverability.
+
+-   **TODO:**
+    1.  Add godoc comments to `internal/storage/` interfaces
+    2.  Document `internal/rag/` service methods
+    3.  Document `internal/jobs/` dispatcher and worker
+    4.  Add package-level documentation
+-   **Benefit:** Better developer experience and API discoverability.
+
+### 3. **Performance Optimizations**
+
+Address memory and performance issues identified in code review.
+
+-   **TODO:**
+    1.  Pre-allocate `allDocs` slice in `rag_index.go`
+    2.  Add cleanup for unbounded maps in `vectorstore.go` and `repomanager/manager.go`
+    3.  Add metrics/alerting for bounded job queue
+-   **Benefit:** More stable long-running operations.
 
 ## 💡 Future Enhancements & Ideas
 
-### 3. **Implement GitHub "Suggested Changes"**
+### 4. **Implement GitHub "Suggested Changes"**
 
-Take the AI's role one step further by allowing it to suggest concrete code changes that a developer can accept with a single click.
+Allow the AI to suggest concrete code changes that developers can accept with a single click.
 
--   **Problem:** The AI currently only comments on what should be changed. Developers must still manually implement the fix.
 -   **TODO:**
-    1.  **Enhance the Prompt & Struct:** Add a `code_suggestion` field to the `core.Suggestion` struct and update the main review prompt to ask the LLM to populate it.
-    2.  **Use the "Suggested Changes" API:** The GitHub Review API supports creating suggestions. The `github.Client` would need to be updated to format comments within the special ````suggestion` code fence.
-    3.  **Update the Review Job:** The job would pass the `code_suggestion` content to the `StatusUpdater` to be posted.
--   **Benefit:** Drastically reduces the friction for developers to accept the AI's feedback, speeding up the development cycle.
+    1.  Add `code_suggestion` field to `core.Suggestion`
+    2.  Use GitHub Review API suggestion format (````suggestion` code fence)
+    3.  Update prompts to request code suggestions
+-   **Benefit:** Reduces friction for accepting AI feedback.
 
-### 4. **Implement Resource Lifecycle Management (Garbage Collection)**
+### 5. **Implement Resource Lifecycle Management**
 
-Ensure long-term stability and manage resource consumption.
+Ensure long-term stability with garbage collection.
 
--   **Problem:** Git clones and Qdrant collections persist indefinitely, leading to unbounded disk and memory usage over time.
 -   **TODO:**
-    1.  **Create a "Janitor" Service:** A background service that runs periodically (e.g., every 24 hours).
-    2.  **TTL-based Cleanup:** The janitor will find repositories with an `updated_at` timestamp older than a configured TTL (e.g., 90 days) and delete their associated Qdrant collection, disk files, and database record.
-    3.  **Handle Uninstallation Events:** Implement a webhook handler for the `installation` event with `action: "deleted"`. When the app is uninstalled, trigger an immediate cleanup of all resources for that installation.
--   **Benefit:** Prevents resource leaks, controls operational costs, and ensures the application remains performant and stable.
+    1.  Create a "Janitor" background service
+    2.  TTL-based cleanup for old repositories (Qdrant collections, disk files, DB records)
+    3.  Handle GitHub App uninstallation events
+-   **Benefit:** Prevents resource leaks and controls operational costs.
+
+### 6. **Advanced RAG Enhancements**
+
+Further improve retrieval quality and reduce hallucinations.
+
+-   **TODO:**
+    1.  Integrate `chains.ValidatingRetrievalQA` for consistent validation
+    2.  Add metrics for sparse vector failure rate
+    3.  Implement query routing based on question type
+    4.  Add support for code change summarization before review
+-   **Benefit:** Higher quality reviews with fewer false positives.
+
+### 7. **Multi-Language Parser Support**
+
+Extend language support beyond Go and TypeScript.
+
+-   **TODO:**
+    1.  Add Python parser plugin
+    2.  Add Java parser plugin
+    3.  Add Rust parser plugin
+-   **Benefit:** Broader language support for diverse teams.
+
+## Architecture Improvements (from Code Review)
+
+### Resource Management
+
+| Issue | Priority | Description |
+|-------|----------|-------------|
+| VectorStore.Close() | ✅ Done | Added Close() method to release gRPC connections |
+| Context propagation | ✅ Done | Fixed context.Background() usage throughout RAG pipeline |
+| Unbounded client map | Medium | Add cleanup for unused collection clients in vectorstore |
+
+### Code Quality
+
+| Issue | Priority | Description |
+|-------|----------|-------------|
+| Map growth in repomanager | Medium | Add cleanup for old mutexes in repoMux map |
+| Job queue metrics | Medium | Add alerting when job queue is full |
+| Pre-allocation | Low | Pre-allocate slices in hot paths |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+
+## Changelog
+
+### v0.3.0 (Feb 2025)
+- GoFrame v0.23.2 compatibility
+- Resource leak fixes (VectorStore.Close())
+- Context propagation improvements
+- Updated README with architecture documentation
+
+### v0.2.0 (Jan 2025)
+- Consensus review with multi-model synthesis
+- Re-review command for validating previous suggestions
+- HyDE context caching
+- Dependency graph traversal for impact analysis
+
+### v0.1.0 (Dec 2024)
+- Initial release
+- Structured line-specific reviews
+- Intelligent RAG context caching
+- Repository configuration support
