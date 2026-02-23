@@ -39,7 +39,7 @@ func (d dynamicSparseRetriever) GetRelevantDocuments(ctx context.Context, query 
 	return d.store.SimilaritySearch(ctx, semanticQuery, d.numDocs, searchOpts...)
 }
 
-func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder string, files []internalgithub.ChangedFile) ([][]schema.Document, []int) {
+func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder string, files []internalgithub.ChangedFile) ([][]schema.Document, []int, error) {
 	r.logger.Info("stage started", "name", "HyDE")
 
 	scopedStore := r.vectorStore.ForRepo(collection, embedder)
@@ -62,7 +62,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 	retriever := vectorstores.NewHyDERetriever(
 		rerankingRetriever,
 		r.generateHyDESnippet,
-		vectorstores.WithNumGenerations(3),
+		vectorstores.WithNumGenerations(2),
 	)
 
 	var finalResults [][]schema.Document
@@ -76,7 +76,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 		select {
 		case <-ctx.Done():
 			r.logger.Warn("HyDE collection cancelled", "error", ctx.Err())
-			return finalResults, finalIndices
+			return finalResults, finalIndices, ctx.Err()
 		default:
 		}
 
@@ -105,7 +105,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 	}
 
 	r.logger.Info("stage completed", "name", "HyDE")
-	return finalResults, finalIndices
+	return finalResults, finalIndices, nil
 }
 
 // generateHyDESnippet generates a HyDE snippet.

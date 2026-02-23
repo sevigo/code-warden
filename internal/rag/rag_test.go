@@ -368,11 +368,11 @@ func TestGatherDefinitionsContext_EmptyInput(t *testing.T) {
 		logger: slog.Default(),
 	}
 
-	seenDocs := make(map[string]struct{})
-	var mu sync.RWMutex
+	result, err := r.gatherDefinitionsContext(t.Context(), nil, []internalgithub.ChangedFile{})
 
-	result := r.gatherDefinitionsContext(t.Context(), nil, []internalgithub.ChangedFile{}, seenDocs, &mu)
-
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
 	if result != "" {
 		t.Errorf("expected empty string for empty input, got %q", result)
 	}
@@ -383,17 +383,17 @@ func TestGatherDefinitionsContext_NoPatch(t *testing.T) {
 		logger: slog.Default(),
 	}
 
-	seenDocs := make(map[string]struct{})
-	var mu sync.RWMutex
-
 	// Files without patches should be skipped, resulting in no symbols
 	changedFiles := []internalgithub.ChangedFile{
 		{Filename: "main.go", Patch: ""},
 		{Filename: "utils.go", Patch: ""},
 	}
 
-	result := r.gatherDefinitionsContext(t.Context(), nil, changedFiles, seenDocs, &mu)
+	result, err := r.gatherDefinitionsContext(t.Context(), nil, changedFiles)
 
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
 	if result != "" {
 		t.Errorf("expected empty string when no patches, got %q", result)
 	}
@@ -420,9 +420,6 @@ func TestGatherDefinitionsContext_WithSymbols(t *testing.T) {
 		logger: slog.Default(),
 	}
 
-	seenDocs := make(map[string]struct{})
-	var mu sync.RWMutex
-
 	changedFiles := []internalgithub.ChangedFile{
 		{
 			Filename: "main.go",
@@ -430,8 +427,11 @@ func TestGatherDefinitionsContext_WithSymbols(t *testing.T) {
 		},
 	}
 
-	result := r.gatherDefinitionsContext(t.Context(), mockSVS, changedFiles, seenDocs, &mu)
+	result, err := r.gatherDefinitionsContext(t.Context(), mockSVS, changedFiles)
 
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
 	// Should contain the header and possibly definitions
 	if result != "" {
 		if !strings.Contains(result, "Resolved Type Definitions") {

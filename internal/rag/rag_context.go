@@ -188,23 +188,21 @@ const maxDepth2Symbols = 15
 const maxSymbolWorkers = 10
 
 // gatherDefinitionsContext extracts symbols from changed files and retrieves their definitions.
-func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, mu *sync.RWMutex) string {
+//
+//nolint:unparam // error is always nil for now but required for errgroup consistency
+func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile) (string, error) {
 	if len(changedFiles) == 0 {
-		return ""
+		return "", nil
 	}
 
-	if seenDocs == nil {
-		seenDocs = make(map[string]struct{})
-	}
-	if mu == nil {
-		mu = &sync.RWMutex{}
-	}
+	seenDocs := make(map[string]struct{})
+	mu := &sync.RWMutex{}
 
 	// Symbol extraction
 	symbolList := r.extractDepth0Symbols(changedFiles)
 	if len(symbolList) == 0 {
 		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
-		return ""
+		return "", nil
 	}
 
 	r.logger.Debug("extracted symbols from diff", "symbols", symbolList)
@@ -223,7 +221,7 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 	depth2Defs := r.resolveDepth2Symbols(ctx, depth1Defs, seenSymbols, scopedStore, seenDocs, mu)
 
 	// Format output
-	return r.formatResolvedDefinitions(depth1Defs, depth2Defs)
+	return r.formatResolvedDefinitions(depth1Defs, depth2Defs), nil
 }
 
 // extractDepth0Symbols extracts unique symbols from all changed file patches.
@@ -464,32 +462,38 @@ func (r *ragService) buildContextConcurrently(
 	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		results.archContext = r.gatherArchContextSafe(ctx, scopedStore, changedFiles)
-		return nil
+		arch, err := r.gatherArchContextSafe(ctx, scopedStore, changedFiles)
+		results.archContext = arch
+		return err
 	})
 
 	if r.cfg.AI.EnableHyDE {
 		g.Go(func() error {
-			results.hydeResults, results.hydeIndices = r.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
-			return nil
+			res, indices, err := r.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
+			results.hydeResults = res
+			results.hydeIndices = indices
+			return err
 		})
 	}
 
 	g.Go(func() error {
-		results.impactDocs = r.gatherImpactDocs(ctx, scopedStore, repoPath, changedFiles)
-		return nil
+		docs, err := r.gatherImpactDocs(ctx, scopedStore, repoPath, changedFiles)
+		results.impactDocs = docs
+		return err
 	})
 
 	if prDescription != "" {
 		g.Go(func() error {
-			results.descriptionDocs = r.gatherDescriptionDocs(ctx, collectionName, embedderModelName, prDescription)
-			return nil
+			docs, err := r.gatherDescriptionDocs(ctx, collectionName, embedderModelName, prDescription)
+			results.descriptionDocs = docs
+			return err
 		})
 	}
 
 	g.Go(func() error {
-		results.definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, nil, nil)
-		return nil
+		defs, err := r.gatherDefinitionsContext(ctx, scopedStore, changedFiles)
+		results.definitionsContext = defs
+		return err
 	})
 
 	if err := g.Wait(); err != nil {
@@ -499,11 +503,12 @@ func (r *ragService) buildContextConcurrently(
 	return results
 }
 
-func (r *ragService) gatherArchContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+//nolint:unparam // error is always nil for now but required for errgroup consistency
+func (r *ragService) gatherArchContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) (string, error) {
 	r.logger.Info("stage started", "name", "ArchitecturalContext")
 	ac := r.getArchContext(ctx, store, files)
 	r.logger.Info("stage completed", "name", "ArchitecturalContext")
-	return ac
+	return ac, nil
 }
 
 // mergeAndDedup merges document slices and deduplicates them by a key function.
@@ -621,7 +626,7 @@ func (r *ragService) formatSplitDocs(
 }
 
 // gatherDescriptionDocs finds documents related to the PR description.
-func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embedder, description string) []schema.Document {
+func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embedder, description string) ([]schema.Document, error) {
 	r.logger.Info("stage started", "name", "DescriptionContext")
 
 	scopedStore := r.vectorStore.ForRepo(collection, embedder)
@@ -653,19 +658,19 @@ func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embe
 	allDocs, err := retriever.GetRelevantDocuments(ctx, description)
 	if err != nil {
 		r.logger.Warn("multi-query retrieval failed", "error", err)
-		return nil
+		return nil, err
 	}
 
 	r.logger.Info("stage completed", "name", "DescriptionContext", "retrieved", len(allDocs))
-	return allDocs
+	return allDocs, nil
 }
 
 // gatherImpactDocs returns raw impact docs without formatting.
-func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) []schema.Document {
+func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) ([]schema.Document, error) {
 	r.logger.Info("stage started", "name", "ImpactAnalysis")
-	docs := r.getImpactDocs(ctx, store, repoPath, files)
+	docs, err := r.getImpactDocs(ctx, store, repoPath, files)
 	r.logger.Info("stage completed", "name", "ImpactAnalysis", "docs", len(docs))
-	return docs
+	return docs, err
 }
 
 // assembleContext assembles the final prompt context.
