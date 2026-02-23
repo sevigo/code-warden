@@ -25,6 +25,9 @@ type VectorStore interface {
 	vectorstores.VectorStore
 	SetBatchConfig(config qdrant.BatchConfig) error
 
+	// Close releases resources associated with the vector store, including cached clients.
+	Close() error
+
 	// ForRepo returns a scoped store for a specific repository collection and embedder model.
 	// The returned ScopedVectorStore implements vectorstores.VectorStore directly,
 	// so it can be passed to goframe tools that expect that interface.
@@ -205,6 +208,28 @@ func (q *qdrantVectorStore) SetBatchConfig(config qdrant.BatchConfig) error {
 		}
 	}
 	return nil
+}
+
+// Close closes all cached Qdrant clients and releases resources.
+func (q *qdrantVectorStore) Close() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var lastErr error
+	for name, client := range q.clients {
+		if store, ok := client.(*qdrant.Store); ok {
+			if err := store.Close(); err != nil {
+				q.logger.Warn("failed to close qdrant client", "collection", name, "error", err)
+				lastErr = err
+			}
+		}
+	}
+
+	// Clear the clients map
+	q.clients = make(map[string]vectorstores.VectorStore)
+	q.logger.Info("closed all qdrant clients")
+
+	return lastErr
 }
 
 func (q *qdrantVectorStore) AddDocumentsToCollection(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error {

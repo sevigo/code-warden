@@ -244,7 +244,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		go func() {
 			defer wg.Done()
 			for f := range fileChan {
-				docs := r.ProcessFile(repoPath, f)
+				docs := r.ProcessFile(ctx, repoPath, f)
 				resultChan <- fileResult{docs: docs}
 			}
 		}()
@@ -282,7 +282,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 }
 
 // ProcessFile reads, parses, and chunks a single file.
-func (r *ragService) ProcessFile(repoPath, file string) []schema.Document {
+func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 
 	// Read file for chunking
@@ -300,7 +300,7 @@ func (r *ragService) ProcessFile(repoPath, file string) []schema.Document {
 		"source": file,
 	})
 
-	splitDocs, err := r.splitter.SplitDocuments(context.Background(), []schema.Document{doc})
+	splitDocs, err := r.splitter.SplitDocuments(ctx, []schema.Document{doc})
 	if err != nil {
 		r.logger.Error("failed to split document with code-aware splitter", "file", file, "error", err)
 		return nil
@@ -308,7 +308,7 @@ func (r *ragService) ProcessFile(repoPath, file string) []schema.Document {
 
 	for i := range splitDocs {
 		// Ensure sparse vectors are generated for hybrid search if possible
-		sparseVec, err := sparse.GenerateSparseVector(context.Background(), splitDocs[i].PageContent)
+		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[i].PageContent)
 		if err == nil {
 			splitDocs[i].Sparse = sparseVec
 		}

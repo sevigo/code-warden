@@ -157,7 +157,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	chain := chains.NewMapReduceChain[string, ComparisonResult, string](
 		func(ctx context.Context, modelName string) (ComparisonResult, error) {
-			llmModel, err := r.getOrCreateLLM(modelName)
+			llmModel, err := r.getOrCreateLLM(ctx, modelName)
 			if err != nil {
 				return ComparisonResult{Model: modelName, Error: err}, nil
 			}

@@ -479,7 +479,7 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 
 	llmInstances := make(map[string]llms.Model)
 	for _, modelName := range models {
-		if llm, err := r.getOrCreateLLM(modelName); err == nil {
+		if llm, err := r.getOrCreateLLM(ctx, modelName); err == nil {
 			llmInstances[modelName] = llm
 		} else {
 			r.logger.Warn("failed to pre-fetch LLM", "model", modelName, "error", err)
