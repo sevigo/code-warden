@@ -36,7 +36,7 @@ type VectorStore interface {
 	// Collection-specific methods (legacy, prefer ForRepo() for new code)
 	AddDocumentsToCollection(ctx context.Context, collectionName, embedderModelName string, docs []schema.Document, progressFn func(processed, total int, duration time.Duration)) error
 	SearchCollection(ctx context.Context, collectionName, embedderModelName, query string, numDocs int) ([]schema.Document, error)
-	SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error)
+	SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int, opts ...vectorstores.Option) ([][]schema.Document, error)
 	DeleteCollection(ctx context.Context, collectionName string) error
 	DeleteDocumentsFromCollection(ctx context.Context, collectionName, embedderModelName string, documentIDs []string) error
 	DeleteDocumentsFromCollectionByFilter(ctx context.Context, collectionName, embedderModelName string, filters map[string]any) error
@@ -284,7 +284,7 @@ func (q *qdrantVectorStore) SearchCollection(ctx context.Context, collectionName
 	return results, nil
 }
 
-func (q *qdrantVectorStore) SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error) {
+func (q *qdrantVectorStore) SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int, opts ...vectorstores.Option) ([][]schema.Document, error) {
 	if len(queries) == 0 {
 		return nil, nil
 	}
@@ -297,7 +297,9 @@ func (q *qdrantVectorStore) SearchCollectionBatch(ctx context.Context, collectio
 		return nil, err
 	}
 
-	return store.SimilaritySearchBatch(ctx, queries, numDocs, vectorstores.WithCollectionName(collectionName))
+	// Combine passed options with mandatory collection name
+	opts = append(opts, vectorstores.WithCollectionName(collectionName))
+	return store.SimilaritySearchBatch(ctx, queries, numDocs, opts...)
 }
 
 func (q *qdrantVectorStore) DeleteCollection(ctx context.Context, collectionName string) error {
@@ -443,12 +445,7 @@ func (q *qdrantVectorStore) SimilaritySearchBatch(ctx context.Context, queries [
 	}
 
 	embedderModel := q.cfg.AI.EmbedderModel
-	store, err := q.getStoreForCollection(collectionName, embedderModel)
-	if err != nil {
-		return nil, err
-	}
-
-	return store.SimilaritySearchBatch(ctx, queries, numDocs, opts...)
+	return q.SearchCollectionBatch(ctx, collectionName, embedderModel, queries, numDocs, opts...)
 }
 
 // ForRepo returns a scoped store for a specific repository collection and embedder model.
@@ -515,8 +512,8 @@ func (s *scopedVectorStore) SimilaritySearchWithScores(ctx context.Context, quer
 }
 
 // SimilaritySearchBatch delegates to the parent's SearchCollectionBatch.
-func (s *scopedVectorStore) SimilaritySearchBatch(ctx context.Context, queries []string, numDocs int, _ ...vectorstores.Option) ([][]schema.Document, error) {
-	return s.parent.SearchCollectionBatch(ctx, s.collectionName, s.embedderModel, queries, numDocs)
+func (s *scopedVectorStore) SimilaritySearchBatch(ctx context.Context, queries []string, numDocs int, opts ...vectorstores.Option) ([][]schema.Document, error) {
+	return s.parent.SearchCollectionBatch(ctx, s.collectionName, s.embedderModel, queries, numDocs, opts...)
 }
 
 // DeleteDocumentsByFilter delegates to the parent's DeleteDocumentsFromCollectionByFilter.

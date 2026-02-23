@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sync"
 
+	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -77,6 +78,9 @@ func NewService(
 	splitter textsplitter.TextSplitter,
 	logger *slog.Logger,
 ) Service {
+	// Register sparse provider for hybrid search
+	sparse.RegisterProvider(sparse.NewBoWProvider())
+
 	return &ragService{
 		cfg:            cfg,
 		promptMgr:      promptMgr,

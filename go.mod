@@ -2,7 +2,7 @@ module github.com/sevigo/code-warden
 
 go 1.25.6
 
-// replace github.com/sevigo/goframe => ../goframe
+replace github.com/sevigo/goframe => ../goframe
 
 require (
 	github.com/bradleyfalzon/ghinstallation/v2 v2.17.0

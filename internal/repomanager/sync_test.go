@@ -86,7 +86,7 @@ func (m *mockVectorStore) AddDocumentsToCollection(_ context.Context, _, _ strin
 func (m *mockVectorStore) SearchCollection(_ context.Context, _, _, _ string, _ int) ([]schema.Document, error) {
 	return nil, nil
 }
-func (m *mockVectorStore) SearchCollectionBatch(_ context.Context, _, _ string, _ []string, _ int) ([][]schema.Document, error) {
+func (m *mockVectorStore) SearchCollectionBatch(_ context.Context, _, _ string, _ []string, _ int, _ ...vectorstores.Option) ([][]schema.Document, error) {
 	return nil, nil
 }
 func (m *mockVectorStore) DeleteDocumentsFromCollection(_ context.Context, _, _ string, _ []string) error {
