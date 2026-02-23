@@ -140,7 +140,7 @@ func (d *ReuseDetector) DetectRedundancies(
 					"file", fn.FilePath,
 					"error", err,
 				)
-				return nil // Continue processing other functions
+				return nil
 			}
 
 			if suggestion != nil {
@@ -328,7 +328,7 @@ func (d *ReuseDetector) retrieveSimilarCode(
 	results, err := scopedStore.SimilaritySearch(
 		ctx,
 		query,
-		3, // Top 3 matches
+		3,
 		vectorstores.WithFilter("source", excludeFile),
 	)
 	if err != nil {

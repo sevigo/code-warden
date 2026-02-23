@@ -25,7 +25,7 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 		return ""
 	}
 
-	// ── Dedup by key ─────────────────────────────────────────────────────────
+	// Dedup by key
 	seenDocs := make(map[string]struct{})
 	unique := docs[:0]
 	for _, doc := range docs {
@@ -37,7 +37,7 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 		unique = append(unique, doc)
 	}
 
-	// ── Group by source file ──────────────────────────────────────────────────
+	// Group by source file
 	type fileEntry struct {
 		source string
 		docs   []schema.Document
@@ -77,9 +77,7 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	return contextBuilder.String()
 }
 
-// mergeChunksForFile merges consecutive chunks from the same source file,
-// removing overlapping text to produce a single continuous code block.
-// This prevents token waste and confusing duplicate snippets for the LLM.
+// mergeChunksForFile merges consecutive chunks from the same source file.
 func mergeChunksForFile(docs []schema.Document, r *ragService) string {
 	if len(docs) == 1 {
 		return r.getDocContent(docs[0])
@@ -105,8 +103,7 @@ func mergeChunksForFile(docs []schema.Document, r *ragService) string {
 	return merged.String()
 }
 
-// findOverlapStart returns the length of the longest suffix of prev that is
-// also a prefix of curr. Checks overlaps of up to 300 characters.
+// findOverlapStart returns the length of the longest suffix of prev that is also a prefix of curr.
 func findOverlapStart(prev, curr string) int {
 	const maxOverlap = 300
 	overlap := len(prev)
@@ -127,10 +124,7 @@ func findOverlapStart(prev, curr string) int {
 	return 0
 }
 
-// filterAddedLines extracts only the added ('+') lines from a git patch string,
-// stripping the leading '+' character. Lines starting with '+++' (file header) are excluded.
-// This prevents regex symbol extraction from matching deleted ('-') lines, which could
-// produce stale or incorrect symbol names.
+// filterAddedLines extracts only the added ('+') lines from a git patch.
 func filterAddedLines(patch string) string {
 	lines := strings.Split(patch, "\n")
 	var added []string
@@ -143,8 +137,6 @@ func filterAddedLines(patch string) string {
 }
 
 // extractSymbolsFromPatch extracts potential type/function names from a git patch.
-// IMPORTANT: Only added lines ('+') are processed to avoid matching deleted symbols.
-// Uses pre-compiled regexes for performance.
 func extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
 
@@ -195,27 +187,20 @@ const maxDepth2Symbols = 15
 // maxSymbolWorkers limits concurrent DefinitionRetriever lookups at each depth.
 const maxSymbolWorkers = 10
 
-// gatherDefinitionsContext extracts symbols from the changed files and retrieves their definitions
-// using a two-depth recursive resolution strategy:
-//
-//	Depth 0: Extract symbols from git diff patches (regex-based).
-//	Depth 1: Concurrently retrieve definitions for those symbols from the vector store.
-//	Depth 2: Parse retrieved definitions for transitive symbol references (via ExtractUsedSymbols)
-//	          and concurrently retrieve those as well.
-//
-// This ensures the LLM has complete type dependency context (e.g., User → Address → Address.Validate).
+// gatherDefinitionsContext extracts symbols from changed files and retrieves their definitions.
 func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile, seenDocs map[string]struct{}, mu *sync.RWMutex) string {
 	if len(changedFiles) == 0 {
 		return ""
 	}
 
-	// ── Depth 0: Extract symbols from diff ──────────────────────────────
+	// Symbol extraction
 	symbolList := r.extractDepth0Symbols(changedFiles)
 	if len(symbolList) == 0 {
 		r.logger.Info("stage skipped", "name", "SymbolResolution", "reason", "no_symbols_found")
 		return ""
 	}
 
+	r.logger.Debug("extracted symbols from diff", "symbols", symbolList)
 	r.logger.Info("stage started", "name", "SymbolResolution", "depth0_symbols", len(symbolList))
 
 	seenSymbols := make(map[string]struct{})
@@ -223,14 +208,14 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 		seenSymbols[s] = struct{}{}
 	}
 
-	// ── Depth 1: Concurrently resolve Depth-0 symbols ───────────────────
+	// Resolve direct symbols
 	depth1Defs := r.resolveSymbolsConcurrently(ctx, symbolList, scopedStore, seenDocs, mu)
 	r.logger.Info("depth-1 resolution complete", "resolved", len(depth1Defs))
 
-	// ── Depth 2: Resolve transitive symbols found inside Depth-1 definitions ──
+	// Resolve transitive symbols
 	depth2Defs := r.resolveDepth2Symbols(ctx, depth1Defs, seenSymbols, scopedStore, seenDocs, mu)
 
-	// ── Format output ───────────────────────────────────────────────────
+	// Format output
 	return r.formatResolvedDefinitions(depth1Defs, depth2Defs)
 }
 
@@ -248,8 +233,7 @@ func (r *ragService) extractDepth0Symbols(changedFiles []internalgithub.ChangedF
 	return mapKeysToSlice(depth0Symbols, maxDepth0Symbols)
 }
 
-// resolveDepth2Symbols extracts transitive symbols from Depth-1 definitions,
-// deduplicates them, and resolves the new ones concurrently.
+// resolveDepth2Symbols extracts transitive symbols from Depth-1 definitions.
 func (r *ragService) resolveDepth2Symbols(
 	ctx context.Context,
 	depth1Defs []resolvedDefinition,
@@ -310,8 +294,7 @@ func (r *ragService) formatResolvedDefinitions(depth1Defs, depth2Defs []resolved
 	return builder.String()
 }
 
-// resolveSymbolsConcurrently resolves a list of symbols in parallel using errgroup.
-// Returns the successfully resolved definitions.
+// resolveSymbolsConcurrently resolves symbols in parallel.
 func (r *ragService) resolveSymbolsConcurrently(
 	ctx context.Context, symbols []string,
 	scopedStore storage.ScopedVectorStore,
@@ -345,10 +328,7 @@ func (r *ragService) resolveSymbolsConcurrently(
 	return results
 }
 
-// extractTransitiveSymbols parses a resolved definition's content to find
-// additional symbols referenced within it (e.g., field types, method parameters).
-// Uses the language-aware parser from the registry when available, falling back
-// to the regex-based extractor.
+// extractTransitiveSymbols parses a definition to find referenced symbols.
 func (r *ragService) extractTransitiveSymbols(source, content string) []string {
 	if r.parserRegistry == nil {
 		return extractSymbolsFromPatch(content) // Fallback to regex
@@ -424,9 +404,7 @@ func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string,
 	return source, content, true
 }
 
-// buildRelevantContext performs similarity searches using file diffs to find related
-// code snippets from the repository. These results provide context to help the LLM
-// better understand the scope and impact of the changes.
+// buildRelevantContext performs similarity searches to find related code snippets.
 func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string) {
 	if len(changedFiles) == 0 {
 		return "", ""
@@ -442,6 +420,14 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	archContext, definitionsContext, impactDocs, descDocs, hydeResults, indices := r.buildContextConcurrently(
 		ctx, collectionName, embedderModelName, repoPath, prDescription, changedFiles, scopedStore)
+
+	r.logger.Debug("raw context gathered",
+		"arch_found", archContext != "",
+		"definitions_found", definitionsContext != "",
+		"impact_docs_count", len(impactDocs),
+		"description_docs_count", len(descDocs),
+		"hyde_results_count", len(hydeResults),
+	)
 
 	allDocs := mergeAndDedup(append(impactDocs, descDocs...), r.getDocKey)
 
@@ -585,6 +571,11 @@ func (r *ragService) filterValidDescriptionDocs(ctx context.Context, descKeys ma
 			validSources[source] = true
 		}
 	}
+
+	r.logger.Debug("description snippets validated",
+		"total_candidates", len(toValidate),
+		"valid_count", len(validSources),
+	)
 	return validSources
 }
 
@@ -624,8 +615,7 @@ func (r *ragService) formatSplitDocs(
 	return impactBuilder.String(), descCtx
 }
 
-// gatherDescriptionDocs uses MultiQuery retrieval to find documents related to the PR description.
-// Returns raw []schema.Document for deterministic dedup in the caller.
+// gatherDescriptionDocs finds documents related to the PR description.
 func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embedder, description string) []schema.Document {
 	r.logger.Info("stage started", "name", "DescriptionContext")
 
@@ -665,8 +655,7 @@ func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embe
 	return allDocs
 }
 
-// gatherImpactDocs returns raw impact docs without formatting or shared seenDocs.
-// Replaces gatherImpactContext: dedup now happens after wg.Wait() in the caller.
+// gatherImpactDocs returns raw impact docs without formatting.
 func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) []schema.Document {
 	r.logger.Info("stage started", "name", "ImpactAnalysis")
 	docs := r.getImpactDocs(ctx, store, repoPath, files)
@@ -674,9 +663,7 @@ func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedV
 	return docs
 }
 
-// assembleContext assembles the final prompt context from all gathered sections,
-// applying a token budget to prevent context window overflow (Issue #3).
-// Priority order (high → low): definitions → description → impact → arch → hyde.
+// assembleContext assembles the final prompt context.
 func (r *ragService) assembleContext(
 	arch, impact, description, definitions string,
 	hyde [][]schema.Document, indices []int,
@@ -739,6 +726,7 @@ func (r *ragService) assembleContext(
 		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
 		"packed_len", len(result),
+		"is_truncated", packer.isTruncated,
 	)
 
 	return result
@@ -750,12 +738,11 @@ type tokenContextSection struct {
 	content string
 }
 
-// tokenContextPacker packs context sections into a token budget, truncating
-// lower-priority sections first. It uses a simple character-based estimate
-// (1 token ≈ 3 characters) for speed — no extra LLM calls needed.
+// tokenContextPacker packs context sections into a token budget.
 type tokenContextPacker struct {
-	budget   int
-	sections []tokenContextSection
+	budget      int
+	sections    []tokenContextSection
+	isTruncated bool
 }
 
 func newTokenContextPacker(tokenBudget int) *tokenContextPacker {
@@ -789,6 +776,7 @@ func (p *tokenContextPacker) build() string {
 			remaining -= tokens
 
 		case remaining > 50: // Only truncate if there's meaningful space left
+			p.isTruncated = true
 			// Truncate to remaining budget
 			maxChars := remaining * 3
 			truncated := sec.content[:maxChars]
@@ -801,6 +789,7 @@ func (p *tokenContextPacker) build() string {
 			remaining = 0
 
 		default: // Budget exhausted
+			p.isTruncated = true
 			out.WriteString(fmt.Sprintf("[%s context omitted — token budget exhausted]\n\n---\n\n", sec.name))
 		}
 	}

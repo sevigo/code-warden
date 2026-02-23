@@ -16,8 +16,7 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// GenerateReReview performs feedback-driven retrieval to find relevant context
-// for verifying fixes to previously identified issues.
+// GenerateReReview performs feedback-driven retrieval for verifying fixes.
 func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	r.logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
@@ -32,17 +31,17 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 		}, "This pull request contains no new code changes to re-review.", nil
 	}
 
-	// Step 1: Build standard context (Arch + Impact + HyDE + Definitions) for the changed files
+	// Build standard context
 	standardContext, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
-	// Step 2: Extract feedback-driven search queries from original review
+	// Extract search queries from original review
 	feedbackQueries := r.extractCommentsFromReview(ctx, originalReview.ReviewContent)
 	r.logger.Info("extracted feedback-driven search queries", "count", len(feedbackQueries))
 
-	// Step 3: Perform feedback-driven vector searches
+	// Feedback-driven searches
 	feedbackContext := r.buildFeedbackDrivenContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, feedbackQueries, event.UserInstructions)
 
-	// Step 4: Combine contexts with feedback-driven results prioritized
+	// Combine contexts
 	combinedContext := r.combineReReviewContext(standardContext, feedbackContext)
 
 	promptData := core.ReReviewData{
@@ -75,8 +74,7 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 	return structuredReview, rawReview, nil
 }
 
-// buildFeedbackDrivenContext performs vector searches using the extracted feedback
-// comments as queries to find relevant code definitions and dependencies.
+// buildFeedbackDrivenContext performs vector searches based on feedback.
 func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionName, embedderModelName string, feedbackQueries []string, userInstructions string) string {
 	if len(feedbackQueries) == 0 && userInstructions == "" {
 		return ""
@@ -87,43 +85,37 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	// Channel to collect results from goroutines
 	resultChan := make(chan string, len(feedbackQueries)+1)
 
-	// Limit concurrent searches to prevent resource exhaustion
 	const maxConcurrentSearches = 10
 	semaphore := make(chan struct{}, maxConcurrentSearches)
 
-	// Search for each feedback query
 	for _, query := range feedbackQueries {
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
 		wg.Add(1)
-		semaphore <- struct{}{} // Acquire slot
+		semaphore <- struct{}{}
 		go func(q string) {
-			defer func() { <-semaphore }() // Release slot
+			defer func() { <-semaphore }()
 			r.performReReviewSearch(ctx, scopedStore, q, "feedback query", "Relevant to", resultChan, seenDocs, &mu, &wg)
 		}(query)
 	}
 
-	// If user provided specific instructions, search for those too
 	if userInstructions != "" {
 		wg.Add(1)
-		semaphore <- struct{}{} // Acquire slot
+		semaphore <- struct{}{}
 		go func() {
-			defer func() { <-semaphore }() // Release slot
+			defer func() { <-semaphore }()
 			r.performReReviewSearch(ctx, scopedStore, userInstructions, "user instructions", "Relevant to user focus", resultChan, seenDocs, &mu, &wg)
 		}()
 	}
 
-	// Wait for all searches to complete, then close the channel
 	go func() {
 		wg.Wait()
 		close(resultChan)
 	}()
 
-	// Collect all results into the builder (single goroutine - no race condition)
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString("# Feedback-Driven Context\n\n")
 	contextBuilder.WriteString("The following code definitions and dependencies are relevant to the issues raised in the original review:\n\n")
@@ -141,12 +133,10 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 	return contextBuilder.String()
 }
 
-// performReReviewSearch executes a single search query (either from feedback or user instructions)
-// and handles deduplication and result formatting for the re-review context.
+// performReReviewSearch executes a search query for re-review context.
 func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType, headerPrefix string, resultChan chan<- string, seenDocs map[string]struct{}, mu *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	// Check for cancellation before starting work
 	select {
 	case <-ctx.Done():
 		return
@@ -166,7 +156,6 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 	var builder strings.Builder
 
 	for _, doc := range docs {
-		// Check for cancellation during processing
 		select {
 		case <-ctx.Done():
 			return
@@ -209,15 +198,13 @@ func (r *ragService) performSearch(ctx context.Context, scopedStore storage.Scop
 
 	docs, err := scopedStore.SimilaritySearch(ctx, query, 5, searchOpts...)
 	if err != nil {
-		r.logger.Warn("search failed", "queryType", queryType, "query", query[:min(50, len(query))], "error", err)
-		return nil
+		r.logger.Warn("re-review search failed", "queryType", queryType, "error", err)
 	}
-
+	r.logger.Debug("re-review search complete", "queryType", queryType, "docs_found", len(docs))
 	return docs
 }
 
-// combineReReviewContext merges standard context with feedback-driven context,
-// prioritizing feedback-driven results at the beginning.
+// combineReReviewContext merges standard context with feedback-driven context.
 func (r *ragService) combineReReviewContext(standardContext, feedbackContext string) string {
 	if feedbackContext == "" {
 		return standardContext
@@ -231,12 +218,10 @@ func (r *ragService) combineReReviewContext(standardContext, feedbackContext str
 	return result.String()
 }
 
-// extractCommentsFromReview parses the original review content and extracts
-// all comment contents to use as feedback-driven search queries.
+// extractCommentsFromReview parses the review content to extract search queries.
 func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewContent string) []string {
 	var queries []string
 
-	// Use the new parser to properly unmarshal the LLM review
 	parsedReview, err := llm.ParseMarkdownReview(ctx, reviewContent, r.logger)
 	if err != nil {
 		r.logger.Warn("extractCommentsFromReview: failed to parse review content", "error", err)
@@ -245,7 +230,6 @@ func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewConten
 
 	for _, s := range parsedReview.Suggestions {
 		if strings.TrimSpace(s.Comment) != "" {
-			// Clean up the comment for use as a search query
 			cleaned := r.cleanCommentForQuery(s.Comment)
 			if cleaned != "" {
 				queries = append(queries, cleaned)
@@ -256,26 +240,19 @@ func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewConten
 	return queries
 }
 
-// cleanCommentForQuery prepares a comment for use as a vector search query.
-// It normalizes markdown artifacts and structural headers while preserving semantic context.
+// cleanCommentForQuery prepares a comment for use as a search query.
 func (r *ragService) cleanCommentForQuery(comment string) string {
-	// Remove markdown formatting (backticks)
 	comment = strings.ReplaceAll(comment, "```", " ")
 	comment = strings.ReplaceAll(comment, "`", " ")
 
-	// Normalize structural headers to separators for semantic retention
-	// This preserves the semantic meaning (e.g., "Observation:", "Fix:") while reducing noise.
-	// Status markers are removed as they don't contribute to code retrieval.
 	comment = statusRegex.ReplaceAllString(comment, " ")
 	comment = obsRegex.ReplaceAllString(comment, " | Observation: ")
 	comment = rootCauseRegex.ReplaceAllString(comment, " | Root Cause: ")
 	comment = fixRegex.ReplaceAllString(comment, " | Fix: ")
 
-	// Collapse multiple spaces and trim
 	comment = whitespaceRegex.ReplaceAllString(comment, " ")
 	comment = strings.TrimSpace(comment)
 
-	// Limit query length to avoid overly long searches
 	const maxQueryLen = 500
 	if len(comment) > maxQueryLen {
 		if idx := strings.LastIndex(comment[:maxQueryLen], " "); idx > 400 {

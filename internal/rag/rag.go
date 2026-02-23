@@ -23,7 +23,7 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// Pre-compiled regexes for comment cleaning and symbol extraction to avoid recompilation on each call
+// Regexes for comment cleaning and symbol extraction.
 var (
 	statusRegex     = regexp.MustCompile(`(?i)\*\*status:\*\*\s*(unresolved|partial|fixed|new critical bug)\s*`)
 	obsRegex        = regexp.MustCompile(`(?i)\*\*observation:\*\*`)
@@ -39,7 +39,7 @@ var (
 	symbolExportedTypeRegex = regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`)
 )
 
-// Service defines the core operations for our Retrieval-Augmented Generation (RAG) pipeline.
+// Service defines operations for the RAG pipeline.
 type Service interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
@@ -65,8 +65,7 @@ type ragService struct {
 	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
 }
 
-// NewService creates a new Service instance with a vector store, LLM model,
-// parser registry, and logger. This service powers the indexing and code review flow.
+// NewService creates a new RAG service.
 func NewService(
 	cfg *config.Config,
 	promptMgr *llm.PromptManager,

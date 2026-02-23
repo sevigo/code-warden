@@ -67,9 +67,7 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 		return nil
 	}
 
-	// 3. For directories that need updates, we need to gather Symbols and Imports.
-	// We defer this data gathering to the worker pool phase to avoid blocking the discovery loop.
-	// The hydration of directory metadata happens efficiently just before the LLM prompt value generation.
+	// Hydrate directory metadata and generate summaries
 
 	// Generate summaries with a worker pool
 	archDocs := r.generateSummariesWithWorkerPool(ctx, dirsToProcess, 3)
@@ -124,7 +122,7 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 	dirsToProcess := make(map[string]*DirectoryInfo)
 	cachedCount := 0
 
-	// Case 1: Full Recursive Walk (Initial Indexing)
+	// Recursive walk for initial indexing
 	if len(targetPaths) == 0 {
 		err := filepath.WalkDir(repoPath, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -148,21 +146,19 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 		return dirsToProcess, cachedCount, err
 	}
 
-	// Case 2: Targeted Walk (Incremental Sync - Bottleneck #4)
+	// Targeted walk for incremental sync
 	uniqueDirs := make(map[string]struct{})
 
 	for _, p := range targetPaths {
-		// Securely validate and join the path using our helper
 		_, err := r.validateAndJoinPath(repoPath, p)
 		if err != nil {
-			r.logger.Warn("invalid or suspicious target path", "path", p, "error", err)
+			r.logger.Warn("invalid target path", "path", p, "error", err)
 			continue
 		}
 
-		// Use the cleaned path for directory traversal.
 		cleanP := filepath.Clean(p)
 		dir := filepath.Dir(cleanP)
-		// Traverse up to root to ensure all affected parent summaries are updated if needed
+		// Traverse up to root
 		for {
 			uniqueDirs[dir] = struct{}{}
 			if dir == "." || dir == "/" || dir == "" {

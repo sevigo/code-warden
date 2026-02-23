@@ -20,6 +20,7 @@ type HyDEData struct {
 
 const hydeBaseQueryPrompt = "To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s"
 
+// dynamicSparseRetriever retrieves documents using sparse vectors if available.
 type dynamicSparseRetriever struct {
 	store   storage.ScopedVectorStore
 	numDocs int
@@ -95,8 +96,11 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 		}
 
 		if len(docs) > 0 {
+			r.logger.Debug("HyDE docs found", "file", file.Filename, "count", len(docs))
 			finalResults = append(finalResults, docs)
 			finalIndices = append(finalIndices, i)
+		} else {
+			r.logger.Debug("no HyDE docs found", "file", file.Filename)
 		}
 	}
 
@@ -104,6 +108,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 	return finalResults, finalIndices
 }
 
+// generateHyDESnippet generates a HyDE snippet.
 func (r *ragService) generateHyDESnippet(ctx context.Context, q string) (string, error) {
 	patchHash := r.hashPatch(q)
 	if cached, ok := r.hydeCache.Load(patchHash); ok {

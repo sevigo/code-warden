@@ -18,9 +18,7 @@ type depRequest struct {
 	File    internalgithub.ChangedFile
 }
 
-// getImpactDocs returns raw impact documents without formatting or deduplication.
-// Deduplication is handled by the caller (buildRelevantContext) after all goroutines
-// complete, ensuring deterministic output.
+// getImpactDocs returns related documents for impact analysis.
 func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) []schema.Document {
 	retriever, err := vectorstores.NewDependencyRetriever(store)
 	if err != nil {
@@ -88,18 +86,19 @@ func (r *ragService) fetchImpactResults(ctx context.Context, retriever *vectorst
 	var wg sync.WaitGroup
 	for _, req := range reqs {
 		wg.Add(1)
-		go func(r depRequest) {
+		go func(dr depRequest) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			network, err := retriever.GetContextNetwork(ctx, r.Pkg, r.Imports)
+			network, err := retriever.GetContextNetwork(ctx, dr.Pkg, dr.Imports)
 			if err != nil {
 				return
 			}
 
 			depMu.Lock()
-			depResults[r.File.Filename] = network.Dependents
+			depResults[dr.File.Filename] = network.Dependents
+			r.logger.Debug("impact graph fetched", "file", dr.File.Filename, "dependents", len(network.Dependents))
 			depMu.Unlock()
 		}(req)
 	}
