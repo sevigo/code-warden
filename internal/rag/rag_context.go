@@ -193,6 +193,13 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 		return ""
 	}
 
+	if seenDocs == nil {
+		seenDocs = make(map[string]struct{})
+	}
+	if mu == nil {
+		mu = &sync.RWMutex{}
+	}
+
 	// Symbol extraction
 	symbolList := r.extractDepth0Symbols(changedFiles)
 	if len(symbolList) == 0 {
@@ -420,6 +427,14 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 
 	results := r.buildContextConcurrently(ctx, collectionName, embedderModelName, repoPath, prDescription, changedFiles, scopedStore)
 
+	r.logger.Debug("raw context gathered",
+		"arch_found", results.archContext != "",
+		"definitions_found", results.definitionsContext != "",
+		"impact_docs_count", len(results.impactDocs),
+		"description_docs_count", len(results.descriptionDocs),
+		"hyde_results_count", len(results.hydeResults),
+	)
+
 	allDocs := mergeAndDedup(append(results.impactDocs, results.descriptionDocs...), r.getDocKey)
 
 	var impactContext, descriptionContext string
@@ -473,21 +488,13 @@ func (r *ragService) buildContextConcurrently(
 	}
 
 	g.Go(func() error {
-		seenDocs := make(map[string]struct{})
-		var mu sync.RWMutex
-		results.definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, seenDocs, &mu)
+		results.definitionsContext = r.gatherDefinitionsContext(ctx, scopedStore, changedFiles, nil, nil)
 		return nil
 	})
 
-	_ = g.Wait()
-
-	r.logger.Debug("raw context gathered",
-		"arch_found", results.archContext != "",
-		"definitions_found", results.definitionsContext != "",
-		"impact_docs_count", len(results.impactDocs),
-		"description_docs_count", len(results.descriptionDocs),
-		"hyde_results_count", len(results.hydeResults),
-	)
+	if err := g.Wait(); err != nil {
+		r.logger.Error("buildContextConcurrently: one or more tasks failed", "error", err)
+	}
 
 	return results
 }
