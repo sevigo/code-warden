@@ -48,6 +48,7 @@ type AIConfig struct {
 	LLMProvider          string   `mapstructure:"llm_provider"`
 	EmbedderProvider     string   `mapstructure:"embedder_provider"`
 	OllamaHost           string   `mapstructure:"ollama_host"`
+	OllamaAPIKey         string   `mapstructure:"ollama_api_key"`
 	GeminiAPIKey         string   `mapstructure:"gemini_api_key"`
 	GeneratorModel       string   `mapstructure:"generator_model"`
 	FastModel            string   `mapstructure:"fast_model"`

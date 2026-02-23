@@ -110,6 +110,7 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 	case "ollama":
 		return ollama.New(
 			ollama.WithServerURL(cfg.AI.OllamaHost),
+			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
 			ollama.WithHTTPClient(newOllamaHTTPClient()),
 			ollama.WithModel(cfg.AI.GeneratorModel),
 			ollama.WithLogger(logger),
@@ -132,6 +133,7 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	case "ollama":
 		embedderLLM, err = ollama.New(
 			ollama.WithServerURL(cfg.AI.OllamaHost),
+			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
 			ollama.WithModel(cfg.AI.EmbedderModel),
 			ollama.WithHTTPClient(newOllamaHTTPClient()),
 			ollama.WithLogger(logger),
