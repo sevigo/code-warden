@@ -8,6 +8,13 @@ custom_instructions:
 # These are added to the application's built-in defaults like '.git' and 'node_modules'.
 exclude_dirs:
   - ".vscode"
+  - "keys"
+  - "reviews"
+  - ".agent"
+  - "bin"
+  - "vendor"
+  - "scripts" 
+  - "mocks"
 
 # File extensions to exclude from indexing.
 exclude_exts:
@@ -15,3 +22,12 @@ exclude_exts:
   - ".yml"     # Exclude Docker Compose and other YAML files.
   - ".sql"     # Exclude raw SQL migration files.
   - ".prompt"  # Exclude the LLM prompt template files.
+
+
+# Specific files to exclude from indexing by their relative path.
+exclude_files:
+  - ".code-warden.yml"
+  - "config.yml"
+  - ".gitignore"
+  - "go.mod"
+  - "CLAUDE.md"

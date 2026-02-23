@@ -489,3 +489,42 @@ func TestContextIsEmpty(t *testing.T) {
 		})
 	}
 }
+func TestFiltering(t *testing.T) {
+	r := &ragService{}
+
+	t.Run("filterFilesByExtensions", func(t *testing.T) {
+		files := []string{"main.go", "config.yml", "go.sum", "README.md"}
+		exclude := []string{".yml", "sum"}
+		got := filterFilesByExtensions(files, exclude)
+		want := []string{"main.go", "README.md"}
+		if len(got) != len(want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("filterFilesByDirectories", func(t *testing.T) {
+		files := []string{
+			"src/main.go",
+			"vendor/pkg/a.go",
+			"node_modules/lib/b.js",
+			"internal/pkg/c.go",
+			".vscode/settings.json",
+		}
+		exclude := []string{"vendor", "node_modules", ".vscode"}
+		got := r.filterFilesByDirectories(files, exclude)
+		want := []string{"src/main.go", "internal/pkg/c.go"}
+		if len(got) != len(want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("filterFilesBySpecificFiles", func(t *testing.T) {
+		files := []string{"main.go", "config/secrets.json", "scripts/temp.py", "README.md"}
+		exclude := []string{"config/secrets.json", "scripts/temp.py"}
+		got := filterFilesBySpecificFiles(files, exclude)
+		want := []string{"main.go", "README.md"}
+		if len(got) != len(want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+}

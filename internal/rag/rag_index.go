@@ -201,12 +201,15 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	// Get the same exclude directories configuration as SetupRepoContext
 	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
 
-	// Apply directory filtering first, then extension filtering
+	// Apply directory filtering first, then extension filtering, then specific file filtering
 	filesToProcess = r.filterFilesByDirectories(filesToProcess, finalExcludeDirs)
 	filesToDelete = r.filterFilesByDirectories(filesToDelete, finalExcludeDirs)
 
 	filesToProcess = filterFilesByExtensions(filesToProcess, repoConfig.ExcludeExts)
 	filesToDelete = filterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
+
+	filesToProcess = filterFilesBySpecificFiles(filesToProcess, repoConfig.ExcludeFiles)
+	filesToDelete = filterFilesBySpecificFiles(filesToDelete, repoConfig.ExcludeFiles)
 
 	r.logger.Info("updating repository context after filtering",
 		"collection", repo.QdrantCollectionName,
@@ -214,6 +217,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		"delete", len(filesToDelete),
 		"exclude_dirs", finalExcludeDirs,
 		"exclude_exts", repoConfig.ExcludeExts,
+		"exclude_files", repoConfig.ExcludeFiles,
 	)
 
 	// Handle deleted files first
@@ -424,6 +428,28 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 		}
 
 		if !isExcluded {
+			filtered = append(filtered, file)
+		}
+	}
+
+	return filtered
+}
+
+// filterFilesBySpecificFiles removes files from a slice if their path matches
+// one of the provided excluded specific files.
+func filterFilesBySpecificFiles(files []string, excludeFiles []string) []string {
+	if len(excludeFiles) == 0 {
+		return files
+	}
+
+	excludeMap := make(map[string]struct{}, len(excludeFiles))
+	for _, f := range excludeFiles {
+		excludeMap[filepath.Clean(f)] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(files))
+	for _, file := range files {
+		if _, isExcluded := excludeMap[filepath.Clean(file)]; !isExcluded {
 			filtered = append(filtered, file)
 		}
 	}
