@@ -19,7 +19,7 @@ type QuestionPromptData struct {
 }
 
 func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
-	r.logger.Info("Answering question with RAG context", "collection", collectionName)
+	r.logger.Info("answering question", "collection", collectionName)
 
 	var retriever schema.Retriever
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
@@ -34,8 +34,7 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 		retriever = vectorstores.ToRetriever(scopedStore, 5, vectorstores.WithSparseQuery(sparseQuery))
 	}
 
-	// Try to use ValidatingRetrievalQA if a fast model is configured for validation
-	// This validates the retrieved context before generating an answer
+	// Use ValidatingRetrievalQA if a fast model is configured.
 	if r.cfg.AI.FastModel != "" {
 		validatorLLM, err := r.getOrCreateLLM(ctx, r.cfg.AI.FastModel)
 		if err == nil {
@@ -49,7 +48,6 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 }
 
 // answerWithValidation uses ValidatingRetrievalQA to validate context before answering.
-// If the retrieved context is not relevant, it generates an answer without context.
 func (r *ragService) answerWithValidation(ctx context.Context, retriever schema.Retriever, validatorLLM llms.Model, question string, history []string) (string, error) {
 	chain, err := chains.NewValidatingRetrievalQA(
 		retriever,
@@ -66,8 +64,7 @@ func (r *ragService) answerWithValidation(ctx context.Context, retriever schema.
 		return "", fmt.Errorf("validating QA chain failed: %w", err)
 	}
 
-	// If there's conversation history, we need to incorporate it
-	// ValidatingRetrievalQA doesn't support history natively, so we append it
+	// If there's conversation history, we need to incorporate it.
 	if len(history) > 0 {
 		answer = r.enrichAnswerWithContext(answer, history)
 	}
@@ -82,10 +79,10 @@ func (r *ragService) answerWithoutValidation(ctx context.Context, retriever sche
 		retriever,
 		r.generatorLLM,
 		chains.WithPromptBuilder(func(q string, docs []schema.Document) (string, error) {
-			for _, doc := range docs {
-				r.logger.Debug("got a document after similarity search:", "document", doc)
+			r.logger.Debug("retrieved docs for question", "count", len(docs))
+			for i, doc := range docs {
+				r.logger.Debug("retrieved doc metadata", "idx", i, "source", doc.Metadata["source"])
 			}
-			r.logger.Debug("Retrieved relevant documents for question", "count", len(docs))
 
 			contextString := r.buildContextForPrompt(docs)
 			promptData := QuestionPromptData{

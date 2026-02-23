@@ -9,6 +9,13 @@ package wire
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"time"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/config"
@@ -29,12 +36,6 @@ import (
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
-	"io"
-	"log/slog"
-	"net"
-	"net/http"
-	"os"
-	"time"
 )
 
 // Injectors from wire.go:

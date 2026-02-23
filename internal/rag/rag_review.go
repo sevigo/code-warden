@@ -61,7 +61,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 
 	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
-	// HIGH PRIORITY: Check for empty context to warn about hallucination risk
+	// Check for empty context to warn about hallucination risk
 	contextIsEmpty := contextIsEmpty(contextString, definitionsContext)
 	if contextIsEmpty {
 		r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - review will be based solely on diff without repository context",
@@ -121,8 +121,8 @@ func (r *ragService) buildReviewPromptData(event *core.GitHubEvent, repoConfig *
 	}
 }
 
-// contextIsEmpty checks if both context strings are empty, indicating no repository context was retrieved.
-// This is used to detect high hallucination risk scenarios.
+// contextIsEmpty checks if both context strings are empty.
+// This helps detect high hallucination risk.
 func contextIsEmpty(contextString, definitionsContext string) bool {
 	return contextString == "" && definitionsContext == ""
 }
@@ -141,7 +141,13 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
-	// HIGH PRIORITY: Check for empty context to warn about hallucination risk
+	r.logger.Info("stage started", "name", "ConsensusGathering", "models_count", len(models))
+	r.logger.Debug("consensus context gathered",
+		"context_len", len(contextString),
+		"definitions_len", len(definitionsContext),
+	)
+
+	// Warn if no context was retrieved
 	contextWasEmpty := contextIsEmpty(contextString, definitionsContext)
 	if contextWasEmpty {
 		r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - consensus review will be based solely on diff",
@@ -169,6 +175,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 			defer cancel()
 
 			resp, err := llmModel.Call(tCtx, prompt)
+			r.logger.Debug("model review finished", "model", modelName, "error", err, "review_len", len(resp))
 			return ComparisonResult{Model: modelName, Review: resp, Error: err}, nil
 		},
 		func(ctx context.Context, results []ComparisonResult) (string, error) {
@@ -206,7 +213,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 }
 
 func (r *ragService) validateStructuredReview(ctx context.Context, event *core.GitHubEvent, review *core.StructuredReview) error {
-	// Verify integrity of consensus review
+	// check review integrity
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -242,7 +249,7 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 	timestamp := time.Now().Format("20060102_150405_000000000")
 	reviewsDir := "reviews"
 
-	// Resolve artifacts directory safely
+	// Ensure reviews directory exists
 	if err := r.ensureReviewsDir(reviewsDir); err != nil {
 		return "", nil, err
 	}
@@ -278,6 +285,7 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 		return "", nil, fmt.Errorf("failed to generate consensus: %w", err)
 	}
 
+	r.logger.Debug("consensus synthesis complete", "valid_reviews", len(validReviews))
 	r.saveConsensusArtifact(reviewsDir, rawConsensus, timestamp)
 	return rawConsensus, validReviews, nil
 }
@@ -349,13 +357,12 @@ func SanitizeModelForFilename(modelName string) string {
 		sanitized = "model"
 	}
 
-	// Security: Prevent collisions by adding a short deterministic hash
+	// Add a short hash to prevent name collisions
 	h := sha256.New()
 	h.Write([]byte(modelName))
 	hashStr := hex.EncodeToString(h.Sum(nil))[:16]
 
-	// Windows reserved names check (case-insensitive)
-	// Ref: Deepseek review - handle extension-like suffixes (e.g., COM1.txt)
+	// Handle Windows reserved names
 	reserved := map[string]bool{
 		"CON": true, "PRN": true, "AUX": true, "NUL": true,
 		"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
@@ -380,8 +387,7 @@ func SanitizeModelForFilename(modelName string) string {
 	return fullName
 }
 
-// formatChangedFiles returns a markdown-formatted list of changed file paths
-// to include in the LLM prompt.
+// formatChangedFiles returns a markdown-formatted list of changed file paths.
 func (r *ragService) formatChangedFiles(files []internalgithub.ChangedFile) string {
 	var builder strings.Builder
 	for _, file := range files {

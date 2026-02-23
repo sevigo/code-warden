@@ -11,14 +11,13 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 )
 
-// snippetValidator uses a fast LLM to validate whether code snippets are
-// relevant to a PR description. All validation is done in a single batch call.
+// snippetValidator validates whether code snippets are relevant to a PR description.
 type snippetValidator struct {
 	validatorLLM llms.Model
 	promptMgr    *llm.PromptManager
 }
 
-// newSnippetValidator creates a validator backed by the provided LLM.
+// newSnippetValidator creates a new validator.
 func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) *snippetValidator {
 	return &snippetValidator{
 		validatorLLM: validatorLLM,
@@ -30,10 +29,7 @@ func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) 
 // {"0": true, "1": false, ...}
 type batchValidationResult map[string]bool
 
-// validateBatch sends all snippets to the LLM in a single call and returns a
-// map of snippet-index → relevant. Fails open (all true) on any error.
-// This is Issue #6's fix: replaces N sequential per-snippet LLM calls with one
-// batched call.
+// validateBatch validates all snippets in a single call.
 func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string, prContext string) map[int]bool {
 	result := make(map[int]bool, len(snippets))
 	for i := range snippets {
@@ -63,7 +59,7 @@ func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string,
 	return result
 }
 
-// buildBatchPrompt constructs the numbered-snippet prompt for batch validation.
+// buildBatchPrompt constructs the prompt for batch validation.
 func (v *snippetValidator) buildBatchPrompt(snippets []string, prContext string) (string, error) {
 	var snippetList strings.Builder
 	for i, s := range snippets {
@@ -99,7 +95,7 @@ func parseBatchResponse(raw string) (batchValidationResult, error) {
 	return parsed, nil
 }
 
-// applyParsedResults writes the LLM's relevance decisions onto the result map.
+// applyParsedResults applies the relevance decisions to the result map.
 func applyParsedResults(parsed batchValidationResult, snippetCount int, result map[int]bool) {
 	for k, relevant := range parsed {
 		idx := atoiSafe(k)
