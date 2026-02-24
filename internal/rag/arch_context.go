@@ -70,7 +70,9 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 	// Hydrate directory metadata and generate summaries
 
 	// Generate summaries with a worker pool
-	archDocs := r.generateSummariesWithWorkerPool(ctx, dirsToProcess, 3)
+	// Use 5 workers by default for better throughput with LLM API rate limits
+	const defaultArchSummaryWorkers = 5
+	archDocs := r.generateSummariesWithWorkerPool(ctx, dirsToProcess, defaultArchSummaryWorkers)
 
 	if len(archDocs) == 0 {
 		r.logger.Warn("no architectural summaries generated")

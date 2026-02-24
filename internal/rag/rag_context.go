@@ -208,17 +208,24 @@ func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore s
 	r.logger.Debug("extracted symbols from diff", "symbols", symbolList)
 	r.logger.Info("stage started", "name", "SymbolResolution", "depth0_symbols", len(symbolList))
 
+	// Create DefinitionRetriever once and reuse for all symbol lookups
+	defRetriever, err := vectorstores.NewDefinitionRetriever(scopedStore)
+	if err != nil {
+		r.logger.Warn("failed to create definition retriever, skipping symbol resolution", "error", err)
+		return "", nil
+	}
+
 	seenSymbols := make(map[string]struct{})
 	for _, s := range symbolList {
 		seenSymbols[s] = struct{}{}
 	}
 
 	// Resolve direct symbols
-	depth1Defs := r.resolveSymbolsConcurrently(ctx, symbolList, scopedStore, seenDocs, mu)
+	depth1Defs := r.resolveSymbolsConcurrently(ctx, symbolList, defRetriever, seenDocs, mu)
 	r.logger.Info("depth-1 resolution complete", "resolved", len(depth1Defs))
 
 	// Resolve transitive symbols
-	depth2Defs := r.resolveDepth2Symbols(ctx, depth1Defs, seenSymbols, scopedStore, seenDocs, mu)
+	depth2Defs := r.resolveDepth2Symbols(ctx, depth1Defs, seenSymbols, defRetriever, seenDocs, mu)
 
 	// Format output
 	return r.formatResolvedDefinitions(depth1Defs, depth2Defs), nil
@@ -243,7 +250,7 @@ func (r *ragService) resolveDepth2Symbols(
 	ctx context.Context,
 	depth1Defs []resolvedDefinition,
 	seenSymbols map[string]struct{},
-	scopedStore storage.ScopedVectorStore,
+	defRetriever *vectorstores.DefinitionRetriever,
 	seenDocs map[string]struct{}, mu *sync.RWMutex,
 ) []resolvedDefinition {
 	var candidates []string
@@ -267,7 +274,7 @@ func (r *ragService) resolveDepth2Symbols(
 	}
 
 	r.logger.Info("depth-2 resolution started", "transitive_symbols", len(candidates))
-	results := r.resolveSymbolsConcurrently(ctx, candidates, scopedStore, seenDocs, mu)
+	results := r.resolveSymbolsConcurrently(ctx, candidates, defRetriever, seenDocs, mu)
 	r.logger.Info("depth-2 resolution complete", "resolved", len(results))
 	return results
 }
@@ -302,7 +309,7 @@ func (r *ragService) formatResolvedDefinitions(depth1Defs, depth2Defs []resolved
 // resolveSymbolsConcurrently resolves symbols in parallel.
 func (r *ragService) resolveSymbolsConcurrently(
 	ctx context.Context, symbols []string,
-	scopedStore storage.ScopedVectorStore,
+	defRetriever *vectorstores.DefinitionRetriever,
 	seenDocs map[string]struct{}, mu *sync.RWMutex,
 ) []resolvedDefinition {
 	var (
@@ -315,7 +322,7 @@ func (r *ragService) resolveSymbolsConcurrently(
 
 	for _, sym := range symbols {
 		g.Go(func() error {
-			source, content, ok := r.resolveSymbolDefinition(gCtx, sym, scopedStore, seenDocs, mu)
+			source, content, ok := r.resolveSymbolDefinition(gCtx, sym, defRetriever, seenDocs, mu)
 			if ok {
 				resultMu.Lock()
 				results = append(results, resolvedDefinition{
@@ -371,13 +378,7 @@ func mapKeysToSlice(m map[string]struct{}, maxLen int) []string {
 	return result
 }
 
-func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, scopedStore storage.ScopedVectorStore, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
-	defRetriever, err := vectorstores.NewDefinitionRetriever(scopedStore)
-	if err != nil {
-		r.logger.Debug("failed to create definition retriever", "symbol", symbol, "error", err)
-		return "", "", false
-	}
-
+func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string, defRetriever *vectorstores.DefinitionRetriever, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
 	docs, err := defRetriever.GetDefinition(ctx, symbol)
 	if err != nil {
 		r.logger.Debug("failed to search for definition", "symbol", symbol, "error", err)
@@ -460,6 +461,11 @@ func (r *ragService) buildContextConcurrently(
 ) *contextResults {
 	results := &contextResults{}
 	g, ctx := errgroup.WithContext(ctx)
+
+	// Limit concurrency to prevent resource exhaustion when all stages run in parallel.
+	// With 5 potential stages (arch, hyde, impact, description, definitions),
+	// a limit of 3 ensures some parallelism while avoiding overwhelming the system.
+	g.SetLimit(3)
 
 	g.Go(func() error {
 		arch, err := r.gatherArchContextSafe(ctx, scopedStore, changedFiles)

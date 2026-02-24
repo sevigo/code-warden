@@ -378,8 +378,8 @@ func TestHashPatch(t *testing.T) {
 	// Different content should produce different hash
 	assert.NotEqual(t, hash1, hash2)
 
-	// Should be 16 hex chars (8 bytes)
-	assert.Len(t, hash1, 16)
+	// Should be 32 hex chars (16 bytes)
+	assert.Len(t, hash1, 32)
 }
 
 // TestStripPatchNoise_Comprehensive tests the patch cleaning function
