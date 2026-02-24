@@ -412,23 +412,7 @@ func filterFilesByValidExtensions(files []string) []string {
 // buildExcludeDirs creates the final list of directories to exclude, combining
 // application defaults with user-configured exclusions.
 func (r *ragService) buildExcludeDirs(repoConfig *core.RepoConfig) []string {
-	appDefaultExcludeDirs := []string{".git", ".github", "vendor", "node_modules", "target", "build"}
-
-	// Using a map handles duplicates automatically.
-	allExcludeDirs := make(map[string]struct{})
-	for _, dir := range appDefaultExcludeDirs {
-		allExcludeDirs[dir] = struct{}{}
-	}
-	for _, dir := range repoConfig.ExcludeDirs {
-		allExcludeDirs[dir] = struct{}{}
-	}
-
-	finalExcludeDirs := make([]string, 0, len(allExcludeDirs))
-	for dir := range allExcludeDirs {
-		finalExcludeDirs = append(finalExcludeDirs, dir)
-	}
-
-	return finalExcludeDirs
+	return core.BuildExcludeDirs(repoConfig.ExcludeDirs)
 }
 
 // filterFilesByDirectories removes files from a slice if they are located within

@@ -393,22 +393,13 @@ func (s *Scanner) shouldExcludeDir(name string, repoConfig *core.RepoConfig) boo
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	// Application default exclusions (same as rag_index.go buildExcludeDirs)
-	defaultExcludes := map[string]bool{
-		".git":         true,
-		".github":      true,
-		"vendor":       true,
-		"node_modules": true,
-		"target":       true,
-		"build":        true,
-	}
-
 	// Exclude hidden directories
 	if strings.HasPrefix(name, ".") && name != "." {
 		return true
 	}
 
-	// Check default exclusions
+	// Check default exclusions (using shared constants)
+	defaultExcludes := core.DefaultExcludedDirsSet()
 	if defaultExcludes[name] {
 		return true
 	}
@@ -429,7 +420,7 @@ func (s *Scanner) shouldExcludeFile(rel, absPath string, repoConfig *core.RepoCo
 	}
 
 	ext := strings.ToLower(filepath.Ext(absPath))
-	if !validExt(ext) {
+	if !core.IsValidExtension(ext) {
 		return true
 	}
 
@@ -441,21 +432,14 @@ func (s *Scanner) shouldExcludeFile(rel, absPath string, repoConfig *core.RepoCo
 		}
 	}
 
-	// Filter by RepoConfig specific files
+	// Filter by RepoConfig specific files (with proper path normalization)
+	cleanRel := filepath.ToSlash(filepath.Clean(rel))
 	for _, excludeFile := range repoConfig.ExcludeFiles {
-		if rel == strings.ReplaceAll(excludeFile, "\\", "/") {
+		if cleanRel == filepath.ToSlash(filepath.Clean(excludeFile)) {
 			return true
 		}
 	}
 
-	return false
-}
-
-func validExt(ext string) bool {
-	switch ext {
-	case ".go", ".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".rs", ".md", ".json", ".yaml", ".yml":
-		return true
-	}
 	return false
 }
 
