@@ -601,9 +601,9 @@ func TestFiltering(t *testing.T) {
 				want:    []string{},
 			},
 			{
-				name:    "windows path normalization",
+				name:    "path normalization with dot",
 				files:   []string{"main.go", "config/secrets.json"},
-				exclude: []string{"config\\secrets.json"},
+				exclude: []string{"./config/secrets.json"},
 				want:    []string{"main.go"},
 			},
 		}
