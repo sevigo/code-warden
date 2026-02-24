@@ -23,7 +23,7 @@ import (
 
 // SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
 //
-//nolint:gocognit,funlen // This function implements complex smart-scan logic that is difficult to split without losing context.
+//nolint:cyclop,gocyclo,gocognit,funlen // Orchestrates complex smart-scan workflow.
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
 	r.logger.Info("performing smart indexing with GoFrame GitLoader",
 		"path", repoPath,
@@ -72,10 +72,10 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 	fileChan := make(chan fileWork, numHashWorkers)
 	resultChan := make(chan struct {
-		docsToInsert  []schema.Document
-		fileToUpdate  storage.FileRecord
-		processed     bool
-		skipped       bool
+		docsToInsert []schema.Document
+		fileToUpdate storage.FileRecord
+		processed    bool
+		skipped      bool
 	}, numHashWorkers)
 
 	// Start worker pool
@@ -99,10 +99,10 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 				if hash != "" {
 					if rec, exists := existingFiles[work.file]; exists && rec.FileHash == hash {
 						resultChan <- struct {
-							docsToInsert  []schema.Document
-							fileToUpdate  storage.FileRecord
-							processed     bool
-							skipped       bool
+							docsToInsert []schema.Document
+							fileToUpdate storage.FileRecord
+							processed    bool
+							skipped      bool
 						}{processed: true, skipped: true}
 						continue
 					}
@@ -125,17 +125,17 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 				}
 
 				resultChan <- struct {
-					docsToInsert  []schema.Document
-					fileToUpdate  storage.FileRecord
-					processed     bool
-					skipped       bool
+					docsToInsert []schema.Document
+					fileToUpdate storage.FileRecord
+					processed    bool
+					skipped      bool
 				}{docsToInsert: split, fileToUpdate: fileRec, processed: true}
 			}
 		}()
 	}
 
 	// Phase 1: Stream ingestion with OOM protection
-	err = loader.LoadAndProcessStream(ctx, func(ctx context.Context, docs []schema.Document) error {
+	err = loader.LoadAndProcessStream(ctx, func(_ context.Context, docs []schema.Document) error {
 		// Group documents by source to apply SHA-skip logic effectively
 		docsByFile := make(map[string][]schema.Document)
 		for _, doc := range docs {
@@ -174,8 +174,6 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 			}
 		}
 
-		// Note: We don't batch-insert here because results come asynchronously.
-		// Documents are accumulated and inserted after the stream completes below.
 		return nil
 	})
 
