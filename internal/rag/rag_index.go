@@ -23,7 +23,7 @@ import (
 
 // SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
 //
-//nolint:gocognit,funlen // This function implements complex smart-scan logic that is difficult to split without losing context.
+//nolint:cyclop,gocyclo,gocognit,funlen // Orchestrates complex smart-scan workflow.
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
 	r.logger.Info("performing smart indexing with GoFrame GitLoader",
 		"path", repoPath,
@@ -43,6 +43,12 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		existingFiles = make(map[string]storage.FileRecord)
 	}
 
+	// Copy existingFiles to avoid race condition (it's read-only after this point)
+	existingFilesCopy := make(map[string]storage.FileRecord, len(existingFiles))
+	for k, v := range existingFiles {
+		existingFilesCopy[k] = v
+	}
+
 	// Initialize GoFrame's GitLoader for streaming ingestion
 	loader, err := documentloaders.NewGit(repoPath, r.parserRegistry,
 		documentloaders.WithExcludeDirs(finalExcludeDirs),
@@ -55,16 +61,135 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 
 	scopedStore := r.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
-	processedCount := 0
-	skippedCount := 0
+	var processedCount int
+	var skippedCount int
 	var mu sync.Mutex
 
 	// Keep track of all files processed by the loader to identify deletions later
 	filesProcessedByLoader := make(map[string]struct{})
 	var filesProcessedByLoaderMu sync.Mutex
 
+	// Worker pool for parallel file hashing and splitting
+	const numHashWorkers = 4
+	const batchSize = 500 // Limit memory usage
+
+	type fileWork struct {
+		file     string
+		docs     []schema.Document
+		filePath string
+	}
+
+	type fileResult struct {
+		docsToInsert []schema.Document
+		fileToUpdate storage.FileRecord
+		processed    bool
+		skipped      bool
+	}
+
+	// Use larger buffer to prevent pipeline deadlock
+	fileChan := make(chan fileWork, numHashWorkers*2)
+	resultChan := make(chan fileResult, numHashWorkers*2)
+
+	// Batch accumulation for memory-bounded inserts
+	var batchDocs []schema.Document
+	var batchFiles []storage.FileRecord
+	var batchMu sync.Mutex
+
+	// Start worker pool
+	var wg sync.WaitGroup
+	for range numHashWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case work, ok := <-fileChan:
+					if !ok {
+						return
+					}
+					// Compute hash
+					var hash string
+					var hashErr error
+					if work.filePath != "" {
+						hash, hashErr = computeFileHash(work.filePath)
+					}
+					if hashErr != nil {
+						r.logger.Warn("hash failed, will re-process", "file", work.file, "error", hashErr)
+					}
+
+					// Check if we can skip this file (using copied map)
+					if hash != "" {
+						if rec, exists := existingFilesCopy[work.file]; exists && rec.FileHash == hash {
+							resultChan <- fileResult{processed: true, skipped: true}
+							continue
+						}
+					}
+
+					// Apply Code-Aware chunking
+					split, err := r.splitter.SplitDocuments(ctx, work.docs)
+					if err != nil {
+						r.logger.Warn("splitting failed, using original chunks", "file", work.file, "error", err)
+						split = work.docs
+					}
+
+					fileRec := storage.FileRecord{}
+					if hash != "" {
+						fileRec = storage.FileRecord{
+							RepositoryID: repo.ID,
+							FilePath:     work.file,
+							FileHash:     hash,
+						}
+					}
+
+					resultChan <- fileResult{docsToInsert: split, fileToUpdate: fileRec, processed: true}
+				}
+			}
+		}()
+	}
+
+	// Start result collector goroutine to prevent deadlock
+	var allProcessed int
+	var allSkipped int
+	var resultsMu sync.Mutex
+
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		for res := range resultChan {
+			resultsMu.Lock()
+			if res.skipped {
+				allSkipped++
+			}
+			if res.processed {
+				allProcessed++
+			}
+
+			// Accumulate for batch insert
+			batchDocs = append(batchDocs, res.docsToInsert...)
+			if res.fileToUpdate.FilePath != "" {
+				batchFiles = append(batchFiles, res.fileToUpdate)
+			}
+
+			// Flush batch when full
+			if len(batchDocs) >= batchSize {
+				if _, err := scopedStore.AddDocuments(ctx, batchDocs); err != nil {
+					r.logger.Error("failed to add vectors in batch", "error", err)
+				}
+				if err := r.store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
+					r.logger.Error("failed to update file state in DB", "error", err)
+				}
+				// Clear batches but keep capacity
+				batchDocs = batchDocs[:0]
+				batchFiles = batchFiles[:0]
+			}
+			resultsMu.Unlock()
+		}
+	}()
+
 	// Phase 1: Stream ingestion with OOM protection
-	err = loader.LoadAndProcessStream(ctx, func(ctx context.Context, docs []schema.Document) error {
+	err = loader.LoadAndProcessStream(ctx, func(_ context.Context, docs []schema.Document) error {
 		// Group documents by source to apply SHA-skip logic effectively
 		docsByFile := make(map[string][]schema.Document)
 		for _, doc := range docs {
@@ -74,58 +199,50 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 			}
 		}
 
-		var docsToInsert []schema.Document
-		var filesToUpdate []storage.FileRecord
-
+		// Send all files to worker pool
 		for file, fileDocs := range docsByFile {
 			filesProcessedByLoaderMu.Lock()
 			filesProcessedByLoader[file] = struct{}{}
 			filesProcessedByLoaderMu.Unlock()
 
 			fullPath := filepath.Join(repoPath, file)
-			hash, err := computeFileHash(fullPath)
-			if err != nil {
-				r.logger.Warn("hash failed, will re-process", "file", file, "error", err)
-			} else if rec, exists := existingFiles[file]; exists && rec.FileHash == hash {
-				mu.Lock()
-				skippedCount++
-				mu.Unlock()
-				continue
-			}
-
-			// Apply Code-Aware chunking to the retrieved documents (Part 2 instruction)
-			split, err := r.splitter.SplitDocuments(ctx, fileDocs)
-			if err != nil {
-				r.logger.Warn("splitting failed, using original chunks", "file", file, "error", err)
-				split = fileDocs
-			}
-
-			docsToInsert = append(docsToInsert, split...)
-			if hash != "" {
-				filesToUpdate = append(filesToUpdate, storage.FileRecord{
-					RepositoryID: repo.ID,
-					FilePath:     file,
-					FileHash:     hash,
-				})
+			select {
+			case fileChan <- fileWork{
+				file:     file,
+				docs:     fileDocs,
+				filePath: fullPath,
+			}:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 		}
 
-		if len(docsToInsert) > 0 {
-			if _, err := scopedStore.AddDocuments(ctx, docsToInsert); err != nil {
-				return fmt.Errorf("failed to add vectors: %w", err)
-			}
-
-			// Update repository tracking in DB
-			if err := r.store.UpsertFiles(ctx, repo.ID, filesToUpdate); err != nil {
-				r.logger.Error("failed to update file state in DB", "error", err)
-			}
-		}
-
-		mu.Lock()
-		processedCount += len(docsByFile) // Count all processed files, even if 0 docs
-		mu.Unlock()
 		return nil
 	})
+
+	// Cleanup: close fileChan and wait for workers
+	close(fileChan)
+	wg.Wait()
+	close(resultChan)
+	<-collectorDone // Wait for collector to finish
+
+	// Flush remaining batch
+	if len(batchDocs) > 0 {
+		batchMu.Lock()
+		if _, err := scopedStore.AddDocuments(ctx, batchDocs); err != nil {
+			r.logger.Error("failed to add vectors in final batch", "error", err)
+		}
+		if err := r.store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
+			r.logger.Error("failed to update file state in final DB batch", "error", err)
+		}
+		batchMu.Unlock()
+	}
+
+	// Update counts
+	mu.Lock()
+	processedCount = allProcessed
+	skippedCount = allSkipped
+	mu.Unlock()
 
 	if err != nil {
 		return fmt.Errorf("repository ingestion failed: %w", err)
