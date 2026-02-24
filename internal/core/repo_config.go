@@ -49,15 +49,13 @@ func BuildExcludeDirs(userExcludes []string) []string {
 }
 
 // DefaultExcludedDirsSet returns a map lookup set of default excluded directories.
+// This is derived from DefaultExcludedDirs to prevent drift.
 func DefaultExcludedDirsSet() map[string]bool {
-	return map[string]bool{
-		".git":         true,
-		".github":      true,
-		"vendor":       true,
-		"node_modules": true,
-		"target":       true,
-		"build":        true,
+	result := make(map[string]bool, len(DefaultExcludedDirs))
+	for _, dir := range DefaultExcludedDirs {
+		result[dir] = true
 	}
+	return result
 }
 
 // RepoConfig represents the structure of the .code-warden.yml file.

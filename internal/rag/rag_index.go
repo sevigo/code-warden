@@ -383,26 +383,10 @@ func filterFilesByExtensions(files []string, excludeExts []string) []string {
 // filterFilesByValidExtensions removes files from a slice if their extension is not
 // in the whitelist of supported extensions. This ensures consistency with the scanner.
 func filterFilesByValidExtensions(files []string) []string {
-	validExts := map[string]bool{
-		".go":   true,
-		".js":   true,
-		".ts":   true,
-		".py":   true,
-		".java": true,
-		".c":    true,
-		".cpp":  true,
-		".h":    true,
-		".rs":   true,
-		".md":   true,
-		".json": true,
-		".yaml": true,
-		".yml":  true,
-	}
-
 	filtered := make([]string, 0, len(files))
 	for _, file := range files {
 		ext := strings.ToLower(filepath.Ext(file))
-		if validExts[ext] {
+		if core.IsValidExtension(ext) {
 			filtered = append(filtered, file)
 		}
 	}

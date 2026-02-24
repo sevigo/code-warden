@@ -393,11 +393,6 @@ func (s *Scanner) shouldExcludeDir(name string, repoConfig *core.RepoConfig) boo
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	// Exclude hidden directories
-	if strings.HasPrefix(name, ".") && name != "." {
-		return true
-	}
-
 	// Check default exclusions (using shared constants)
 	defaultExcludes := core.DefaultExcludedDirsSet()
 	if defaultExcludes[name] {

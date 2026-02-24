@@ -45,6 +45,7 @@ exclude_files:
 		assert.Empty(t, cfg.CustomInstructions)
 		assert.Empty(t, cfg.ExcludeDirs)
 		assert.Empty(t, cfg.ExcludeExts)
+		assert.Empty(t, cfg.ExcludeFiles)
 	})
 
 	t.Run("invalid yaml returns error", func(t *testing.T) {
