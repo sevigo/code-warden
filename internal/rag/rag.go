@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
+	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -115,6 +117,9 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 		ollama.WithServerURL(r.cfg.AI.OllamaHost),
 		ollama.WithAPIKey(r.cfg.AI.OllamaAPIKey),
 		ollama.WithModel(modelName),
+		ollama.WithHTTPClient(httpclient.DefaultClient),
+		ollama.WithRetryAttempts(3),
+		ollama.WithRetryDelay(2*time.Second),
 	)
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sevigo/goframe/embeddings"
+	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
@@ -63,6 +64,7 @@ type qdrantVectorStore struct {
 	embedders   map[string]embeddings.Embedder
 	batchConfig *qdrant.BatchConfig
 	cfg         *config.Config
+	qdrantOpts  []qdrant.Option
 }
 
 // QdrantStoreOption defines a functional option for configuring the Qdrant vector store.
@@ -80,6 +82,13 @@ func WithInitialEmbedder(modelName string, embedder embeddings.Embedder) QdrantS
 	return func(s *qdrantVectorStore) {
 		s.logger.Info("Pre-registering initial embedder", "model", modelName)
 		s.embedders[modelName] = embedder
+	}
+}
+
+// WithQdrantOptions sets additional Qdrant options for connection configuration.
+func WithQdrantOptions(opts ...qdrant.Option) QdrantStoreOption {
+	return func(s *qdrantVectorStore) {
+		s.qdrantOpts = append(s.qdrantOpts, opts...)
 	}
 }
 
@@ -134,6 +143,9 @@ func (q *qdrantVectorStore) getOrCreateEmbedder(modelName string) (embeddings.Em
 	baseEmbedder, err := ollama.New(
 		ollama.WithServerURL(q.cfg.AI.OllamaHost),
 		ollama.WithModel(modelName),
+		ollama.WithHTTPClient(httpclient.DefaultClient),
+		ollama.WithRetryAttempts(3),
+		ollama.WithRetryDelay(2*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new ollama instance for %s: %w", modelName, err)
@@ -172,7 +184,15 @@ func (q *qdrantVectorStore) getStoreForCollection(collectionName string, embedde
 		qdrant.WithEmbedder(embedder),
 		qdrant.WithCollectionName(collectionName),
 		qdrant.WithLogger(q.logger),
+		qdrant.WithTimeout(60 * time.Second),
+		qdrant.WithKeepaliveTime(15 * time.Second),
+		qdrant.WithKeepaliveTimeout(5 * time.Second),
+		qdrant.WithRetryAttempts(3),
+		qdrant.WithRetryDelay(2 * time.Second),
 	}
+
+	// Append any additional options
+	opts = append(opts, q.qdrantOpts...)
 
 	if q.cfg.AI.EnableHybrid {
 		opts = append(opts, qdrant.WithSparseVector(q.cfg.AI.SparseVectorName))
