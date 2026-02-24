@@ -109,6 +109,7 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 	// Fallback/Default to Ollama
 	return ollama.New(
 		ollama.WithServerURL(r.cfg.AI.OllamaHost),
+		ollama.WithAPIKey(r.cfg.AI.OllamaAPIKey),
 		ollama.WithModel(modelName),
 	)
 }

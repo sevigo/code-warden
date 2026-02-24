@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -54,7 +55,6 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 	}, nil
 }
 
-//nolint:gocognit,nestif // Core scanning loop with state management
 func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bool) error {
 	s.Verbose = verbose
 	s.startTime = time.Now()
@@ -76,20 +76,16 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 	}
 	s.printCollection(repoRecord.QdrantCollectionName)
 
-	// 3. Load State
+	// 3. Load State & Initialize Progress
 	stateMgr := NewStateManager(s.Manager.store, repoRecord.ID)
 	scanState, progress, err := stateMgr.LoadState(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Auto-resume logic
 	if force || scanState == nil || scanState.Status == string(StatusCompleted) || scanState.Status == string(StatusFailed) {
 		s.Manager.logger.Info("Starting fresh scan")
-		progress = &Progress{
-			Files:       make(map[string]bool),
-			LastUpdated: time.Now(),
-		}
+		progress = &Progress{Files: make(map[string]bool), LastUpdated: time.Now()}
 		if err := stateMgr.SaveState(ctx, StatusPending, progress, nil); err != nil {
 			return err
 		}
@@ -97,69 +93,39 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 		s.Manager.logger.Info("Resuming scan", "processed", progress.ProcessedFiles, "total_known", progress.TotalFiles)
 	}
 
-	// 4. Discover Files
-	files, err := s.listFiles(localPath)
+	// 4. Discover Files (filtered by .code-warden.yml if present)
+	repoConfig, err := config.LoadRepoConfig(localPath)
+	if err != nil {
+		if errors.Is(err, config.ErrConfigNotFound) {
+			s.Manager.logger.Info("no .code-warden.yml found, using defaults")
+		} else {
+			s.Manager.logger.Warn("failed to parse .code-warden.yml, using defaults", "error", err)
+		}
+		repoConfig = core.DefaultRepoConfig()
+	}
+	files, err := s.listFiles(localPath, repoConfig)
 	if err != nil {
 		return fmt.Errorf("failed to list files: %w", err)
 	}
 	progress.TotalFiles = len(files)
 
-	// 5. Update State to In Progress
 	if err := stateMgr.SaveState(ctx, StatusInProgress, progress, nil); err != nil {
 		return err
 	}
 
-	// 6. Iterate and Process
-	if err := s.runScanLoop(ctx, stateMgr, repoRecord, localPath, files, progress); err != nil {
+	// 5. Run main processing loop
+	if err := s.runScanLoop(ctx, stateMgr, repoRecord, localPath, files, progress, repoConfig); err != nil {
 		return err
 	}
 
-	// 1. Prepare documentation
-	s.Manager.logger.Info("Generating documentation artifacts", "path", localPath)
+	// 6. Post-processing: Documentation & Comparisons
 	docMap, err := s.generateAndSaveDocumentation(localPath)
 	if err != nil {
 		s.Manager.logger.Warn("Failed to generate documentation artifacts", "error", err)
-		docMap = make(map[string]any) // Initialize empty map to prevent panic in SaveState
+		docMap = make(map[string]any)
 	}
+	s.generateArchitecturalComparisons(ctx, localPath)
 
-	// 2. Generate and save architectural comparisons (if configured)
-	if len(s.Manager.cfg.AI.ComparisonModels) > 0 {
-		s.Manager.logger.Info("Generating architectural comparisons", "models", s.Manager.cfg.AI.ComparisonModels)
-
-		// Sanitize and validate repo path to prevent traversal
-		validatedLocalPath, err := s.validateRepoPath(s.Manager.cfg.Storage.RepoPath, localPath)
-		if err != nil {
-			return fmt.Errorf("invalid repository path: %w", err)
-		}
-
-		characteristicPaths := s.Manager.cfg.AI.ComparisonPaths
-		if len(characteristicPaths) == 0 {
-			characteristicPaths = []string{"."}
-		}
-		results, err := s.RAGService.GenerateComparisonSummaries(ctx, s.Manager.cfg.AI.ComparisonModels, validatedLocalPath, characteristicPaths)
-		if err != nil {
-			s.Manager.logger.Warn("Multi-model comparison failed", "error", err)
-		} else {
-			for modelName, summaries := range results {
-				// potential path traversal: strictly replace invalid chars
-				sanitizedModel := rag.SanitizeModelForFilename(modelName)
-				fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
-				filePath := filepath.Join(localPath, fileName)
-
-				var sb strings.Builder
-				sb.WriteString(fmt.Sprintf("# Architectural Comparison: %s\n\n", modelName))
-				for path, summary := range summaries {
-					sb.WriteString(fmt.Sprintf("## Directory: %s\n\n%s\n\n", path, summary))
-				}
-
-				if err := os.WriteFile(filePath, []byte(sb.String()), 0600); err != nil {
-					s.Manager.logger.Warn("Failed to save comparison file", "file", fileName, "error", err)
-				}
-			}
-		}
-	}
-
-	// Complete & Save Artifacts
 	if err := stateMgr.SaveState(ctx, StatusCompleted, progress, docMap); err != nil {
 		return err
 	}
@@ -168,6 +134,47 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 	s.Manager.logger.Info("Scan completed successfully")
 
 	return s.updateRepoIndexVersion(ctx, localPath, repoRecord)
+}
+
+func (s *Scanner) generateArchitecturalComparisons(ctx context.Context, localPath string) {
+	if len(s.Manager.cfg.AI.ComparisonModels) == 0 {
+		return
+	}
+
+	s.Manager.logger.Info("Generating architectural comparisons", "models", s.Manager.cfg.AI.ComparisonModels)
+
+	validatedPath, err := s.validateRepoPath(s.Manager.cfg.Storage.RepoPath, localPath)
+	if err != nil {
+		s.Manager.logger.Warn("Skipping comparisons: invalid path", "error", err)
+		return
+	}
+
+	characteristicPaths := s.Manager.cfg.AI.ComparisonPaths
+	if len(characteristicPaths) == 0 {
+		characteristicPaths = []string{"."}
+	}
+
+	results, err := s.RAGService.GenerateComparisonSummaries(ctx, s.Manager.cfg.AI.ComparisonModels, validatedPath, characteristicPaths)
+	if err != nil {
+		s.Manager.logger.Warn("Multi-model comparison failed", "error", err)
+		return
+	}
+
+	for modelName, summaries := range results {
+		sanitizedModel := rag.SanitizeModelForFilename(modelName)
+		fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
+		filePath := filepath.Join(localPath, fileName)
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("# Architectural Comparison: %s\n\n", modelName))
+		for path, summary := range summaries {
+			sb.WriteString(fmt.Sprintf("## Directory: %s\n\n%s\n\n", path, summary))
+		}
+
+		if err := os.WriteFile(filePath, []byte(sb.String()), 0600); err != nil {
+			s.Manager.logger.Warn("Failed to save comparison file", "file", fileName, "error", err)
+		}
+	}
 }
 
 func (s *Scanner) printMetadata(repoFullName, localPath string) {
@@ -202,11 +209,18 @@ func (s *Scanner) printSummary(startTime time.Time, processedFiles int) {
 	}
 }
 
-func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, files []string, progress *Progress) error {
+func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, files []string, progress *Progress, repoConfig *core.RepoConfig) error {
 	batchSize := 100
 	var batch []string
 
 	for i, file := range files {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if progress.Files[file] {
 			continue
 		}
@@ -217,7 +231,7 @@ func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoR
 			// Process Batch
 			s.Manager.logger.Info("Processing batch", "size", len(batch), "current", i+1, "total", len(files))
 
-			err := s.processBatch(ctx, stateMgr, repoRecord, localPath, &batch, progress)
+			err := s.processBatch(ctx, stateMgr, repoRecord, localPath, &batch, progress, repoConfig)
 			if err != nil {
 				return err
 			}
@@ -227,19 +241,14 @@ func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoR
 	// Flush remaining batch
 	if len(batch) > 0 {
 		s.Manager.logger.Info("Processing final batch", "size", len(batch))
-		if err := s.processBatch(ctx, stateMgr, repoRecord, localPath, &batch, progress); err != nil {
+		if err := s.processBatch(ctx, stateMgr, repoRecord, localPath, &batch, progress, repoConfig); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, batch *[]string, progress *Progress) error {
-	repoConfig, configErr := config.LoadRepoConfig(localPath)
-	if configErr != nil && !errors.Is(configErr, config.ErrConfigNotFound) {
-		s.Manager.logger.Warn("Failed to load .code-warden.yml", "error", configErr)
-	}
-
+func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, batch *[]string, progress *Progress, repoConfig *core.RepoConfig) error {
 	batchStartTime := time.Now()
 	err := s.RAGService.UpdateRepoContext(ctx, repoConfig, repoRecord, localPath, *batch, nil)
 	if err != nil {
@@ -348,40 +357,84 @@ func (s *Scanner) ensureRepoRecord(ctx context.Context, fullName, path string) (
 	return rec, nil
 }
 
-func (s *Scanner) listFiles(root string) ([]string, error) {
+func (s *Scanner) listFiles(root string, repoConfig *core.RepoConfig) ([]string, error) {
 	var files []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
-		}
-		if info.IsDir() {
-			name := info.Name()
-			if strings.HasPrefix(name, ".") && name != "." {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Basic extension filter
-		ext := strings.ToLower(filepath.Ext(path))
-		if !validExt(ext) {
-			return nil
 		}
 
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		files = append(files, strings.ReplaceAll(rel, "\\", "/"))
+		rel = strings.ReplaceAll(rel, "\\", "/")
+
+		if info.IsDir() {
+			if s.shouldExcludeDir(info.Name(), repoConfig) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if s.shouldExcludeFile(rel, path, repoConfig) {
+			return nil
+		}
+
+		files = append(files, rel)
 		return nil
 	})
 	return files, err
 }
 
-func validExt(ext string) bool {
-	switch ext {
-	case ".go", ".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".rs", ".md", ".json", ".yaml", ".yml":
+func (s *Scanner) shouldExcludeDir(name string, repoConfig *core.RepoConfig) bool {
+	// Defensive guard to prevent panic on nil config
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	// Check default exclusions (using shared constants)
+	defaultExcludes := core.DefaultExcludedDirsSet()
+	if defaultExcludes[name] {
 		return true
 	}
+
+	// Check user-configured exclusions
+	for _, excludeDir := range repoConfig.ExcludeDirs {
+		if name == excludeDir {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scanner) shouldExcludeFile(rel, absPath string, repoConfig *core.RepoConfig) bool {
+	// Defensive guard to prevent panic on nil config
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	ext := strings.ToLower(filepath.Ext(absPath))
+	if !core.IsValidExtension(ext) {
+		return true
+	}
+
+	// Filter by RepoConfig extensions
+	for _, excludeExt := range repoConfig.ExcludeExts {
+		normalizedExt := strings.ToLower(strings.TrimPrefix(excludeExt, "."))
+		if strings.TrimPrefix(ext, ".") == normalizedExt {
+			return true
+		}
+	}
+
+	// Filter by RepoConfig specific files (with proper path normalization)
+	cleanRel := filepath.ToSlash(filepath.Clean(rel))
+	for _, excludeFile := range repoConfig.ExcludeFiles {
+		if cleanRel == filepath.ToSlash(filepath.Clean(excludeFile)) {
+			return true
+		}
+	}
+
 	return false
 }
 

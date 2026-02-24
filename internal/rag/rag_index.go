@@ -201,12 +201,19 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	// Get the same exclude directories configuration as SetupRepoContext
 	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
 
-	// Apply directory filtering first, then extension filtering
+	// Apply directory filtering first, then extension filtering, then specific file filtering
 	filesToProcess = r.filterFilesByDirectories(filesToProcess, finalExcludeDirs)
 	filesToDelete = r.filterFilesByDirectories(filesToDelete, finalExcludeDirs)
 
+	// Apply valid extension whitelist (same as scanner)
+	filesToProcess = filterFilesByValidExtensions(filesToProcess)
+	filesToDelete = filterFilesByValidExtensions(filesToDelete)
+
 	filesToProcess = filterFilesByExtensions(filesToProcess, repoConfig.ExcludeExts)
 	filesToDelete = filterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
+
+	filesToProcess = filterFilesBySpecificFiles(filesToProcess, repoConfig.ExcludeFiles)
+	filesToDelete = filterFilesBySpecificFiles(filesToDelete, repoConfig.ExcludeFiles)
 
 	r.logger.Info("updating repository context after filtering",
 		"collection", repo.QdrantCollectionName,
@@ -214,6 +221,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		"delete", len(filesToDelete),
 		"exclude_dirs", finalExcludeDirs,
 		"exclude_exts", repoConfig.ExcludeExts,
+		"exclude_files", repoConfig.ExcludeFiles,
 	)
 
 	// Handle deleted files first
@@ -372,26 +380,23 @@ func filterFilesByExtensions(files []string, excludeExts []string) []string {
 	return filtered
 }
 
+// filterFilesByValidExtensions removes files from a slice if their extension is not
+// in the whitelist of supported extensions. This ensures consistency with the scanner.
+func filterFilesByValidExtensions(files []string) []string {
+	filtered := make([]string, 0, len(files))
+	for _, file := range files {
+		ext := strings.ToLower(filepath.Ext(file))
+		if core.IsValidExtension(ext) {
+			filtered = append(filtered, file)
+		}
+	}
+	return filtered
+}
+
 // buildExcludeDirs creates the final list of directories to exclude, combining
 // application defaults with user-configured exclusions.
 func (r *ragService) buildExcludeDirs(repoConfig *core.RepoConfig) []string {
-	appDefaultExcludeDirs := []string{".git", ".github", "vendor", "node_modules", "target", "build"}
-
-	// Using a map handles duplicates automatically.
-	allExcludeDirs := make(map[string]struct{})
-	for _, dir := range appDefaultExcludeDirs {
-		allExcludeDirs[dir] = struct{}{}
-	}
-	for _, dir := range repoConfig.ExcludeDirs {
-		allExcludeDirs[dir] = struct{}{}
-	}
-
-	finalExcludeDirs := make([]string, 0, len(allExcludeDirs))
-	for dir := range allExcludeDirs {
-		finalExcludeDirs = append(finalExcludeDirs, dir)
-	}
-
-	return finalExcludeDirs
+	return core.BuildExcludeDirs(repoConfig.ExcludeDirs)
 }
 
 // filterFilesByDirectories removes files from a slice if they are located within
@@ -403,8 +408,8 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 
 	filtered := make([]string, 0, len(files))
 	for _, file := range files {
-		// Normalize the file path - remove any leading separators and clean it
-		cleanFile := filepath.Clean(strings.TrimPrefix(file, string(filepath.Separator)))
+		// Normalize the file path to forward slashes for cross-platform consistency
+		cleanFile := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(file, string(filepath.Separator))))
 
 		isExcluded := false
 		for _, excludeDir := range excludeDirs {
@@ -417,13 +422,36 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 			}
 
 			// Check if the file path starts with the excluded directory followed by a separator
-			if strings.HasPrefix(cleanFile, cleanExcludeDir+string(filepath.Separator)) {
+			// Use forward slash for cross-platform consistency
+			if strings.HasPrefix(cleanFile, cleanExcludeDir+"/") {
 				isExcluded = true
 				break
 			}
 		}
 
 		if !isExcluded {
+			filtered = append(filtered, file)
+		}
+	}
+
+	return filtered
+}
+
+// filterFilesBySpecificFiles removes files from a slice if their path matches
+// one of the provided excluded specific files.
+func filterFilesBySpecificFiles(files []string, excludeFiles []string) []string {
+	if len(excludeFiles) == 0 {
+		return files
+	}
+
+	excludeMap := make(map[string]struct{}, len(excludeFiles))
+	for _, f := range excludeFiles {
+		excludeMap[filepath.ToSlash(filepath.Clean(f))] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(files))
+	for _, file := range files {
+		if _, isExcluded := excludeMap[filepath.ToSlash(filepath.Clean(file))]; !isExcluded {
 			filtered = append(filtered, file)
 		}
 	}
