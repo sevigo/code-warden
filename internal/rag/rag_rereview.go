@@ -193,7 +193,7 @@ func (r *ragService) performSearch(ctx context.Context, scopedStore storage.Scop
 	const baseDelay = 500 * time.Millisecond
 
 	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		select {
 		case <-ctx.Done():
 			r.logger.Debug("search cancelled by context", "queryType", queryType)
@@ -225,7 +225,7 @@ func (r *ragService) performSearch(ctx context.Context, scopedStore storage.Scop
 
 		// Exponential backoff with jitter
 		if attempt < maxRetries-1 {
-			delay := baseDelay * time.Duration(1<<uint(attempt))
+			delay := baseDelay * time.Duration(1<<(attempt%30))
 			select {
 			case <-ctx.Done():
 				return nil
