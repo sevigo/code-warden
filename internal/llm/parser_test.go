@@ -471,3 +471,103 @@ func TestStripMarkdownFence(t *testing.T) {
 		})
 	}
 }
+
+func TestEscapeCodeSuggestionXML(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "Generic type with T",
+			input: `<code_suggestion>func foo<T>(x T) {}</code_suggestion>`,
+			want:  `<code_suggestion>func foo&lt;T&gt;(x T) {}</code_suggestion>`,
+		},
+		{
+			name:  "Generic type with multiple type params",
+			input: `<code_suggestion>func foo<K, V>(m map[K]V) V {}</code_suggestion>`,
+			want:  `<code_suggestion>func foo&lt;K, V&gt;(m map[K]V) V {}</code_suggestion>`,
+		},
+		{
+			name:  "Angle bracket comparison",
+			input: `<code_suggestion>if a < b && b > c {}</code_suggestion>`,
+			want:  `<code_suggestion>if a &lt; b && b &gt; c {}</code_suggestion>`,
+		},
+		{
+			name:  "Template syntax",
+			input: `<code_suggestion>for i := 0; i < n; i++ {}</code_suggestion>`,
+			want:  `<code_suggestion>for i := 0; i &lt; n; i++ {}</code_suggestion>`,
+		},
+		{
+			name:  "No special characters",
+			input: `<code_suggestion>func main() { fmt.Println("hello") }</code_suggestion>`,
+			want:  `<code_suggestion>func main() { fmt.Println("hello") }</code_suggestion>`,
+		},
+		{
+			name:  "Multiple code suggestions",
+			input: `<code_suggestion>func foo<T>(x T) {}</code_suggestion><code_suggestion>func bar(y int) {}</code_suggestion>`,
+			want:  `<code_suggestion>func foo&lt;T&gt;(x T) {}</code_suggestion><code_suggestion>func bar(y int) {}</code_suggestion>`,
+		},
+		{
+			name:  "Fix code tag",
+			input: `<fix_code>func foo<T>(x T) {}</fix_code>`,
+			want:  `<fix_code>func foo&lt;T&gt;(x T) {}</fix_code>`,
+		},
+		{
+			name:  "Mixed code suggestion and fix code",
+			input: `<code_suggestion>func foo<T>() {}</code_suggestion><fix_code>func bar() {}</fix_code>`,
+			want:  `<code_suggestion>func foo&lt;T&gt;() {}</code_suggestion><fix_code>func bar() {}</fix_code>`,
+		},
+		{
+			name:  "Preserves other XML tags in review",
+			input: `<review><summary>Test</summary><code_suggestion>func foo<T>() {}</code_suggestion></review>`,
+			want:  `<review><summary>Test</summary><code_suggestion>func foo&lt;T&gt;() {}</code_suggestion></review>`,
+		},
+		{
+			name:  "Lambda with generics",
+			input: `<code_suggestion>x := func<T>(t T) T { return t }</code_suggestion>`,
+			want:  `<code_suggestion>x := func&lt;T&gt;(t T) T { return t }</code_suggestion>`,
+		},
+		{
+			name:  "Empty code suggestion",
+			input: `<code_suggestion></code_suggestion>`,
+			want:  `<code_suggestion></code_suggestion>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := escapeCodeSuggestionXML(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestParseMarkdownReviewWithGenerics(t *testing.T) {
+	// Test that the full parsing flow handles generic types correctly
+	input := `
+<review>
+  <verdict>COMMENT</verdict>
+  <summary>Generic types test</summary>
+  <suggestions>
+    <suggestion>
+      <file>main.go</file>
+      <line>10</line>
+      <severity>Low</severity>
+      <category>Style</category>
+      <code_suggestion>
+func foo<T>(x T) T {
+	return x
+}
+      </code_suggestion>
+    </suggestion>
+  </suggestions>
+</review>`
+
+	got, err := ParseMarkdownReview(context.Background(), input, slog.Default())
+	require.NoError(t, err)
+	assert.Equal(t, "COMMENT", got.Verdict)
+	assert.Equal(t, 1, len(got.Suggestions))
+	// The code suggestion should contain the generic function (unescaped)
+	assert.Contains(t, got.Suggestions[0].CodeSuggestion, "func foo<T>(x T) T")
+}
