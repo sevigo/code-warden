@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
@@ -186,22 +187,55 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 	}
 }
 
-// performSearch executes a similarity search with sparse vector fallback.
+// performSearch executes a similarity search with sparse vector fallback and retry logic.
 func (r *ragService) performSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType string) []schema.Document {
-	var searchOpts []vectorstores.Option
-	sparseVec, err := sparse.GenerateSparseVector(ctx, query)
-	if err != nil {
-		r.logger.Debug("sparse vector generation failed, using dense only", "query", query[:min(50, len(query))], "error", err)
-	} else {
-		searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
+	const maxRetries = 3
+	const baseDelay = 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			r.logger.Debug("search cancelled by context", "queryType", queryType)
+			return nil
+		default:
+		}
+
+		var searchOpts []vectorstores.Option
+		sparseVec, err := sparse.GenerateSparseVector(ctx, query)
+		if err != nil {
+			r.logger.Debug("sparse vector generation failed, using dense only", "query", query[:min(50, len(query))], "error", err)
+		} else {
+			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
+		}
+
+		docs, err := scopedStore.SimilaritySearch(ctx, query, 5, searchOpts...)
+		if err == nil {
+			r.logger.Debug("re-review search complete", "queryType", queryType, "docs_found", len(docs), "attempt", attempt+1)
+			return docs
+		}
+
+		lastErr = err
+		r.logger.Warn("re-review search failed, will retry",
+			"queryType", queryType,
+			"attempt", attempt+1,
+			"max_retries", maxRetries,
+			"error", err,
+		)
+
+		// Exponential backoff with jitter
+		if attempt < maxRetries-1 {
+			delay := baseDelay * time.Duration(1<<uint(attempt))
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(delay):
+			}
+		}
 	}
 
-	docs, err := scopedStore.SimilaritySearch(ctx, query, 5, searchOpts...)
-	if err != nil {
-		r.logger.Warn("re-review search failed", "queryType", queryType, "error", err)
-	}
-	r.logger.Debug("re-review search complete", "queryType", queryType, "docs_found", len(docs))
-	return docs
+	r.logger.Warn("re-review search failed after all retries", "queryType", queryType, "error", lastErr)
+	return nil
 }
 
 // combineReReviewContext merges standard context with feedback-driven context.
