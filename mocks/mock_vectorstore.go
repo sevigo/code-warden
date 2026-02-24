@@ -199,18 +199,23 @@ func (mr *MockVectorStoreMockRecorder) SearchCollection(ctx, collectionName, emb
 }
 
 // SearchCollectionBatch mocks base method.
-func (m *MockVectorStore) SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int) ([][]schema.Document, error) {
+func (m *MockVectorStore) SearchCollectionBatch(ctx context.Context, collectionName, embedderModelName string, queries []string, numDocs int, options ...vectorstores.Option) ([][]schema.Document, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SearchCollectionBatch", ctx, collectionName, embedderModelName, queries, numDocs)
+	varargs := []any{ctx, collectionName, embedderModelName, queries, numDocs}
+	for _, a := range options {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "SearchCollectionBatch", varargs...)
 	ret0, _ := ret[0].([][]schema.Document)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // SearchCollectionBatch indicates an expected call of SearchCollectionBatch.
-func (mr *MockVectorStoreMockRecorder) SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, numDocs any) *gomock.Call {
+func (mr *MockVectorStoreMockRecorder) SearchCollectionBatch(ctx, collectionName, embedderModelName, queries, numDocs any, options ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchCollectionBatch", reflect.TypeOf((*MockVectorStore)(nil).SearchCollectionBatch), ctx, collectionName, embedderModelName, queries, numDocs)
+	varargs := append([]any{ctx, collectionName, embedderModelName, queries, numDocs}, options...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SearchCollectionBatch", reflect.TypeOf((*MockVectorStore)(nil).SearchCollectionBatch), varargs...)
 }
 
 // SetBatchConfig mocks base method.
