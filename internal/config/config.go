@@ -48,6 +48,7 @@ type AIConfig struct {
 	LLMProvider          string   `mapstructure:"llm_provider"`
 	EmbedderProvider     string   `mapstructure:"embedder_provider"`
 	OllamaHost           string   `mapstructure:"ollama_host"`
+	OllamaAPIKey         string   `mapstructure:"ollama_api_key"`
 	GeminiAPIKey         string   `mapstructure:"gemini_api_key"`
 	GeneratorModel       string   `mapstructure:"generator_model"`
 	FastModel            string   `mapstructure:"fast_model"`
@@ -224,6 +225,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.llm_provider", "ollama")
 	v.SetDefault("ai.embedder_provider", "ollama")
 	v.SetDefault("ai.ollama_host", "http://localhost:11434")
+	v.SetDefault("ai.ollama_api_key", "")
 	v.SetDefault("ai.embedder_model", "nomic-embed-text")
 	v.SetDefault("ai.embedder_task_description", "search_document")
 	v.SetDefault("ai.enable_reranking", false)     // Disabled by default for speed

@@ -3,6 +3,7 @@ custom_instructions:
   - "Pay close attention to Go best practices, especially regarding error handling and context propagation."
   - "The project uses the 'slog' library for structured logging. Ensure all new logging statements follow this standard."
   - "Verify that user-facing configuration options are handled gracefully, with clear defaults."
+  - "Add a citate from a famous sci-fi book or movie or tv show."
 
 # Directories to completely exclude from indexing. This is for performance.
 # These are added to the application's built-in defaults like '.git' and 'node_modules'.
@@ -11,12 +12,12 @@ exclude_dirs:
   - "keys"        # Private keys and certificates
   - "reviews"     # Generated review history
   - ".agent"      # Local agent/workflow state
-  - "bin"          # Compiled binaries
-  - "vendor"       # Dependency source code
-  - "scripts"      # Utility scripts, often not core logic
-  - "mocks"        # Generated mock code
+  - "bin"         # Compiled binaries
+  - "vendor"      # Dependency source code
+  - "scripts"     # Utility scripts, often not core logic
+  - "mocks"       # Generated mock code
   - ".github"     # CI configuration
-  - "embeddings"   # Script service for local embeddings
+  - "embeddings"  # Script service for local embeddings
 
 # File extensions to exclude from indexing.
 exclude_exts:
