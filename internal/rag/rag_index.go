@@ -93,7 +93,6 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	// Batch accumulation for memory-bounded inserts
 	var batchDocs []schema.Document
 	var batchFiles []storage.FileRecord
-	var batchMu sync.Mutex
 
 	// Start worker pool
 	var wg sync.WaitGroup
@@ -226,16 +225,14 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	close(resultChan)
 	<-collectorDone // Wait for collector to finish
 
-	// Flush remaining batch
+	// Flush remaining batch (no mutex needed - collector goroutine has finished)
 	if len(batchDocs) > 0 {
-		batchMu.Lock()
 		if _, err := scopedStore.AddDocuments(ctx, batchDocs); err != nil {
 			r.logger.Error("failed to add vectors in final batch", "error", err)
 		}
 		if err := r.store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
 			r.logger.Error("failed to update file state in final DB batch", "error", err)
 		}
-		batchMu.Unlock()
 	}
 
 	// Update counts

@@ -66,6 +66,7 @@ type ragService struct {
 	splitter       textsplitter.TextSplitter
 	logger         *slog.Logger
 	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
+	llmCache       sync.Map // map[string]llms.Model: modelName -> LLM instance
 }
 
 // NewService creates a new RAG service.
@@ -101,26 +102,45 @@ func (r *ragService) GetTextSplitter() textsplitter.TextSplitter {
 }
 
 func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms.Model, error) {
-	// For now, just return the initialized generator if model matches or if we don't support dynamic switching yet.
-	// This is a simplification to fix the build.
+	// Return the initialized generator if model matches
 	if modelName == r.cfg.AI.GeneratorModel {
 		return r.generatorLLM, nil
 	}
 
-	// Create new instance if needed (simplified fallback)
-	r.logger.Info("creating new LLM instance on the fly", "model", modelName)
-	if r.cfg.AI.LLMProvider == "gemini" {
-		return gemini.New(ctx, gemini.WithModel(modelName), gemini.WithAPIKey(r.cfg.AI.GeminiAPIKey))
+	// Check cache first (read-only lock-free lookup)
+	if cached, ok := r.llmCache.Load(modelName); ok {
+		if llmModel, valid := cached.(llms.Model); valid {
+			return llmModel, nil
+		}
 	}
-	// Fallback/Default to Ollama
-	return ollama.New(
-		ollama.WithServerURL(r.cfg.AI.OllamaHost),
-		ollama.WithAPIKey(r.cfg.AI.OllamaAPIKey),
-		ollama.WithModel(modelName),
-		ollama.WithHTTPClient(httpclient.DefaultClient),
-		ollama.WithRetryAttempts(3),
-		ollama.WithRetryDelay(2*time.Second),
-	)
+
+	// Create new instance (not in cache)
+	r.logger.Info("creating new LLM instance on the fly", "model", modelName)
+
+	var newLLM llms.Model
+	var err error
+
+	if r.cfg.AI.LLMProvider == "gemini" {
+		newLLM, err = gemini.New(ctx, gemini.WithModel(modelName), gemini.WithAPIKey(r.cfg.AI.GeminiAPIKey))
+	} else {
+		// Fallback/Default to Ollama
+		newLLM, err = ollama.New(
+			ollama.WithServerURL(r.cfg.AI.OllamaHost),
+			ollama.WithAPIKey(r.cfg.AI.OllamaAPIKey),
+			ollama.WithModel(modelName),
+			ollama.WithHTTPClient(httpclient.DefaultClient),
+			ollama.WithRetryAttempts(3),
+			ollama.WithRetryDelay(2*time.Second),
+		)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LLM instance for model %s: %w", modelName, err)
+	}
+
+	// Store in cache for future use
+	r.llmCache.Store(modelName, newLLM)
+	return newLLM, nil
 }
 
 func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey llm.PromptKey, promptData any) (string, error) {
@@ -152,7 +172,8 @@ func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core
 }
 
 // hashPatch computes a short hash of the patch content for caching.
+// Uses 16 bytes (128 bits) for collision resistance.
 func (r *ragService) hashPatch(patch string) string {
 	hash := sha256.Sum256([]byte(patch))
-	return hex.EncodeToString(hash[:8])
+	return hex.EncodeToString(hash[:16])
 }

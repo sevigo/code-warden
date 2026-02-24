@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
+	"sync"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
+	"golang.org/x/sync/errgroup"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
@@ -65,46 +68,84 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 		vectorstores.WithNumGenerations(2),
 	)
 
-	var finalResults [][]schema.Document
-	var finalIndices []int
+	// Parallel HyDE generation with concurrency limit
+	const maxHyDEConcurrency = 5
+	type hydeResult struct {
+		index int
+		docs  []schema.Document
+	}
+
+	var (
+		resultsMu sync.Mutex
+		results   []hydeResult
+	)
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxHyDEConcurrency)
 
 	for i, file := range files {
 		if file.Patch == "" {
 			continue
 		}
 
-		select {
-		case <-ctx.Done():
-			r.logger.Warn("HyDE collection cancelled", "error", ctx.Err())
-			return finalResults, finalIndices, ctx.Err()
-		default:
-		}
+		// Capture loop variables
+		idx := i
+		f := file
 
-		var docs []schema.Document
-		var err error
+		g.Go(func() error {
+			// Check context cancellation
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 
-		if isLogicFile(file.Filename) {
-			docs, err = retriever.GetRelevantDocuments(ctx, file.Patch)
-		} else {
-			baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, file.Filename, file.Patch)
-			docs, err = rerankingRetriever.GetRelevantDocuments(ctx, baseQuery)
-		}
+			var docs []schema.Document
+			var err error
 
-		if err != nil {
-			r.logger.Warn("HyDE generation/retrieval failed for file", "file", file.Filename, "error", err)
-			continue
-		}
+			if isLogicFile(f.Filename) {
+				docs, err = retriever.GetRelevantDocuments(ctx, f.Patch)
+			} else {
+				baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, f.Filename, f.Patch)
+				docs, err = rerankingRetriever.GetRelevantDocuments(ctx, baseQuery)
+			}
 
-		if len(docs) > 0 {
-			r.logger.Debug("HyDE docs found", "file", file.Filename, "count", len(docs))
-			finalResults = append(finalResults, docs)
-			finalIndices = append(finalIndices, i)
-		} else {
-			r.logger.Debug("no HyDE docs found", "file", file.Filename)
-		}
+			if err != nil {
+				r.logger.Warn("HyDE generation/retrieval failed for file", "file", f.Filename, "error", err)
+				return nil // Non-fatal: continue processing other files
+			}
+
+			if len(docs) > 0 {
+				r.logger.Debug("HyDE docs found", "file", f.Filename, "count", len(docs))
+				resultsMu.Lock()
+				results = append(results, hydeResult{index: idx, docs: docs})
+				resultsMu.Unlock()
+			} else {
+				r.logger.Debug("no HyDE docs found", "file", f.Filename)
+			}
+			return nil
+		})
 	}
 
-	r.logger.Info("stage completed", "name", "HyDE")
+	if err := g.Wait(); err != nil {
+		r.logger.Warn("HyDE collection cancelled", "error", err)
+		return nil, nil, err
+	}
+
+	// Sort results by original index to maintain order
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].index < results[j].index
+	})
+
+	// Extract final results
+	finalResults := make([][]schema.Document, len(results))
+	finalIndices := make([]int, len(results))
+	for i, res := range results {
+		finalResults[i] = res.docs
+		finalIndices[i] = res.index
+	}
+
+	r.logger.Info("stage completed", "name", "HyDE", "files_processed", len(results))
 	return finalResults, finalIndices, nil
 }
 

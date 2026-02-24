@@ -56,15 +56,17 @@ var _ VectorStore = (*qdrantVectorStore)(nil)
 
 // qdrantVectorStore implements VectorStore using Qdrant with client caching.
 type qdrantVectorStore struct {
-	qdrantHost  string
-	logger      *slog.Logger
-	mu          sync.Mutex
-	embedderMu  sync.RWMutex
-	clients     map[string]vectorstores.VectorStore
-	embedders   map[string]embeddings.Embedder
-	batchConfig *qdrant.BatchConfig
-	cfg         *config.Config
-	qdrantOpts  []qdrant.Option
+	qdrantHost   string
+	logger       *slog.Logger
+	mu           sync.Mutex
+	embedderMu   sync.RWMutex
+	clients      map[string]vectorstores.VectorStore
+	embedders    map[string]embeddings.Embedder
+	batchConfig  *qdrant.BatchConfig
+	cfg          *config.Config
+	qdrantOpts   []qdrant.Option
+	scopedMu     sync.RWMutex
+	scopedStores map[string]*scopedVectorStore // cache for scoped stores
 }
 
 // QdrantStoreOption defines a functional option for configuring the Qdrant vector store.
@@ -105,12 +107,13 @@ func NewQdrantVectorStore(cfg *config.Config, logger *slog.Logger, opts ...Qdran
 		MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
 	}
 	s := &qdrantVectorStore{
-		qdrantHost:  cfg.Storage.QdrantHost,
-		logger:      logger,
-		clients:     make(map[string]vectorstores.VectorStore),
-		embedders:   make(map[string]embeddings.Embedder),
-		batchConfig: defaultConfig,
-		cfg:         cfg,
+		qdrantHost:   cfg.Storage.QdrantHost,
+		logger:       logger,
+		clients:      make(map[string]vectorstores.VectorStore),
+		embedders:    make(map[string]embeddings.Embedder),
+		batchConfig:  defaultConfig,
+		cfg:          cfg,
+		scopedStores: make(map[string]*scopedVectorStore),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -469,12 +472,37 @@ func (q *qdrantVectorStore) SimilaritySearchBatch(ctx context.Context, queries [
 }
 
 // ForRepo returns a scoped store for a specific repository collection and embedder model.
+// Cached scoped stores are returned for better performance on hot paths.
 func (q *qdrantVectorStore) ForRepo(collectionName, embedderModel string) ScopedVectorStore {
-	return &scopedVectorStore{
+	// Create cache key
+	cacheKey := collectionName + "|" + embedderModel
+
+	// Try read lock first for fast path
+	q.scopedMu.RLock()
+	if cached, ok := q.scopedStores[cacheKey]; ok {
+		q.scopedMu.RUnlock()
+		return cached
+	}
+	q.scopedMu.RUnlock()
+
+	// Create new scoped store
+	scoped := &scopedVectorStore{
 		parent:         q,
 		collectionName: collectionName,
 		embedderModel:  embedderModel,
 	}
+
+	// Store in cache with write lock
+	q.scopedMu.Lock()
+	// Double-check pattern - another goroutine might have created it
+	if existing, ok := q.scopedStores[cacheKey]; ok {
+		q.scopedMu.Unlock()
+		return existing
+	}
+	q.scopedStores[cacheKey] = scoped
+	q.scopedMu.Unlock()
+
+	return scoped
 }
 
 // scopedVectorStore wraps qdrantVectorStore with pre-configured collection and embedder.
