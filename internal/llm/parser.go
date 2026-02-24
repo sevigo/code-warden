@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -19,7 +20,36 @@ import (
 var (
 	reFixCodeCleanup = regexp.MustCompile(`(?is)<fix_code>.*?</fix_code>`)
 	reCodeSugCleanup = regexp.MustCompile(`(?is)<code_suggestion>.*?</code_suggestion>`)
+
+	// escapeCodeSuggestionXML regexes for escaping angle brackets in code blocks
+	reCodeSuggestion = regexp.MustCompile(`(?is)<code_suggestion>(.*?)</code_suggestion>`)
+	reFixCode        = regexp.MustCompile(`(?is)<fix_code>(.*?)</fix_code>`)
 )
+
+// escapeCodeSuggestionXML escapes XML special characters (< and >) within
+// <code_suggestion> and <fix_code> tags to prevent the XML parser from breaking
+// on generic types like <T> or template syntax.
+func escapeCodeSuggestionXML(markdown string) string {
+	// Escape <code_suggestion> blocks
+	markdown = reCodeSuggestion.ReplaceAllStringFunc(markdown, func(match string) string {
+		// Extract content between tags
+		content := match[len("<code_suggestion>") : len(match)-len("</code_suggestion>")]
+		// Escape only the angle brackets in the content (not in the tags)
+		escaped := strings.ReplaceAll(content, "<", "&lt;")
+		escaped = strings.ReplaceAll(escaped, ">", "&gt;")
+		return "<code_suggestion>" + escaped + "</code_suggestion>"
+	})
+
+	// Escape <fix_code> blocks
+	markdown = reFixCode.ReplaceAllStringFunc(markdown, func(match string) string {
+		content := match[len("<fix_code>") : len(match)-len("</fix_code>")]
+		escaped := strings.ReplaceAll(content, "<", "&lt;")
+		escaped = strings.ReplaceAll(escaped, ">", "&gt;")
+		return "<fix_code>" + escaped + "</fix_code>"
+	})
+
+	return markdown
+}
 
 // ParseMarkdownReview extracts structured review data from the LLM's XML-tagged output.
 // It handles preambles gracefully and maintains a fallback for legacy markdown formats.
@@ -64,6 +94,10 @@ type xmlSuggestion struct {
 func decodeXMLReview(ctx context.Context, markdown string, logger *slog.Logger) (*xmlReview, bool) {
 	// Pre-process markdown to fix common LLM XML hallucinations
 	markdown = strings.ReplaceAll(markdown, "</ ", "</")
+
+	// Escape angle brackets within code suggestion blocks to prevent XML parser errors
+	// when models output generic types like <T> or template syntax
+	markdown = escapeCodeSuggestionXML(markdown)
 
 	// Count open tags vs closed tags for standard elements to handle truncation robustly
 	if strings.Contains(markdown, "<review>") && !strings.Contains(markdown, "</review>") {
@@ -209,10 +243,12 @@ func parseXMLSuggestion(xs *xmlSuggestion, logger *slog.Logger) *core.Suggestion
 		if len(xs.CodeSuggestion.Content) > maxCodeBytes {
 			logger.Warn("code suggestion exceeds safe size", "size", len(xs.CodeSuggestion.Content))
 		}
-		s.CodeSuggestion = stripMarkdownFence(unindent(xs.CodeSuggestion.Content))
+		unescaped := html.UnescapeString(xs.CodeSuggestion.Content)
+		s.CodeSuggestion = stripMarkdownFence(unindent(unescaped))
 	} else if xs.FixCode.Content != "" {
 		logger.Warn("using deprecated <fix_code> tag")
-		s.CodeSuggestion = stripMarkdownFence(unindent(xs.FixCode.Content))
+		unescaped := html.UnescapeString(xs.FixCode.Content)
+		s.CodeSuggestion = stripMarkdownFence(unindent(unescaped))
 	}
 
 	return s
