@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"time"
 
@@ -27,6 +25,7 @@ import (
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/embeddings"
+	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -87,8 +86,10 @@ func provideVectorStore(cfg *config.Config, embedder embeddings.Embedder, logger
 			MaxConcurrency:          8,
 			EmbeddingBatchSize:      64,
 			EmbeddingMaxConcurrency: 8,
-			RetryAttempts:           2,
-			RetryDelay:              1 * time.Second,
+			RetryAttempts:           qdrant.DefaultRetryAttempts,
+			RetryDelay:              qdrant.DefaultRetryDelay,
+			RetryJitter:             qdrant.DefaultRetryJitter,
+			MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
 		}
 	}
 
@@ -97,6 +98,12 @@ func provideVectorStore(cfg *config.Config, embedder embeddings.Embedder, logger
 		logger,
 		storage.WithBatchConfig(batchConfig),
 		storage.WithInitialEmbedder(cfg.AI.EmbedderModel, embedder),
+		storage.WithQdrantOptions(
+			qdrant.WithTimeout(60*time.Second),
+			qdrant.WithKeepaliveTime(15*time.Second),
+			qdrant.WithKeepaliveTimeout(5*time.Second),
+			qdrant.WithPoolSize(20),
+		),
 	)
 }
 
@@ -111,9 +118,11 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		return ollama.New(
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
-			ollama.WithHTTPClient(newOllamaHTTPClient()),
+			ollama.WithHTTPClient(httpclient.DefaultClient),
 			ollama.WithModel(cfg.AI.GeneratorModel),
 			ollama.WithLogger(logger),
+			ollama.WithRetryAttempts(3),
+			ollama.WithRetryDelay(2*time.Second),
 		)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.AI.LLMProvider)
@@ -135,8 +144,10 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
 			ollama.WithModel(cfg.AI.EmbedderModel),
-			ollama.WithHTTPClient(newOllamaHTTPClient()),
+			ollama.WithHTTPClient(httpclient.DefaultClient),
 			ollama.WithLogger(logger),
+			ollama.WithRetryAttempts(3),
+			ollama.WithRetryDelay(2*time.Second),
 		)
 	default:
 		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.AI.EmbedderProvider)
@@ -166,22 +177,6 @@ func provideTextSplitter(registry parsers.ParserRegistry, model llms.Model, logg
 		return nil, err
 	}
 	return splitter, nil
-}
-
-func newOllamaHTTPClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:        100,
-			MaxConnsPerHost:     10,
-			IdleConnTimeout:     90 * time.Second,
-			TLSHandshakeTimeout: 10 * time.Second,
-		},
-		Timeout: 15 * time.Minute,
-	}
 }
 
 func provideLoggerConfig(cfg *config.Config) logger.Config {
@@ -223,49 +218,22 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 
 	logger.Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
 
-	// We create a dedicated LLM instance for reranking
-	// Note: Currently only supporting Ollama for reranking as per request snippet, but could be extended.
 	rerankLLM, err := ollama.New(
 		ollama.WithServerURL(cfg.AI.OllamaHost),
 		ollama.WithModel(cfg.AI.RerankerModel),
-		ollama.WithHTTPClient(newOllamaHTTPClient()), // Reuse the optimized client
+		ollama.WithHTTPClient(httpclient.DefaultClient),
 		ollama.WithLogger(logger),
+		ollama.WithRetryAttempts(3),
+		ollama.WithRetryDelay(2*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reranker LLM: %w", err)
 	}
 
-	// Load custom prompt if available
-	// Note: We need to import the key constant or define it.
-	// The user mentioned: prompt, _ := promptMgr.Render(RerankPrompt, DefaultProvider, nil)
-	// I need to check if RerankPrompt is defined in llm package or if I should define it there.
-	// For now, I will use a default or assume I'll add the prompt key in llm package.
-	// However, I can't access `llm.RerankPrompt` here easily unless I export it from `llm` or define it.
-	// The user's snippet for provideReranker used `promptMgr`.
-
-	// Let's assume we want to pass the prompt management to the reranker or set the prompt here.
-	// The user's snippet:
-	// prompt, _ := promptMgr.Render(RerankPrompt, DefaultProvider, nil)
-	// return llms.NewLLMReranker(rerankLLM, llms.WithPrompt(prompt))
-
-	// Since RerankPrompt will be added to llm package, I should modify wire to pass promptMgr.
-	// But provideReranker in snippet had (ctx, cfg, logger).
-	// The user's snippet in Step 5 mentioned: `Then in provideReranker, pass this custom prompt: ... promptMgr.Render(...)`
-	// This implies provideReranker needs promptMgr.
-
-	const RerankPromptKey = "rerank_precision" // I will define this in llm package or use string here for now to avoid circular deps if any (unlikely as wire imports llm).
-
-	// Actually, to avoid "RerankPrompt not defined" error, I should make sure I ADD it to llm package first or use a string literal.
-	// I will use "rerank_precision" string literal matching the prompt file name I will create.
+	const RerankPromptKey = "rerank_precision"
 
 	prompt, err := promptMgr.Render("rerank_precision", nil)
 	if err != nil {
-		// Fallback or log? User plan implies we should use it.
-		// If render fails (e.g. file not found), maybe fallback to default.
-		// But `llms.NewLLMReranker` probably has a generic default.
-		// Let's log warning and proceed without custom prompt if fails?
-		// Or strict error.
-		// I'll stick to a simpler version first or Try to render.
 		logger.Debug("Loaded rerank prompt", "prompt_len", len(prompt))
 	}
 
