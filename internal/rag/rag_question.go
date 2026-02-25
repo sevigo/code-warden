@@ -107,10 +107,11 @@ func (r *ragService) answerWithoutValidation(ctx context.Context, retriever sche
 }
 
 // enrichAnswerWithContext adds conversation history context to the answer when needed.
-// TODO: Implement history incorporation with GoFrame's validation prompts extension.
+// The history parameter is currently unused but reserved for future implementation
+// of multi-turn conversation support with GoFrame's validation prompts extension.
 func (r *ragService) enrichAnswerWithContext(answer string, _ []string) string {
-	// For now, just return the answer as-is. The ValidatingRetrievalQA already
-	// considers the context relevance. History support can be added by extending
-	// GoFrame's validation prompts in the future.
+	// TODO: Implement history incorporation with GoFrame's validation prompts extension.
+	// The ValidatingRetrievalQA already considers context relevance.
+	// History support can be added by extending GoFrame's validation prompts.
 	return answer
 }

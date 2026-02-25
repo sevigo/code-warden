@@ -345,11 +345,13 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 		return results[i].Model < results[j].Model
 	})
 
+	// Collect artifacts to save asynchronously
+	var artifactsToSave []ComparisonResult
 	for _, res := range results {
 		if res.Error != nil || strings.TrimSpace(res.Review) == "" {
 			continue
 		}
-		r.saveReviewArtifact(reviewsDir, res, event, timestamp)
+		artifactsToSave = append(artifactsToSave, res)
 		reviewsBuilder.WriteString(fmt.Sprintf("\n--- Review from %s ---\n", res.Model))
 		reviewsBuilder.WriteString(res.Review)
 		reviewsBuilder.WriteString("\n")
@@ -359,6 +361,9 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 	if len(validReviews) == 0 {
 		return "", nil, fmt.Errorf("all models failed to generate valid reviews")
 	}
+
+	// Save artifacts asynchronously in background
+	go r.saveArtifactsAsync(reviewsDir, artifactsToSave, event, timestamp)
 
 	promptData := map[string]string{
 		"Reviews":            reviewsBuilder.String(),
@@ -373,8 +378,16 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 	}
 
 	r.logger.Debug("consensus synthesis complete", "valid_reviews", len(validReviews))
-	r.saveConsensusArtifact(reviewsDir, rawConsensus, timestamp)
+	// Save consensus artifact asynchronously
+	go r.saveConsensusArtifact(reviewsDir, rawConsensus, timestamp)
 	return rawConsensus, validReviews, nil
+}
+
+// saveArtifactsAsync saves review artifacts in the background without blocking.
+func (r *ragService) saveArtifactsAsync(dir string, results []ComparisonResult, event *core.GitHubEvent, timestamp string) {
+	for _, res := range results {
+		r.saveReviewArtifact(dir, res, event, timestamp)
+	}
 }
 
 func (r *ragService) ensureReviewsDir(reviewsDir string) error {
