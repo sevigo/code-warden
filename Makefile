@@ -52,6 +52,10 @@ lint:
 
 # Clean up the built binary and tools
 clean:
-	@echo "Cleaning up..."
-	@rm -f $(BINARY_NAME)
+	@echo "Cleaning up binaries..."
 	@rm -rf ./bin
+
+# Clean up database, qdrant and local data
+clean-data:
+	@echo "Cleaning up data..."
+	@powershell -ExecutionPolicy Bypass -File ./scripts/cleanup.ps1
