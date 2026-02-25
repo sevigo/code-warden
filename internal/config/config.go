@@ -65,6 +65,13 @@ type AIConfig struct {
 	MaxComparisonModels  int      `mapstructure:"max_comparison_models"`
 	HyDEConcurrency      int      `mapstructure:"hyde_concurrency"`
 	ConsensusTimeout     string   `mapstructure:"consensus_timeout"` // Timeout for individual model reviews in consensus mode (e.g., "5m")
+
+	// Thinking/Reasoning Mode - for models that support it (DeepSeek-R1, Qwen 3, etc.)
+	EnableThinking bool   `mapstructure:"enable_thinking"` // Enable thinking/reasoning mode
+	ThinkingEffort string `mapstructure:"thinking_effort"` // "low", "medium", "high" (for GPT-OSS models)
+
+	// Model Memory Management
+	ModelKeepAlive string `mapstructure:"model_keep_alive"` // How long to keep models loaded (e.g., "10m", "1h", "0" to unload immediately)
 }
 
 func (c *AIConfig) Validate() error {
@@ -236,6 +243,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
 	v.SetDefault("ai.enable_hyde", false) // Default to false for performance
 	v.SetDefault("ai.hyde_concurrency", 5)
+	v.SetDefault("ai.enable_thinking", false)      // Disabled by default - enable per model
+	v.SetDefault("ai.thinking_effort", "medium")   // "low", "medium", "high"
+	v.SetDefault("ai.model_keep_alive", "10m")     // Keep models loaded for 10 minutes
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")

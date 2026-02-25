@@ -84,6 +84,17 @@ ai:
   embedder_model: "nomic-embed-text"
   embedder_task_description: "search_document"
 
+  # Thinking/Reasoning Mode - for models that support it (DeepSeek-R1, Qwen 3, Kimi-K2.5, etc.)
+  # Enables transparent decision-making in code reviews. Models show their reasoning process.
+  # Note: Some models like qwen3-coder-next do NOT support thinking.
+  enable_thinking: false
+  # Thinking effort level: "low", "medium", "high" (for supported models)
+  thinking_effort: "medium"
+
+  # Model Memory Management - keep models loaded for faster subsequent responses
+  # Examples: "5m" (5 minutes), "10m", "1h", "0" (unload immediately)
+  model_keep_alive: "10m"
+
 # ============================================================================
 # Storage Configuration
 # ============================================================================

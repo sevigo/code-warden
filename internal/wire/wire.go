@@ -115,15 +115,27 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		}
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
-		return ollama.New(
+		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
 			ollama.WithHTTPClient(httpclient.DefaultClient),
 			ollama.WithModel(cfg.AI.GeneratorModel),
 			ollama.WithLogger(logger),
 			ollama.WithRetryAttempts(3),
-			ollama.WithRetryDelay(2*time.Second),
-		)
+			ollama.WithRetryDelay(2 * time.Second),
+		}
+		// Add thinking/reasoning mode if enabled
+		if cfg.AI.EnableThinking {
+			opts = append(opts, ollama.WithThinking(true))
+			if cfg.AI.ThinkingEffort != "" {
+				opts = append(opts, ollama.WithReasoningEffort(cfg.AI.ThinkingEffort))
+			}
+		}
+		// Add keep_alive for model memory management
+		if cfg.AI.ModelKeepAlive != "" {
+			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
+		}
+		return ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.AI.LLMProvider)
 	}
@@ -140,15 +152,20 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 			gemini.WithAPIKey(cfg.AI.GeminiAPIKey),
 		)
 	case "ollama":
-		embedderLLM, err = ollama.New(
+		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
 			ollama.WithModel(cfg.AI.EmbedderModel),
 			ollama.WithHTTPClient(httpclient.DefaultClient),
 			ollama.WithLogger(logger),
 			ollama.WithRetryAttempts(3),
-			ollama.WithRetryDelay(2*time.Second),
-		)
+			ollama.WithRetryDelay(2 * time.Second),
+		}
+		// Add keep_alive for model memory management
+		if cfg.AI.ModelKeepAlive != "" {
+			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
+		}
+		embedderLLM, err = ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.AI.EmbedderProvider)
 	}
@@ -218,14 +235,20 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 
 	logger.Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
 
-	rerankLLM, err := ollama.New(
+	opts := []ollama.Option{
 		ollama.WithServerURL(cfg.AI.OllamaHost),
 		ollama.WithModel(cfg.AI.RerankerModel),
 		ollama.WithHTTPClient(httpclient.DefaultClient),
 		ollama.WithLogger(logger),
 		ollama.WithRetryAttempts(3),
-		ollama.WithRetryDelay(2*time.Second),
-	)
+		ollama.WithRetryDelay(2 * time.Second),
+	}
+	// Add keep_alive for model memory management
+	if cfg.AI.ModelKeepAlive != "" {
+		opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
+	}
+
+	rerankLLM, err := ollama.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reranker LLM: %w", err)
 	}
