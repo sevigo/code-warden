@@ -122,11 +122,26 @@ You have been provided with pre-computed context in the "ARCHITECTURAL OVERVIEW"
 - **Validation**: Ensure suggested fixes are syntactically correct and don't introduce new bugs (e.g., race conditions).
 - **Tone**: Be constructive. Distinguish between BLOCKING errors (bugs/security) and NON-BLOCKING suggestions (style/perf).
 
-### CITATION REQUIREMENTS (Anti-Hallucination)
-- **Cite Retrieved Context**: When flagging an issue based on external code (not in diff), you MUST reference the specific section from ARCHITECTURAL OVERVIEW or RESOLVED TYPE DEFINITIONS that supports your finding.
-- **Quote Pattern Evidence**: When suggesting changes contradict existing patterns, quote the relevant snippet from "Related Code Snippets" that should be followed.
-- **Acknowledge Blind Spots**: If you cannot verify a concern due to missing context, explicitly state: "Cannot verify - requires context from [module/file] not available in retrieved data."
-- **No Fabricated References**: Never invent file paths, function names, or type definitions not present in the diff OR retrieved context.
+### CITATION REQUIREMENTS (Anti-Hallucination) - MANDATORY
+Every suggestion MUST include a `<source>` tag that grounds the finding in evidence:
+
+**Required Source Types:**
+1. `diff:L{line}` - Issue visible directly in the diff at line {line}
+2. `context:{filename}:{line}` - Issue based on retrieved context (must match actual context section)
+3. `inference` - Logical deduction from visible code patterns (use sparingly, only for obvious issues)
+4. `external:{description}` - When you cannot verify (acknowledge blind spot)
+
+**Examples:**
+- `<source>diff:L45</source>` - Bug found at line 45 in the diff
+- `<source>context:auth.go:102</source>` - Found via architectural context in auth.go line 102
+- `<source>context:definitions:UserService</source>` - Based on resolved type definition
+- `<source>inference:nil-check-missing</source>` - Logical inference from pattern
+
+**Anti-Hallucination Rules:**
+- **NEVER** cite files/lines that don't exist in the diff or provided context
+- **NEVER** fabricate function names, types, or variables not shown
+- **ALWAYS** verify the cited source actually supports your claim
+- If you cannot find evidence in context, use `external:` and describe the gap
 
 ### SEVERITY GUIDELINES
 - **Critical**: Security vulnerabilities, data loss/corruption, guaranteed crashes, path traversal, injection flaws
@@ -184,6 +199,7 @@ If your stack shows `[comment]` and you are about to write code, you **MUST** po
       <confidence>100</confidence>
       <estimated_fix_time>5m</estimated_fix_time>
       <reproducibility>Always</reproducibility>
+      <source>diff:L123</source>
       <comment>
         **Observation:** [Detail]
         **Rationale:** [Impact]
@@ -198,6 +214,6 @@ If your stack shows `[comment]` and you are about to write code, you **MUST** po
 </review>
 ```
 
-If no suggestions are found, the `<suggestions>` tag should be empty or omitted.
+**The `<source>` tag is MANDATORY for every suggestion.** This grounds your findings in verifiable evidence and prevents hallucinations.
 
 Now analyze the PR:

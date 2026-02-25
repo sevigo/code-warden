@@ -29,6 +29,9 @@ type Suggestion struct {
 	Reproducibility string `json:"reproducibility,omitempty"`
 	// CodeSuggestion is the raw code fix proposed by the LLM.
 	CodeSuggestion string `json:"code_suggestion,omitempty"`
+	// Source is the citation for where this finding originated (anti-hallucination grounding).
+	// Format: "diff:L{line}", "context:{file}:{line}", "inference:{type}", or "external:{description}"
+	Source string `json:"source,omitempty"`
 }
 
 // StructuredReview represents the complete output from the LLM in a structured,

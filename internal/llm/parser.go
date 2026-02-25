@@ -85,6 +85,7 @@ type xmlSuggestion struct {
 	Confidence       int            `xml:"confidence"`
 	EstimatedFixTime string         `xml:"estimated_fix_time"`
 	Reproducibility  string         `xml:"reproducibility"`
+	Source           string         `xml:"source"`
 	Comment          innerXMLString `xml:"comment"`
 	CodeSuggestion   innerXMLString `xml:"code_suggestion"`
 	FixCode          innerXMLString `xml:"fix_code"` // Legacy syntax fallback
@@ -225,6 +226,7 @@ func parseXMLSuggestion(xs *xmlSuggestion, logger *slog.Logger) *core.Suggestion
 	s.Confidence = xs.Confidence
 	s.EstimatedFixTime = strings.TrimSpace(xs.EstimatedFixTime)
 	s.Reproducibility = strings.TrimSpace(xs.Reproducibility)
+	s.Source = strings.TrimSpace(xs.Source)
 
 	if xs.Comment.Content != "" {
 		// Clean up the comment by removing any embedded <fix_code> or <code_suggestion> tags
