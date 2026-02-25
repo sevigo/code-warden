@@ -1,7 +1,6 @@
 package rag
 
 import (
-	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -166,91 +165,4 @@ func TestExtractFunctionBody(t *testing.T) {
 	// Should capture lines starting with + or space within the function
 	assert.NotEmpty(t, body)
 	assert.Contains(t, strings.Join(body, "\n"), "ComplexFunction")
-}
-
-func TestVerificationOutputParser(t *testing.T) {
-	parser := &verificationOutputParser{}
-
-	tests := []struct {
-		name     string
-		output   string
-		expected verificationResult
-	}{
-		{
-			name:   "valid JSON response",
-			output: `Some text before {"is_redundant": true, "confidence": 0.85, "reason": "same functionality", "suggestion": "Use existing function"} some text after`,
-			expected: verificationResult{
-				IsRedundant: true,
-				Confidence:  0.85,
-				Reason:      "same functionality",
-				Suggestion:  "Use existing function",
-			},
-		},
-		{
-			name:   "no JSON in response",
-			output: "This is just some text without any JSON",
-			expected: verificationResult{
-				IsRedundant: false,
-				Confidence:  0,
-				Reason:      "failed to parse verification response",
-			},
-		},
-		{
-			name:   "invalid JSON",
-			output: `{"is_redundant": true, invalid json here}`,
-			expected: verificationResult{
-				IsRedundant: false,
-				Confidence:  0,
-				Reason:      "parse error:",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := parser.Parse(context.TODO(), tt.output)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expected.IsRedundant, result.IsRedundant)
-			assert.Equal(t, tt.expected.Confidence, result.Confidence)
-			if tt.expected.Reason != "parse error:" {
-				assert.Equal(t, tt.expected.Reason, result.Reason)
-			} else {
-				assert.Contains(t, result.Reason, "parse error:")
-			}
-		})
-	}
-}
-
-func TestIntentOutputParser(t *testing.T) {
-	parser := &intentOutputParser{}
-
-	tests := []struct {
-		name     string
-		output   string
-		expected string
-	}{
-		{
-			name:     "simple intent",
-			output:   "Validates an email address using regex",
-			expected: "Validates an email address using regex",
-		},
-		{
-			name:     "intent with whitespace",
-			output:   "  Validates an email address  ",
-			expected: "Validates an email address",
-		},
-		{
-			name:     "multiline intent",
-			output:   "Validates\nan email",
-			expected: "Validates\nan email",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := parser.Parse(context.TODO(), tt.output)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
 }

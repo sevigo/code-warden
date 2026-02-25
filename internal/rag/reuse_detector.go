@@ -2,7 +2,6 @@ package rag
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/sevigo/goframe/chains"
 	"github.com/sevigo/goframe/llms"
+	"github.com/sevigo/goframe/output"
 	"github.com/sevigo/goframe/prompts"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
@@ -56,33 +56,6 @@ type verificationResult struct {
 	Confidence  float64 `json:"confidence"`
 	Reason      string  `json:"reason"`
 	Suggestion  string  `json:"suggestion"`
-}
-
-// verificationOutputParser parses the verification LLM response.
-type verificationOutputParser struct{}
-
-func (p *verificationOutputParser) Parse(_ context.Context, output string) (verificationResult, error) {
-	start := strings.Index(output, "{")
-	end := strings.LastIndex(output, "}")
-	if start == -1 || end == -1 || end < start {
-		return verificationResult{
-			IsRedundant: false,
-			Confidence:  0,
-			Reason:      "failed to parse verification response",
-		}, nil
-	}
-
-	jsonStr := output[start : end+1]
-	var result verificationResult
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		//nolint:nilerr // Intentional: fail-open design, parse error captured in Reason field
-		return verificationResult{
-			IsRedundant: false,
-			Confidence:  0,
-			Reason:      "parse error: " + err.Error(),
-		}, nil
-	}
-	return result, nil
 }
 
 // NewReuseDetector creates a new ReuseDetector instance.
@@ -277,13 +250,6 @@ func (d *ReuseDetector) processFunction(
 	return d.verifyRedundancy(ctx, fn, candidates)
 }
 
-// intentOutputParser parses the raw LLM output into an intent string.
-type intentOutputParser struct{}
-
-func (p *intentOutputParser) Parse(_ context.Context, output string) (string, error) {
-	return strings.TrimSpace(output), nil
-}
-
 // extractIntent uses an LLM to generate a semantic description of the function's purpose.
 func (d *ReuseDetector) extractIntent(ctx context.Context, fn extractedFunction) (string, error) {
 	promptData := map[string]string{
@@ -295,11 +261,9 @@ func (d *ReuseDetector) extractIntent(ctx context.Context, fn extractedFunction)
 		return "", fmt.Errorf("failed to render intent prompt: %w", err)
 	}
 
-	parser := &intentOutputParser{}
-	chain, err := chains.NewLLMChain(
+	chain, err := chains.NewLLMChain[string](
 		d.llm,
 		prompts.NewPromptTemplate(prompt),
-		chains.WithOutputParser(parser),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create LLM chain: %w", err)
@@ -344,7 +308,7 @@ func (d *ReuseDetector) verifyRedundancy(
 	newFunc extractedFunction,
 	candidates []schema.Document,
 ) (*ReuseSuggestion, error) {
-	parser := &verificationOutputParser{}
+	parser := output.NewJSONParser[verificationResult]()
 
 	for _, candidate := range candidates {
 		// Skip if same file (shouldn't happen due to filter, but be safe)
@@ -365,23 +329,21 @@ func (d *ReuseDetector) verifyRedundancy(
 			continue
 		}
 
-		chain, err := chains.NewLLMChain(
+		chain, err := chains.NewLLMChain[verificationResult](
 			d.llm,
 			prompts.NewPromptTemplate(prompt),
-			chains.WithOutputParser(parser),
+			chains.WithOutputParser[verificationResult](parser),
 		)
 		if err != nil {
 			d.logger.Warn("failed to create LLM chain", "error", err)
 			continue
 		}
 
-		result, err := chain.Call(ctx, nil)
+		verdict, err := chain.Call(ctx, nil)
 		if err != nil {
 			d.logger.Warn("verification LLM call failed", "error", err)
 			continue
 		}
-
-		verdict := result
 
 		// Only return suggestions with high confidence
 		if verdict.IsRedundant && verdict.Confidence >= 0.7 {

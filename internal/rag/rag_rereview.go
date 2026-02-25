@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
+	"github.com/sevigo/goframe/output"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 
@@ -59,10 +60,15 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 		return nil, "", err
 	}
 
-	structuredReview, err := llm.ParseMarkdownReview(ctx, rawReview, r.logger)
+	xmlParser := output.NewXMLParser[*core.StructuredReview]("review")
+	structuredReview, err := xmlParser.Parse(ctx, rawReview)
 	if err != nil {
-		r.logger.Warn("failed to parse re-review, using raw output", "error", err)
-		structuredReview = &core.StructuredReview{Summary: rawReview}
+		r.logger.Warn("failed to parse re-review, trying legacy markdown", "error", err)
+		structuredReview, err = llm.ParseLegacyMarkdownReview(rawReview)
+		if err != nil {
+			r.logger.Warn("failed to parse legacy re-review, using raw output", "error", err)
+			structuredReview = &core.StructuredReview{Summary: rawReview}
+		}
 	}
 
 	if structuredReview.Title == "" {
@@ -256,10 +262,15 @@ func (r *ragService) combineReReviewContext(standardContext, feedbackContext str
 func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewContent string) []string {
 	var queries []string
 
-	parsedReview, err := llm.ParseMarkdownReview(ctx, reviewContent, r.logger)
+	xmlParser := output.NewXMLParser[*core.StructuredReview]("review")
+	parsedReview, err := xmlParser.Parse(ctx, reviewContent)
 	if err != nil {
-		r.logger.Warn("extractCommentsFromReview: failed to parse review content", "error", err)
-		return queries
+		r.logger.Warn("extractCommentsFromReview: failed to parse XML review, trying legacy", "error", err)
+		parsedReview, err = llm.ParseLegacyMarkdownReview(reviewContent)
+		if err != nil {
+			r.logger.Warn("extractCommentsFromReview: failed to parse legacy review", "error", err)
+			return queries
+		}
 	}
 
 	for _, s := range parsedReview.Suggestions {

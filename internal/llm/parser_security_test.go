@@ -1,8 +1,6 @@
 package llm
 
 import (
-	"context"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseXMLReview_Security(t *testing.T) {
+func TestParseLegacyReview_Security(t *testing.T) {
 	tests := []struct {
 		name        string
 		content     string
@@ -20,39 +18,16 @@ func TestParseXMLReview_Security(t *testing.T) {
 		ok          bool
 	}{
 		{
-			name:        "simple extraction",
-			content:     "<review><summary>bar</summary></review>",
+			name:        "legacy summary",
+			content:     "# SUMMARY\nbar",
 			wantSummary: "bar",
 			ok:          true,
-		},
-		{
-			name:    "no tags",
-			content: "just some text",
-			ok:      false,
-		},
-		{
-			name:        "unclosed tag",
-			content:     "<review><summary>bar",
-			wantSummary: "bar",
-			ok:          true, // Lenient parsing captures until end
-		},
-		{
-			name:        "nested tags (should return outer content)",
-			content:     "<review><summary>fine<foo>ok</foo></summary></review>",
-			wantSummary: "fine<foo>ok</foo>",
-			ok:          true,
-		},
-		{
-			name:        "malformed end tag",
-			content:     "<review><summary>bar</ summary></review>",
-			wantSummary: "bar",
-			ok:          true, // Lenient parsing captures until end/next tag
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseMarkdownReview(context.Background(), tt.content, slog.Default())
+			got, err := ParseLegacyMarkdownReview(tt.content)
 			if !tt.ok {
 				assert.Error(t, err)
 			} else {
@@ -97,10 +72,10 @@ func TestSanitizePath_Security(t *testing.T) {
 func TestDoS_PreambleResilience(t *testing.T) {
 	// Huge preamble should not crash the parser
 	hugePreamble := strings.Repeat("A", 1000000)
-	input := hugePreamble + "<review><summary>OK</summary></review>"
+	input := "# SUMMARY\n" + hugePreamble
 
 	start := time.Now()
-	_, err := ParseMarkdownReview(context.Background(), input, slog.Default())
+	_, err := ParseLegacyMarkdownReview(input)
 	duration := time.Since(start)
 
 	assert.NoError(t, err)

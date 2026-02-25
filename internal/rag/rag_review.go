@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sevigo/goframe/chains"
+	"github.com/sevigo/goframe/output"
 	"github.com/sevigo/goframe/prompts"
 
 	"github.com/sevigo/code-warden/internal/core"
@@ -34,12 +35,13 @@ type structuredReviewParser struct {
 	raw    string
 }
 
-func (p *structuredReviewParser) Parse(ctx context.Context, output string) (*core.StructuredReview, error) {
-	p.raw = output
-	parsed, err := llm.ParseMarkdownReview(ctx, output, p.logger)
+func (p *structuredReviewParser) Parse(ctx context.Context, outputStr string) (*core.StructuredReview, error) {
+	p.raw = outputStr
+	xmlParser := output.NewXMLParser[*core.StructuredReview]("review")
+	parsed, err := xmlParser.Parse(ctx, outputStr)
 	if err != nil {
-		p.logger.Warn("failed to parse markdown review, using raw output as fallback", "error", err)
-		return &core.StructuredReview{Summary: output}, nil
+		p.logger.Warn("failed to parse XML review, trying legacy markdown", "error", err)
+		return llm.ParseLegacyMarkdownReview(outputStr)
 	}
 	return parsed, nil
 }
@@ -253,7 +255,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 		return nil, "", fmt.Errorf("failed to gather consensus reviews: %w", err)
 	}
 
-	structuredReview, err := llm.ParseMarkdownReview(ctx, rawConsensus, r.logger)
+	structuredReview, err := llm.ParseLegacyMarkdownReview(rawConsensus)
 	if err != nil {
 		r.logger.Error("FATAL: failed to parse consensus review - final report structure is broken. Check LLM output for tagging errors.", "error", err, "pr", event.PRNumber)
 		structuredReview = &core.StructuredReview{Summary: rawConsensus}
