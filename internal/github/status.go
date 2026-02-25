@@ -197,6 +197,12 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 		sb.WriteString("\n```")
 	}
 
+	// 5. Add Source Citation (anti-hallucination grounding)
+	if sug.Source != "" {
+		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, "*📍 Source: `%s`*", sug.Source)
+	}
+
 	return sb.String()
 }
 
