@@ -3,7 +3,6 @@ package llm
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -11,46 +10,12 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 )
 
-var (
-	reFixCodeCleanup = regexp.MustCompile(`(?is)<fix_code>.*?</fix_code>`)
-	reCodeSugCleanup = regexp.MustCompile(`(?is)<code_suggestion>.*?</code_suggestion>`)
-
-	// escapeCodeSuggestionXML regexes for escaping angle brackets in code blocks
-	reCodeSuggestion = regexp.MustCompile(`(?is)<code_suggestion>(.*?)</code_suggestion>`)
-	reFixCode        = regexp.MustCompile(`(?is)<fix_code>(.*?)</fix_code>`)
-)
-
-// escapeCodeSuggestionXML escapes XML special characters (< and >) within
-// <code_suggestion> and <fix_code> tags to prevent the XML parser from breaking
-// on generic types like <T> or template syntax.
-func escapeCodeSuggestionXML(markdown string) string {
-	// Escape <code_suggestion> blocks
-	markdown = reCodeSuggestion.ReplaceAllStringFunc(markdown, func(match string) string {
-		// Extract content between tags
-		content := match[len("<code_suggestion>") : len(match)-len("</code_suggestion>")]
-		// Escape only the angle brackets in the content (not in the tags)
-		escaped := strings.ReplaceAll(content, "<", "&lt;")
-		escaped = strings.ReplaceAll(escaped, ">", "&gt;")
-		return "<code_suggestion>" + escaped + "</code_suggestion>"
-	})
-
-	// Escape <fix_code> blocks
-	markdown = reFixCode.ReplaceAllStringFunc(markdown, func(match string) string {
-		content := match[len("<fix_code>") : len(match)-len("</fix_code>")]
-		escaped := strings.ReplaceAll(content, "<", "&lt;")
-		escaped = strings.ReplaceAll(escaped, ">", "&gt;")
-		return "<fix_code>" + escaped + "</fix_code>"
-	})
-
-	return markdown
-}
-
 // ParseLegacyMarkdownReview handles older formats without XML tags.
 func ParseLegacyMarkdownReview(markdown string) (*core.StructuredReview, error) {
-	// 1. Normalize line endings
+	// normalize line endings
 	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 
-	// 2. Fallback to Legacy Markdown Parser
+	// fallback to Legacy Markdown Parser
 	return parseLegacyMarkdownReview(markdown)
 }
 
@@ -90,25 +55,6 @@ func sanitizePath(path string) string {
 	}
 
 	return filepath.ToSlash(cleaned)
-}
-
-// normalizeVerdict maps a string to canonical core.Verdict constants.
-func normalizeVerdict(v string) string {
-	v = strings.ToUpper(strings.TrimSpace(v))
-	// Remove brackets if present
-	v = strings.TrimPrefix(v, "[")
-	v = strings.TrimSuffix(v, "]")
-
-	switch v {
-	case "APPROVE", "APPROVED":
-		return core.VerdictApprove
-	case "REQUEST_CHANGES", "CHANGES_REQUESTED":
-		return core.VerdictRequestChanges
-	case "COMMENT", "NEEDS_DISCUSSION":
-		return core.VerdictComment
-	default:
-		return core.VerdictComment
-	}
 }
 
 // parseLegacyMarkdownReview handles older formats without XML tags.

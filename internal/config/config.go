@@ -243,9 +243,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
 	v.SetDefault("ai.enable_hyde", false) // Default to false for performance
 	v.SetDefault("ai.hyde_concurrency", 5)
-	v.SetDefault("ai.enable_thinking", false)      // Disabled by default - enable per model
-	v.SetDefault("ai.thinking_effort", "medium")   // "low", "medium", "high"
-	v.SetDefault("ai.model_keep_alive", "10m")     // Keep models loaded for 10 minutes
+	v.SetDefault("ai.enable_thinking", false)    // Disabled by default - enable per model
+	v.SetDefault("ai.thinking_effort", "medium") // "low", "medium", "high"
+	v.SetDefault("ai.model_keep_alive", "10m")   // Keep models loaded for 10 minutes
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")
