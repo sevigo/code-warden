@@ -64,6 +64,7 @@ type AIConfig struct {
 	MaxConcurrentReviews int      `mapstructure:"max_concurrent_reviews"`
 	MaxComparisonModels  int      `mapstructure:"max_comparison_models"`
 	HyDEConcurrency      int      `mapstructure:"hyde_concurrency"`
+	ConsensusTimeout     string   `mapstructure:"consensus_timeout"` // Timeout for individual model reviews in consensus mode (e.g., "5m")
 }
 
 func (c *AIConfig) Validate() error {
