@@ -83,7 +83,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	parser := &structuredReviewParser{logger: r.logger}
-	chain, err := chains.NewLLMChain[*core.StructuredReview](
+	chain, err := chains.NewLLMChain(
 		r.generatorLLM,
 		prompts.NewPromptTemplate(promptStr),
 		chains.WithOutputParser[*core.StructuredReview](parser),

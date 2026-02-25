@@ -37,3 +37,7 @@ warden-terminal.log
 llm_context.md
 *_test_results*
 .claude/settings.local.json
+
+.agent/
+.claude/
+CLAUDE.md
