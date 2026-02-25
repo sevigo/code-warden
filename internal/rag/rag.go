@@ -124,11 +124,22 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 		newLLM, err = gemini.New(ctx, gemini.WithModel(modelName), gemini.WithAPIKey(r.cfg.AI.GeminiAPIKey))
 	} else {
 		// Fallback/Default to Ollama
+		headerTimeout, pErr := time.ParseDuration(r.cfg.AI.HTTPResponseHeaderTimeout)
+		if pErr != nil {
+			r.logger.Warn("invalid http_response_header_timeout, using default",
+				"configured", r.cfg.AI.HTTPResponseHeaderTimeout,
+				"error", pErr,
+			)
+			return nil, fmt.Errorf("failed to parse http_response_header_timeout: %w", pErr)
+		}
+
 		newLLM, err = ollama.New(
 			ollama.WithServerURL(r.cfg.AI.OllamaHost),
 			ollama.WithAPIKey(r.cfg.AI.OllamaAPIKey),
 			ollama.WithModel(modelName),
-			ollama.WithHTTPClient(httpclient.DefaultClient),
+			ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
+				httpclient.WithResponseHeaderTimeout(headerTimeout),
+			))),
 			ollama.WithRetryAttempts(3),
 			ollama.WithRetryDelay(2*time.Second),
 		)

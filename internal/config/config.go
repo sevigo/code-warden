@@ -65,6 +65,7 @@ type AIConfig struct {
 	MaxComparisonModels  int      `mapstructure:"max_comparison_models"`
 	HyDEConcurrency      int      `mapstructure:"hyde_concurrency"`
 	ConsensusTimeout     string   `mapstructure:"consensus_timeout"` // Timeout for individual model reviews in consensus mode (e.g., "5m")
+	ConsensusQuorum      float64  `mapstructure:"consensus_quorum"`  // Percentage of models that must finish before synthesis (0.0 to 1.0)
 
 	// Thinking/Reasoning Mode - for models that support it (DeepSeek-R1, Qwen 3, etc.)
 	EnableThinking bool   `mapstructure:"enable_thinking"` // Enable thinking/reasoning mode
@@ -72,6 +73,9 @@ type AIConfig struct {
 
 	// Model Memory Management
 	ModelKeepAlive string `mapstructure:"model_keep_alive"` // How long to keep models loaded (e.g., "10m", "1h", "0" to unload immediately)
+
+	// HTTP Client Overrides
+	HTTPResponseHeaderTimeout string `mapstructure:"http_response_header_timeout"` // Timeout for waiting for HTTP response headers (e.g., "30s", "120s")
 }
 
 func (c *AIConfig) Validate() error {
@@ -80,6 +84,9 @@ func (c *AIConfig) Validate() error {
 	}
 	if c.HyDEConcurrency < 1 {
 		return errors.New("ai.hyde_concurrency must be >= 1")
+	}
+	if c.ConsensusQuorum < 0 || c.ConsensusQuorum > 1 {
+		return errors.New("ai.consensus_quorum must be between 0.0 and 1.0")
 	}
 	if err := c.validateModels(); err != nil {
 		return err
@@ -246,6 +253,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.enable_thinking", false)    // Disabled by default - enable per model
 	v.SetDefault("ai.thinking_effort", "medium") // "low", "medium", "high"
 	v.SetDefault("ai.model_keep_alive", "10m")   // Keep models loaded for 10 minutes
+	v.SetDefault("ai.http_response_header_timeout", "120s")
+	v.SetDefault("ai.consensus_quorum", 0.66)
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")

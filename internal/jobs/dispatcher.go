@@ -96,7 +96,13 @@ func (d *dispatcher) Dispatch(ctx context.Context, event *core.GitHubEvent) erro
 	case d.jobQueue <- &jobPayload{ctx: jobCtx, event: event}:
 		return nil
 	default:
-		return fmt.Errorf("job queue is full, cannot accept new review job")
+		d.logger.Warn("ALERT: Job queue is full, dropping review job",
+			slog.String("repo", event.RepoFullName),
+			slog.Int("pr", event.PRNumber),
+			slog.Int("queue_capacity", cap(d.jobQueue)),
+		)
+		return fmt.Errorf("job queue is full, cannot accept new review job (repo: %s, pr: %d, capacity: %d)",
+			event.RepoFullName, event.PRNumber, cap(d.jobQueue))
 	}
 }
 

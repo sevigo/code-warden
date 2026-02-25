@@ -4,37 +4,18 @@ This document outlines the development roadmap for Code-Warden. It tracks comple
 
 ## ✅ Recently Completed
 
--   **1. Structured, Line-Specific Reviews:** The review process has been fundamentally upgraded.
-    -   **Resolution:** The system now prompts the LLM for a structured JSON output. This JSON is parsed into `Suggestions` which are then posted as line-specific comments on the pull request using the GitHub Review API.
-    -   **Benefit:** Feedback is now contextual, actionable, and appears exactly where it's relevant.
+-   **Performance & Stability Optimizations:**
+    -   **Resolution:** Pre-allocated `allDocs` slice in `rag_index.go`, implemented `ClearLocks` in `repomanager`, and added queue saturation alerting.
+    -   **Benefit:** Reduced GC pressure and prevented unbounded memory growth for long-running sessions.
 
--   **2. Intelligent RAG Context Caching:** This was the most critical step to make the tool practical.
-    -   **Resolution:** The system tracks repository state in PostgreSQL (`last_indexed_sha`). Subsequent reviews perform a `git diff` to incrementally update the vector store.
-    -   **Benefit:** Reduces subsequent review time from minutes to seconds.
+-   **Resource Leak Fixes:**
+    -   **Resolution:** Added `Close()` method to `VectorStore` to properly release gRPC connections.
+    -   **Benefit:** Clean application shutdown.
 
--   **3. Repository Configuration (`.code-warden.yml`):** Users can customize behavior.
-    -   **Resolution:** A `.code-warden.yml` file allows for `custom_instructions`, `exclude_dirs`, and `exclude_exts`.
-    -   **Benefit:** Makes the tool adaptable to team-specific needs.
+-   **Context Propagation Improvements:**
+    -   **Resolution:** Fixed `context.Background()` usage throughout the RAG pipeline.
+    -   **Benefit:** Proper cancellation support during heavy indexing.
 
--   **4. Re-implemented the `/rereview` Command:**
-    -   **Resolution:** The `/rereview` command validates previous suggestions against new changes.
-    -   **Benefit:** Developers can request fresh analysis after pushing fixes.
-
--   **5. Enhanced GitHub Comment Formatting:**
-    -   **Resolution:** Inline comments feature severity badges (🔴, 🟠, 🟡, 🟢) and categories. Comments are tied to specific commit SHAs.
-    -   **Benefit:** Improved readability and professional look.
-
--   **6. GoFrame v0.23.2 Compatibility (Feb 2025):**
-    -   **Resolution:** Updated all GoFrame API calls to handle new error returns from constructors (`NewLLMChain`, `NewRetrievalQA`, `NewDependencyRetriever`, `NewDefinitionRetriever`).
-    -   **Benefit:** Maintains compatibility with latest GoFrame features.
-
--   **7. Resource Leak Fixes (Feb 2025):**
-    -   **Resolution:** Added `Close()` method to `VectorStore` interface, properly closing gRPC connections in `App.Stop()`.
-    -   **Benefit:** Prevents resource leaks on application shutdown.
-
--   **8. Context Propagation Improvements (Feb 2025):**
-    -   **Resolution:** Fixed `context.Background()` usage throughout RAG pipeline. Context now properly propagates through `getOrCreateLLM`, `ProcessFile`, `SplitDocuments`, and `GenerateSparseVector`.
-    -   **Benefit:** Proper cancellation support for long-running operations.
 
 ## 🚀 Next Up: Immediate Priorities
 
@@ -59,15 +40,7 @@ Improve package-level documentation for better discoverability.
     4.  Add package-level documentation
 -   **Benefit:** Better developer experience and API discoverability.
 
-### 3. **Performance Optimizations**
-
-Address memory and performance issues identified in code review.
-
--   **TODO:**
-    1.  Pre-allocate `allDocs` slice in `rag_index.go`
-    2.  Add cleanup for unbounded maps in `vectorstore.go` and `repomanager/manager.go`
-    3.  Add metrics/alerting for bounded job queue
--   **Benefit:** More stable long-running operations.
+-   **Benefit:** More stable long-running operations. (✅ Done)
 
 ## 💡 Future Enhancements & Ideas
 
@@ -120,15 +93,15 @@ Extend language support beyond Go and TypeScript.
 |-------|----------|-------------|
 | VectorStore.Close() | ✅ Done | Added Close() method to release gRPC connections |
 | Context propagation | ✅ Done | Fixed context.Background() usage throughout RAG pipeline |
-| Unbounded client map | Medium | Add cleanup for unused collection clients in vectorstore |
+| Unbounded client map | ✅ Done | Add cleanup for unused collection clients in vectorstore |
 
 ### Code Quality
 
 | Issue | Priority | Description |
 |-------|----------|-------------|
-| Map growth in repomanager | Medium | Add cleanup for old mutexes in repoMux map |
-| Job queue metrics | Medium | Add alerting when job queue is full |
-| Pre-allocation | Low | Pre-allocate slices in hot paths |
+| Map growth in repomanager | ✅ Done | Add cleanup for old mutexes in repoMux map |
+| Job queue metrics | ✅ Done | Add alerting when job queue is full |
+| Pre-allocation | ✅ Done | Pre-allocate slices in hot paths |
 
 ## Contributing
 

@@ -382,7 +382,12 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		close(resultChan)
 	}()
 
-	var allDocs []schema.Document
+	// avgChunksPerFile is based on observed average file sizes and chunking strategy (~4 chunks/file).
+	// Adjust if profiling reveals consistent over/under-allocation.
+	const avgChunksPerFile = 4
+
+	// Pre-allocate with an estimated capacity to reduce GC pressure during indexing.
+	allDocs := make([]schema.Document, 0, len(filesToProcess)*avgChunksPerFile)
 	for res := range resultChan {
 		allDocs = append(allDocs, res.docs...)
 	}
