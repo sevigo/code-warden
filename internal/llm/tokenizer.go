@@ -74,7 +74,9 @@ func NewEstimatingTokenizer() llms.Tokenizer {
 	return &EstimatingTokenizer{}
 }
 
-// CountTokens estimates token count using the 1 token ≈ 3 characters heuristic.
+// CountTokens estimates token count using the industry-standard approximation
+// of 1 token ≈ 3-4 characters for English text.
+// Note: This is less accurate for code or non-English languages.
 func (e *EstimatingTokenizer) CountTokens(_ context.Context, text string) (int, error) {
 	return len(text) / 3, nil
 }

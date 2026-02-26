@@ -86,18 +86,28 @@ func NewService(
 	// Register sparse provider for hybrid search
 	sparse.RegisterProvider(sparse.NewBoWProvider())
 
-	// Create context packer with 6000 token budget for context assembly
+	// Get token budget from config, with fallback
+	tokenBudget := cfg.AI.ContextTokenBudget
+	if tokenBudget <= 0 {
+		tokenBudget = 16000 // Default for 128K context models
+	}
+
+	// Create context packer with configurable token budget
 	tokenizer := llm.AsTokenizer(gen)
-	contextPacker, err := contextpacker.New(tokenizer, 6000,
+	contextPacker, err := contextpacker.New(tokenizer, tokenBudget,
 		contextpacker.WithTemplate(contextpacker.CompactTemplate),
 		contextpacker.WithLogger(logger),
 	)
 	if err != nil {
-		logger.Warn("failed to create context packer, using fallback", "error", err)
-		// Create a fallback packer with nil tokenizer (will use estimation)
-		contextPacker, _ = contextpacker.New(llm.NewEstimatingTokenizer(), 6000,
+		logger.Error("failed to create context packer with model tokenizer, using estimation fallback", "error", err)
+		// Fallback to estimation-based packer
+		contextPacker, err = contextpacker.New(llm.NewEstimatingTokenizer(), tokenBudget,
 			contextpacker.WithTemplate(contextpacker.CompactTemplate),
 		)
+		if err != nil {
+			// This should never happen with EstimatingTokenizer, but handle it
+			logger.Error("critical: failed to create fallback context packer", "error", err)
+		}
 	}
 
 	return &ragService{

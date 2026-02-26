@@ -688,71 +688,7 @@ func (r *ragService) assembleContext(
 ) string {
 	// Build documents with priority-based ordering for the packer
 	// Priority (highest first): Definitions > Description > Impact > Arch > HyDE
-	var docs []schema.Document
-
-	// Priority 1: Definitions (type context is most critical for accuracy)
-	if definitions != "" {
-		docs = append(docs, schema.Document{
-			PageContent: definitions,
-			Metadata:    map[string]any{"section": "definitions", "priority": 1},
-		})
-	}
-
-	// Priority 2: Description-related snippets
-	if description != "" {
-		docs = append(docs, schema.Document{
-			PageContent: description,
-			Metadata:    map[string]any{"section": "description", "priority": 2},
-		})
-	}
-
-	// Priority 3: Impact analysis
-	if impact != "" {
-		docs = append(docs, schema.Document{
-			PageContent: fmt.Sprintf("# Potential Impacted Callers & Usages\n\nThe following code snippets may be affected by the changes in modified symbols:\n\n%s", impact),
-			Metadata:    map[string]any{"section": "impact", "priority": 3},
-		})
-	}
-
-	// Priority 4: Architectural context
-	if arch != "" {
-		docs = append(docs, schema.Document{
-			PageContent: fmt.Sprintf("# Architectural Context\n\nThe following describes the purpose of the affected modules:\n\n%s", arch),
-			Metadata:    map[string]any{"section": "arch", "priority": 4},
-		})
-	}
-
-	// Priority 5: HyDE snippets (may be redundant if impact/description already covered)
-	if len(hyde) > 0 {
-		var hydeBuilder strings.Builder
-		hydeBuilder.WriteString("# Related Code Snippets\n\nThe following code snippets might be relevant to the changes being reviewed:\n\n")
-		hydeSeenKeys := make(map[string]struct{})
-		for i, hydeDocs := range hyde {
-			if i >= len(indices) {
-				continue
-			}
-			originalIdx := indices[i]
-			if originalIdx >= len(files) {
-				continue
-			}
-			filePath := files[originalIdx].Filename
-			for _, doc := range hydeDocs {
-				key := r.getDocKey(doc)
-				if _, exists := hydeSeenKeys[key]; exists {
-					continue
-				}
-				hydeSeenKeys[key] = struct{}{}
-				hydeBuilder.WriteString(fmt.Sprintf("## Related to: %s\n", filePath))
-				hydeBuilder.WriteString("```\n")
-				hydeBuilder.WriteString(r.getDocContent(doc))
-				hydeBuilder.WriteString("\n```\n\n")
-			}
-		}
-		docs = append(docs, schema.Document{
-			PageContent: hydeBuilder.String(),
-			Metadata:    map[string]any{"section": "hyde", "priority": 5},
-		})
-	}
+	docs := r.buildContextDocuments(arch, impact, description, definitions, hyde, indices, files)
 
 	// Pack documents using the contextpacker
 	result, err := r.contextPacker.Pack(context.Background(), docs)
@@ -780,6 +716,80 @@ func (r *ragService) assembleContext(
 	)
 
 	return result.Content
+}
+
+// buildContextDocuments creates prioritized documents for the context packer.
+func (r *ragService) buildContextDocuments(
+	arch, impact, description, definitions string,
+	hyde [][]schema.Document, indices []int,
+	files []internalgithub.ChangedFile,
+) []schema.Document {
+	var docs []schema.Document
+
+	// Priority 1: Definitions (type context is most critical for accuracy)
+	if definitions != "" {
+		docs = append(docs, schema.Document{
+			PageContent: definitions,
+		})
+	}
+
+	// Priority 2: Description-related snippets
+	if description != "" {
+		docs = append(docs, schema.Document{
+			PageContent: description,
+		})
+	}
+
+	// Priority 3: Impact analysis
+	if impact != "" {
+		docs = append(docs, schema.Document{
+			PageContent: fmt.Sprintf("# Potential Impacted Callers & Usages\n\nThe following code snippets may be affected by the changes in modified symbols:\n\n%s", impact),
+		})
+	}
+
+	// Priority 4: Architectural context
+	if arch != "" {
+		docs = append(docs, schema.Document{
+			PageContent: fmt.Sprintf("# Architectural Context\n\nThe following describes the purpose of the affected modules:\n\n%s", arch),
+		})
+	}
+
+	// Priority 5: HyDE snippets
+	if hydeContent := r.buildHyDEContent(hyde, indices, files); hydeContent != "" {
+		docs = append(docs, schema.Document{
+			PageContent: hydeContent,
+		})
+	}
+
+	return docs
+}
+
+// buildHyDEContent builds the HyDE section content from retrieved documents.
+func (r *ragService) buildHyDEContent(hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
+	if len(hyde) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.WriteString("# Related Code Snippets\n\nThe following code snippets might be relevant to the changes being reviewed:\n\n")
+
+	seenKeys := make(map[string]struct{})
+	for i, hydeDocs := range hyde {
+		if i >= len(indices) || indices[i] >= len(files) {
+			continue
+		}
+		filePath := files[indices[i]].Filename
+		for _, doc := range hydeDocs {
+			key := r.getDocKey(doc)
+			if _, exists := seenKeys[key]; exists {
+				continue
+			}
+			seenKeys[key] = struct{}{}
+			builder.WriteString(fmt.Sprintf("## Related to: %s\n```\n%s\n```\n\n", filePath, r.getDocContent(doc)))
+		}
+	}
+
+	return builder.String()
 }
 
 func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {

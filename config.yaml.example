@@ -102,11 +102,22 @@ ai:
   model_keep_alive: "10m"
 
   # HTTP Client Overrides
-  # Timeout for waiting for the first byte of an LLM response (headers). 
-  # Increase this if you see "timeout awaiting response headers" errors 
+  # Timeout for waiting for the first byte of an LLM response (headers).
+  # Increase this if you see "timeout awaiting response headers" errors
   # when using heavy cloud models via Ollama proxy.
   # default: "120s"
   http_response_header_timeout: "120s"
+
+  # Context Assembly
+  # Maximum tokens for RAG context (retrieved code snippets, definitions, etc.)
+  # This is NOT the full prompt - it's just the retrieved context portion.
+  # Recommendation based on model context window:
+  #   - 8K context models: 4000-6000
+  #   - 32K context models: 12000-20000
+  #   - 128K context models: 30000-50000 (default)
+  #   - 256K+ context models: 50000-100000
+  # Note: Leave room for system prompt (~1K), diff (~4K), and response (~8K-16K)
+  context_token_budget: 16000
 
 # ============================================================================
 # Storage Configuration

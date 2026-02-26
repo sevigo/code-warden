@@ -76,6 +76,9 @@ type AIConfig struct {
 
 	// HTTP Client Overrides
 	HTTPResponseHeaderTimeout string `mapstructure:"http_response_header_timeout"` // Timeout for waiting for HTTP response headers (e.g., "30s", "120s")
+
+	// Context Assembly
+	ContextTokenBudget int `mapstructure:"context_token_budget"` // Max tokens for RAG context (default: 16000)
 }
 
 func (c *AIConfig) Validate() error {
@@ -255,6 +258,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.model_keep_alive", "10m")   // Keep models loaded for 10 minutes
 	v.SetDefault("ai.http_response_header_timeout", "120s")
 	v.SetDefault("ai.consensus_quorum", 0.66)
+	v.SetDefault("ai.context_token_budget", 16000) // Reasonable default for 128K context models
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")
