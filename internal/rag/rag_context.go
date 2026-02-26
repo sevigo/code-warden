@@ -680,37 +680,54 @@ func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedV
 	return docs, err
 }
 
-// assembleContext assembles the final prompt context.
+// assembleContext assembles the final prompt context using the contextpacker.
 func (r *ragService) assembleContext(
 	arch, impact, description, definitions string,
 	hyde [][]schema.Document, indices []int,
 	files []internalgithub.ChangedFile,
 ) string {
-	const tokenBudget = 6000
-	packer := newTokenContextPacker(tokenBudget)
+	// Build documents with priority-based ordering for the packer
+	// Priority (highest first): Definitions > Description > Impact > Arch > HyDE
+	var docs []schema.Document
 
 	// Priority 1: Definitions (type context is most critical for accuracy)
 	if definitions != "" {
-		packer.add("Definitions", definitions)
+		docs = append(docs, schema.Document{
+			PageContent: definitions,
+			Metadata:    map[string]any{"section": "definitions", "priority": 1},
+		})
 	}
+
 	// Priority 2: Description-related snippets
 	if description != "" {
-		packer.add("Description", description)
+		docs = append(docs, schema.Document{
+			PageContent: description,
+			Metadata:    map[string]any{"section": "description", "priority": 2},
+		})
 	}
+
 	// Priority 3: Impact analysis
 	if impact != "" {
-		packer.add("Impact", fmt.Sprintf("# Potential Impacted Callers & Usages\n\nThe following code snippets may be affected by the changes in modified symbols:\n\n%s", impact))
+		docs = append(docs, schema.Document{
+			PageContent: fmt.Sprintf("# Potential Impacted Callers & Usages\n\nThe following code snippets may be affected by the changes in modified symbols:\n\n%s", impact),
+			Metadata:    map[string]any{"section": "impact", "priority": 3},
+		})
 	}
+
 	// Priority 4: Architectural context
 	if arch != "" {
-		packer.add("Arch", fmt.Sprintf("# Architectural Context\n\nThe following describes the purpose of the affected modules:\n\n%s", arch))
+		docs = append(docs, schema.Document{
+			PageContent: fmt.Sprintf("# Architectural Context\n\nThe following describes the purpose of the affected modules:\n\n%s", arch),
+			Metadata:    map[string]any{"section": "arch", "priority": 4},
+		})
 	}
+
 	// Priority 5: HyDE snippets (may be redundant if impact/description already covered)
 	if len(hyde) > 0 {
 		var hydeBuilder strings.Builder
 		hydeBuilder.WriteString("# Related Code Snippets\n\nThe following code snippets might be relevant to the changes being reviewed:\n\n")
 		hydeSeenKeys := make(map[string]struct{})
-		for i, docs := range hyde {
+		for i, hydeDocs := range hyde {
 			if i >= len(indices) {
 				continue
 			}
@@ -719,7 +736,7 @@ func (r *ragService) assembleContext(
 				continue
 			}
 			filePath := files[originalIdx].Filename
-			for _, doc := range docs {
+			for _, doc := range hydeDocs {
 				key := r.getDocKey(doc)
 				if _, exists := hydeSeenKeys[key]; exists {
 					continue
@@ -731,10 +748,24 @@ func (r *ragService) assembleContext(
 				hydeBuilder.WriteString("\n```\n\n")
 			}
 		}
-		packer.add("HyDE", hydeBuilder.String())
+		docs = append(docs, schema.Document{
+			PageContent: hydeBuilder.String(),
+			Metadata:    map[string]any{"section": "hyde", "priority": 5},
+		})
 	}
 
-	result := packer.build()
+	// Pack documents using the contextpacker
+	result, err := r.contextPacker.Pack(context.Background(), docs)
+	if err != nil {
+		r.logger.Warn("context packer failed, using fallback", "error", err)
+		// Fallback: concatenate all content
+		var fallback strings.Builder
+		for _, doc := range docs {
+			fallback.WriteString(doc.PageContent)
+			fallback.WriteString("\n---\n\n")
+		}
+		return fallback.String()
+	}
 
 	r.logger.Info("relevant context built",
 		"changed_files", len(files),
@@ -742,76 +773,13 @@ func (r *ragService) assembleContext(
 		"impact_len", len(impact),
 		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
-		"packed_len", len(result),
-		"is_truncated", packer.isTruncated,
+		"total_tokens", result.TokenStats.TotalTokens,
+		"documents_packed", result.TokenStats.DocumentsPacked,
+		"documents_considered", result.TokenStats.DocumentsConsidered,
+		"truncated", result.Truncated,
 	)
 
-	return result
-}
-
-// tokenContextSection represents a named section in the context packer.
-type tokenContextSection struct {
-	name    string
-	content string
-}
-
-// tokenContextPacker packs context sections into a token budget.
-type tokenContextPacker struct {
-	budget      int
-	sections    []tokenContextSection
-	isTruncated bool
-}
-
-func newTokenContextPacker(tokenBudget int) *tokenContextPacker {
-	return &tokenContextPacker{budget: tokenBudget}
-}
-
-// add appends a named section. Sections are packed in the order they are added
-// (first added = highest priority).
-func (p *tokenContextPacker) add(name, content string) {
-	if content != "" {
-		p.sections = append(p.sections, tokenContextSection{name: name, content: content})
-	}
-}
-
-// estimateTokens returns a fast character-based token estimate (1 token ≈ 3 chars).
-func estimateTokens(s string) int { return len(s) / 3 }
-
-// build assembles sections into a single string, truncating lower-priority
-// sections when the total would exceed the token budget.
-func (p *tokenContextPacker) build() string {
-	var out strings.Builder
-	remaining := p.budget
-
-	for _, sec := range p.sections {
-		tokens := estimateTokens(sec.content)
-
-		switch {
-		case tokens <= remaining:
-			out.WriteString(sec.content)
-			out.WriteString("\n---\n\n")
-			remaining -= tokens
-
-		case remaining > 50: // Only truncate if there's meaningful space left
-			p.isTruncated = true
-			// Truncate to remaining budget
-			maxChars := remaining * 3
-			truncated := sec.content[:maxChars]
-			// Try to cut at a newline boundary
-			if idx := strings.LastIndex(truncated, "\n"); idx > maxChars/2 {
-				truncated = truncated[:idx]
-			}
-			out.WriteString(truncated)
-			out.WriteString(fmt.Sprintf("\n[%s context truncated due to length]\n\n---\n\n", sec.name))
-			remaining = 0
-
-		default: // Budget exhausted
-			p.isTruncated = true
-			out.WriteString(fmt.Sprintf("[%s context omitted — token budget exhausted]\n\n---\n\n", sec.name))
-		}
-	}
-
-	return out.String()
+	return result.Content
 }
 
 func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {

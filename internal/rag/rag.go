@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sevigo/goframe/contextpacker"
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
@@ -64,6 +65,7 @@ type ragService struct {
 	reranker       schema.Reranker
 	parserRegistry parsers.ParserRegistry
 	splitter       textsplitter.TextSplitter
+	contextPacker  *contextpacker.Packer
 	logger         *slog.Logger
 	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
 	llmCache       sync.Map // map[string]llms.Model: modelName -> LLM instance
@@ -84,6 +86,20 @@ func NewService(
 	// Register sparse provider for hybrid search
 	sparse.RegisterProvider(sparse.NewBoWProvider())
 
+	// Create context packer with 6000 token budget for context assembly
+	tokenizer := llm.AsTokenizer(gen)
+	contextPacker, err := contextpacker.New(tokenizer, 6000,
+		contextpacker.WithTemplate(contextpacker.CompactTemplate),
+		contextpacker.WithLogger(logger),
+	)
+	if err != nil {
+		logger.Warn("failed to create context packer, using fallback", "error", err)
+		// Create a fallback packer with nil tokenizer (will use estimation)
+		contextPacker, _ = contextpacker.New(llm.NewEstimatingTokenizer(), 6000,
+			contextpacker.WithTemplate(contextpacker.CompactTemplate),
+		)
+	}
+
 	return &ragService{
 		cfg:            cfg,
 		promptMgr:      promptMgr,
@@ -93,6 +109,7 @@ func NewService(
 		reranker:       reranker,
 		parserRegistry: pr,
 		splitter:       splitter,
+		contextPacker:  contextPacker,
 		logger:         logger,
 	}
 }
