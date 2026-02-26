@@ -56,6 +56,14 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.ResponseWriter, event *github.IssueCommentEvent) {
+	// Ignore comment deletions - only process created and edited comments
+	action := event.GetAction()
+	if action != "created" && action != "edited" {
+		h.logger.Debug("ignoring issue comment", "reason", "action is "+action, "repo", event.GetRepo().GetFullName())
+		_, _ = fmt.Fprint(w, "Comment action ignored")
+		return
+	}
+
 	reviewEvent, err := core.EventFromIssueComment(event)
 	if err != nil {
 		h.logger.Debug("ignoring issue comment", "reason", err.Error(), "repo", event.GetRepo().GetFullName())
