@@ -141,7 +141,7 @@ func (c *Client) ResetToUpstream(ctx context.Context, path string) error {
 }
 
 // GetRemoteHeadSHA fetches the HEAD commit SHA of a specific remote branch without cloning.
-func (c *Client) GetRemoteHeadSHA(repoURL, branch, token string) (string, error) {
+func (c *Client) GetRemoteHeadSHA(ctx context.Context, repoURL, branch, token string) (string, error) {
 	authURL, err := c.getAuthenticatedURL(repoURL, token)
 	if err != nil {
 		return "", err
@@ -150,7 +150,7 @@ func (c *Client) GetRemoteHeadSHA(repoURL, branch, token string) (string, error)
 	// Use `git ls-remote` to get the ref for the specific branch.
 	// `refs/heads/main` for example.
 	ref := fmt.Sprintf("refs/heads/%s", branch)
-	out, err := exec.CommandContext(context.Background(), "git", "ls-remote", authURL, ref).Output()
+	out, err := exec.CommandContext(ctx, "git", "ls-remote", authURL, ref).Output()
 	if err != nil {
 		return "", fmt.Errorf("git ls-remote failed: %w. Ensure branch '%s' exists", err, branch)
 	}

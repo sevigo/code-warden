@@ -16,6 +16,18 @@ This document outlines the development roadmap for Code-Warden. It tracks comple
     -   **Resolution:** Fixed `context.Background()` usage throughout the RAG pipeline.
     -   **Benefit:** Proper cancellation support during heavy indexing.
 
+-   **GitHub Suggested Changes:**
+    -   **Resolution:** Added `code_suggestion` field to `core.Suggestion`, implemented GitHub Review API suggestion format (````suggestion` code fence), and updated prompts.
+    -   **Benefit:** Developers can accept AI feedback with a single click.
+
+-   **Advanced RAG Enhancements:**
+    -   **Resolution:** Integrated `chains.ValidatingRetrievalQA` for consistent validation.
+    -   **Benefit:** Higher quality reviews with fewer false positives.
+
+-   **Unbounded Client Map Cleanup:**
+    -   **Resolution:** Added cleanup for unused collection clients in vectorstore.
+    -   **Benefit:** Prevents memory leaks from unbounded client map.
+
 
 ## 🚀 Next Up: Immediate Priorities
 
@@ -94,6 +106,7 @@ Extend language support beyond Go and TypeScript.
 | VectorStore.Close() | ✅ Done | Added Close() method to release gRPC connections |
 | Context propagation | ✅ Done | Fixed context.Background() usage throughout RAG pipeline |
 | Unbounded client map | ✅ Done | Add cleanup for unused collection clients in vectorstore |
+| gitutil context | ✅ Done | Added context propagation to GetRemoteHeadSHA for proper cancellation |
 
 ### Code Quality
 
@@ -102,6 +115,7 @@ Extend language support beyond Go and TypeScript.
 | Map growth in repomanager | ✅ Done | Add cleanup for old mutexes in repoMux map |
 | Job queue metrics | ✅ Done | Add alerting when job queue is full |
 | Pre-allocation | ✅ Done | Pre-allocate slices in hot paths |
+| Comment deletion handling | ✅ Done | Ignore comment deletion events in webhook handler |
 
 ## Contributing
 

@@ -51,5 +51,3 @@ func (d *DocGenerator) GenerateProjectStructure(root string) (string, error) {
 
 	return builder.String(), err
 }
-
-// TODO: Implement GenerateDependencyGraph logic requiring parser outputs
