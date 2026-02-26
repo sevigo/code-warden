@@ -161,8 +161,11 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 	// This check is now safe from race conditions because it was performed while holding the repo mutex.
 	if reviewEnv.skipReview {
 		// Mark check run as completed so the PR status doesn't stay pending
-		_ = reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID,
-			"success", "Review Already Exists", "This commit was already reviewed.")
+		if err := reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID,
+			"success", "Review Already Exists", "This commit was already reviewed."); err != nil {
+			j.logger.Warn("failed to mark check run as completed for skipped review",
+				"error", err, "repo", event.RepoFullName, "pr", event.PRNumber)
+		}
 		return nil
 	}
 
@@ -324,6 +327,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 }
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
+// It uses a database unique constraint to prevent duplicate reviews for the same SHA.
 func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validLineMaps map[string]map[int]struct{}) error {
 	// Filter out non-code file suggestions first
 	structuredReview.Suggestions = FilterNonCodeSuggestions(j.logger, structuredReview.Suggestions)
@@ -337,19 +341,33 @@ func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent,
 		structuredReview.Summary = appendOffDiffSuggestions(structuredReview.Summary, offDiffSuggestions)
 	}
 
-	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
-		return fmt.Errorf("failed to post review comment to GitHub: %w", err)
-	}
-
+	// Save to DB first - the unique constraint (repo_full_name, pr_number, head_sha) prevents duplicates.
+	// If another concurrent webhook already saved a review for this SHA, we get ErrDuplicateReview.
 	dbReview := &core.Review{
 		RepoFullName:  event.RepoFullName,
 		PRNumber:      event.PRNumber,
 		HeadSHA:       event.HeadSHA,
 		ReviewContent: rawReview,
 	}
-	if err := j.store.SaveReview(ctx, dbReview); err != nil {
+	err := j.store.SaveReview(ctx, dbReview)
+	if err != nil {
+		if errors.Is(err, storage.ErrDuplicateReview) {
+			// Another concurrent webhook already completed this review.
+			// We still need to mark the check run as complete, but skip posting duplicate comments.
+			j.logger.Info("Review already saved by concurrent webhook, skipping duplicate post",
+				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
+			if completeErr := env.statusUpdater.Completed(ctx, event, env.checkRunID, "success", "Review Complete", "AI analysis finished."); completeErr != nil {
+				j.logger.Warn("failed to update completion status", "error", completeErr)
+			}
+			return nil
+		}
 		j.logger.Error("failed to save review to database", "error", err)
 		return fmt.Errorf("failed to save review record to database: %w", err)
+	}
+
+	// Only post to GitHub after successful DB save (prevents duplicate comments)
+	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
+		return fmt.Errorf("failed to post review comment to GitHub: %w", err)
 	}
 
 	if err := env.statusUpdater.Completed(ctx, event, env.checkRunID, "success", "Review Complete", "AI analysis finished."); err != nil {
