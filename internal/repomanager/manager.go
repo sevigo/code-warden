@@ -83,7 +83,11 @@ func (m *manager) UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string
 // mutexes for the same repo).
 func (m *manager) ClearLocks() {
 	m.logger.Info("clearing all repository locks")
-	m.repoMux.Clear()
+	// sync.Map has no Clear() method in Go <= 1.23 — delete keys via Range
+	m.repoMux.Range(func(key, _ any) bool {
+		m.repoMux.Delete(key)
+		return true
+	})
 }
 
 func (m *manager) lockFor(key string) *sync.Mutex {

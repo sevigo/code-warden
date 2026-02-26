@@ -363,3 +363,58 @@ func TestSeverityAlert(t *testing.T) {
 		})
 	}
 }
+func TestDedent(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "simple string",
+			input:    "hello",
+			expected: "hello",
+		},
+		{
+			name:     "indented block",
+			input:    "    line1\n    line2",
+			expected: "line1\nline2",
+		},
+		{
+			name:     "uneven indentation",
+			input:    "    line1\n        line2",
+			expected: "line1\n    line2",
+		},
+		{
+			name:     "empty lines at ends",
+			input:    "\n\n    line1\n\n",
+			expected: "line1",
+		},
+		{
+			name:     "multi-line with empty line in middle",
+			input:    "    line1\n\n    line2",
+			expected: "line1\n\nline2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dedent(tt.input)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestDedentComplex(t *testing.T) {
+	input := `
+    func test() {
+        fmt.Println("hi")
+    }
+`
+	expected := "func test() {\n    fmt.Println(\"hi\")\n}"
+	assert.Equal(t, expected, dedent(input))
+}
