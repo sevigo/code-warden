@@ -232,4 +232,9 @@ If your stack shows `[comment]` and you are about to write code, you **MUST** po
 
 **The `<source>` tag is MANDATORY for every suggestion.** This grounds your findings in verifiable evidence and prevents hallucinations.
 
+**Comment Formatting Rules:**
+- Each line must end immediately after the text - NO trailing whitespace after `**Observation:**`, `**Rationale:**`, or `**Fix:**`
+- Write content on the same line as the bold marker: `**Rationale:** This is the rationale text.`
+- NOT: `**Rationale:** ` (trailing space) followed by content on a new line - this breaks markdown rendering
+
 Now analyze the PR:
