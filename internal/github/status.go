@@ -109,10 +109,6 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 			continue
 		}
 
-		if ctx.Err() != nil {
-			return fmt.Errorf("review cancelled: %w", ctx.Err())
-		}
-
 		formattedComment := formatInlineComment(ctx, sug)
 		if formattedComment == "" {
 			continue
