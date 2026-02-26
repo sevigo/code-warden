@@ -285,20 +285,26 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	}
 
 	successfulModels := getSuccessfulModels(modelResults)
+	totalTime := time.Since(startTime)
 	r.logger.Info("consensus review completed",
-		"total_time", time.Since(startTime).String(),
+		"total_time", totalTime.String(),
 		"models_requested", len(models),
 		"models_eventually_succeeded", len(successfulModels),
 		"total_completed_tasks", len(modelResults),
 	)
 
 	// Construct final disclaimer with timings and model info
-	modelsList := strings.Join(getSuccessfulModels(modelResults), ", ")
+	// Synthesis time is approximated as total time minus context build time
+	synthesisTime := totalTime - contextBuildTime
+	if synthesisTime < 0 {
+		synthesisTime = 0
+	}
+	modelsList := strings.Join(successfulModels, ", ")
 	disclaimer := fmt.Sprintf("\n\n---\n> 🤖 **AI Consensus Review**\n> **Models:** %s\n> **Context:** %s | **Synthesis:** %s | **Total:** %s\n> *Mistakes are possible. Please verify critical issues.*",
 		modelsList,
 		contextBuildTime.Truncate(time.Millisecond),
-		time.Since(startTime).Truncate(time.Millisecond), // This is approximate synthesis time
-		time.Since(startTime).Truncate(time.Millisecond),
+		synthesisTime.Truncate(time.Millisecond),
+		totalTime.Truncate(time.Millisecond),
 	)
 
 	// Update summary and raw output

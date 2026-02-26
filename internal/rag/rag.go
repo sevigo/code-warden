@@ -130,7 +130,7 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 				"configured", r.cfg.AI.HTTPResponseHeaderTimeout,
 				"error", pErr,
 			)
-			return nil, fmt.Errorf("failed to parse http_response_header_timeout: %w", pErr)
+			headerTimeout = 120 * time.Second // use default
 		}
 
 		newLLM, err = ollama.New(
