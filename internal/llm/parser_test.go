@@ -81,7 +81,6 @@ func verifySpecificMetadata(t *testing.T, name string, got *core.StructuredRevie
 	s := got.Suggestions[0]
 	if name == "Valid XML Review" {
 		assert.Equal(t, 90, s.Confidence)
-		assert.Equal(t, "15m", s.EstimatedFixTime)
 		assert.Equal(t, "Always", s.Reproducibility)
 	}
 	if name == "Dirty XML (Bolded Path and Extra Tags)" {

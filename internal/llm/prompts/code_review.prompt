@@ -158,7 +158,7 @@ Every suggestion MUST include a `<source>` tag that grounds the finding in evide
 ### 1. ABSOLUTE REQUIREMENT: TAG CLOSURE DISCIPLINE
 You MUST follow this sequence EXACTLY for every suggestion:
 1. Write the opening `<suggestion>` tag.
-2. Fill in `<file>`, `<line>`, `<severity>`, `<category>`, `<confidence>`, `<estimated_fix_time>`, `<reproducibility>`.
+2. Fill in `<file>`, `<line>`, `<severity>`, `<category>`, `<confidence>`, `<reproducibility>`.
 3. Open `<comment>`.
 4. Write your detailed observation and fix recommendation.
 5. **Type `</comment>` IMMEDIATELY after the last word of your comment.**
@@ -187,24 +187,24 @@ If your stack shows `[comment]` and you are about to write code, you **MUST** po
   <verdict>APPROVE | REQUEST_CHANGES | COMMENT</verdict>
   <confidence>95</confidence>
   <summary>
-    # REVIEW SUMMARY
-    [High-level assessment of the changes]
+# REVIEW SUMMARY
+[High-level assessment of the changes]
 
-    ### 📊 Issue Status Table
+### 📊 Issue Status Table
 
-    | Issue | Severity | Blocking? |
-    | :--- | :--- | :--- |
-    | [Brief title] | [Indicator] [Severity] | [Yes/No] |
-    | [Brief title] | [Indicator] [Severity] | [Yes/No] |
+| Issue | Severity | Blocking? |
+| :--- | :--- | :--- |
+| [Brief title] | [Indicator] [Severity] | [Yes/No] |
+| [Brief title] | [Indicator] [Severity] | [Yes/No] |
 
-    #### Severity Legend:
-    - 🔴 Critical: Security vulnerabilities, data loss, guaranteed crashes
-    - 🟡 High: Logic bugs, breaking changes, resource leaks
-    - 🟠 Medium: Performance issues, code smells, anti-patterns
-    - 🟢 Low: Minor improvements, style suggestions
+#### Severity Legend:
+- 🔴 Critical: Security vulnerabilities, data loss, guaranteed crashes
+- 🟡 High: Logic bugs, breaking changes, resource leaks
+- 🟠 Medium: Performance issues, code smells, anti-patterns
+- 🟢 Low: Minor improvements, style suggestions
 
-    ## Overall Assessment
-    [Conclusion about whether the code is ready to merge]
+## Overall Assessment
+[Conclusion about whether the code is ready to merge]
   </summary>
   <suggestions>
     <suggestion>
@@ -213,13 +213,12 @@ If your stack shows `[comment]` and you are about to write code, you **MUST** po
       <severity>Critical</severity>
       <category>Security</category>
       <confidence>100</confidence>
-      <estimated_fix_time>5m</estimated_fix_time>
       <reproducibility>Always</reproducibility>
       <source>diff:L123</source>
       <comment>
-        **Observation:** [Detail]
-        **Rationale:** [Impact]
-        **Fix:** [Recommendation]
+**Observation:** [Detail]
+**Rationale:** [Impact]
+**Fix:** [Recommendation]
       </comment>  <!-- CLOSE COMMENT HERE, BEFORE NEXT TAG -->
       <code_suggestion>
 // RAW CODE ONLY - NO markdown backticks

@@ -218,7 +218,6 @@ func preprocessComment(comment string) string {
 	for i := range lines {
 		line := lines[i]
 		// Strip trailing whitespace from each line (fixes markdown rendering issues
-		// where "**Rationale:** " with trailing space breaks the bold formatting)
 		line = strings.TrimRight(line, " \t")
 		trimmed := strings.TrimSpace(line)
 
@@ -318,11 +317,12 @@ func formatReviewSummary(review *core.StructuredReview) string {
 
 	// Verdict
 	icon := verdictIcon(review.Verdict)
-	sb.WriteString(fmt.Sprintf("### %s Verdict: %s\n\n", icon, review.Verdict))
+	fmt.Fprintf(&sb, "### %s Verdict: %s\n\n", icon, review.Verdict)
 
 	// Summary content
 	if review.Summary != "" {
-		sb.WriteString(review.Summary)
+		summary := preprocessComment(review.Summary)
+		sb.WriteString(summary)
 		sb.WriteString("\n\n")
 	}
 

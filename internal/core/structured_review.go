@@ -23,8 +23,6 @@ type Suggestion struct {
 	Comment string `json:"comment" xml:"comment"`
 	// Confidence is the LLM's confidence score for this suggestion (0-100).
 	Confidence int `json:"confidence,omitempty" xml:"confidence,omitempty"`
-	// EstimatedFixTime provides an estimate of how long the fix might take.
-	EstimatedFixTime string `json:"estimated_fix_time,omitempty" xml:"estimated_fix_time,omitempty"`
 	// Reproducibility describes how easily the issue can be reproduced.
 	Reproducibility string `json:"reproducibility,omitempty" xml:"reproducibility,omitempty"`
 	// CodeSuggestion is the raw code fix proposed by the LLM.
