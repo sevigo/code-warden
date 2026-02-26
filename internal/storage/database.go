@@ -18,6 +18,9 @@ import (
 var (
 	// ErrNotFound is returned when a requested record is not found in the database.
 	ErrNotFound = errors.New("record not found")
+	// ErrDuplicateReview is returned when attempting to save a review that already exists
+	// for the same repository, PR number, and head SHA.
+	ErrDuplicateReview = errors.New("review already exists for this PR/SHA")
 )
 
 // Repository represents a stored Git repository.
@@ -88,12 +91,21 @@ func NewStore(db *sqlx.DB) Store {
 }
 
 // SaveReview inserts a new review record into the database.
+// Returns ErrDuplicateReview if a review already exists for the same repo/PR/SHA combination.
 func (s *postgresStore) SaveReview(ctx context.Context, review *core.Review) error {
 	query := `
-		INSERT INTO reviews (repo_full_name, pr_number, head_sha, review_content) 
+		INSERT INTO reviews (repo_full_name, pr_number, head_sha, review_content)
 		VALUES ($1, $2, $3, $4)`
 	_, err := s.db.ExecContext(ctx, query, review.RepoFullName, review.PRNumber, review.HeadSHA, review.ReviewContent)
-	return err
+	if err != nil {
+		// Check for PostgreSQL unique constraint violation (error code 23505)
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return ErrDuplicateReview
+		}
+		return err
+	}
+	return nil
 }
 
 // GetLatestReviewForPR retrieves the most recent review for a given pull request.
