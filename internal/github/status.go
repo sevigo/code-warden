@@ -207,6 +207,7 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 }
 
 // preprocessComment cleans up LLM-generated comments by:
+// - Stripping trailing whitespace from each line (fixes markdown rendering)
 // - Stripping legacy ### title headers
 // - Converting #### headers to bold with emojis
 func preprocessComment(comment string) string {
@@ -216,6 +217,9 @@ func preprocessComment(comment string) string {
 
 	for i := range lines {
 		line := lines[i]
+		// Strip trailing whitespace from each line (fixes markdown rendering issues
+		// where "**Rationale:** " with trailing space breaks the bold formatting)
+		line = strings.TrimRight(line, " \t")
 		trimmed := strings.TrimSpace(line)
 
 		// Strip legacy ### headers (e.g., "### Old Style Title")

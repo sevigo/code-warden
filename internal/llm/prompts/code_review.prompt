@@ -188,7 +188,23 @@ If your stack shows `[comment]` and you are about to write code, you **MUST** po
   <confidence>95</confidence>
   <summary>
     # REVIEW SUMMARY
-    [High-level assessment]
+    [High-level assessment of the changes]
+
+    ### 📊 Issue Status Table
+
+    | Issue | Severity | Blocking? |
+    | :--- | :--- | :--- |
+    | [Brief title] | [Indicator] [Severity] | [Yes/No] |
+    | [Brief title] | [Indicator] [Severity] | [Yes/No] |
+
+    #### Severity Legend:
+    - 🔴 Critical: Security vulnerabilities, data loss, guaranteed crashes
+    - 🟡 High: Logic bugs, breaking changes, resource leaks
+    - 🟠 Medium: Performance issues, code smells, anti-patterns
+    - 🟢 Low: Minor improvements, style suggestions
+
+    ## Overall Assessment
+    [Conclusion about whether the code is ready to merge]
   </summary>
   <suggestions>
     <suggestion>
