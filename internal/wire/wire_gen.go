@@ -88,7 +88,11 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	service := rag.NewService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
+	service, err := rag.NewService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	job := jobs.NewReviewJob(configConfig, service, store, repoManager, logger)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
 	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)

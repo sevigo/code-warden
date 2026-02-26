@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sevigo/goframe/contextpacker"
 	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
@@ -64,6 +65,7 @@ type ragService struct {
 	reranker       schema.Reranker
 	parserRegistry parsers.ParserRegistry
 	splitter       textsplitter.TextSplitter
+	contextPacker  *contextpacker.Packer
 	logger         *slog.Logger
 	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
 	llmCache       sync.Map // map[string]llms.Model: modelName -> LLM instance
@@ -80,9 +82,32 @@ func NewService(
 	pr parsers.ParserRegistry,
 	splitter textsplitter.TextSplitter,
 	logger *slog.Logger,
-) Service {
+) (Service, error) {
 	// Register sparse provider for hybrid search
 	sparse.RegisterProvider(sparse.NewBoWProvider())
+
+	// Get token budget from config, with fallback
+	tokenBudget := cfg.AI.ContextTokenBudget
+	if tokenBudget <= 0 {
+		tokenBudget = 16000 // Default for 128K context models
+	}
+
+	// Create context packer with configurable token budget
+	tokenizer := llm.AsTokenizer(gen)
+	contextPacker, err := contextpacker.New(tokenizer, tokenBudget,
+		contextpacker.WithTemplate(contextpacker.CompactTemplate),
+		contextpacker.WithLogger(logger),
+	)
+	if err != nil {
+		logger.Warn("failed to create context packer with model tokenizer, using estimation fallback", "error", err)
+		// Fallback to estimation-based packer
+		contextPacker, err = contextpacker.New(llm.NewEstimatingTokenizer(), tokenBudget,
+			contextpacker.WithTemplate(contextpacker.CompactTemplate),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize context packer: %w", err)
+		}
+	}
 
 	return &ragService{
 		cfg:            cfg,
@@ -93,8 +118,9 @@ func NewService(
 		reranker:       reranker,
 		parserRegistry: pr,
 		splitter:       splitter,
+		contextPacker:  contextPacker,
 		logger:         logger,
-	}
+	}, nil
 }
 
 func (r *ragService) GetTextSplitter() textsplitter.TextSplitter {

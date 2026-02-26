@@ -64,3 +64,29 @@ func (a *OllamaTokenizerAdapter) GetOptimalOverlapTokens(_ context.Context, _ st
 func (a *OllamaTokenizerAdapter) GetMaxContextWindow(_ context.Context, _ string) int {
 	return 8192
 }
+
+// EstimatingTokenizer is a fallback tokenizer that uses character-based estimation.
+// It's used when the LLM provider doesn't implement llms.Tokenizer (e.g., Gemini).
+type EstimatingTokenizer struct{}
+
+// NewEstimatingTokenizer creates a tokenizer that estimates token count from characters.
+func NewEstimatingTokenizer() llms.Tokenizer {
+	return &EstimatingTokenizer{}
+}
+
+// CountTokens estimates token count using the industry-standard approximation
+// of 1 token ≈ 3-4 characters for English text.
+// Note: This is less accurate for code or non-English languages.
+func (e *EstimatingTokenizer) CountTokens(_ context.Context, text string) (int, error) {
+	return len(text) / 3, nil
+}
+
+// AsTokenizer returns an llms.Tokenizer for the given model.
+// If the model implements llms.Tokenizer, it's returned directly.
+// Otherwise, an EstimatingTokenizer is returned as fallback.
+func AsTokenizer(model llms.Model) llms.Tokenizer {
+	if t, ok := model.(llms.Tokenizer); ok {
+		return t
+	}
+	return NewEstimatingTokenizer()
+}

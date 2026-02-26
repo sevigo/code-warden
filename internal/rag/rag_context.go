@@ -442,7 +442,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		impactContext, descriptionContext = r.splitAndFormatDocs(ctx, allDocs, results.descriptionDocs, prDescription, &seenDocs)
 	}
 
-	fullContext := r.assembleContext(results.archContext, impactContext, descriptionContext, results.definitionsContext, results.hydeResults, results.hydeIndices, changedFiles)
+	fullContext := r.assembleContext(ctx, results.archContext, impactContext, descriptionContext, results.definitionsContext, results.hydeResults, results.hydeIndices, changedFiles)
 	return fullContext, results.definitionsContext
 }
 
@@ -680,61 +680,29 @@ func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedV
 	return docs, err
 }
 
-// assembleContext assembles the final prompt context.
+// assembleContext assembles the final prompt context using the contextpacker.
 func (r *ragService) assembleContext(
+	ctx context.Context,
 	arch, impact, description, definitions string,
 	hyde [][]schema.Document, indices []int,
 	files []internalgithub.ChangedFile,
 ) string {
-	const tokenBudget = 6000
-	packer := newTokenContextPacker(tokenBudget)
+	// Build documents with priority-based ordering for the packer
+	// Priority (highest first): Definitions > Description > Impact > Arch > HyDE
+	docs := r.buildContextDocuments(arch, impact, description, definitions, hyde, indices, files)
 
-	// Priority 1: Definitions (type context is most critical for accuracy)
-	if definitions != "" {
-		packer.add("Definitions", definitions)
-	}
-	// Priority 2: Description-related snippets
-	if description != "" {
-		packer.add("Description", description)
-	}
-	// Priority 3: Impact analysis
-	if impact != "" {
-		packer.add("Impact", fmt.Sprintf("# Potential Impacted Callers & Usages\n\nThe following code snippets may be affected by the changes in modified symbols:\n\n%s", impact))
-	}
-	// Priority 4: Architectural context
-	if arch != "" {
-		packer.add("Arch", fmt.Sprintf("# Architectural Context\n\nThe following describes the purpose of the affected modules:\n\n%s", arch))
-	}
-	// Priority 5: HyDE snippets (may be redundant if impact/description already covered)
-	if len(hyde) > 0 {
-		var hydeBuilder strings.Builder
-		hydeBuilder.WriteString("# Related Code Snippets\n\nThe following code snippets might be relevant to the changes being reviewed:\n\n")
-		hydeSeenKeys := make(map[string]struct{})
-		for i, docs := range hyde {
-			if i >= len(indices) {
-				continue
-			}
-			originalIdx := indices[i]
-			if originalIdx >= len(files) {
-				continue
-			}
-			filePath := files[originalIdx].Filename
-			for _, doc := range docs {
-				key := r.getDocKey(doc)
-				if _, exists := hydeSeenKeys[key]; exists {
-					continue
-				}
-				hydeSeenKeys[key] = struct{}{}
-				hydeBuilder.WriteString(fmt.Sprintf("## Related to: %s\n", filePath))
-				hydeBuilder.WriteString("```\n")
-				hydeBuilder.WriteString(r.getDocContent(doc))
-				hydeBuilder.WriteString("\n```\n\n")
-			}
-		}
-		packer.add("HyDE", hydeBuilder.String())
+	// Nil check for defensive programming
+	if r.contextPacker == nil {
+		r.logger.Error("context packer not initialized, using limited fallback")
+		return r.fallbackConcat(docs)
 	}
 
-	result := packer.build()
+	// Pack documents using the contextpacker with proper context propagation
+	result, err := r.contextPacker.Pack(ctx, docs)
+	if err != nil {
+		r.logger.Error("context packer failed, using limited fallback - token budget may not be enforced", "error", err)
+		return r.fallbackConcat(docs)
+	}
 
 	r.logger.Info("relevant context built",
 		"changed_files", len(files),
@@ -742,76 +710,112 @@ func (r *ragService) assembleContext(
 		"impact_len", len(impact),
 		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
-		"packed_len", len(result),
-		"is_truncated", packer.isTruncated,
+		"total_tokens", result.TokenStats.TotalTokens,
+		"documents_packed", result.TokenStats.DocumentsPacked,
+		"documents_considered", result.TokenStats.DocumentsConsidered,
+		"truncated", result.Truncated,
 	)
 
-	return result
+	return result.Content
 }
 
-// tokenContextSection represents a named section in the context packer.
-type tokenContextSection struct {
-	name    string
-	content string
-}
-
-// tokenContextPacker packs context sections into a token budget.
-type tokenContextPacker struct {
-	budget      int
-	sections    []tokenContextSection
-	isTruncated bool
-}
-
-func newTokenContextPacker(tokenBudget int) *tokenContextPacker {
-	return &tokenContextPacker{budget: tokenBudget}
-}
-
-// add appends a named section. Sections are packed in the order they are added
-// (first added = highest priority).
-func (p *tokenContextPacker) add(name, content string) {
-	if content != "" {
-		p.sections = append(p.sections, tokenContextSection{name: name, content: content})
+// fallbackConcat provides a safe fallback when contextpacker is unavailable.
+// It uses character-based estimation to respect token budget.
+func (r *ragService) fallbackConcat(docs []schema.Document) string {
+	const tokensPerChar = 3
+	maxChars := r.cfg.AI.ContextTokenBudget * tokensPerChar
+	if maxChars <= 0 {
+		maxChars = 48000 // Default: 16000 tokens * 3
 	}
+
+	var fallback strings.Builder
+	currentChars := 0
+
+	for _, doc := range docs {
+		docLen := len(doc.PageContent)
+		if currentChars+docLen > maxChars {
+			break // Respect budget
+		}
+		fallback.WriteString(doc.PageContent)
+		fallback.WriteString("\n---\n\n")
+		currentChars += docLen + 5 // Account for separator
+	}
+
+	return fallback.String()
 }
 
-// estimateTokens returns a fast character-based token estimate (1 token ≈ 3 chars).
-func estimateTokens(s string) int { return len(s) / 3 }
+// buildContextDocuments creates prioritized documents for the context packer.
+func (r *ragService) buildContextDocuments(
+	arch, impact, description, definitions string,
+	hyde [][]schema.Document, indices []int,
+	files []internalgithub.ChangedFile,
+) []schema.Document {
+	var docs []schema.Document
 
-// build assembles sections into a single string, truncating lower-priority
-// sections when the total would exceed the token budget.
-func (p *tokenContextPacker) build() string {
-	var out strings.Builder
-	remaining := p.budget
+	// Priority 1: Definitions (type context is most critical for accuracy)
+	if definitions != "" {
+		docs = append(docs, schema.Document{
+			PageContent: definitions,
+		})
+	}
 
-	for _, sec := range p.sections {
-		tokens := estimateTokens(sec.content)
+	// Priority 2: Description-related snippets
+	if description != "" {
+		docs = append(docs, schema.Document{
+			PageContent: description,
+		})
+	}
 
-		switch {
-		case tokens <= remaining:
-			out.WriteString(sec.content)
-			out.WriteString("\n---\n\n")
-			remaining -= tokens
+	// Priority 3: Impact analysis
+	if impact != "" {
+		docs = append(docs, schema.Document{
+			PageContent: fmt.Sprintf("# Potential Impacted Callers & Usages\n\nThe following code snippets may be affected by the changes in modified symbols:\n\n%s", impact),
+		})
+	}
 
-		case remaining > 50: // Only truncate if there's meaningful space left
-			p.isTruncated = true
-			// Truncate to remaining budget
-			maxChars := remaining * 3
-			truncated := sec.content[:maxChars]
-			// Try to cut at a newline boundary
-			if idx := strings.LastIndex(truncated, "\n"); idx > maxChars/2 {
-				truncated = truncated[:idx]
+	// Priority 4: Architectural context
+	if arch != "" {
+		docs = append(docs, schema.Document{
+			PageContent: fmt.Sprintf("# Architectural Context\n\nThe following describes the purpose of the affected modules:\n\n%s", arch),
+		})
+	}
+
+	// Priority 5: HyDE snippets
+	if hydeContent := r.buildHyDEContent(hyde, indices, files); hydeContent != "" {
+		docs = append(docs, schema.Document{
+			PageContent: hydeContent,
+		})
+	}
+
+	return docs
+}
+
+// buildHyDEContent builds the HyDE section content from retrieved documents.
+func (r *ragService) buildHyDEContent(hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
+	if len(hyde) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.WriteString("# Related Code Snippets\n\nThe following code snippets might be relevant to the changes being reviewed:\n\n")
+
+	seenKeys := make(map[string]struct{})
+	for i, hydeDocs := range hyde {
+		if i >= len(indices) || indices[i] >= len(files) {
+			continue
+		}
+		filePath := files[indices[i]].Filename
+		for _, doc := range hydeDocs {
+			key := r.getDocKey(doc)
+			if _, exists := seenKeys[key]; exists {
+				continue
 			}
-			out.WriteString(truncated)
-			out.WriteString(fmt.Sprintf("\n[%s context truncated due to length]\n\n---\n\n", sec.name))
-			remaining = 0
-
-		default: // Budget exhausted
-			p.isTruncated = true
-			out.WriteString(fmt.Sprintf("[%s context omitted — token budget exhausted]\n\n---\n\n", sec.name))
+			seenKeys[key] = struct{}{}
+			builder.WriteString(fmt.Sprintf("## Related to: %s\n```\n%s\n```\n\n", filePath, r.getDocContent(doc)))
 		}
 	}
 
-	return out.String()
+	return builder.String()
 }
 
 func (r *ragService) processRelatedSnippet(doc schema.Document, originalFile internalgithub.ChangedFile, rank int, seenDocs map[string]struct{}, seenMu *sync.RWMutex, topFiles []string, builder *strings.Builder) []string {
