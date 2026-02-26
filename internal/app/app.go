@@ -103,6 +103,11 @@ func (a *App) Stop() error {
 		}
 	}
 
+	// Clear repository locks to free memory.
+	if a.RepoMgr != nil {
+		a.RepoMgr.ClearLocks()
+	}
+
 	if shutdownErr != nil {
 		a.Logger.Error("Code Warden stopped with errors", "error", shutdownErr)
 	} else {

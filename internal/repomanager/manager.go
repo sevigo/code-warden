@@ -31,6 +31,8 @@ type RepoManager interface {
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
 	UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error
 	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string, force bool) (*core.UpdateResult, error)
+	// ClearLocks removes all cached repository locks to free memory.
+	ClearLocks()
 }
 
 // New creates a manager that implements core.RepoManager.
@@ -72,6 +74,16 @@ func (m *manager) GetRepoRecord(ctx context.Context, repoFullName string) (*stor
 
 func (m *manager) UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error {
 	return m.updateRepoSHA(ctx, repoFullName, newSHA)
+}
+
+// ClearLocks wipes the internal map of repository-specific mutexes.
+// IMPORTANT: This MUST only be called during application shutdown after all
+// repository operations have completed. Calling this during active processing
+// may lead to lock identity violations (e.g., two goroutines using different
+// mutexes for the same repo).
+func (m *manager) ClearLocks() {
+	m.logger.Info("clearing all repository locks")
+	m.repoMux.Clear()
 }
 
 func (m *manager) lockFor(key string) *sync.Mutex {

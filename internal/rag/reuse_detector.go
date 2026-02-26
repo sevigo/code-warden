@@ -329,10 +329,10 @@ func (d *ReuseDetector) verifyRedundancy(
 			continue
 		}
 
-		chain, err := chains.NewLLMChain[verificationResult](
+		chain, err := chains.NewLLMChain(
 			d.llm,
 			prompts.NewPromptTemplate(prompt),
-			chains.WithOutputParser[verificationResult](parser),
+			chains.WithOutputParser(parser),
 		)
 		if err != nil {
 			d.logger.Warn("failed to create LLM chain", "error", err)

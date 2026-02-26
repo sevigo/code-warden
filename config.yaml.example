@@ -74,6 +74,12 @@ ai:
     - "deepseek-v3.1:671b-cloud"
     - "gemini-3-pro-preview:latest"
     
+  # Consensus Quorum (0.0 to 1.0)
+  # Percentage of models that must finish before synthesis begins. 
+  # Set to 1.0 to wait for EVERY model (safest but slowest).
+  # Set to 0.66 to proceed when 2/3 of models finished (balanced).
+  consensus_quorum: 0.66
+    
   # Paths for Architectural Comparison (used by `prescan`)
   # Default is "." (root only). Add specific high-level directories for deeper analysis.
   comparison_paths:
@@ -94,6 +100,13 @@ ai:
   # Model Memory Management - keep models loaded for faster subsequent responses
   # Examples: "5m" (5 minutes), "10m", "1h", "0" (unload immediately)
   model_keep_alive: "10m"
+
+  # HTTP Client Overrides
+  # Timeout for waiting for the first byte of an LLM response (headers). 
+  # Increase this if you see "timeout awaiting response headers" errors 
+  # when using heavy cloud models via Ollama proxy.
+  # default: "120s"
+  http_response_header_timeout: "120s"
 
 # ============================================================================
 # Storage Configuration
