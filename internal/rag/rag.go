@@ -82,7 +82,7 @@ func NewService(
 	pr parsers.ParserRegistry,
 	splitter textsplitter.TextSplitter,
 	logger *slog.Logger,
-) Service {
+) (Service, error) {
 	// Register sparse provider for hybrid search
 	sparse.RegisterProvider(sparse.NewBoWProvider())
 
@@ -99,14 +99,13 @@ func NewService(
 		contextpacker.WithLogger(logger),
 	)
 	if err != nil {
-		logger.Error("failed to create context packer with model tokenizer, using estimation fallback", "error", err)
+		logger.Warn("failed to create context packer with model tokenizer, using estimation fallback", "error", err)
 		// Fallback to estimation-based packer
 		contextPacker, err = contextpacker.New(llm.NewEstimatingTokenizer(), tokenBudget,
 			contextpacker.WithTemplate(contextpacker.CompactTemplate),
 		)
 		if err != nil {
-			// This should never happen with EstimatingTokenizer, but handle it
-			logger.Error("critical: failed to create fallback context packer", "error", err)
+			return nil, fmt.Errorf("failed to initialize context packer: %w", err)
 		}
 	}
 
@@ -121,7 +120,7 @@ func NewService(
 		splitter:       splitter,
 		contextPacker:  contextPacker,
 		logger:         logger,
-	}
+	}, nil
 }
 
 func (r *ragService) GetTextSplitter() textsplitter.TextSplitter {

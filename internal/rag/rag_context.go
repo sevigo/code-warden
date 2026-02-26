@@ -442,7 +442,7 @@ func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, e
 		impactContext, descriptionContext = r.splitAndFormatDocs(ctx, allDocs, results.descriptionDocs, prDescription, &seenDocs)
 	}
 
-	fullContext := r.assembleContext(results.archContext, impactContext, descriptionContext, results.definitionsContext, results.hydeResults, results.hydeIndices, changedFiles)
+	fullContext := r.assembleContext(ctx, results.archContext, impactContext, descriptionContext, results.definitionsContext, results.hydeResults, results.hydeIndices, changedFiles)
 	return fullContext, results.definitionsContext
 }
 
@@ -682,6 +682,7 @@ func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedV
 
 // assembleContext assembles the final prompt context using the contextpacker.
 func (r *ragService) assembleContext(
+	ctx context.Context,
 	arch, impact, description, definitions string,
 	hyde [][]schema.Document, indices []int,
 	files []internalgithub.ChangedFile,
@@ -690,17 +691,17 @@ func (r *ragService) assembleContext(
 	// Priority (highest first): Definitions > Description > Impact > Arch > HyDE
 	docs := r.buildContextDocuments(arch, impact, description, definitions, hyde, indices, files)
 
-	// Pack documents using the contextpacker
-	result, err := r.contextPacker.Pack(context.Background(), docs)
+	// Nil check for defensive programming
+	if r.contextPacker == nil {
+		r.logger.Error("context packer not initialized, using limited fallback")
+		return r.fallbackConcat(docs)
+	}
+
+	// Pack documents using the contextpacker with proper context propagation
+	result, err := r.contextPacker.Pack(ctx, docs)
 	if err != nil {
-		r.logger.Warn("context packer failed, using fallback", "error", err)
-		// Fallback: concatenate all content
-		var fallback strings.Builder
-		for _, doc := range docs {
-			fallback.WriteString(doc.PageContent)
-			fallback.WriteString("\n---\n\n")
-		}
-		return fallback.String()
+		r.logger.Error("context packer failed, using limited fallback - token budget may not be enforced", "error", err)
+		return r.fallbackConcat(docs)
 	}
 
 	r.logger.Info("relevant context built",
@@ -716,6 +717,31 @@ func (r *ragService) assembleContext(
 	)
 
 	return result.Content
+}
+
+// fallbackConcat provides a safe fallback when contextpacker is unavailable.
+// It uses character-based estimation to respect token budget.
+func (r *ragService) fallbackConcat(docs []schema.Document) string {
+	const tokensPerChar = 3
+	maxChars := r.cfg.AI.ContextTokenBudget * tokensPerChar
+	if maxChars <= 0 {
+		maxChars = 48000 // Default: 16000 tokens * 3
+	}
+
+	var fallback strings.Builder
+	currentChars := 0
+
+	for _, doc := range docs {
+		docLen := len(doc.PageContent)
+		if currentChars+docLen > maxChars {
+			break // Respect budget
+		}
+		fallback.WriteString(doc.PageContent)
+		fallback.WriteString("\n---\n\n")
+		currentChars += docLen + 5 // Account for separator
+	}
+
+	return fallback.String()
 }
 
 // buildContextDocuments creates prioritized documents for the context packer.
