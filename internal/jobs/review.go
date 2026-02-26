@@ -157,18 +157,13 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 		}
 	}()
 
-	// Skip if this exact commit was already reviewed (prevents duplicate work on rapid webhook delivery).
-	// Only for full reviews — re-reviews intentionally re-analyze the same SHA.
-	if event.Type == core.FullReview {
-		existing, _ := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
-		if existing != nil && existing.HeadSHA == event.HeadSHA {
-			j.logger.Info("Skipping review — same SHA already reviewed",
-				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
-			// Mark check run as completed so the PR status doesn't stay pending
-			_ = reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID,
-				"success", "Review Already Exists", "This commit was already reviewed.")
-			return nil
-		}
+	// Skip if this exact commit was already reviewed (detected under mutex in setupReviewEnvironment).
+	// This check is now safe from race conditions because it was performed while holding the repo mutex.
+	if reviewEnv.skipReview {
+		// Mark check run as completed so the PR status doesn't stay pending
+		_ = reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID,
+			"success", "Review Already Exists", "This commit was already reviewed.")
+		return nil
 	}
 
 	structuredReview, rawReview, validFiles, err := j.processRepository(ctx, event, reviewEnv)
@@ -186,6 +181,7 @@ type reviewEnvironment struct {
 	checkRunID    int64
 	updateResult  *core.UpdateResult
 	repoConfig    *core.RepoConfig
+	skipReview    bool // Set to true if review should be skipped (duplicate SHA)
 }
 
 // setupReviewEnvironment initializes clients, syncs the repo to the default branch,
@@ -235,6 +231,22 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		)
 	}
 
+	// ── Check for duplicate review WHILE HOLDING THE LOCK ───────────────────
+	// This prevents a race condition where two concurrent webhooks for the same PR
+	// could both pass the SHA check and generate duplicate reviews.
+	skipReview := false
+	if event.Type == core.FullReview {
+		existing, err := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+		if err != nil {
+			j.logger.Warn("failed to check for existing review", "error", err, "repo", event.RepoFullName, "pr", event.PRNumber)
+			// Continue with review on error - don't block reviews if DB check fails
+		} else if existing != nil && existing.HeadSHA == event.HeadSHA {
+			j.logger.Info("Skipping review — same SHA already reviewed (detected under mutex)",
+				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
+			skipReview = true
+		}
+	}
+
 	// ── Release lock before any LLM call ─────────────────────────────────────
 	mutex.Unlock()
 
@@ -247,6 +259,7 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		checkRunID:    checkRunID,
 		updateResult:  updateResult,
 		repoConfig:    repoConfig,
+		skipReview:    skipReview,
 	}, nil
 }
 
