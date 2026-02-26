@@ -193,7 +193,7 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 	// 4. Add Code Suggestion (if present) - MUST be outside alert
 	if sug.CodeSuggestion != "" {
 		sb.WriteString("\n\n```suggestion\n")
-		sb.WriteString(strings.TrimSpace(sug.CodeSuggestion))
+		sb.WriteString(dedent(sug.CodeSuggestion))
 		sb.WriteString("\n```")
 	}
 
@@ -210,6 +210,7 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 // - Stripping legacy ### title headers
 // - Converting #### headers to bold with emojis
 func preprocessComment(comment string) string {
+	comment = strings.TrimSpace(comment)
 	lines := strings.Split(comment, "\n")
 	var processed []string
 
@@ -413,4 +414,74 @@ func verdictIcon(verdict string) string {
 	default:
 		return "📝"
 	}
+}
+
+// dedent removes common leading whitespace from all lines in s.
+// This ensures that multi-line code blocks or suggestions are properly
+// aligned when rendered in GitHub.
+func dedent(s string) string {
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	lines = trimEmptyLines(lines)
+	if len(lines) == 0 {
+		return ""
+	}
+
+	minIndent := findMinIndent(lines)
+	if minIndent <= 0 {
+		return strings.Join(lines, "\n")
+	}
+
+	for i, line := range lines {
+		if len(line) >= minIndent {
+			lines[i] = line[minIndent:]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func trimEmptyLines(lines []string) []string {
+	var start int
+	found := false
+	for i := range lines {
+		if strings.TrimSpace(lines[i]) != "" {
+			start = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	end := len(lines)
+	for i := len(lines); i > start; i-- {
+		if strings.TrimSpace(lines[i-1]) != "" {
+			end = i
+			break
+		}
+	}
+	return lines[start:end]
+}
+
+func findMinIndent(lines []string) int {
+	minIndent := -1
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		indent := 0
+		for _, r := range line {
+			if r == ' ' || r == '\t' {
+				indent++
+			} else {
+				break
+			}
+		}
+		if minIndent == -1 || indent < minIndent {
+			minIndent = indent
+		}
+	}
+	return minIndent
 }
