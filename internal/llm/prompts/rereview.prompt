@@ -103,11 +103,14 @@ The following types are referenced in the diff. Use these definitions to verify 
 
 4. **SUMMARY**: The summary MUST include a "📊 Issue Status Table" section using a Markdown table.
 
+5. **MULTI-LINE SUGGESTIONS**: When replacing multiple lines, include `<start_line>` with the first line to replace. Omit for single-line suggestions.
+
 ### Example of Valid XML Structure:
 
 ```xml
 <suggestion>
   <file>path/to/file.go</file>
+  <start_line>38</start_line>
   <line>42</line>
   <severity>High</severity>
   <comment>
@@ -156,6 +159,7 @@ safeCopy := data.Clone()
   <suggestions>
     <suggestion>
       <file>path/to/filename.go</file>
+      <start_line>5</start_line>
       <line>10</line>
       <severity>Critical | High | Medium</severity>
       <comment>
@@ -170,6 +174,7 @@ safeCopy := data.Clone()
       <code_suggestion>
 // Provide code fix here ONLY if you have 95%+ confidence
 // Raw code, no markdown formatting
+// This replaces lines 5-10
       </code_suggestion>
     </suggestion>
   </suggestions>
