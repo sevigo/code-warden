@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"sync"
 	"time"
 
@@ -65,7 +67,7 @@ func DefaultConfig() Config {
 		Model:         "llama3.1:70b",
 		Timeout:       30 * time.Minute,
 		MaxIterations: 3,
-		MCPAddr:       ":8081",
+		MCPAddr:       "127.0.0.1:8081", // Bind to localhost only for security
 		WorkingDir:    "/tmp/code-warden-agents",
 	}
 }
@@ -106,6 +108,33 @@ func NewOrchestrator(
 	}
 }
 
+// Start begins the MCP HTTP server. Must be called before agents can use tools.
+func (o *Orchestrator) Start() error {
+	if !o.config.Enabled {
+		o.logger.Info("agent orchestrator is disabled, not starting MCP server")
+		return nil
+	}
+
+	go func() {
+		o.logger.Info("starting MCP HTTP server",
+			"addr", o.config.MCPAddr,
+			"provider", o.config.Provider,
+			"model", o.config.Model)
+
+		//nolint:gosec // G114: Internal MCP server with localhost-only binding
+		if err := http.ListenAndServe(o.config.MCPAddr, o.mcpServer); err != nil {
+			o.logger.Error("MCP HTTP server failed", "error", err, "addr", o.config.MCPAddr)
+		}
+	}()
+
+	return nil
+}
+
+// MCPServer returns the MCP server instance for external routing if needed.
+func (o *Orchestrator) MCPServer() *mcp.Server {
+	return o.mcpServer
+}
+
 // Issue represents a GitHub issue to be implemented.
 type Issue struct {
 	Number       int
@@ -118,14 +147,81 @@ type Issue struct {
 
 // Session represents an active agent session.
 type Session struct {
+	mu          sync.Mutex
 	ID          string
 	Issue       Issue
-	Status      SessionStatus
+	status      SessionStatus
 	StartedAt   time.Time
 	CompletedAt time.Time
 	Result      *Result
-	Error       string
+	err         string
 	cancel      context.CancelFunc
+}
+
+// GetStatus returns the current session status (thread-safe).
+func (s *Session) GetStatus() SessionStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status
+}
+
+// SetStatus updates the session status (thread-safe).
+func (s *Session) SetStatus(status SessionStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = status
+}
+
+// GetError returns the session error message (thread-safe).
+func (s *Session) GetError() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
+// SetError sets the session error message (thread-safe).
+func (s *Session) SetError(err string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+// GetResult returns the session result (thread-safe).
+func (s *Session) GetResult() *Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Result
+}
+
+// SetResult sets the session result (thread-safe).
+func (s *Session) SetResult(result *Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Result = result
+}
+
+// Snapshot returns a thread-safe copy of session state for external reading.
+func (s *Session) Snapshot() SessionSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SessionSnapshot{
+		ID:          s.ID,
+		Status:      s.status,
+		StartedAt:   s.StartedAt,
+		CompletedAt: s.CompletedAt,
+		Error:       s.err,
+		Result:      s.Result,
+	}
+}
+
+// SessionSnapshot is an immutable snapshot of session state.
+type SessionSnapshot struct {
+	ID          string
+	Status      SessionStatus
+	StartedAt   time.Time
+	CompletedAt time.Time
+	Error       string
+	Result      *Result
 }
 
 // SessionStatus represents the status of an agent session.
@@ -161,7 +257,7 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 	session := &Session{
 		ID:        sessionID,
 		Issue:     issue,
-		Status:    StatusPending,
+		status:    StatusPending,
 		StartedAt: time.Now(),
 	}
 
@@ -206,8 +302,10 @@ func (o *Orchestrator) CancelSession(id string) error {
 		session.cancel()
 	}
 
-	session.Status = StatusCancelled
+	session.SetStatus(StatusCancelled)
+	session.mu.Lock()
 	session.CompletedAt = time.Now()
+	session.mu.Unlock()
 
 	o.logger.Info("agent session cancelled", "session_id", id)
 	return nil
@@ -215,12 +313,19 @@ func (o *Orchestrator) CancelSession(id string) error {
 
 // runAgent executes the agent workflow.
 func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
+	// Ensure context is cancelled when done (prevents resource leak)
+	defer func() {
+		if session.cancel != nil {
+			session.cancel()
+		}
+	}()
+
 	o.logger.Info("runAgent: starting agent workflow",
 		"session_id", session.ID,
 		"issue_number", session.Issue.Number,
 		"issue_title", session.Issue.Title)
 
-	session.Status = StatusRunning
+	session.SetStatus(StatusRunning)
 
 	// Build the system prompt
 	o.logger.Debug("runAgent: building system prompt", "session_id", session.ID)
@@ -229,8 +334,8 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"session_id", session.ID,
 		"prompt_length", len(systemPrompt))
 
-	// Create branch name
-	branch := fmt.Sprintf("agent/%s", session.ID)
+	// Create branch name (sanitize for git safety)
+	branch := sanitizeBranch(fmt.Sprintf("agent/%s", session.ID))
 	o.logger.Info("runAgent: created branch name",
 		"session_id", session.ID,
 		"branch", branch)
@@ -247,9 +352,11 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 	// Run the agent
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		session.Status = StatusFailed
-		session.Error = fmt.Sprintf("Agent failed: %v\nOutput: %s", err, string(output))
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Agent failed: %v\nOutput: %s", err, string(output)))
+		session.mu.Lock()
 		session.CompletedAt = time.Now()
+		session.mu.Unlock()
 		o.logger.Error("runAgent: agent process failed",
 			"session_id", session.ID,
 			"error", err,
@@ -265,9 +372,11 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 	// Parse result
 	result := o.parseAgentOutput(string(output))
 
-	session.Result = result
-	session.Status = StatusCompleted
+	session.SetResult(result)
+	session.SetStatus(StatusCompleted)
+	session.mu.Lock()
 	session.CompletedAt = time.Now()
+	session.mu.Unlock()
 
 	o.logger.Info("runAgent: agent session completed successfully",
 		"session_id", session.ID,
@@ -381,4 +490,27 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// sanitizeBranch sanitizes a string to be a valid git branch name.
+// Git branch names cannot contain spaces, ~, ^, :, *, ?, [, \\, or start with -.
+func sanitizeBranch(name string) string {
+	// Replace invalid characters with hyphens
+	re := regexp.MustCompile(`[\s~^:?*\[\\]`)
+	sanitized := re.ReplaceAllString(name, "-")
+
+	// Remove leading/trailing hyphens and dots
+	for len(sanitized) > 0 && (sanitized[0] == '-' || sanitized[0] == '.') {
+		sanitized = sanitized[1:]
+	}
+	for len(sanitized) > 0 && (sanitized[len(sanitized)-1] == '-' || sanitized[len(sanitized)-1] == '.') {
+		sanitized = sanitized[:len(sanitized)-1]
+	}
+
+	// Limit length to 200 characters
+	if len(sanitized) > 200 {
+		sanitized = sanitized[:200]
+	}
+
+	return sanitized
 }

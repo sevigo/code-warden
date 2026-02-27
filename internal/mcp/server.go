@@ -236,7 +236,8 @@ func (s *Server) writeError(w http.ResponseWriter, id any, code int, message str
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadRequest)
+	// JSON-RPC over HTTP should return 200 OK even for errors
+	// The error is indicated in the JSON body, not the HTTP status
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		s.logger.Error("failed to encode error response", "error", err)
 	}
