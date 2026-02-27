@@ -110,6 +110,21 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 
 const reReviewCmd = "/rereview"
 
+// sanitizeInstructions normalizes instructions by replacing whitespace characters
+// with spaces and removing control characters. This prevents injection attacks
+// and ensures consistent formatting.
+func sanitizeInstructions(instructions string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, instructions)
+}
+
 // parseReviewCommand parses the comment body to determine the review type
 // and any user-provided instructions.
 //
@@ -132,19 +147,7 @@ func parseReviewCommand(commentBody string) (ReviewType, string, error) {
 	args := strings.TrimPrefix(commentBody, reReviewCmd)
 	instructions := strings.TrimSpace(args)
 
-	// Sanitize instructions by replacing whitespace characters with spaces
-	// and removing control characters.
-	instructions = strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' {
-			return ' '
-		}
-		if r < 32 {
-			return -1
-		}
-		return r
-	}, instructions)
-
-	return ReReview, instructions, nil
+	return ReReview, sanitizeInstructions(instructions), nil
 }
 
 // ImplementEventFromIssueComment transforms a GitHub IssueCommentEvent on an issue
@@ -213,14 +216,5 @@ func parseImplementInstructions(commentBody string) string {
 	instructions := strings.TrimPrefix(commentBody, "/implement")
 	instructions = strings.TrimSpace(instructions)
 
-	// Sanitize instructions
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' {
-			return ' '
-		}
-		if r < 32 {
-			return -1
-		}
-		return r
-	}, instructions)
+	return sanitizeInstructions(instructions)
 }

@@ -73,6 +73,15 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 			return
 		}
 
+		// Check if agent functionality is enabled
+		if !h.cfg.Agent.Enabled {
+			h.logger.Warn("agent functionality is disabled, ignoring /implement command",
+				"repo", implementEvent.RepoFullName,
+				"issue", implementEvent.IssueNumber)
+			_, _ = fmt.Fprint(w, "Agent functionality is disabled. Enable it in config to use /implement.")
+			return
+		}
+
 		if err := h.dispatcher.Dispatch(ctx, implementEvent); err != nil {
 			h.logger.Error("failed to dispatch implement job", "error", err, "repo", implementEvent.RepoFullName)
 			http.Error(w, "Failed to start implement job", http.StatusInternalServerError)
