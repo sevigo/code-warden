@@ -67,6 +67,14 @@ func (j *ReviewJob) getRepoMutex(repoFullName string) *sync.Mutex {
 
 // Run acts as a router, directing the event to the correct review flow.
 func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
+	// Log the command type
+	j.logger.Info("processing GitHub event",
+		"type", event.Type,
+		"repo", event.RepoFullName,
+		"pr", event.PRNumber,
+		"issue", event.IssueNumber,
+		"commenter", event.Commenter)
+
 	if err := j.validateInputs(event); err != nil {
 		j.logger.Error("Input validation failed", "error", err)
 		return err
@@ -697,12 +705,22 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 	if event.RepoOwner == "" || event.RepoName == "" || event.RepoFullName == "" || event.RepoCloneURL == "" {
 		return errors.New("repository information cannot be empty")
 	}
-	if event.PRNumber <= 0 {
-		return fmt.Errorf("pull request number must be positive, got: %d", event.PRNumber)
-	}
 	if event.InstallationID <= 0 {
 		return fmt.Errorf("installation ID must be positive, got: %d", event.InstallationID)
 	}
+
+	// Validate based on event type
+	switch event.Type {
+	case core.FullReview, core.ReReview:
+		if event.PRNumber <= 0 {
+			return fmt.Errorf("pull request number must be positive for review, got: %d", event.PRNumber)
+		}
+	case core.ImplementIssue:
+		if event.IssueNumber <= 0 {
+			return fmt.Errorf("issue number must be positive for implement, got: %d", event.IssueNumber)
+		}
+	}
+
 	return nil
 }
 
