@@ -36,7 +36,6 @@ exclude_files:
   - "config.yaml.example"
   - ".gitignore"
   - "go.mod"           # Build metadata
-  - "CLAUDE.md"        # Local IDE instructions
   - ".golangci.yml"    # Linter config
   - "Dockerfile"
   - "docker-compose.yml"
