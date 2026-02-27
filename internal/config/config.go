@@ -23,10 +23,40 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	GitHub   GitHubConfig   `mapstructure:"github"`
 	AI       AIConfig       `mapstructure:"ai"`
+	Agent    AgentConfig    `mapstructure:"agent"`
 	Database DBConfig       `mapstructure:"database"`
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Logging  logger.Config  `mapstructure:"logging"`
 	Features FeaturesConfig `mapstructure:"features"`
+}
+
+// AgentConfig holds configuration for the autonomous agent system.
+type AgentConfig struct {
+	// Enabled determines if agent functionality is active.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Provider is the agent provider (currently only "opencode").
+	Provider string `mapstructure:"provider"`
+
+	// Model is the LLM model to use for the agent.
+	Model string `mapstructure:"model"`
+
+	// Timeout is the maximum time for an agent session.
+	Timeout string `mapstructure:"timeout"`
+
+	// MaxIterations is the maximum review iterations before escalation.
+	MaxIterations int `mapstructure:"max_iterations"`
+
+	// MCPAddr is the address for the MCP server.
+	MCPAddr string `mapstructure:"mcp_addr"`
+
+	// WorkingDir is the directory for agent workspaces.
+	WorkingDir string `mapstructure:"working_dir"`
+}
+
+// GetTimeout parses and returns the timeout duration.
+func (c *AgentConfig) GetTimeout() (time.Duration, error) {
+	return time.ParseDuration(c.Timeout)
 }
 
 type ServerConfig struct {
@@ -285,6 +315,15 @@ func setDefaults(v *viper.Viper) {
 	// Features
 	v.SetDefault("features.enable_binary_quantization", true)
 	v.SetDefault("features.enable_graph_analysis", true)
+
+	// Agent
+	v.SetDefault("agent.enabled", false)
+	v.SetDefault("agent.provider", "opencode")
+	v.SetDefault("agent.model", "llama3.1:70b")
+	v.SetDefault("agent.timeout", "30m")
+	v.SetDefault("agent.max_iterations", 3)
+	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
+	v.SetDefault("agent.working_dir", "/tmp/code-warden-agents")
 }
 
 func (c *Config) ValidateForServer() error {
