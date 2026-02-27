@@ -20,7 +20,7 @@ func TestPostStructuredReview(t *testing.T) {
 
 	mockClient := mocks.NewMockClient(ctrl)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	updater := github.NewStatusUpdater(mockClient, logger)
+	updater := github.NewStatusUpdater(mockClient, logger, true) // enable code suggestions
 
 	review := &core.StructuredReview{
 		Title:   "Test Review",

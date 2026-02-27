@@ -72,6 +72,8 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 		return j.runFullReview(ctx, event)
 	case core.ReReview:
 		return j.runReReview(ctx, event)
+	case core.ImplementIssue:
+		return j.runImplementIssue(ctx, event)
 	default:
 		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
@@ -87,6 +89,30 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🔄 Starting Re-Review", "repo", event.RepoFullName, "pr", event.PRNumber)
 	return j.executeReReviewWorkflow(ctx, event)
+}
+
+// runImplementIssue handles the `/implement` command on issues.
+// TODO: Full implementation with agent orchestration.
+func (j *ReviewJob) runImplementIssue(_ context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("🤖 Starting Issue Implementation",
+		"repo", event.RepoFullName,
+		"issue", event.IssueNumber,
+		"title", event.IssueTitle)
+
+	// Check if agent is enabled
+	if !j.cfg.Agent.Enabled {
+		j.logger.Warn("agent functionality is disabled")
+		return fmt.Errorf("agent functionality is disabled; enable it in config to use /implement")
+	}
+
+	// TODO: Implement full agent orchestration:
+	// 1. Create GitHub client for the installation
+	// 2. Create orchestrator with proper dependencies
+	// 3. Spawn agent to implement the issue
+	// 4. Monitor session and report progress
+	// 5. Post result as PR comment
+
+	return fmt.Errorf("issue implementation not yet fully implemented")
 }
 
 func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.GitHubEvent) (err error) {
@@ -490,7 +516,7 @@ func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, ti
 	}
 	event.HeadSHA = pr.GetHead().GetSHA()
 
-	statusUpdater := github.NewStatusUpdater(ghClient, j.logger)
+	statusUpdater := github.NewStatusUpdater(ghClient, j.logger, j.cfg.AI.EnableCodeSuggestions)
 	checkRunID, err := statusUpdater.InProgress(ctx, event, title, summary)
 	if err != nil {
 		return nil, "", nil, 0, fmt.Errorf("failed to set in-progress status: %w", err)

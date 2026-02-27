@@ -23,10 +23,88 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	GitHub   GitHubConfig   `mapstructure:"github"`
 	AI       AIConfig       `mapstructure:"ai"`
+	Agent    AgentConfig    `mapstructure:"agent"`
 	Database DBConfig       `mapstructure:"database"`
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Logging  logger.Config  `mapstructure:"logging"`
 	Features FeaturesConfig `mapstructure:"features"`
+}
+
+// AgentConfig holds configuration for the autonomous agent system.
+type AgentConfig struct {
+	// Enabled determines if agent functionality is active.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Provider is the agent provider (currently only "opencode").
+	Provider string `mapstructure:"provider"`
+
+	// Model is the LLM model to use for the agent.
+	Model string `mapstructure:"model"`
+
+	// Timeout is the maximum time for an agent session.
+	Timeout string `mapstructure:"timeout"`
+
+	// MaxIterations is the maximum review iterations before escalation.
+	MaxIterations int `mapstructure:"max_iterations"`
+
+	// MCPAddr is the address for the MCP server.
+	MCPAddr string `mapstructure:"mcp_addr"`
+
+	// WorkingDir is the directory for agent workspaces.
+	WorkingDir string `mapstructure:"working_dir"`
+}
+
+// GetTimeout parses and returns the timeout duration.
+func (c *AgentConfig) GetTimeout() (time.Duration, error) {
+	return time.ParseDuration(c.Timeout)
+}
+
+// Validate validates the agent configuration.
+func (c *AgentConfig) Validate() error {
+	if !c.Enabled {
+		return nil // No validation needed if disabled
+	}
+
+	// Validate provider
+	if c.Provider != "opencode" {
+		return fmt.Errorf("agent.provider must be 'opencode', got: %s", c.Provider)
+	}
+
+	// Validate model is set
+	if c.Model == "" {
+		return errors.New("agent.model is required when agent is enabled")
+	}
+
+	// Validate timeout
+	if _, err := c.GetTimeout(); err != nil {
+		return fmt.Errorf("agent.timeout is invalid: %w", err)
+	}
+
+	// Validate max iterations
+	if c.MaxIterations < 1 {
+		return errors.New("agent.max_iterations must be >= 1")
+	}
+
+	// Validate MCP address
+	if c.MCPAddr == "" {
+		return errors.New("agent.mcp_addr is required when agent is enabled")
+	}
+
+	// Validate working directory
+	if c.WorkingDir == "" {
+		return errors.New("agent.working_dir is required when agent is enabled")
+	}
+	// Check for path traversal
+	cleanPath := filepath.Clean(c.WorkingDir)
+	if strings.Contains(cleanPath, "..") {
+		return fmt.Errorf("agent.working_dir contains path traversal: %s", c.WorkingDir)
+	}
+	// Must be an absolute path
+	if !filepath.IsAbs(cleanPath) {
+		return fmt.Errorf("agent.working_dir must be an absolute path: %s", c.WorkingDir)
+	}
+
+	return nil
 }
 
 type ServerConfig struct {
@@ -79,6 +157,9 @@ type AIConfig struct {
 
 	// Context Assembly
 	ContextTokenBudget int `mapstructure:"context_token_budget"` // Max tokens for RAG context (default: 16000)
+
+	// Review Output Options
+	EnableCodeSuggestions bool `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
 }
 
 func (c *AIConfig) Validate() error {
@@ -258,7 +339,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.model_keep_alive", "10m")   // Keep models loaded for 10 minutes
 	v.SetDefault("ai.http_response_header_timeout", "120s")
 	v.SetDefault("ai.consensus_quorum", 0.66)
-	v.SetDefault("ai.context_token_budget", 16000) // Reasonable default for 128K context models
+	v.SetDefault("ai.context_token_budget", 16000)   // Reasonable default for 128K context models
+	v.SetDefault("ai.enable_code_suggestions", true) // Include code suggestions by default
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")
@@ -285,6 +367,15 @@ func setDefaults(v *viper.Viper) {
 	// Features
 	v.SetDefault("features.enable_binary_quantization", true)
 	v.SetDefault("features.enable_graph_analysis", true)
+
+	// Agent
+	v.SetDefault("agent.enabled", false)
+	v.SetDefault("agent.provider", "opencode")
+	v.SetDefault("agent.model", "llama3.1:70b")
+	v.SetDefault("agent.timeout", "30m")
+	v.SetDefault("agent.max_iterations", 3)
+	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
+	v.SetDefault("agent.working_dir", "") // Empty means disabled/no default; must be explicitly set
 }
 
 func (c *Config) ValidateForServer() error {
@@ -302,6 +393,9 @@ func (c *Config) ValidateForServer() error {
 	}
 	if err := c.AI.Validate(); err != nil {
 		return fmt.Errorf("ai config invalid: %w", err)
+	}
+	if err := c.Agent.Validate(); err != nil {
+		return fmt.Errorf("agent config invalid: %w", err)
 	}
 	return nil
 }

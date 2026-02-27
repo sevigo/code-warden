@@ -45,13 +45,18 @@ type StatusUpdater interface {
 }
 
 type statusUpdater struct {
-	client Client
-	logger *slog.Logger
+	client                Client
+	logger                *slog.Logger
+	enableCodeSuggestions bool
 }
 
 // NewStatusUpdater creates and returns a new instance of a statusUpdater.
-func NewStatusUpdater(client Client, logger *slog.Logger) StatusUpdater {
-	return &statusUpdater{client: client, logger: logger}
+func NewStatusUpdater(client Client, logger *slog.Logger, enableCodeSuggestions bool) StatusUpdater {
+	return &statusUpdater{
+		client:                client,
+		logger:                logger,
+		enableCodeSuggestions: enableCodeSuggestions,
+	}
 }
 
 // PostSimpleComment posts a single, general comment on the pull request.
@@ -107,6 +112,11 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 
 		if sug.FilePath == "" || sug.LineNumber <= 0 || sug.Comment == "" {
 			continue
+		}
+
+		// Clear code suggestion if disabled
+		if !s.enableCodeSuggestions {
+			sug.CodeSuggestion = ""
 		}
 
 		formattedComment := formatInlineComment(ctx, sug)

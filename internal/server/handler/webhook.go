@@ -64,6 +64,37 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 		return
 	}
 
+	// Try to parse as /implement command on issue first
+	if !event.GetIssue().IsPullRequest() {
+		implementEvent, err := core.ImplementEventFromIssueComment(event)
+		if err != nil {
+			h.logger.Debug("ignoring issue comment", "reason", err.Error(), "repo", event.GetRepo().GetFullName())
+			_, _ = fmt.Fprint(w, "Comment ignored")
+			return
+		}
+
+		// Check if agent functionality is enabled
+		if !h.cfg.Agent.Enabled {
+			h.logger.Warn("agent functionality is disabled, ignoring /implement command",
+				"repo", implementEvent.RepoFullName,
+				"issue", implementEvent.IssueNumber)
+			_, _ = fmt.Fprint(w, "Agent functionality is disabled. Enable it in config to use /implement.")
+			return
+		}
+
+		if err := h.dispatcher.Dispatch(ctx, implementEvent); err != nil {
+			h.logger.Error("failed to dispatch implement job", "error", err, "repo", implementEvent.RepoFullName)
+			http.Error(w, "Failed to start implement job", http.StatusInternalServerError)
+			return
+		}
+
+		h.logger.Info("implement job dispatched successfully", "repo", implementEvent.RepoFullName, "issue", implementEvent.IssueNumber)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprint(w, "Implement job accepted")
+		return
+	}
+
+	// Handle /review and /rereview commands on PRs
 	reviewEvent, err := core.EventFromIssueComment(event)
 	if err != nil {
 		h.logger.Debug("ignoring issue comment", "reason", err.Error(), "repo", event.GetRepo().GetFullName())
