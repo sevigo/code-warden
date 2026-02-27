@@ -12,6 +12,17 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+// Input validation limits.
+const (
+	maxQueryLength   = 10000
+	maxResultLimit   = 100
+	minResultLimit   = 1
+	maxDiffLength    = 1000000 // 1MB max diff
+	maxTitleLength   = 500
+	maxSymbolLength  = 200
+	maxDirPathLength = 500
+)
+
 // SearchCodeTool searches for code using semantic similarity.
 type SearchCodeTool struct {
 	vectorStore storage.ScopedVectorStore
@@ -56,10 +67,19 @@ func (t *SearchCodeTool) Execute(ctx context.Context, args map[string]any) (any,
 		t.logger.Warn("search_code: missing query parameter")
 		return nil, fmt.Errorf("query is required")
 	}
+	if len(query) > maxQueryLength {
+		t.logger.Warn("search_code: query too long", "length", len(query))
+		return nil, fmt.Errorf("query exceeds maximum length of %d characters", maxQueryLength)
+	}
 
 	limit := 10
 	if l, ok := args["limit"].(float64); ok {
 		limit = int(l)
+		if limit < minResultLimit {
+			limit = minResultLimit
+		} else if limit > maxResultLimit {
+			limit = maxResultLimit
+		}
 	}
 
 	opts := []vectorstores.Option{}
@@ -159,6 +179,10 @@ func (t *GetArchContextTool) Execute(ctx context.Context, args map[string]any) (
 	if !ok || directory == "" {
 		return nil, fmt.Errorf("directory is required")
 	}
+	if len(directory) > maxDirPathLength {
+		t.logger.Warn("get_arch_context: directory path too long", "length", len(directory))
+		return nil, fmt.Errorf("directory path exceeds maximum length of %d characters", maxDirPathLength)
+	}
 
 	// Search for architectural summary of this directory
 	query := fmt.Sprintf("Summary of directory %s architecture structure purpose", directory)
@@ -234,6 +258,10 @@ func (t *GetSymbolTool) Execute(ctx context.Context, args map[string]any) (any, 
 	name, ok := args["name"].(string)
 	if !ok || name == "" {
 		return nil, fmt.Errorf("name is required")
+	}
+	if len(name) > maxSymbolLength {
+		t.logger.Warn("get_symbol: symbol name too long", "length", len(name))
+		return nil, fmt.Errorf("symbol name exceeds maximum length of %d characters", maxSymbolLength)
 	}
 
 	// Search for symbol definition
@@ -414,11 +442,18 @@ func (t *ReviewCodeTool) Execute(ctx context.Context, args map[string]any) (any,
 	if !ok || diff == "" {
 		return nil, fmt.Errorf("diff is required")
 	}
+	if len(diff) > maxDiffLength {
+		t.logger.Warn("review_code: diff too large", "length", len(diff))
+		return nil, fmt.Errorf("diff exceeds maximum size of %d bytes", maxDiffLength)
+	}
 
 	// Create a mock event for the review
 	title, _ := args["title"].(string)
 	if title == "" {
 		title = "Internal Code Review"
+	}
+	if len(title) > maxTitleLength {
+		title = title[:maxTitleLength]
 	}
 	description, _ := args["description"].(string)
 

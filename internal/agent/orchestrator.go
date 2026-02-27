@@ -28,6 +28,7 @@ type Orchestrator struct {
 	ragService  rag.Service
 	ghClient    github.Client
 	mcpServer   *mcp.Server
+	httpServer  *http.Server
 	logger      *slog.Logger
 	config      Config
 
@@ -115,19 +116,95 @@ func (o *Orchestrator) Start() error {
 		return nil
 	}
 
+	o.httpServer = &http.Server{
+		Addr:              o.config.MCPAddr,
+		Handler:           o.mcpServer,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	go func() {
 		o.logger.Info("starting MCP HTTP server",
 			"addr", o.config.MCPAddr,
 			"provider", o.config.Provider,
 			"model", o.config.Model)
 
-		//nolint:gosec // G114: Internal MCP server with localhost-only binding
-		if err := http.ListenAndServe(o.config.MCPAddr, o.mcpServer); err != nil {
+		if err := o.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			o.logger.Error("MCP HTTP server failed", "error", err, "addr", o.config.MCPAddr)
 		}
 	}()
 
+	// Start session cleanup goroutine
+	go o.cleanupLoop()
+
 	return nil
+}
+
+// Shutdown gracefully stops the MCP server and cleans up resources.
+func (o *Orchestrator) Shutdown(ctx context.Context) error {
+	o.logger.Info("shutting down agent orchestrator")
+
+	// Cancel all running sessions
+	o.sessionsMu.Lock()
+	for _, session := range o.sessions {
+		if session.cancel != nil {
+			session.cancel()
+		}
+	}
+	o.sessionsMu.Unlock()
+
+	// Shutdown HTTP server
+	if o.httpServer != nil {
+		if err := o.httpServer.Shutdown(ctx); err != nil {
+			o.logger.Error("MCP server shutdown error", "error", err)
+			return err
+		}
+	}
+
+	o.logger.Info("agent orchestrator shutdown complete")
+	return nil
+}
+
+// cleanupLoop periodically removes old completed/failed sessions.
+func (o *Orchestrator) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		o.cleanupOldSessions()
+	}
+}
+
+// cleanupOldSessions removes sessions that have been completed for more than 1 hour.
+func (o *Orchestrator) cleanupOldSessions() {
+	o.sessionsMu.Lock()
+	defer o.sessionsMu.Unlock()
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	removed := 0
+
+	for id, session := range o.sessions {
+		status := session.GetStatus()
+		if status == StatusCompleted || status == StatusFailed || status == StatusCancelled {
+			snapshot := session.Snapshot()
+			if snapshot.CompletedAt.Before(cutoff) {
+				delete(o.sessions, id)
+				removed++
+			}
+		}
+	}
+
+	if removed > 0 {
+		o.logger.Info("cleaned up old sessions", "count", removed, "remaining", len(o.sessions))
+	}
+}
+
+// DeleteSession removes a session from the map.
+func (o *Orchestrator) DeleteSession(id string) {
+	o.sessionsMu.Lock()
+	defer o.sessionsMu.Unlock()
+	delete(o.sessions, id)
 }
 
 // MCPServer returns the MCP server instance for external routing if needed.
