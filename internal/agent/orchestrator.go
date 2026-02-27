@@ -1,0 +1,593 @@
+// Package agent provides orchestration for AI coding agents.
+// It manages agent sessions, spawns OpenCode processes, and handles the
+// communication between code-warden and the agent.
+package agent
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"regexp"
+	"sync"
+	"time"
+
+	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/mcp"
+	"github.com/sevigo/code-warden/internal/rag"
+	"github.com/sevigo/code-warden/internal/storage"
+)
+
+// Orchestrator manages agent sessions and their lifecycle.
+type Orchestrator struct {
+	store       storage.Store
+	vectorStore storage.ScopedVectorStore
+	ragService  rag.Service
+	ghClient    github.Client
+	mcpServer   *mcp.Server
+	httpServer  *http.Server
+	logger      *slog.Logger
+	config      Config
+
+	sessions   map[string]*Session
+	sessionsMu sync.RWMutex
+}
+
+// Config holds configuration for the agent orchestrator.
+type Config struct {
+	// Enabled determines if agent functionality is active.
+	Enabled bool `yaml:"enabled"`
+
+	// Provider is the agent provider (currently only "opencode").
+	Provider string `yaml:"provider"`
+
+	// Model is the Ollama model to use.
+	Model string `yaml:"model"`
+
+	// Timeout is the maximum time for an agent session.
+	Timeout time.Duration `yaml:"timeout"`
+
+	// MaxIterations is the maximum review iterations before escalation.
+	MaxIterations int `yaml:"max_iterations"`
+
+	// MCPAddr is the address for the MCP server.
+	MCPAddr string `yaml:"mcp_addr"`
+
+	// WorkingDir is the directory for agent workspaces.
+	WorkingDir string `yaml:"working_dir"`
+}
+
+// DefaultConfig returns default configuration.
+func DefaultConfig() Config {
+	return Config{
+		Enabled:       false,
+		Provider:      "opencode",
+		Model:         "llama3.1:70b",
+		Timeout:       30 * time.Minute,
+		MaxIterations: 3,
+		MCPAddr:       "127.0.0.1:8081", // Bind to localhost only for security
+		WorkingDir:    "/tmp/code-warden-agents",
+	}
+}
+
+// NewOrchestrator creates a new agent orchestrator.
+func NewOrchestrator(
+	store storage.Store,
+	vectorStore storage.ScopedVectorStore,
+	ragService rag.Service,
+	ghClient github.Client,
+	repo *storage.Repository,
+	repoConfig *core.RepoConfig,
+	projectRoot string,
+	config Config,
+	logger *slog.Logger,
+) *Orchestrator {
+	// Create MCP server
+	mcpServer := mcp.NewServer(
+		store,
+		vectorStore,
+		ragService,
+		ghClient,
+		repo,
+		repoConfig,
+		projectRoot,
+		logger,
+	)
+
+	return &Orchestrator{
+		store:       store,
+		vectorStore: vectorStore,
+		ragService:  ragService,
+		ghClient:    ghClient,
+		mcpServer:   mcpServer,
+		logger:      logger,
+		config:      config,
+		sessions:    make(map[string]*Session),
+	}
+}
+
+// Start begins the MCP HTTP server. Must be called before agents can use tools.
+func (o *Orchestrator) Start() error {
+	if !o.config.Enabled {
+		o.logger.Info("agent orchestrator is disabled, not starting MCP server")
+		return nil
+	}
+
+	o.httpServer = &http.Server{
+		Addr:              o.config.MCPAddr,
+		Handler:           o.mcpServer,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	go func() {
+		o.logger.Info("starting MCP HTTP server",
+			"addr", o.config.MCPAddr,
+			"provider", o.config.Provider,
+			"model", o.config.Model)
+
+		if err := o.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			o.logger.Error("MCP HTTP server failed", "error", err, "addr", o.config.MCPAddr)
+		}
+	}()
+
+	// Start session cleanup goroutine
+	go o.cleanupLoop()
+
+	return nil
+}
+
+// Shutdown gracefully stops the MCP server and cleans up resources.
+func (o *Orchestrator) Shutdown(ctx context.Context) error {
+	o.logger.Info("shutting down agent orchestrator")
+
+	// Cancel all running sessions
+	o.sessionsMu.Lock()
+	for _, session := range o.sessions {
+		if session.cancel != nil {
+			session.cancel()
+		}
+	}
+	o.sessionsMu.Unlock()
+
+	// Shutdown HTTP server
+	if o.httpServer != nil {
+		if err := o.httpServer.Shutdown(ctx); err != nil {
+			o.logger.Error("MCP server shutdown error", "error", err)
+			return err
+		}
+	}
+
+	o.logger.Info("agent orchestrator shutdown complete")
+	return nil
+}
+
+// cleanupLoop periodically removes old completed/failed sessions.
+func (o *Orchestrator) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		o.cleanupOldSessions()
+	}
+}
+
+// cleanupOldSessions removes sessions that have been completed for more than 1 hour.
+func (o *Orchestrator) cleanupOldSessions() {
+	o.sessionsMu.Lock()
+	defer o.sessionsMu.Unlock()
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	removed := 0
+
+	for id, session := range o.sessions {
+		status := session.GetStatus()
+		if status == StatusCompleted || status == StatusFailed || status == StatusCancelled {
+			snapshot := session.Snapshot()
+			if snapshot.CompletedAt.Before(cutoff) {
+				delete(o.sessions, id)
+				removed++
+			}
+		}
+	}
+
+	if removed > 0 {
+		o.logger.Info("cleaned up old sessions", "count", removed, "remaining", len(o.sessions))
+	}
+}
+
+// DeleteSession removes a session from the map.
+func (o *Orchestrator) DeleteSession(id string) {
+	o.sessionsMu.Lock()
+	defer o.sessionsMu.Unlock()
+	delete(o.sessions, id)
+}
+
+// MCPServer returns the MCP server instance for external routing if needed.
+func (o *Orchestrator) MCPServer() *mcp.Server {
+	return o.mcpServer
+}
+
+// Issue represents a GitHub issue to be implemented.
+type Issue struct {
+	Number       int
+	Title        string
+	Body         string
+	Instructions string // Additional instructions from /implement comment
+	RepoOwner    string
+	RepoName     string
+}
+
+// Session represents an active agent session.
+type Session struct {
+	mu          sync.Mutex
+	ID          string
+	Issue       Issue
+	status      SessionStatus
+	StartedAt   time.Time
+	CompletedAt time.Time
+	Result      *Result
+	err         string
+	cancel      context.CancelFunc
+}
+
+// GetStatus returns the current session status (thread-safe).
+func (s *Session) GetStatus() SessionStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status
+}
+
+// SetStatus updates the session status (thread-safe).
+func (s *Session) SetStatus(status SessionStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status = status
+}
+
+// GetError returns the session error message (thread-safe).
+func (s *Session) GetError() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
+// SetError sets the session error message (thread-safe).
+func (s *Session) SetError(err string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+// GetResult returns the session result (thread-safe).
+func (s *Session) GetResult() *Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Result
+}
+
+// SetResult sets the session result (thread-safe).
+func (s *Session) SetResult(result *Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Result = result
+}
+
+// Snapshot returns a thread-safe copy of session state for external reading.
+func (s *Session) Snapshot() SessionSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SessionSnapshot{
+		ID:          s.ID,
+		Status:      s.status,
+		StartedAt:   s.StartedAt,
+		CompletedAt: s.CompletedAt,
+		Error:       s.err,
+		Result:      s.Result,
+	}
+}
+
+// SessionSnapshot is an immutable snapshot of session state.
+type SessionSnapshot struct {
+	ID          string
+	Status      SessionStatus
+	StartedAt   time.Time
+	CompletedAt time.Time
+	Error       string
+	Result      *Result
+}
+
+// SessionStatus represents the status of an agent session.
+type SessionStatus string
+
+const (
+	StatusPending   SessionStatus = "pending"
+	StatusRunning   SessionStatus = "running"
+	StatusReviewing SessionStatus = "reviewing"
+	StatusCompleted SessionStatus = "completed"
+	StatusFailed    SessionStatus = "failed"
+	StatusCancelled SessionStatus = "cancelled"
+)
+
+// Result represents the result of an agent session.
+type Result struct {
+	PRNumber      int      `json:"pr_number"`
+	PRURL         string   `json:"pr_url"`
+	Branch        string   `json:"branch"`
+	FilesChanged  []string `json:"files_changed"`
+	ReviewSummary string   `json:"review_summary"`
+	Verdict       string   `json:"verdict"`
+	Iterations    int      `json:"iterations"`
+}
+
+// SpawnAgent creates a new agent session to implement an issue.
+func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, error) {
+	if !o.config.Enabled {
+		return nil, fmt.Errorf("agent functionality is disabled")
+	}
+
+	sessionID := generateSessionID()
+	session := &Session{
+		ID:        sessionID,
+		Issue:     issue,
+		status:    StatusPending,
+		StartedAt: time.Now(),
+	}
+
+	o.sessionsMu.Lock()
+	o.sessions[sessionID] = session
+	o.sessionsMu.Unlock()
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
+	session.cancel = cancel
+
+	// Start agent in background
+	go o.runAgent(ctx, session)
+
+	o.logger.Info("agent session started",
+		"session_id", sessionID,
+		"issue", issue.Number,
+		"repo", issue.RepoOwner+"/"+issue.RepoName)
+
+	return session, nil
+}
+
+// GetSession retrieves a session by ID.
+func (o *Orchestrator) GetSession(id string) (*Session, bool) {
+	o.sessionsMu.RLock()
+	defer o.sessionsMu.RUnlock()
+	session, ok := o.sessions[id]
+	return session, ok
+}
+
+// CancelSession cancels a running session.
+func (o *Orchestrator) CancelSession(id string) error {
+	o.sessionsMu.RLock()
+	session, ok := o.sessions[id]
+	o.sessionsMu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	if session.cancel != nil {
+		session.cancel()
+	}
+
+	session.SetStatus(StatusCancelled)
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+
+	o.logger.Info("agent session cancelled", "session_id", id)
+	return nil
+}
+
+// runAgent executes the agent workflow.
+func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
+	// Ensure context is cancelled when done (prevents resource leak)
+	defer func() {
+		if session.cancel != nil {
+			session.cancel()
+		}
+	}()
+
+	o.logger.Info("runAgent: starting agent workflow",
+		"session_id", session.ID,
+		"issue_number", session.Issue.Number,
+		"issue_title", session.Issue.Title)
+
+	session.SetStatus(StatusRunning)
+
+	// Build the system prompt
+	o.logger.Debug("runAgent: building system prompt", "session_id", session.ID)
+	systemPrompt := o.buildSystemPrompt(session.Issue)
+	o.logger.Debug("runAgent: system prompt built",
+		"session_id", session.ID,
+		"prompt_length", len(systemPrompt))
+
+	// Create branch name (sanitize for git safety)
+	branch := sanitizeBranch(fmt.Sprintf("agent/%s", session.ID))
+	o.logger.Info("runAgent: created branch name",
+		"session_id", session.ID,
+		"branch", branch)
+
+	// Build OpenCode command
+	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
+
+	o.logger.Info("runAgent: starting OpenCode process",
+		"session_id", session.ID,
+		"command", cmd.String(),
+		"working_dir", cmd.Dir,
+		"timeout", o.config.Timeout)
+
+	// Run the agent
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Agent failed: %v\nOutput: %s", err, string(output)))
+		session.mu.Lock()
+		session.CompletedAt = time.Now()
+		session.mu.Unlock()
+		o.logger.Error("runAgent: agent process failed",
+			"session_id", session.ID,
+			"error", err,
+			"output_length", len(output),
+			"output_preview", truncateString(string(output), 500))
+		return
+	}
+
+	o.logger.Info("runAgent: agent process completed successfully",
+		"session_id", session.ID,
+		"output_length", len(output))
+
+	// Parse result
+	result := o.parseAgentOutput(string(output))
+
+	session.SetResult(result)
+	session.SetStatus(StatusCompleted)
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+
+	o.logger.Info("runAgent: agent session completed successfully",
+		"session_id", session.ID,
+		"pr_number", result.PRNumber,
+		"pr_url", result.PRURL,
+		"branch", result.Branch,
+		"files_changed", len(result.FilesChanged),
+		"iterations", result.Iterations,
+		"verdict", result.Verdict,
+		"duration", session.CompletedAt.Sub(session.StartedAt))
+}
+
+// buildSystemPrompt creates the system prompt for the agent.
+func (o *Orchestrator) buildSystemPrompt(issue Issue) string {
+	return fmt.Sprintf(`You are an autonomous coding agent working on the code-warden project.
+
+## Your Tools
+- MCP server available at %s with these tools:
+  - search_code(query, limit, chunk_type) - Find relevant code in the codebase
+  - get_arch_context(directory) - Get architectural summary for a directory
+  - get_symbol(name) - Get type/function definition
+  - get_structure() - Get project structure
+  - review_code(diff) - Request internal code review
+
+## Your Task
+Implement the issue described below. Follow these steps:
+
+1. **Understand** - Read the issue carefully
+2. **Explore** - Use MCP tools to understand the codebase
+3. **Plan** - Identify files to modify and changes needed
+4. **Implement** - Write the code
+5. **Review** - Call review_code on your changes
+6. **Iterate** - If REQUEST_CHANGES, fix issues and review again
+7. **Submit** - Create a pull request when APPROVED
+
+## Issue #%d: %s
+
+%s
+
+## Additional Instructions
+%s
+
+## MCP Server
+Connect to the MCP server at %s to access project context.
+
+## Working Directory
+Work in the current directory. Create a branch named 'agent/%s' for your changes.
+`,
+		o.config.MCPAddr,
+		issue.Number,
+		issue.Title,
+		issue.Body,
+		issue.Instructions,
+		o.config.MCPAddr,
+		sessionIDFromIssue(issue),
+	)
+}
+
+// buildOpenCodeCommand creates the command to run OpenCode.
+func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, _ Issue, systemPrompt, branch string) *exec.Cmd {
+	// OpenCode command structure (headless mode with Ollama)
+	// This is a placeholder - adjust based on actual OpenCode CLI
+	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for agent execution
+	cmd := exec.CommandContext(ctx, "opencode",
+		"--headless",
+		"--model", o.config.Model,
+		"--mcp", o.config.MCPAddr,
+		"--branch", branch,
+		"--prompt", systemPrompt,
+	)
+
+	// Set working directory
+	cmd.Dir = o.config.WorkingDir
+
+	// Set environment variables
+	cmd.Env = append(os.Environ(),
+		"OPENCODE_MCP_SERVER="+o.config.MCPAddr,
+		"OPENCODE_MAX_ITERATIONS="+fmt.Sprintf("%d", o.config.MaxIterations),
+	)
+
+	return cmd
+}
+
+// parseAgentOutput extracts the result from agent output.
+// TODO: Implement actual parsing when OpenCode output format is defined.
+func (o *Orchestrator) parseAgentOutput(_ string) *Result {
+	// TODO: Parse structured output from OpenCode
+	// This will depend on the actual OpenCode output format
+	o.logger.Debug("parseAgentOutput: parsing agent output (placeholder)")
+	return &Result{
+		PRNumber:     0,
+		Branch:       "",
+		FilesChanged: []string{},
+		Verdict:      "UNKNOWN",
+		Iterations:   1,
+	}
+}
+
+// generateSessionID creates a unique session ID.
+func generateSessionID() string {
+	return fmt.Sprintf("agent-%d", time.Now().UnixNano())
+}
+
+func sessionIDFromIssue(issue Issue) string {
+	return fmt.Sprintf("issue-%d-%d", issue.Number, time.Now().Unix())
+}
+
+// truncateString truncates a string to maxLen characters.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// sanitizeBranch sanitizes a string to be a valid git branch name.
+// Git branch names cannot contain spaces, ~, ^, :, *, ?, [, \\, or start with -.
+func sanitizeBranch(name string) string {
+	// Replace invalid characters with hyphens
+	re := regexp.MustCompile(`[\s~^:?*\[\\]`)
+	sanitized := re.ReplaceAllString(name, "-")
+
+	// Remove leading/trailing hyphens and dots
+	for len(sanitized) > 0 && (sanitized[0] == '-' || sanitized[0] == '.') {
+		sanitized = sanitized[1:]
+	}
+	for len(sanitized) > 0 && (sanitized[len(sanitized)-1] == '-' || sanitized[len(sanitized)-1] == '.') {
+		sanitized = sanitized[:len(sanitized)-1]
+	}
+
+	// Limit length to 200 characters
+	if len(sanitized) > 200 {
+		sanitized = sanitized[:200]
+	}
+
+	return sanitized
+}
