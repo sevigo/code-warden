@@ -21,16 +21,16 @@ import (
 
 // Orchestrator manages agent sessions and their lifecycle.
 type Orchestrator struct {
-	store        storage.Store
-	vectorStore  storage.ScopedVectorStore
-	ragService   rag.Service
-	ghClient     github.Client
-	mcpServer    *mcp.Server
-	logger       *slog.Logger
-	config       Config
+	store       storage.Store
+	vectorStore storage.ScopedVectorStore
+	ragService  rag.Service
+	ghClient    github.Client
+	mcpServer   *mcp.Server
+	logger      *slog.Logger
+	config      Config
 
-	sessions     map[string]*Session
-	sessionsMu   sync.RWMutex
+	sessions   map[string]*Session
+	sessionsMu sync.RWMutex
 }
 
 // Config holds configuration for the agent orchestrator.
@@ -142,13 +142,13 @@ const (
 
 // Result represents the result of an agent session.
 type Result struct {
-	PRNumber      int          `json:"pr_number"`
-	PRURL         string       `json:"pr_url"`
-	Branch        string       `json:"branch"`
-	FilesChanged  []string     `json:"files_changed"`
-	ReviewSummary string       `json:"review_summary"`
-	Verdict       string       `json:"verdict"`
-	Iterations    int          `json:"iterations"`
+	PRNumber      int      `json:"pr_number"`
+	PRURL         string   `json:"pr_url"`
+	Branch        string   `json:"branch"`
+	FilesChanged  []string `json:"files_changed"`
+	ReviewSummary string   `json:"review_summary"`
+	Verdict       string   `json:"verdict"`
+	Iterations    int      `json:"iterations"`
 }
 
 // SpawnAgent creates a new agent session to implement an issue.
@@ -215,20 +215,34 @@ func (o *Orchestrator) CancelSession(id string) error {
 
 // runAgent executes the agent workflow.
 func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
+	o.logger.Info("runAgent: starting agent workflow",
+		"session_id", session.ID,
+		"issue_number", session.Issue.Number,
+		"issue_title", session.Issue.Title)
+
 	session.Status = StatusRunning
 
 	// Build the system prompt
+	o.logger.Debug("runAgent: building system prompt", "session_id", session.ID)
 	systemPrompt := o.buildSystemPrompt(session.Issue)
+	o.logger.Debug("runAgent: system prompt built",
+		"session_id", session.ID,
+		"prompt_length", len(systemPrompt))
 
 	// Create branch name
 	branch := fmt.Sprintf("agent/%s", session.ID)
+	o.logger.Info("runAgent: created branch name",
+		"session_id", session.ID,
+		"branch", branch)
 
 	// Build OpenCode command
 	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
 
-	o.logger.Debug("starting agent process",
+	o.logger.Info("runAgent: starting OpenCode process",
 		"session_id", session.ID,
-		"command", cmd.String())
+		"command", cmd.String(),
+		"working_dir", cmd.Dir,
+		"timeout", o.config.Timeout)
 
 	// Run the agent
 	output, err := cmd.CombinedOutput()
@@ -236,30 +250,34 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		session.Status = StatusFailed
 		session.Error = fmt.Sprintf("Agent failed: %v\nOutput: %s", err, string(output))
 		session.CompletedAt = time.Now()
-		o.logger.Error("agent failed",
+		o.logger.Error("runAgent: agent process failed",
 			"session_id", session.ID,
 			"error", err,
-			"output", string(output))
+			"output_length", len(output),
+			"output_preview", truncateString(string(output), 500))
 		return
 	}
 
+	o.logger.Info("runAgent: agent process completed successfully",
+		"session_id", session.ID,
+		"output_length", len(output))
+
 	// Parse result
-	result, err := o.parseAgentOutput(string(output))
-	if err != nil {
-		session.Status = StatusFailed
-		session.Error = fmt.Sprintf("Failed to parse agent output: %v", err)
-		session.CompletedAt = time.Now()
-		return
-	}
+	result := o.parseAgentOutput(string(output))
 
 	session.Result = result
 	session.Status = StatusCompleted
 	session.CompletedAt = time.Now()
 
-	o.logger.Info("agent session completed",
+	o.logger.Info("runAgent: agent session completed successfully",
 		"session_id", session.ID,
 		"pr_number", result.PRNumber,
-		"iterations", result.Iterations)
+		"pr_url", result.PRURL,
+		"branch", result.Branch,
+		"files_changed", len(result.FilesChanged),
+		"iterations", result.Iterations,
+		"verdict", result.Verdict,
+		"duration", session.CompletedAt.Sub(session.StartedAt))
 }
 
 // buildSystemPrompt creates the system prompt for the agent.
@@ -309,9 +327,10 @@ Work in the current directory. Create a branch named 'agent/%s' for your changes
 }
 
 // buildOpenCodeCommand creates the command to run OpenCode.
-func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch string) *exec.Cmd {
+func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, _ Issue, systemPrompt, branch string) *exec.Cmd {
 	// OpenCode command structure (headless mode with Ollama)
 	// This is a placeholder - adjust based on actual OpenCode CLI
+	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for agent execution
 	cmd := exec.CommandContext(ctx, "opencode",
 		"--headless",
 		"--model", o.config.Model,
@@ -333,16 +352,18 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 }
 
 // parseAgentOutput extracts the result from agent output.
-func (o *Orchestrator) parseAgentOutput(output string) (*Result, error) {
+// TODO: Implement actual parsing when OpenCode output format is defined.
+func (o *Orchestrator) parseAgentOutput(_ string) *Result {
 	// TODO: Parse structured output from OpenCode
 	// This will depend on the actual OpenCode output format
+	o.logger.Debug("parseAgentOutput: parsing agent output (placeholder)")
 	return &Result{
 		PRNumber:     0,
 		Branch:       "",
 		FilesChanged: []string{},
 		Verdict:      "UNKNOWN",
 		Iterations:   1,
-	}, nil
+	}
 }
 
 // generateSessionID creates a unique session ID.
@@ -352,4 +373,12 @@ func generateSessionID() string {
 
 func sessionIDFromIssue(issue Issue) string {
 	return fmt.Sprintf("issue-%d-%d", issue.Number, time.Now().Unix())
+}
+
+// truncateString truncates a string to maxLen characters.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

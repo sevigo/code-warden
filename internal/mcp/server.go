@@ -17,15 +17,15 @@ import (
 
 // Server implements an MCP server for code-warden.
 type Server struct {
-	store        storage.Store
-	vectorStore  storage.ScopedVectorStore
-	ragService   rag.Service
-	ghClient     github.Client
-	repo         *storage.Repository
-	repoConfig   *core.RepoConfig
-	projectRoot  string
-	logger       *slog.Logger
-	tools        map[string]Tool
+	store       storage.Store
+	vectorStore storage.ScopedVectorStore
+	ragService  rag.Service
+	ghClient    github.Client
+	repo        *storage.Repository
+	repoConfig  *core.RepoConfig
+	projectRoot string
+	logger      *slog.Logger
+	tools       map[string]Tool
 }
 
 // Tool represents an MCP tool that can be called by an agent.
@@ -133,24 +133,24 @@ type ToolInfo struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-// MCPRequest represents a JSON-RPC 2.0 request.
-type MCPRequest struct {
+// Request represents a JSON-RPC 2.0 request.
+type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      any             `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-// MCPResponse represents a JSON-RPC 2.0 response.
-type MCPResponse struct {
+// Response represents a JSON-RPC 2.0 response.
+type Response struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID      any    `json:"id,omitempty"`
 	Result  any    `json:"result,omitempty"`
-	Error   *MCPError `json:"error,omitempty"`
+	Error   *Error `json:"error,omitempty"`
 }
 
-// MCPError represents a JSON-RPC 2.0 error.
-type MCPError struct {
+// Error represents a JSON-RPC 2.0 error.
+type Error struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
@@ -162,7 +162,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req MCPRequest
+	var req Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, nil, -32700, "parse error")
 		return
@@ -215,27 +215,31 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeResult(w http.ResponseWriter, id any, result any) {
-	resp := MCPResponse{
+	resp := Response{
 		JSONRPC: "2.0",
 		ID:      id,
 		Result:  result,
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.logger.Error("failed to encode response", "error", err)
+	}
 }
 
 func (s *Server) writeError(w http.ResponseWriter, id any, code int, message string) {
-	resp := MCPResponse{
+	resp := Response{
 		JSONRPC: "2.0",
 		ID:      id,
-		Error: &MCPError{
+		Error: &Error{
 			Code:    code,
 			Message: message,
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.logger.Error("failed to encode error response", "error", err)
+	}
 }
 
 func mustMarshal(v any) string {

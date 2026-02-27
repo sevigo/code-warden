@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/sevigo/goframe/vectorstores"
+
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
-	"github.com/sevigo/goframe/vectorstores"
 )
 
 // SearchCodeTool searches for code using semantic similarity.
@@ -52,6 +53,7 @@ func (t *SearchCodeTool) InputSchema() map[string]any {
 func (t *SearchCodeTool) Execute(ctx context.Context, args map[string]any) (any, error) {
 	query, ok := args["query"].(string)
 	if !ok || query == "" {
+		t.logger.Warn("search_code: missing query parameter")
 		return nil, fmt.Errorf("query is required")
 	}
 
@@ -61,15 +63,24 @@ func (t *SearchCodeTool) Execute(ctx context.Context, args map[string]any) (any,
 	}
 
 	opts := []vectorstores.Option{}
-	if chunkType, ok := args["chunk_type"].(string); ok && chunkType != "" {
+	chunkType := ""
+	if ct, ok := args["chunk_type"].(string); ok && ct != "" {
+		chunkType = ct
 		opts = append(opts, vectorstores.WithFilters(map[string]any{
-			"chunk_type": chunkType,
+			"chunk_type": ct,
 		}))
 	}
 
+	t.logger.Info("search_code: executing search",
+		"query", query,
+		"limit", limit,
+		"chunk_type", chunkType)
+
 	docsWithScores, err := t.vectorStore.SimilaritySearchWithScores(ctx, query, limit, opts...)
 	if err != nil {
-		t.logger.Error("search failed", "query", query, "error", err)
+		t.logger.Error("search_code: search failed",
+			"query", query,
+			"error", err)
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
 
@@ -82,6 +93,16 @@ func (t *SearchCodeTool) Execute(ctx context.Context, args map[string]any) (any,
 		}
 		results = append(results, result)
 	}
+
+	t.logger.Info("search_code: search completed",
+		"query", query,
+		"results_count", len(results),
+		"top_score", func() float64 {
+			if len(results) > 0 {
+				return results[0].Score
+			}
+			return 0
+		}())
 
 	return SearchCodeResponse{
 		Query:   query,
@@ -295,7 +316,7 @@ func (t *GetStructureTool) InputSchema() map[string]any {
 	}
 }
 
-func (t *GetStructureTool) Execute(ctx context.Context, args map[string]any) (any, error) {
+func (t *GetStructureTool) Execute(ctx context.Context, _ map[string]any) (any, error) {
 	// Get root-level architectural summary
 	query := "project structure architecture overview main directories"
 	docs, err := t.vectorStore.SimilaritySearch(ctx, query, 10,
@@ -405,9 +426,9 @@ func (t *ReviewCodeTool) Execute(ctx context.Context, args map[string]any) (any,
 		PRTitle: title,
 		PRBody:  description,
 		// These fields are needed but can be mock values for internal review
-		RepoFullName:  t.repo.FullName,
-		HeadSHA:       "internal-review",
-		PRNumber:      0,
+		RepoFullName:   t.repo.FullName,
+		HeadSHA:        "internal-review",
+		PRNumber:       0,
 		InstallationID: 0,
 	}
 
