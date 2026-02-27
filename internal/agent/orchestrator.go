@@ -31,6 +31,7 @@ type Orchestrator struct {
 	httpServer  *http.Server
 	logger      *slog.Logger
 	config      Config
+	projectRoot string // Path to the repository being worked on
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
@@ -105,6 +106,7 @@ func NewOrchestrator(
 		mcpServer:   mcpServer,
 		logger:      logger,
 		config:      config,
+		projectRoot: projectRoot,
 		sessions:    make(map[string]*Session),
 	}
 }
@@ -513,25 +515,27 @@ Work in the current directory. Create a branch named 'agent/%s' for your changes
 }
 
 // buildOpenCodeCommand creates the command to run OpenCode.
-func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, _ Issue, systemPrompt, branch string) *exec.Cmd {
-	// OpenCode command structure (headless mode with Ollama)
-	// This is a placeholder - adjust based on actual OpenCode CLI
+func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch string) *exec.Cmd {
+	// OpenCode CLI usage: opencode run [message..]
+	// The prompt is passed as positional arguments after "run"
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for agent execution
 	cmd := exec.CommandContext(ctx, "opencode",
-		"--headless",
+		"run",
 		"--model", o.config.Model,
-		"--mcp", o.config.MCPAddr,
-		"--branch", branch,
-		"--prompt", systemPrompt,
+		systemPrompt,
 	)
 
-	// Set working directory
-	cmd.Dir = o.config.WorkingDir
+	// Set working directory to the repository path
+	cmd.Dir = o.projectRoot
 
-	// Set environment variables
+	// Set environment variables for MCP and iteration config
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_MCP_SERVER="+o.config.MCPAddr,
 		"OPENCODE_MAX_ITERATIONS="+fmt.Sprintf("%d", o.config.MaxIterations),
+		"OPENCODE_BRANCH="+branch,
+		"OPENCODE_REPO_OWNER="+issue.RepoOwner,
+		"OPENCODE_REPO_NAME="+issue.RepoName,
+		"OPENCODE_ISSUE_NUMBER="+fmt.Sprintf("%d", issue.Number),
 	)
 
 	return cmd
