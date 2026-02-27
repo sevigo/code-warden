@@ -9,13 +9,6 @@ package wire
 import (
 	"context"
 	"fmt"
-	"io"
-	"log/slog"
-	"net"
-	"net/http"
-	"os"
-	"time"
-
 	"github.com/jmoiron/sqlx"
 	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/config"
@@ -29,6 +22,7 @@ import (
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/embeddings"
+	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -36,6 +30,10 @@ import (
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
 	"github.com/sevigo/goframe/vectorstores/qdrant"
+	"io"
+	"log/slog"
+	"os"
+	"time"
 )
 
 // Injectors from wire.go:
@@ -93,7 +91,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	job := jobs.NewReviewJob(configConfig, service, store, repoManager, logger)
+	job := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
 	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)
 	appApp := app.NewApp(configConfig, dbDB, store, vectorStore, repoManager, jobDispatcher, service, serverServer, client, logger)
@@ -127,14 +125,16 @@ func provideVectorStore(cfg *config.Config, embedder embeddings.Embedder, logger
 			MaxConcurrency:          8,
 			EmbeddingBatchSize:      64,
 			EmbeddingMaxConcurrency: 8,
-			RetryAttempts:           2,
-			RetryDelay:              1 * time.Second,
+			RetryAttempts:           qdrant.DefaultRetryAttempts,
+			RetryDelay:              qdrant.DefaultRetryDelay,
+			RetryJitter:             qdrant.DefaultRetryJitter,
+			MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
 		}
 	}
 
 	return storage.NewQdrantVectorStore(
 		cfg,
-		logger, storage.WithBatchConfig(batchConfig), storage.WithInitialEmbedder(cfg.AI.EmbedderModel, embedder),
+		logger, storage.WithBatchConfig(batchConfig), storage.WithInitialEmbedder(cfg.AI.EmbedderModel, embedder), storage.WithQdrantOptions(qdrant.WithTimeout(60*time.Second), qdrant.WithKeepaliveTime(15*time.Second), qdrant.WithKeepaliveTimeout(5*time.Second), qdrant.WithPoolSize(20)),
 	)
 }
 
@@ -146,7 +146,19 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		}
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
-		return ollama.New(ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithHTTPClient(newOllamaHTTPClient()), ollama.WithModel(cfg.AI.GeneratorModel), ollama.WithLogger(logger))
+		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithHTTPClient(httpclient.DefaultClient), ollama.WithModel(cfg.AI.GeneratorModel), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
+
+		if cfg.AI.EnableThinking {
+			opts = append(opts, ollama.WithThinking(true))
+			if cfg.AI.ThinkingEffort != "" {
+				opts = append(opts, ollama.WithReasoningEffort(cfg.AI.ThinkingEffort))
+			}
+		}
+
+		if cfg.AI.ModelKeepAlive != "" {
+			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
+		}
+		return ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.AI.LLMProvider)
 	}
@@ -160,7 +172,12 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	case "gemini":
 		embedderLLM, err = gemini.New(ctx, gemini.WithEmbeddingModel(cfg.AI.EmbedderModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
-		embedderLLM, err = ollama.New(ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithModel(cfg.AI.EmbedderModel), ollama.WithHTTPClient(newOllamaHTTPClient()), ollama.WithLogger(logger))
+		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithModel(cfg.AI.EmbedderModel), ollama.WithHTTPClient(httpclient.DefaultClient), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
+
+		if cfg.AI.ModelKeepAlive != "" {
+			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
+		}
+		embedderLLM, err = ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.AI.EmbedderProvider)
 	}
@@ -186,22 +203,6 @@ func provideTextSplitter(registry parsers.ParserRegistry, model llms.Model, logg
 		return nil, err
 	}
 	return splitter, nil
-}
-
-func newOllamaHTTPClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:        100,
-			MaxConnsPerHost:     10,
-			IdleConnTimeout:     90 * time.Second,
-			TLSHandshakeTimeout: 10 * time.Second,
-		},
-		Timeout: 15 * time.Minute,
-	}
 }
 
 func provideLoggerConfig(cfg *config.Config) logger.Config {
@@ -243,12 +244,18 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logg
 	logger2.
 		Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
 
-	rerankLLM, err := ollama.New(ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithModel(cfg.AI.RerankerModel), ollama.WithHTTPClient(newOllamaHTTPClient()), ollama.WithLogger(logger2))
+	opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithModel(cfg.AI.RerankerModel), ollama.WithHTTPClient(httpclient.DefaultClient), ollama.WithLogger(logger2), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
+
+	if cfg.AI.ModelKeepAlive != "" {
+		opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
+	}
+
+	rerankLLM, err := ollama.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reranker LLM: %w", err)
 	}
 
-	const RerankPromptKey = "rerank_precision" // I will define this in llm package or use string here for now to avoid circular deps if any (unlikely as wire imports llm).
+	const RerankPromptKey = "rerank_precision"
 
 	prompt, err := promptMgr.Render("rerank_precision", nil)
 	if err != nil {

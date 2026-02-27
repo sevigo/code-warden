@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/sevigo/code-warden/internal/agent"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
@@ -25,6 +27,7 @@ type ReviewJob struct {
 	cfg         *config.Config
 	ragService  rag.Service
 	store       storage.Store
+	vectorStore storage.VectorStore
 	repoMgr     repomanager.RepoManager
 	logger      *slog.Logger
 	repoMutexes sync.Map
@@ -35,6 +38,7 @@ func NewReviewJob(
 	cfg *config.Config,
 	rag rag.Service,
 	store storage.Store,
+	vectorStore storage.VectorStore,
 	repoMgr repomanager.RepoManager,
 	logger *slog.Logger,
 ) core.Job {
@@ -42,6 +46,7 @@ func NewReviewJob(
 		cfg:         cfg,
 		ragService:  rag,
 		store:       store,
+		vectorStore: vectorStore,
 		repoMgr:     repoMgr,
 		logger:      logger,
 		repoMutexes: sync.Map{},
@@ -92,8 +97,7 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) er
 }
 
 // runImplementIssue handles the `/implement` command on issues.
-// TODO: Full implementation with agent orchestration.
-func (j *ReviewJob) runImplementIssue(_ context.Context, event *core.GitHubEvent) error {
+func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🤖 Starting Issue Implementation",
 		"repo", event.RepoFullName,
 		"issue", event.IssueNumber,
@@ -105,14 +109,166 @@ func (j *ReviewJob) runImplementIssue(_ context.Context, event *core.GitHubEvent
 		return fmt.Errorf("agent functionality is disabled; enable it in config to use /implement")
 	}
 
-	// TODO: Implement full agent orchestration:
 	// 1. Create GitHub client for the installation
-	// 2. Create orchestrator with proper dependencies
-	// 3. Spawn agent to implement the issue
-	// 4. Monitor session and report progress
-	// 5. Post result as PR comment
+	ghClient, _, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub client: %w", err)
+	}
 
-	return fmt.Errorf("issue implementation not yet fully implemented")
+	// 2. Sync the repository to get the latest code
+	updateResult, err := j.repoMgr.SyncRepo(ctx, event, "")
+	if err != nil {
+		return fmt.Errorf("failed to sync repo: %w", err)
+	}
+
+	// 3. Get the repository record
+	repo, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if err != nil {
+		return fmt.Errorf("failed to get repo record: %w", err)
+	}
+
+	// 4. Load repository config
+	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
+
+	// 5. Get scoped vector store for this repo
+	scopedStore := j.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+
+	// 6. Parse agent timeout
+	timeout, err := j.cfg.Agent.GetTimeout()
+	if err != nil {
+		return fmt.Errorf("invalid agent timeout: %w", err)
+	}
+
+	// 7. Create orchestrator
+	orchestrator := agent.NewOrchestrator(
+		j.store,
+		scopedStore,
+		j.ragService,
+		ghClient,
+		repo,
+		repoConfig,
+		updateResult.RepoPath,
+		agent.Config{
+			Enabled:       j.cfg.Agent.Enabled,
+			Provider:      j.cfg.Agent.Provider,
+			Model:         j.cfg.Agent.Model,
+			Timeout:       timeout,
+			MaxIterations: j.cfg.Agent.MaxIterations,
+			MCPAddr:       j.cfg.Agent.MCPAddr,
+			WorkingDir:    j.cfg.Agent.WorkingDir,
+		},
+		j.logger,
+	)
+
+	// 8. Start the MCP server
+	if err := orchestrator.Start(); err != nil {
+		return fmt.Errorf("failed to start orchestrator: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := orchestrator.Shutdown(shutdownCtx); err != nil {
+			j.logger.Error("failed to shutdown orchestrator", "error", err)
+		}
+	}()
+
+	// 9. Spawn agent to implement the issue
+	issue := agent.Issue{
+		Number:       event.IssueNumber,
+		Title:        event.IssueTitle,
+		Body:         event.IssueBody,
+		Instructions: event.UserInstructions,
+		RepoOwner:    event.RepoOwner,
+		RepoName:     event.RepoName,
+	}
+
+	session, err := orchestrator.SpawnAgent(ctx, issue)
+	if err != nil {
+		return fmt.Errorf("failed to spawn agent: %w", err)
+	}
+
+	// 10. Monitor session and wait for completion
+	result, err := j.waitForAgentSession(ctx, orchestrator, session, timeout)
+	if err != nil {
+		return err
+	}
+
+	// 11. Post result as comment on the issue
+	comment := j.formatImplementResult(result)
+	return ghClient.CreateComment(ctx, event.RepoOwner, event.RepoName, event.IssueNumber, comment)
+}
+
+// waitForAgentSession monitors the agent session until completion or timeout.
+func (j *ReviewJob) waitForAgentSession(ctx context.Context, orchestrator *agent.Orchestrator, session *agent.Session, timeout time.Duration) (*agent.Result, error) {
+	j.logger.Info("agent session started, waiting for completion",
+		"session_id", session.ID,
+		"timeout", timeout)
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			if err := orchestrator.CancelSession(session.ID); err != nil {
+				j.logger.Error("failed to cancel session on timeout", "error", err)
+			}
+			return nil, fmt.Errorf("agent session timed out after %v", timeout)
+
+		case <-ticker.C:
+			snapshot := session.Snapshot()
+			j.logger.Info("agent session status",
+				"session_id", session.ID,
+				"status", snapshot.Status,
+				"duration", time.Since(snapshot.StartedAt).Round(time.Second))
+
+			switch snapshot.Status {
+			case agent.StatusCompleted:
+				if snapshot.Result == nil {
+					return nil, fmt.Errorf("agent completed with no result")
+				}
+				j.logger.Info("agent session completed",
+					"session_id", session.ID,
+					"pr_number", snapshot.Result.PRNumber,
+					"pr_url", snapshot.Result.PRURL,
+					"verdict", snapshot.Result.Verdict,
+					"iterations", snapshot.Result.Iterations)
+				return snapshot.Result, nil
+
+			case agent.StatusFailed:
+				return nil, fmt.Errorf("agent session failed: %s", snapshot.Error)
+
+			case agent.StatusCancelled:
+				return nil, fmt.Errorf("agent session was cancelled: %s", snapshot.Error)
+			}
+		}
+	}
+}
+
+// formatImplementResult creates a comment body from the agent result.
+func (j *ReviewJob) formatImplementResult(result *agent.Result) string {
+	var sb strings.Builder
+
+	if result.PRNumber > 0 {
+		sb.WriteString("## ✅ Implementation Complete\n\n")
+		sb.WriteString(fmt.Sprintf("I've created pull request [#%d](%s) with the implementation.\n\n", result.PRNumber, result.PRURL))
+		sb.WriteString(fmt.Sprintf("**Branch:** `%s`\n", result.Branch))
+		sb.WriteString(fmt.Sprintf("**Files Changed:** %d\n", len(result.FilesChanged)))
+		sb.WriteString(fmt.Sprintf("**Iterations:** %d\n", result.Iterations))
+		sb.WriteString(fmt.Sprintf("**Verdict:** %s\n", result.Verdict))
+
+		if result.ReviewSummary != "" {
+			sb.WriteString(fmt.Sprintf("\n**Review Summary:**\n%s\n", result.ReviewSummary))
+		}
+	} else {
+		sb.WriteString("## ❌ Implementation Failed\n\n")
+		sb.WriteString("The agent was unable to complete the implementation. Please check the logs for details.\n")
+	}
+
+	return sb.String()
 }
 
 func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.GitHubEvent) (err error) {
