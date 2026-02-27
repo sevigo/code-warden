@@ -41,7 +41,7 @@ Combine independent reviews of the same Pull Request into a single, high-quality
 ### 1. ABSOLUTE REQUIREMENT: TAG CLOSURE DISCIPLINE
 You MUST follow this sequence EXACTLY for every suggestion:
 1. Write the opening `<suggestion>` tag.
-2. Fill in metadata tags: `<file>`, `<line>`, etc.
+2. Fill in metadata tags: `<file>`, optionally `<start_line>` (for multi-line suggestions), `<line>`, etc.
 3. Open `<comment>`.
 4. Write your detailed observation.
 5. **Type `</comment>` IMMEDIATELY after the last word of your comment.**
@@ -49,6 +49,8 @@ You MUST follow this sequence EXACTLY for every suggestion:
 7. Write only raw code (no markdown).
 8. **Type `</code_suggestion>` IMMEDIATELY after the last character of code.**
 9. Close with `</suggestion>`.
+
+**Multi-line Suggestions:** Include `<start_line>` when replacing multiple lines. Omit for single-line suggestions.
 
 ### 2. TAG STACK MENTAL MODEL
 When you open a tag, imagine pushing it onto a stack:
@@ -76,6 +78,7 @@ If your stack shows `[comment]` and you're about to write code, you **MUST** pop
   <suggestions>
     <suggestion>
       <file>path/to/file.go</file>
+      <start_line>40</start_line>
       <line>42</line>
       ...
       <comment>
@@ -83,6 +86,7 @@ If your stack shows `[comment]` and you're about to write code, you **MUST** pop
       </comment>  <!-- CLOSE COMMENT HERE, BEFORE NEXT TAG -->
       <code_suggestion>
 // RAW CODE ONLY - NO BACKTICKS
+// This replaces lines 40-42
 if (x == nil) {
     return err
 }
