@@ -14,9 +14,8 @@ import (
 	reflect "reflect"
 
 	github "github.com/google/go-github/v73/github"
-	gomock "go.uber.org/mock/gomock"
-
 	github0 "github.com/sevigo/code-warden/internal/github"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockClient is a mock of Client interface.
@@ -72,6 +71,21 @@ func (mr *MockClientMockRecorder) CreateComment(ctx, owner, repo, number, body a
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateComment", reflect.TypeOf((*MockClient)(nil).CreateComment), ctx, owner, repo, number, body)
 }
 
+// CreatePullRequest mocks base method.
+func (m *MockClient) CreatePullRequest(ctx context.Context, owner, repo string, opts github0.PullRequestOptions) (*github.PullRequest, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreatePullRequest", ctx, owner, repo, opts)
+	ret0, _ := ret[0].(*github.PullRequest)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CreatePullRequest indicates an expected call of CreatePullRequest.
+func (mr *MockClientMockRecorder) CreatePullRequest(ctx, owner, repo, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreatePullRequest", reflect.TypeOf((*MockClient)(nil).CreatePullRequest), ctx, owner, repo, opts)
+}
+
 // CreateReview mocks base method.
 func (m *MockClient) CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []github0.DraftReviewComment) error {
 	m.ctrl.T.Helper()
@@ -99,6 +113,21 @@ func (m *MockClient) GetChangedFiles(ctx context.Context, owner, repo string, nu
 func (mr *MockClientMockRecorder) GetChangedFiles(ctx, owner, repo, number any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetChangedFiles", reflect.TypeOf((*MockClient)(nil).GetChangedFiles), ctx, owner, repo, number)
+}
+
+// GetIssue mocks base method.
+func (m *MockClient) GetIssue(ctx context.Context, owner, repo string, number int) (*github0.Issue, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetIssue", ctx, owner, repo, number)
+	ret0, _ := ret[0].(*github0.Issue)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetIssue indicates an expected call of GetIssue.
+func (mr *MockClientMockRecorder) GetIssue(ctx, owner, repo, number any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetIssue", reflect.TypeOf((*MockClient)(nil).GetIssue), ctx, owner, repo, number)
 }
 
 // GetPullRequest mocks base method.
@@ -129,6 +158,21 @@ func (m *MockClient) GetPullRequestDiff(ctx context.Context, owner, repo string,
 func (mr *MockClientMockRecorder) GetPullRequestDiff(ctx, owner, repo, number any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPullRequestDiff", reflect.TypeOf((*MockClient)(nil).GetPullRequestDiff), ctx, owner, repo, number)
+}
+
+// ListIssues mocks base method.
+func (m *MockClient) ListIssues(ctx context.Context, owner, repo string, opts github0.IssueOptions) ([]github0.Issue, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListIssues", ctx, owner, repo, opts)
+	ret0, _ := ret[0].([]github0.Issue)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListIssues indicates an expected call of ListIssues.
+func (mr *MockClientMockRecorder) ListIssues(ctx, owner, repo, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListIssues", reflect.TypeOf((*MockClient)(nil).ListIssues), ctx, owner, repo, opts)
 }
 
 // UpdateCheckRun mocks base method.

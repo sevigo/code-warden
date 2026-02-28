@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,6 +120,26 @@ func (s *Server) registerTools() {
 		repoConfig: s.repoConfig,
 		logger:     s.logger,
 	}
+
+	// Register GitHub tools if ghClient is available
+	if s.ghClient != nil && s.repo != nil {
+		// Parse owner/name from FullName
+		owner, name := parseRepoFullName(s.repo.FullName)
+		if owner != "" && name != "" {
+			s.tools["create_pull_request"] = NewCreatePRTool(s.ghClient, owner, name, s.logger)
+			s.tools["list_issues"] = NewListIssuesTool(s.ghClient, owner, name, s.logger)
+			s.tools["get_issue"] = NewGetIssueTool(s.ghClient, owner, name, s.logger)
+		}
+	}
+}
+
+// parseRepoFullName parses a "owner/name" string into owner and name.
+func parseRepoFullName(fullName string) (owner, name string) {
+	parts := strings.SplitN(fullName, "/", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", fullName
 }
 
 // ListTools returns all available tools.
