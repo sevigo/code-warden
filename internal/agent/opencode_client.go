@@ -17,6 +17,24 @@ import (
 // safeBranchNameRegex validates that branch names contain only safe characters.
 var safeBranchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
+// DefaultAgent is the default OpenCode agent type.
+const DefaultAgent = "build"
+
+// APIError represents an error response from the OpenCode API.
+type APIError struct {
+	StatusCode int
+	Message    string
+	Type       string `json:"type,omitempty"`
+	Code       string `json:"code,omitempty"`
+}
+
+func (e *APIError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("API error (status %d, code %s): %s", e.StatusCode, e.Code, e.Message)
+	}
+	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
+}
+
 // shellQuote safely quotes a string for shell execution by wrapping in single quotes
 // and escaping any existing single quotes.
 func shellQuote(s string) string {
@@ -37,13 +55,17 @@ func validateBranchName(name string) error {
 
 // OpenCodeClient handles communication with the OpenCode HTTP API.
 type OpenCodeClient struct {
-	baseURL    string
-	password   string
-	httpClient *http.Client
-	logger     *slog.Logger
+	baseURL  string
+	password string
+	logger   *slog.Logger
+	// Agent is the OpenCode agent type to use (default: "build").
+	Agent string
+	// HTTPClient is the HTTP client for requests (uses context for timeouts).
+	HTTPClient *http.Client
 }
 
 // NewOpenCodeClient creates a new OpenCode API client.
+// The client uses context-driven timeouts instead of a global timeout.
 func NewOpenCodeClient(baseURL, password string, logger *slog.Logger) *OpenCodeClient {
 	if baseURL != "" && !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		baseURL = "http://" + baseURL
@@ -53,8 +75,14 @@ func NewOpenCodeClient(baseURL, password string, logger *slog.Logger) *OpenCodeC
 		baseURL:  baseURL,
 		password: password,
 		logger:   logger,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Minute, // Match the session timeout for LLM operations
+		Agent:    DefaultAgent,
+		// No global timeout - use context for per-request timeouts
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:       10,
+				IdleConnTimeout:    30 * time.Second,
+				DisableCompression: false,
+			},
 		},
 	}
 }
@@ -142,7 +170,7 @@ func (c *OpenCodeClient) doRequest(ctx context.Context, method, path string, bod
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.password)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -154,12 +182,47 @@ func (c *OpenCodeClient) doRequest(ctx context.Context, method, path string, bod
 	}
 
 	if resp.StatusCode >= 400 {
-		c.logger.Error("API request failed", "method", method, "path", path, "status", resp.StatusCode, "response", string(respBody))
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, c.parseAPIError(resp.StatusCode, respBody, method, path)
 	}
 
 	c.logger.Debug("API response received", "method", method, "path", path, "status", resp.StatusCode, "size", len(respBody))
 	return respBody, nil
+}
+
+// parseAPIError parses an error response from the OpenCode API.
+func (c *OpenCodeClient) parseAPIError(statusCode int, respBody []byte, method, path string) *APIError {
+	apiErr := &APIError{StatusCode: statusCode}
+
+	if len(respBody) == 0 {
+		apiErr.Message = "empty response body"
+		c.logger.Error("API request failed", "method", method, "path", path, "status", statusCode, "response", "")
+		return apiErr
+	}
+
+	// Try structured error format
+	var structuredErr struct {
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(respBody, &structuredErr); err == nil && structuredErr.Message != "" {
+		apiErr.Type = structuredErr.Type
+		apiErr.Code = structuredErr.Code
+		apiErr.Message = structuredErr.Message
+	} else {
+		// Try simple error format
+		var simpleErr struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(respBody, &simpleErr); err == nil && simpleErr.Error != "" {
+			apiErr.Message = simpleErr.Error
+		} else {
+			apiErr.Message = string(respBody)
+		}
+	}
+
+	c.logger.Error("API request failed", "method", method, "path", path, "status", statusCode, "response", string(respBody))
+	return apiErr
 }
 
 // CreateSession creates a new OpenCode session.
@@ -185,8 +248,12 @@ func (c *OpenCodeClient) CreateSession(ctx context.Context, title, model string,
 
 // SendMessage sends a message to a session and returns the response.
 func (c *OpenCodeClient) SendMessage(ctx context.Context, sessionID string, content string, tools []ToolDefinition) (*SendMessageResponse, error) {
+	agent := c.Agent
+	if agent == "" {
+		agent = DefaultAgent
+	}
 	req := SendMessageRequest{
-		Agent:  "build", // Use the "build" agent per curl defaults
+		Agent:  agent,
 		Parts:  []Part{{Type: "text", Text: content}},
 		Tools:  tools,
 		Stream: false,
@@ -292,6 +359,7 @@ func (c *OpenCodeClient) PushBranch(ctx context.Context, sessionID, branchName s
 }
 
 // CreatePullRequest creates a PR via gh CLI and returns the PR URL and number.
+// Returns an error if the PR was created but the response couldn't be parsed.
 func (c *OpenCodeClient) CreatePullRequest(ctx context.Context, sessionID, title, body string) (string, int, error) {
 	// Use --json flag to get structured output
 	cmd := fmt.Sprintf("gh pr create --title %q --body %q --json url,number", title, body)
@@ -306,18 +374,20 @@ func (c *OpenCodeClient) CreatePullRequest(ctx context.Context, sessionID, title
 		Number int    `json:"number"`
 	}
 	// The response comes as Parts from ExecuteCommand, we need to extract the JSON
-	// For now, we parse the text content
 	for _, part := range resp.Parts {
 		if part.Type == "text" {
 			if err := json.Unmarshal([]byte(part.Text), &prResult); err != nil {
-				c.logger.Warn("failed to parse PR response, returning default", "error", err)
-				return "PR created (URL not parsed)", 0, nil
+				// Return explicit error - PR may have been created but we couldn't parse the response
+				return "", 0, fmt.Errorf("PR may have been created but failed to parse response: %w (raw: %s)", err, part.Text)
+			}
+			if prResult.URL == "" || prResult.Number == 0 {
+				return "", 0, fmt.Errorf("PR response missing required fields: url=%q, number=%d", prResult.URL, prResult.Number)
 			}
 			return prResult.URL, prResult.Number, nil
 		}
 	}
 
-	return "PR created successfully", 0, nil
+	return "", 0, fmt.Errorf("no text response found in PR creation result")
 }
 
 // CloseSession closes a session.

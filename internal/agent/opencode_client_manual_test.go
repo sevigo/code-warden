@@ -1,3 +1,6 @@
+//go:build manual
+// +build manual
+
 package agent
 
 import (
