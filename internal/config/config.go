@@ -35,7 +35,7 @@ type AgentConfig struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Provider is the agent provider (currently only "opencode").
+	// Provider is the agent provider: "goose" or "opencode".
 	Provider string `mapstructure:"provider"`
 
 	// Model is the LLM model to use for the agent.
@@ -50,7 +50,7 @@ type AgentConfig struct {
 	// MCPAddr is the address for the MCP server.
 	MCPAddr string `mapstructure:"mcp_addr"`
 
-	// OpencodeAddr is the address of the opencode server API.
+	// OpencodeAddr is the address of the opencode server API (only for opencode provider).
 	OpencodeAddr string `mapstructure:"opencode_addr"`
 
 	// WorkingDir is the directory for agent workspaces.
@@ -374,7 +374,7 @@ func setDefaults(v *viper.Viper) {
 	// Agent
 	v.SetDefault("agent.enabled", false)
 	v.SetDefault("agent.provider", "opencode")
-	v.SetDefault("agent.model", "llama3.1:70b")
+	v.SetDefault("agent.model", "qwen2.5-coder")
 	v.SetDefault("agent.timeout", "30m")
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")

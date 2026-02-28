@@ -12,8 +12,12 @@ GOLINT_BIN_DIR=$(CURDIR)/bin
 GOLINT_CMD=$(GOLINT_BIN_DIR)/golangci-lint
 GOLINT_VERSION=v2.5.0
 
+# OpenCode configuration
+OPENCODE_PORT=4096
+OPENCODE_MCP_URL=http://127.0.0.1:8081/sse
+
 .DEFAULT_GOAL := all
-.PHONY: all build run clean test lint
+.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev
 
 all: build
 
@@ -42,13 +46,47 @@ test:
 	@echo "Running tests..."
 	@go test -v ./...
 
-lint: 
+lint:
 	@echo "Linting Go code..."
 	@if ! command -v $(GOLINT_CMD) &> /dev/null; then \
 		echo "golangci-lint $(GOLINT_VERSION) not found or wrong version, installing to $(GOLINT_BIN_DIR)..."; \
 		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOLINT_BIN_DIR) $(GOLINT_VERSION); \
 	fi
 	$(GOLINT_CMD) run ./...
+
+# OpenCode server management
+opencode-start:
+	@echo "Starting OpenCode server on port $(OPENCODE_PORT)..."
+	@OPENCODE_PORT=$(OPENCODE_PORT) opencode serve &>/tmp/opencode.log &
+	@sleep 2
+	@echo "OpenCode server started. Logs: /tmp/opencode.log"
+
+opencode-stop:
+	@echo "Stopping OpenCode server..."
+	@pkill -f "opencode serve" || echo "OpenCode server not running"
+	@echo "OpenCode server stopped"
+
+opencode-config:
+	@echo "Configuring OpenCode MCP server..."
+	@mkdir -p ~/.config/opencode
+	@echo '{\n\
+  "$$schema": "https://opencode.ai/config.json",\n\
+  "mcp": {\n\
+    "code-warden": {\n\
+      "type": "sse",\n\
+      "url": "$(OPENCODE_MCP_URL)",\n\
+      "enabled": true\n\
+    }\n\
+  }\n\
+}' > ~/.config/opencode/opencode.json
+	@echo "OpenCode MCP configured to connect to $(OPENCODE_MCP_URL)"
+
+# Development mode: start both code-warden and OpenCode
+dev: build-server opencode-config
+	@echo "Starting development environment..."
+	@$(MAKE) opencode-start
+	@echo "Starting code-warden server..."
+	@$(BIN_DIR)/$(SERVER_BINARY_NAME)
 
 # Clean up the built binary and tools
 clean:

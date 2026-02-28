@@ -3,9 +3,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -305,8 +307,17 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 
 // handleJSONRPC handles direct JSON-RPC requests (backwards compatibility).
 func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
+	// Log all incoming requests for debugging
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	s.logger.Info("MCP JSON-RPC request received",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"body", string(body))
+
 	var req Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&req); err != nil {
 		s.writeError(w, nil, -32700, "parse error")
 		return
 	}
