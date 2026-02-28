@@ -91,6 +91,22 @@ func (t *stepTimer) infof(format string, args ...any) {
 	}
 }
 
+func initAndValidateApp(ctx context.Context) (*app.App, func(), error) {
+	appInstance, cleanup, err := wire.InitializeApp(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)
+	}
+	if vErr := appInstance.Cfg.ValidateForCLI(); vErr != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("configuration validation failed: %w", vErr)
+	}
+	if mErr := appInstance.DB.RunMigrations(); mErr != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to run migrations: %w", mErr)
+	}
+	return appInstance, cleanup, nil
+}
+
 func runReview(_ *cobra.Command, args []string) error {
 	ctx := context.Background()
 	prURL := args[0]
@@ -102,15 +118,11 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	// 1. Initialize Application
 	timer.step("Initializing application")
-	appInstance, cleanup, err := wire.InitializeApp(ctx)
+	appInstance, cleanup, err := initAndValidateApp(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)
+		return err
 	}
 	defer cleanup()
-
-	if err := appInstance.DB.RunMigrations(); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
-	}
 	timer.done()
 
 	// 2. Parse URL and fetch PR metadata

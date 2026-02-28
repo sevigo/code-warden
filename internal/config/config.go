@@ -383,33 +383,108 @@ func setDefaults(v *viper.Viper) {
 }
 
 func (c *Config) ValidateForServer() error {
-	if c.GitHub.AppID == 0 {
-		return errors.New("github.app_id is required")
+	var errs []string
+
+	if err := c.validateGitHub(); err != nil {
+		errs = append(errs, err.Error())
 	}
-	if c.GitHub.WebhookSecret == "" {
-		return errors.New("github.webhook_secret is required")
+	if err := c.validateAI(); err != nil {
+		errs = append(errs, err.Error())
 	}
-	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
-		return fmt.Errorf("github private key not found at path: %s", c.GitHub.PrivateKeyPath)
+	if err := c.validateDatabase(); err != nil {
+		errs = append(errs, err.Error())
 	}
-	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
-		return errors.New("ai.gemini_api_key is required for gemini provider")
-	}
-	if err := c.AI.Validate(); err != nil {
-		return fmt.Errorf("ai config invalid: %w", err)
+	if err := c.validateServer(); err != nil {
+		errs = append(errs, err.Error())
 	}
 	if err := c.Agent.Validate(); err != nil {
-		return fmt.Errorf("agent config invalid: %w", err)
+		errs = append(errs, err.Error())
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (c *Config) validateGitHub() error {
+	var errs []string
+	if c.GitHub.AppID == 0 {
+		errs = append(errs, "github.app_id is required")
+	}
+	if c.GitHub.WebhookSecret == "" {
+		errs = append(errs, "github.webhook_secret is required")
+	}
+	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
+		errs = append(errs, fmt.Sprintf("github private key not found at path: %s", c.GitHub.PrivateKeyPath))
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (c *Config) validateAI() error {
+	var errs []string
+	validProviders := map[string]bool{"ollama": true, "gemini": true}
+	if !validProviders[strings.ToLower(c.AI.LLMProvider)] {
+		errs = append(errs, fmt.Sprintf("ai.llm_provider must be 'ollama' or 'gemini', got: %s", c.AI.LLMProvider))
+	}
+	if c.AI.GeneratorModel == "" {
+		errs = append(errs, "ai.generator_model is required")
+	}
+	if c.AI.EmbedderModel == "" {
+		errs = append(errs, "ai.embedder_model is required")
+	}
+	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
+		errs = append(errs, "ai.gemini_api_key is required for gemini provider")
+	}
+	if err := c.AI.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (c *Config) validateDatabase() error {
+	var errs []string
+	if c.Database.Host == "" {
+		errs = append(errs, "database.host is required")
+	}
+	if c.Database.Port < 1 || c.Database.Port > 65535 {
+		errs = append(errs, fmt.Sprintf("database.port must be between 1 and 65535, got: %d", c.Database.Port))
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (c *Config) validateServer() error {
+	var errs []string
+	if c.Server.MaxWorkers <= 0 {
+		errs = append(errs, fmt.Sprintf("server.max_workers must be positive, got: %d", c.Server.MaxWorkers))
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
 }
 
 func (c *Config) ValidateForCLI() error {
-	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
-		return errors.New("ai.gemini_api_key is required for gemini provider")
+	var errs []string
+
+	if err := c.validateAI(); err != nil {
+		errs = append(errs, err.Error())
 	}
-	if err := c.AI.Validate(); err != nil {
-		return fmt.Errorf("ai config invalid: %w", err)
+	if err := c.Agent.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
