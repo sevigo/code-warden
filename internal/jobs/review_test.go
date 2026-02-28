@@ -11,7 +11,7 @@ func TestRepoMutexCleanup(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -36,11 +36,11 @@ func TestRepoMutexConcurrentAccess(t *testing.T) {
 	var counter int
 	var mu sync.Mutex
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for k := 0; k < 10; k++ {
+			for range 10 {
 				release := j.acquireRepoMutex("test/repo")
 				mu.Lock()
 				counter++
@@ -102,7 +102,7 @@ func TestRepoMutexRefCountConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	startBarrier := make(chan struct{})
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -130,7 +130,7 @@ func TestRepoMutexSequentialAcquireRelease(t *testing.T) {
 		repoMutexes: sync.Map{},
 	}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		release := j.acquireRepoMutex("test/repo")
 		_, exists := j.repoMutexes.Load("test/repo")
 		if !exists {

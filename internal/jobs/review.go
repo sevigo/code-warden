@@ -60,7 +60,12 @@ func (j *ReviewJob) acquireRepoMutex(repoFullName string) func() {
 		mu:       &sync.Mutex{},
 		refCount: 0,
 	})
-	e := entry.(*repoMutexEntry)
+	e, ok := entry.(*repoMutexEntry)
+	if !ok {
+		j.repoMutexMu.Unlock()
+		j.logger.Error("type assertion failed for repo mutex entry", "repo", repoFullName)
+		return func() {}
+	}
 	e.refCount++
 	j.repoMutexMu.Unlock()
 
@@ -79,7 +84,11 @@ func (j *ReviewJob) releaseRepoMutex(repoFullName string) {
 	if !ok {
 		return
 	}
-	e := entry.(*repoMutexEntry)
+	e, ok := entry.(*repoMutexEntry)
+	if !ok {
+		j.logger.Error("type assertion failed for repo mutex entry in release", "repo", repoFullName)
+		return
+	}
 	e.refCount--
 	if e.refCount <= 0 {
 		j.repoMutexes.Delete(repoFullName)
