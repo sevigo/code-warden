@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/jobs"
 )
 
 // WebhookHandler processes incoming webhooks from GitHub.
@@ -83,6 +85,13 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 		}
 
 		if err := h.dispatcher.Dispatch(ctx, implementEvent); err != nil {
+			if errors.Is(err, jobs.ErrQueueFull) {
+				h.logger.Warn("job queue full, returning 503",
+					"repo", implementEvent.RepoFullName,
+					"issue", implementEvent.IssueNumber)
+				http.Error(w, "Service temporarily unavailable, please retry", http.StatusServiceUnavailable)
+				return
+			}
 			h.logger.Error("failed to dispatch implement job", "error", err, "repo", implementEvent.RepoFullName)
 			http.Error(w, "Failed to start implement job", http.StatusInternalServerError)
 			return
@@ -103,6 +112,13 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 	}
 
 	if err := h.dispatcher.Dispatch(ctx, reviewEvent); err != nil {
+		if errors.Is(err, jobs.ErrQueueFull) {
+			h.logger.Warn("job queue full, returning 503",
+				"repo", reviewEvent.RepoFullName,
+				"pr", reviewEvent.PRNumber)
+			http.Error(w, "Service temporarily unavailable, please retry", http.StatusServiceUnavailable)
+			return
+		}
 		h.logger.Error("failed to dispatch review job", "error", err, "repo", reviewEvent.RepoFullName)
 		http.Error(w, "Failed to start review job", http.StatusInternalServerError)
 		return

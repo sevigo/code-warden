@@ -3,13 +3,24 @@ package jobs
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 )
+
+var ErrQueueFull = errors.New("job queue is full, try again later")
+
+type QueueMetrics struct {
+	QueueDepth     int
+	QueueCapacity  int
+	JobsDropped    int64
+	JobsDispatched int64
+	JobsProcessed  int64
+}
 
 type jobPayload struct {
 	ctx   context.Context
@@ -19,12 +30,15 @@ type jobPayload struct {
 // dispatcher implements core.JobDispatcher and manages a pool of worker goroutines
 // for processing GitHub events as code review jobs.
 type dispatcher struct {
-	reviewJob  core.Job
-	jobQueue   chan *jobPayload
-	maxWorkers int
-	wg         sync.WaitGroup
-	logger     *slog.Logger
-	mainCtx    context.Context
+	reviewJob      core.Job
+	jobQueue       chan *jobPayload
+	maxWorkers     int
+	wg             sync.WaitGroup
+	logger         *slog.Logger
+	mainCtx        context.Context
+	jobsDropped    atomic.Int64
+	jobsDispatched atomic.Int64
+	jobsProcessed  atomic.Int64
 }
 
 // NewDispatcher initializes a dispatcher with a worker pool.
@@ -72,6 +86,7 @@ func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core
 	)
 
 	defer func() {
+		d.jobsProcessed.Add(1)
 		if r := recover(); r != nil {
 			d.logger.Error("panic recovered in review job", "panic", r, "repo", event.RepoFullName)
 		}
@@ -94,15 +109,16 @@ func (d *dispatcher) Dispatch(ctx context.Context, event *core.GitHubEvent) erro
 
 	select {
 	case d.jobQueue <- &jobPayload{ctx: jobCtx, event: event}:
+		d.jobsDispatched.Add(1)
 		return nil
 	default:
+		d.jobsDropped.Add(1)
 		d.logger.Warn("ALERT: Job queue is full, dropping review job",
 			slog.String("repo", event.RepoFullName),
 			slog.Int("pr", event.PRNumber),
 			slog.Int("queue_capacity", cap(d.jobQueue)),
 		)
-		return fmt.Errorf("job queue is full, cannot accept new review job (repo: %s, pr: %d, capacity: %d)",
-			event.RepoFullName, event.PRNumber, cap(d.jobQueue))
+		return ErrQueueFull
 	}
 }
 
@@ -112,4 +128,14 @@ func (d *dispatcher) Stop() {
 	close(d.jobQueue)
 	d.wg.Wait()
 	d.logger.Info("all review jobs have finished")
+}
+
+func (d *dispatcher) Metrics() QueueMetrics {
+	return QueueMetrics{
+		QueueDepth:     len(d.jobQueue),
+		QueueCapacity:  cap(d.jobQueue),
+		JobsDropped:    d.jobsDropped.Load(),
+		JobsDispatched: d.jobsDispatched.Load(),
+		JobsProcessed:  d.jobsProcessed.Load(),
+	}
 }
