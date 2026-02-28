@@ -9,9 +9,31 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// safeBranchNameRegex validates that branch names contain only safe characters.
+var safeBranchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
+
+// shellQuote safely quotes a string for shell execution by wrapping in single quotes
+// and escaping any existing single quotes.
+func shellQuote(s string) string {
+	// Replace single quotes with '\'' (end quote, escaped quote, start quote)
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// validateBranchName checks if a branch name is safe for shell execution.
+func validateBranchName(name string) error {
+	if name == "" {
+		return fmt.Errorf("branch name cannot be empty")
+	}
+	if !safeBranchNameRegex.MatchString(name) {
+		return fmt.Errorf("invalid branch name: contains unsafe characters")
+	}
+	return nil
+}
 
 // OpenCodeClient handles communication with the OpenCode HTTP API.
 type OpenCodeClient struct {
@@ -241,7 +263,10 @@ func (c *OpenCodeClient) ExecuteCommand(ctx context.Context, sessionID, command 
 
 // CreateBranch creates a new git branch.
 func (c *OpenCodeClient) CreateBranch(ctx context.Context, sessionID, branchName string) error {
-	_, err := c.ExecuteCommand(ctx, sessionID, "git checkout -b "+branchName)
+	if err := validateBranchName(branchName); err != nil {
+		return fmt.Errorf("invalid branch name: %w", err)
+	}
+	_, err := c.ExecuteCommand(ctx, sessionID, "git checkout -b "+shellQuote(branchName))
 	return err
 }
 
@@ -252,26 +277,47 @@ func (c *OpenCodeClient) CommitChanges(ctx context.Context, sessionID, message s
 		return fmt.Errorf("failed to stage changes: %w", err)
 	}
 
-	// Commit with message
-	_, err := c.ExecuteCommand(ctx, sessionID, fmt.Sprintf("git commit -m %q", message))
+	// Commit with properly escaped message
+	_, err := c.ExecuteCommand(ctx, sessionID, "git commit -m "+shellQuote(message))
 	return err
 }
 
 // PushBranch pushes the current branch to remote.
 func (c *OpenCodeClient) PushBranch(ctx context.Context, sessionID, branchName string) error {
-	_, err := c.ExecuteCommand(ctx, sessionID, "git push -u origin "+branchName)
+	if err := validateBranchName(branchName); err != nil {
+		return fmt.Errorf("invalid branch name: %w", err)
+	}
+	_, err := c.ExecuteCommand(ctx, sessionID, "git push -u origin "+shellQuote(branchName))
 	return err
 }
 
-// CreatePullRequest creates a PR via gh CLI.
+// CreatePullRequest creates a PR via gh CLI and returns the PR URL and number.
 func (c *OpenCodeClient) CreatePullRequest(ctx context.Context, sessionID, title, body string) (string, int, error) {
-	cmd := fmt.Sprintf("gh pr create --title %q --body %q", title, body)
-	_, err := c.ExecuteCommand(ctx, sessionID, cmd)
+	// Use --json flag to get structured output
+	cmd := fmt.Sprintf("gh pr create --title %q --body %q --json url,number", title, body)
+	resp, err := c.ExecuteCommand(ctx, sessionID, cmd)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to create PR: %w", err)
 	}
 
-	return "PR created successfully", 0, nil // PR number extraction would require parsing parts
+	// Parse the JSON response from gh
+	var prResult struct {
+		URL    string `json:"url"`
+		Number int    `json:"number"`
+	}
+	// The response comes as Parts from ExecuteCommand, we need to extract the JSON
+	// For now, we parse the text content
+	for _, part := range resp.Parts {
+		if part.Type == "text" {
+			if err := json.Unmarshal([]byte(part.Text), &prResult); err != nil {
+				c.logger.Warn("failed to parse PR response, returning default", "error", err)
+				return "PR created (URL not parsed)", 0, nil
+			}
+			return prResult.URL, prResult.Number, nil
+		}
+	}
+
+	return "PR created successfully", 0, nil
 }
 
 // CloseSession closes a session.

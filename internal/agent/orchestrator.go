@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"net"
@@ -513,8 +514,8 @@ func (o *Orchestrator) runAgentAPI(ctx context.Context, session *Session, system
 
 	// 1. Health check
 	if err := client.HealthCheck(ctx); err != nil {
-		o.failSessionf(session, "OpenCode API health check failed: %v", err)
 		o.logger.Error("runAgentAPI: health check failed", "session_id", session.ID, "error", err)
+		o.failSessionf(session, "OpenCode API health check failed: %v", err)
 		return
 	}
 
@@ -529,11 +530,20 @@ func (o *Orchestrator) runAgentAPI(ctx context.Context, session *Session, system
 	title := fmt.Sprintf("Issue %d: %s", session.Issue.Number, session.Issue.Title)
 	opencodeSession, err := client.CreateSession(ctx, title, o.config.Model, nil)
 	if err != nil {
-		o.failSessionf(session, "Failed to create OpenCode session: %v", err)
 		o.logger.Error("runAgentAPI: failed to create session", "session_id", session.ID, "error", err)
+		o.failSessionf(session, "Failed to create OpenCode session: %v", err)
 		return
 	}
 	o.logger.Info("runAgentAPI: created OpenCode session", "session_id", session.ID, "opencode_session_id", opencodeSession.ID)
+
+	// Ensure session cleanup on error
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := client.CloseSession(closeCtx, opencodeSession.ID); err != nil {
+			o.logger.Warn("runAgentAPI: failed to close OpenCode session", "session_id", opencodeSession.ID, "error", err)
+		}
+	}()
 
 	// 4. Execute agent workflow
 	if !o.executeAgentWorkflow(ctx, session, client, opencodeSession.ID, systemPrompt, branch) {
@@ -696,9 +706,11 @@ func (o *Orchestrator) parseAgentOutput(_ string) *Result {
 	}
 }
 
-// generateSessionID creates a unique session ID.
+// generateSessionID creates a unique session ID using cryptographic random.
 func generateSessionID() string {
-	return fmt.Sprintf("agent-%d", time.Now().UnixNano())
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("agent-%x", b)
 }
 
 func sessionIDFromIssue(issue Issue) string {

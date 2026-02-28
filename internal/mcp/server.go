@@ -5,6 +5,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -295,8 +296,13 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 			respBytes, _ := json.Marshal(resp)
 			select {
 			case session.messages <- respBytes:
-			default:
-				s.logger.Warn("session message channel full", "session_id", sessionID)
+				// Message sent successfully
+			case <-session.done:
+				// Session was closed, client disconnected
+				s.logger.Debug("session closed before message sent", "session_id", sessionID)
+			case <-time.After(5 * time.Second):
+				// Timeout to avoid blocking forever
+				s.logger.Warn("timeout sending message to session", "session_id", sessionID)
 			}
 		}
 	}
@@ -341,8 +347,11 @@ type jsonRPCError struct {
 func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRPCError) {
 	switch req.Method {
 	case "tools/list":
+		s.logger.Info("MCP tool call: tools/list")
+		tools := s.ListTools()
+		s.logger.Info("MCP tool response: tools/list", "tool_count", len(tools))
 		return map[string]any{
-			"tools": s.ListTools(),
+			"tools": tools,
 		}, nil
 
 	case "tools/call":
@@ -353,10 +362,13 @@ func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRP
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return nil, &jsonRPCError{Code: -32602, Message: "invalid params"}
 		}
+		s.logger.Info("MCP tool call started", "tool", params.Name, "arguments", params.Arguments)
 		result, err := s.CallTool(ctx, params.Name, params.Arguments)
 		if err != nil {
+			s.logger.Error("MCP tool call failed", "tool", params.Name, "error", err)
 			return nil, &jsonRPCError{Code: -32603, Message: err.Error()}
 		}
+		s.logger.Info("MCP tool call completed", "tool", params.Name, "result_type", fmt.Sprintf("%T", result))
 		return map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": mustMarshal(result)},
@@ -364,6 +376,7 @@ func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRP
 		}, nil
 
 	case "initialize":
+		s.logger.Info("MCP client initializing")
 		return map[string]any{
 			"protocolVersion": "2024-11-05",
 			"serverInfo": map[string]any{
@@ -376,9 +389,11 @@ func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRP
 		}, nil
 
 	case "ping":
+		s.logger.Debug("MCP ping received")
 		return map[string]any{}, nil
 
 	default:
+		s.logger.Warn("MCP unknown method", "method", req.Method)
 		return nil, &jsonRPCError{Code: -32601, Message: "method not found"}
 	}
 }
@@ -419,5 +434,8 @@ func mustMarshal(v any) string {
 
 // generateSessionID creates a unique session ID for SSE connections.
 func generateSessionID() string {
-	return fmt.Sprintf("sess_%d", time.Now().UnixNano())
+	b := make([]byte, 16)
+	// crypto/rand.Read always returns len(b), nil on supported platforms
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("sess_%x", b)
 }
