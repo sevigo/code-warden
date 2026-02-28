@@ -584,23 +584,28 @@ func (o *Orchestrator) buildSystemPrompt(issue Issue) string {
   - review_code(diff) - Request internal code review
 
 ## Your Task
-Implement the issue described below. Follow these steps:
+Implement the issue described below. Follow these steps IN ORDER:
 
 1. **Understand** - Read the issue carefully
 2. **Explore** - Use MCP tools to understand the codebase
 3. **Plan** - Identify files to modify and changes needed
 4. **Implement** - Write the code
-5. **Verify** - Run 'make lint' and 'make test' - fix any issues before proceeding
+5. **STOP AND VERIFY** - You MUST run these commands before proceeding:
+   - Run: make lint
+   - Run: make test
+   - If EITHER command fails, you MUST fix the issues and run BOTH commands again
+   - Only proceed when BOTH commands pass with exit code 0
 6. **Review** - Call review_code on your changes
 7. **Iterate** - If REQUEST_CHANGES, fix issues, run lint/test again, and review again
-8. **Submit** - Create a pull request when APPROVED
+8. **Submit** - Create a pull request ONLY after steps 5-7 are complete
 
-## CRITICAL: Before Committing
-You MUST run these commands and ensure they pass:
-- 'make lint' - All linting errors must be fixed
-- 'make test' - All tests must pass
+## MANDATORY REQUIREMENTS (DO NOT SKIP):
+1. You MUST run 'make lint' and it MUST pass (exit code 0)
+2. You MUST run 'make test' and it MUST pass (exit code 0)
+3. You MUST call review_code tool for code review
+4. You MUST NOT create a PR until all above steps pass
 
-Do NOT commit or create a PR until both commands succeed.
+If you cannot complete any step, report what failed and why.
 
 ## Issue #%d: %s
 
