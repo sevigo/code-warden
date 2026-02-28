@@ -73,7 +73,7 @@ opencode-config:
   "$$schema": "https://opencode.ai/config.json",\n\
   "mcp": {\n\
     "code-warden": {\n\
-      "type": "sse",\n\
+      "type": "remote",\n\
       "url": "$(OPENCODE_MCP_URL)",\n\
       "enabled": true\n\
     }\n\

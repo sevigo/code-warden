@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -17,8 +18,33 @@ import (
 // safeBranchNameRegex validates that branch names contain only safe characters.
 var safeBranchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
-// DefaultAgent is the default OpenCode agent type.
-const DefaultAgent = "build"
+// maxBranchNameLength is the maximum length for git branch names.
+const maxBranchNameLength = 255
+
+// shellQuote safely quotes a string for shell execution by wrapping in single quotes
+// and escaping any existing single quotes.
+func shellQuote(s string) string {
+	// Replace single quotes with '\'' (end quote, escaped quote, start quote)
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// validateBranchName checks if a branch name is safe for shell execution.
+func validateBranchName(name string) error {
+	if name == "" {
+		return fmt.Errorf("branch name cannot be empty")
+	}
+	if len(name) > maxBranchNameLength {
+		return fmt.Errorf("branch name exceeds maximum length of %d bytes", maxBranchNameLength)
+	}
+	if !safeBranchNameRegex.MatchString(name) {
+		return fmt.Errorf("invalid branch name: contains unsafe characters")
+	}
+	// Check for consecutive dots which could lead to directory traversal
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("branch name cannot contain consecutive dots")
+	}
+	return nil
+}
 
 // APIError represents an error response from the OpenCode API.
 type APIError struct {
@@ -35,23 +61,8 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
 }
 
-// shellQuote safely quotes a string for shell execution by wrapping in single quotes
-// and escaping any existing single quotes.
-func shellQuote(s string) string {
-	// Replace single quotes with '\'' (end quote, escaped quote, start quote)
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-// validateBranchName checks if a branch name is safe for shell execution.
-func validateBranchName(name string) error {
-	if name == "" {
-		return fmt.Errorf("branch name cannot be empty")
-	}
-	if !safeBranchNameRegex.MatchString(name) {
-		return fmt.Errorf("invalid branch name: contains unsafe characters")
-	}
-	return nil
-}
+// DefaultAgent is the default OpenCode agent type.
+const DefaultAgent = "build"
 
 // OpenCodeClient handles communication with the OpenCode HTTP API.
 type OpenCodeClient struct {
@@ -79,9 +90,15 @@ func NewOpenCodeClient(baseURL, password string, logger *slog.Logger) *OpenCodeC
 		// No global timeout - use context for per-request timeouts
 		HTTPClient: &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:       10,
-				IdleConnTimeout:    30 * time.Second,
-				DisableCompression: false,
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				MaxIdleConns:          10,
+				IdleConnTimeout:       30 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				DisableCompression:    false,
 			},
 		},
 	}
@@ -308,8 +325,12 @@ func (c *OpenCodeClient) GetMessages(ctx context.Context, sessionID string) ([]M
 
 // ExecuteCommand runs a shell command in the session context.
 func (c *OpenCodeClient) ExecuteCommand(ctx context.Context, sessionID, command string) (*SendMessageResponse, error) {
+	agent := c.Agent
+	if agent == "" {
+		agent = DefaultAgent
+	}
 	req := ShellRequest{
-		Agent:   "build",
+		Agent:   agent,
 		Command: command,
 	}
 
