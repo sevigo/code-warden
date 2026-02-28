@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -130,16 +131,39 @@ func (o *Orchestrator) Start() error {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	// Use a channel to signal when the server is ready
+	ready := make(chan struct{})
+
 	go func() {
+		// Create a listener to know when the server is actually bound
+		listenConfig := net.ListenConfig{}
+		ln, err := listenConfig.Listen(context.Background(), "tcp", o.config.MCPAddr)
+		if err != nil {
+			o.logger.Error("failed to create MCP server listener", "error", err, "addr", o.config.MCPAddr)
+			close(ready)
+			return
+		}
+		close(ready)
+
 		o.logger.Info("starting MCP HTTP server",
 			"addr", o.config.MCPAddr,
 			"provider", o.config.Provider,
 			"model", o.config.Model)
 
-		if err := o.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := o.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			o.logger.Error("MCP HTTP server failed", "error", err, "addr", o.config.MCPAddr)
 		}
 	}()
+
+	// Wait for the server to be ready (with timeout)
+	select {
+	case <-ready:
+		// Small delay to ensure the server is fully ready
+		time.Sleep(100 * time.Millisecond)
+		o.logger.Info("MCP HTTP server is ready", "addr", o.config.MCPAddr)
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout waiting for MCP server to start")
+	}
 
 	// Start session cleanup goroutine
 	go o.cleanupLoop()
