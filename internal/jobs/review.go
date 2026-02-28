@@ -21,6 +21,11 @@ var (
 	ErrConfigParsing  = errors.New("config parsing failed")
 )
 
+type repoMutexEntry struct {
+	mu       *sync.Mutex
+	refCount int
+}
+
 type ReviewJob struct {
 	cfg         *config.Config
 	ragService  rag.Service
@@ -28,6 +33,7 @@ type ReviewJob struct {
 	repoMgr     repomanager.RepoManager
 	logger      *slog.Logger
 	repoMutexes sync.Map
+	repoMutexMu sync.Mutex
 }
 
 // NewReviewJob creates a new ReviewJob.
@@ -48,16 +54,31 @@ func NewReviewJob(
 	}
 }
 
-// getRepoMutex returns a mutex for the given repository to prevent concurrent operations.
-func (j *ReviewJob) getRepoMutex(repoFullName string) *sync.Mutex {
-	mutex, _ := j.repoMutexes.LoadOrStore(repoFullName, &sync.Mutex{})
-	m, ok := mutex.(*sync.Mutex)
+func (j *ReviewJob) acquireRepoMutex(repoFullName string) *sync.Mutex {
+	j.repoMutexMu.Lock()
+	entry, _ := j.repoMutexes.LoadOrStore(repoFullName, &repoMutexEntry{
+		mu:       &sync.Mutex{},
+		refCount: 0,
+	})
+	e := entry.(*repoMutexEntry)
+	e.refCount++
+	j.repoMutexMu.Unlock()
+	return e.mu
+}
+
+func (j *ReviewJob) releaseRepoMutex(repoFullName string) {
+	j.repoMutexMu.Lock()
+	defer j.repoMutexMu.Unlock()
+
+	entry, ok := j.repoMutexes.Load(repoFullName)
 	if !ok {
-		// This should never happen as we store *sync.Mutex, but log and recover
-		j.logger.Error("type assertion failed for repo mutex", "repo", repoFullName, "type", fmt.Sprintf("%T", mutex))
-		return &sync.Mutex{}
+		return
 	}
-	return m
+	e := entry.(*repoMutexEntry)
+	e.refCount--
+	if e.refCount <= 0 {
+		j.repoMutexes.Delete(repoFullName)
+	}
 }
 
 // Run acts as a router, directing the event to the correct review flow.
@@ -226,12 +247,15 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 	// ── Mutex: protect only the Git sync + optional Qdrant update phase ──────
 	// The lock is acquired here and released at the end of this function.
 	// GenerateReview (LLM call) runs completely outside the lock.
-	mutex := j.getRepoMutex(event.RepoFullName)
+	mutex := j.acquireRepoMutex(event.RepoFullName)
 	mutex.Lock()
+	defer func() {
+		mutex.Unlock()
+		j.releaseRepoMutex(event.RepoFullName)
+	}()
 
 	updateResult, syncErr := j.repoMgr.SyncRepo(ctx, event, ghToken)
 	if syncErr != nil {
-		mutex.Unlock() // release before error return
 		syncErr = fmt.Errorf("failed to sync repository: %w", syncErr)
 		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, syncErr)
 		return nil, syncErr
@@ -239,7 +263,6 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 
 	repo, repoErr := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
 	if repoErr != nil || repo == nil {
-		mutex.Unlock()
 		repoErr = fmt.Errorf("failed to retrieve repository record after sync for %s: %w", event.RepoFullName, repoErr)
 		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, repoErr)
 		return nil, repoErr
@@ -249,7 +272,6 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 	// PR diffs are NEVER written to Qdrant; they are passed in-memory to the LLM.
 	if updateResult.IsInitialClone || updateResult.DefaultBranchChanged {
 		if vsErr := j.updateVectorStoreAndSHA(ctx, j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName), repo, updateResult); vsErr != nil {
-			mutex.Unlock()
 			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, vsErr)
 			return nil, vsErr
 		}
@@ -277,7 +299,6 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 	}
 
 	// ── Release lock before any LLM call ─────────────────────────────────────
-	mutex.Unlock()
 
 	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
 
