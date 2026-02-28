@@ -54,7 +54,7 @@ func NewReviewJob(
 	}
 }
 
-func (j *ReviewJob) acquireRepoMutex(repoFullName string) *sync.Mutex {
+func (j *ReviewJob) acquireRepoMutex(repoFullName string) func() {
 	j.repoMutexMu.Lock()
 	entry, _ := j.repoMutexes.LoadOrStore(repoFullName, &repoMutexEntry{
 		mu:       &sync.Mutex{},
@@ -63,7 +63,12 @@ func (j *ReviewJob) acquireRepoMutex(repoFullName string) *sync.Mutex {
 	e := entry.(*repoMutexEntry)
 	e.refCount++
 	j.repoMutexMu.Unlock()
-	return e.mu
+
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		j.releaseRepoMutex(repoFullName)
+	}
 }
 
 func (j *ReviewJob) releaseRepoMutex(repoFullName string) {
@@ -247,12 +252,8 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 	// ── Mutex: protect only the Git sync + optional Qdrant update phase ──────
 	// The lock is acquired here and released at the end of this function.
 	// GenerateReview (LLM call) runs completely outside the lock.
-	mutex := j.acquireRepoMutex(event.RepoFullName)
-	mutex.Lock()
-	defer func() {
-		mutex.Unlock()
-		j.releaseRepoMutex(event.RepoFullName)
-	}()
+	release := j.acquireRepoMutex(event.RepoFullName)
+	defer release()
 
 	updateResult, syncErr := j.repoMgr.SyncRepo(ctx, event, ghToken)
 	if syncErr != nil {

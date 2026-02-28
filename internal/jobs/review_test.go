@@ -15,10 +15,8 @@ func TestRepoMutexCleanup(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			mu := j.acquireRepoMutex("test/repo")
-			mu.Lock()
-			mu.Unlock()
-			j.releaseRepoMutex("test/repo")
+			release := j.acquireRepoMutex("test/repo")
+			release()
 		}()
 	}
 	wg.Wait()
@@ -43,13 +41,11 @@ func TestRepoMutexConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for k := 0; k < 10; k++ {
-				repoMu := j.acquireRepoMutex("test/repo")
-				repoMu.Lock()
+				release := j.acquireRepoMutex("test/repo")
 				mu.Lock()
 				counter++
 				mu.Unlock()
-				repoMu.Unlock()
-				j.releaseRepoMutex("test/repo")
+				release()
 			}
 		}()
 	}
@@ -70,8 +66,8 @@ func TestRepoMutexMultipleRepos(t *testing.T) {
 		repoMutexes: sync.Map{},
 	}
 
-	mu1 := j.acquireRepoMutex("owner/repo1")
-	mu2 := j.acquireRepoMutex("owner/repo2")
+	release1 := j.acquireRepoMutex("owner/repo1")
+	release2 := j.acquireRepoMutex("owner/repo2")
 
 	_, exists1 := j.repoMutexes.Load("owner/repo1")
 	_, exists2 := j.repoMutexes.Load("owner/repo2")
@@ -79,9 +75,7 @@ func TestRepoMutexMultipleRepos(t *testing.T) {
 		t.Error("both mutex entries should exist while in use")
 	}
 
-	mu1.Lock()
-	mu1.Unlock()
-	j.releaseRepoMutex("owner/repo1")
+	release1()
 
 	_, exists1 = j.repoMutexes.Load("owner/repo1")
 	_, exists2 = j.repoMutexes.Load("owner/repo2")
@@ -92,9 +86,7 @@ func TestRepoMutexMultipleRepos(t *testing.T) {
 		t.Error("repo2 mutex should still exist while in use")
 	}
 
-	mu2.Lock()
-	mu2.Unlock()
-	j.releaseRepoMutex("owner/repo2")
+	release2()
 
 	_, exists2 = j.repoMutexes.Load("owner/repo2")
 	if exists2 {
@@ -102,38 +94,87 @@ func TestRepoMutexMultipleRepos(t *testing.T) {
 	}
 }
 
-func TestRepoMutexRefCount(t *testing.T) {
+func TestRepoMutexRefCountConcurrent(t *testing.T) {
 	j := &ReviewJob{
 		repoMutexes: sync.Map{},
 	}
 
-	mu1 := j.acquireRepoMutex("test/repo")
+	var wg sync.WaitGroup
+	startBarrier := make(chan struct{})
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-startBarrier
+			release := j.acquireRepoMutex("test/repo")
+			_, exists := j.repoMutexes.Load("test/repo")
+			if !exists {
+				t.Error("mutex entry should exist while in use")
+			}
+			release()
+		}()
+	}
+
+	close(startBarrier)
+	wg.Wait()
+
+	_, exists := j.repoMutexes.Load("test/repo")
+	if exists {
+		t.Error("mutex entry should be cleaned up after all references released")
+	}
+}
+
+func TestRepoMutexSequentialAcquireRelease(t *testing.T) {
+	j := &ReviewJob{
+		repoMutexes: sync.Map{},
+	}
+
+	for i := 0; i < 10; i++ {
+		release := j.acquireRepoMutex("test/repo")
+		_, exists := j.repoMutexes.Load("test/repo")
+		if !exists {
+			t.Error("mutex entry should exist while acquired")
+		}
+		release()
+	}
+
+	_, exists := j.repoMutexes.Load("test/repo")
+	if exists {
+		t.Error("mutex entry should be cleaned up after release")
+	}
+}
+
+func TestRepoMutexPreventsEarlyCleanup(t *testing.T) {
+	j := &ReviewJob{
+		repoMutexes: sync.Map{},
+	}
+
+	var wg sync.WaitGroup
+	started := make(chan struct{})
+	done := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		release := j.acquireRepoMutex("test/repo")
+		close(started)
+		<-done
+		release()
+	}()
+
+	<-started
+
 	_, exists := j.repoMutexes.Load("test/repo")
 	if !exists {
-		t.Error("mutex entry should exist after first acquire")
+		t.Error("mutex entry should exist while in use")
 	}
 
-	mu2 := j.acquireRepoMutex("test/repo")
-	_, exists = j.repoMutexes.Load("test/repo")
-	if !exists {
-		t.Error("mutex entry should still exist after second acquire")
-	}
-
-	mu1.Lock()
-	mu1.Unlock()
-	j.releaseRepoMutex("test/repo")
-
-	_, exists = j.repoMutexes.Load("test/repo")
-	if !exists {
-		t.Error("mutex entry should still exist after first release (refCount > 0)")
-	}
-
-	mu2.Lock()
-	mu2.Unlock()
-	j.releaseRepoMutex("test/repo")
+	close(done)
+	wg.Wait()
 
 	_, exists = j.repoMutexes.Load("test/repo")
 	if exists {
-		t.Error("mutex entry should be cleaned up after all references released")
+		t.Error("mutex entry should be cleaned up after release")
 	}
 }
