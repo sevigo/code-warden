@@ -63,6 +63,12 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 		return noChangesReview, noChangesReview.Summary, nil
 	}
 
+	// If changedFiles is empty (internal review), extract them from the diff
+	if len(changedFiles) == 0 {
+		changedFiles = ParseDiff(diff)
+		r.logger.Info("extracted changed files from diff for internal review", "count", len(changedFiles))
+	}
+
 	contextString, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	// Check for empty context to warn about hallucination risk
@@ -110,6 +116,44 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	}
 
 	return structuredReview, parser.raw, nil
+}
+
+// ParseDiff parses a unified git diff into a slice of ChangedFile.
+func ParseDiff(diff string) []internalgithub.ChangedFile {
+	var files []internalgithub.ChangedFile
+	var currentFile *internalgithub.ChangedFile
+
+	lines := strings.Split(diff, "\n")
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			// Start of a new file
+			if currentFile != nil {
+				files = append(files, *currentFile)
+			}
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				// Format: diff --git a/path/to/file b/path/to/file
+				// We want the path after b/
+				filename := strings.TrimPrefix(parts[3], "b/")
+				currentFile = &internalgithub.ChangedFile{
+					Filename: filename,
+				}
+			}
+		case strings.HasPrefix(line, "@@"):
+			// Hunk header — skip, not part of the patch body
+			continue
+		case currentFile != nil:
+			// Append line to current file patch
+			currentFile.Patch += line + "\n"
+		}
+	}
+
+	if currentFile != nil {
+		files = append(files, *currentFile)
+	}
+
+	return files
 }
 
 func (r *ragService) buildReviewPromptData(event *core.GitHubEvent, repoConfig *core.RepoConfig, contextString, definitionsContext, diff string, changedFiles []internalgithub.ChangedFile) map[string]string {
@@ -260,7 +304,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	chain := chains.NewMapReduceChain(
 		r.consensusMapFunc(event, promptData, &modelResults, &modelResultsMu, reviewsDir, timestamp),
 		r.consensusReduceFunc(repoConfig, event, contextString, changedFiles, contextBuildTime),
-		chains.WithMaxConcurrency[string, ComparisonResult, string](5),
+		chains.WithMaxConcurrency[string, ComparisonResult, string](2),
 		chains.WithQuorum[string, ComparisonResult, string](r.cfg.AI.ConsensusQuorum),
 	)
 

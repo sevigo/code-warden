@@ -94,6 +94,15 @@ Code-Warden follows an event-driven architecture with a multi-stage RAG pipeline
 | `internal/core/` | Domain types and interfaces |
 | `cmd/` | Server and CLI entry points |
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | High-level architecture, component relationships, separation of concerns |
+| [docs/RAG_ARCHITECTURE.md](docs/RAG_ARCHITECTURE.md) | Detailed RAG pipeline documentation (5-stage context building) |
+| [docs/IMPLEMENT_ARCHITECTURE.md](docs/IMPLEMENT_ARCHITECTURE.md) | `/implement` command architecture (agent orchestration) |
+| [docs/opencode-config.md](docs/opencode-config.md) | OpenCode agent configuration |
+
 ## Quick Start
 
 ### Prerequisites
