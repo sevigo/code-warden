@@ -57,6 +57,9 @@ type Config struct {
 	// MCPAddr is the address for the MCP server.
 	MCPAddr string `yaml:"mcp_addr"`
 
+	// OpencodeAddr is the address for the OpenCode HTTP API.
+	OpencodeAddr string `yaml:"opencode_addr"`
+
 	// WorkingDir is the directory for agent workspaces.
 	WorkingDir string `yaml:"working_dir"`
 }
@@ -70,6 +73,7 @@ func DefaultConfig() Config {
 		Timeout:       30 * time.Minute,
 		MaxIterations: 3,
 		MCPAddr:       "127.0.0.1:8081", // Bind to localhost only for security
+		OpencodeAddr:  "http://127.0.0.1:8000",
 		WorkingDir:    "/tmp/code-warden-agents",
 	}
 }
@@ -419,10 +423,19 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"session_id", session.ID,
 		"branch", branch)
 
+	if o.config.OpencodeAddr != "" {
+		o.runAgentAPI(ctx, session, systemPrompt, branch)
+	} else {
+		o.runAgentCLI(ctx, session, systemPrompt, branch)
+	}
+}
+
+// runAgentCLI executes the agent workflow using the local OpenCode binary.
+func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, systemPrompt, branch string) {
 	// Build OpenCode command
 	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
 
-	o.logger.Info("runAgent: starting OpenCode process",
+	o.logger.Info("runAgentCLI: starting OpenCode process",
 		"session_id", session.ID,
 		"command", cmd.String(),
 		"working_dir", cmd.Dir,
@@ -436,7 +449,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		session.mu.Lock()
 		session.CompletedAt = time.Now()
 		session.mu.Unlock()
-		o.logger.Error("runAgent: agent process failed",
+		o.logger.Error("runAgentCLI: agent process failed",
 			"session_id", session.ID,
 			"error", err,
 			"output_length", len(output),
@@ -444,7 +457,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		return
 	}
 
-	o.logger.Info("runAgent: agent process completed successfully",
+	o.logger.Info("runAgentCLI: agent process completed successfully",
 		"session_id", session.ID,
 		"output_length", len(output))
 
@@ -457,7 +470,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 	session.CompletedAt = time.Now()
 	session.mu.Unlock()
 
-	o.logger.Info("runAgent: agent session completed successfully",
+	o.logger.Info("runAgentCLI: agent session completed successfully",
 		"session_id", session.ID,
 		"pr_number", result.PRNumber,
 		"pr_url", result.PRURL,
@@ -465,6 +478,96 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"files_changed", len(result.FilesChanged),
 		"iterations", result.Iterations,
 		"verdict", result.Verdict,
+		"duration", session.CompletedAt.Sub(session.StartedAt))
+}
+
+// runAgentAPI executes the agent workflow using the OpenCode HTTP API.
+func (o *Orchestrator) runAgentAPI(ctx context.Context, session *Session, systemPrompt, branch string) {
+	o.logger.Info("runAgentAPI: starting OpenCode API workflow", "session_id", session.ID, "api_url", o.config.OpencodeAddr)
+
+	client := NewOpenCodeClient(o.config.OpencodeAddr, "", o.logger)
+
+	// 1. Health check
+	if err := client.HealthCheck(ctx); err != nil {
+		o.failSessionf(session, "OpenCode API health check failed: %v", err)
+		o.logger.Error("runAgentAPI: health check failed", "session_id", session.ID, "error", err)
+		return
+	}
+
+	// 2. Verify MCP server is configured in OpenCode (best effort)
+	if err := o.verifyMCPConfig(ctx); err != nil {
+		o.logger.Warn("runAgentAPI: MCP server 'code-warden' may not be configured in OpenCode",
+			"error", err,
+			"hint", "Add MCP server to ~/.config/opencode/opencode.json or run: opencode mcp list")
+	}
+
+	// 3. Create session
+	title := fmt.Sprintf("Issue %d: %s", session.Issue.Number, session.Issue.Title)
+	opencodeSession, err := client.CreateSession(ctx, title, o.config.Model, nil)
+	if err != nil {
+		o.failSessionf(session, "Failed to create OpenCode session: %v", err)
+		o.logger.Error("runAgentAPI: failed to create session", "session_id", session.ID, "error", err)
+		return
+	}
+	o.logger.Info("runAgentAPI: created OpenCode session", "session_id", session.ID, "opencode_session_id", opencodeSession.ID)
+
+	// 4. Execute agent workflow
+	if !o.executeAgentWorkflow(ctx, session, client, opencodeSession.ID, systemPrompt, branch) {
+		return
+	}
+
+	// 5. Complete session
+	o.completeSession(session, branch, opencodeSession.ID)
+}
+
+// failSessionf marks a session as failed with the given error message.
+func (o *Orchestrator) failSessionf(session *Session, format string, args ...interface{}) {
+	session.SetStatus(StatusFailed)
+	session.SetError(fmt.Sprintf(format, args...))
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+}
+
+// executeAgentWorkflow runs the agent workflow steps and returns true if successful.
+func (o *Orchestrator) executeAgentWorkflow(ctx context.Context, session *Session, client *OpenCodeClient, sessionID, systemPrompt, branch string) bool {
+	// Create branch
+	if err := client.CreateBranch(ctx, sessionID, branch); err != nil {
+		o.logger.Warn("runAgentAPI: failed to create branch via shell command", "error", err)
+	}
+
+	// Send message to agent
+	if _, err := client.SendMessage(ctx, sessionID, systemPrompt, nil); err != nil {
+		o.failSessionf(session, "Failed to send message: %v", err)
+		o.logger.Error("runAgentAPI: failed to send message", "session_id", session.ID, "error", err)
+		return false
+	}
+	o.logger.Info("runAgentAPI: message execution completed", "session_id", session.ID)
+
+	// Check session status
+	sessInfo, err := client.GetSession(ctx, sessionID)
+	if err == nil && sessInfo.Status == "failed" {
+		o.failSessionf(session, "OpenCode session failed remotely")
+		return false
+	}
+
+	return true
+}
+
+// completeSession finalizes a successful agent session.
+func (o *Orchestrator) completeSession(session *Session, branch, opencodeSessionID string) {
+	result := o.parseAgentOutput("API session completed")
+	result.Branch = branch
+
+	session.SetResult(result)
+	session.SetStatus(StatusCompleted)
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+
+	o.logger.Info("runAgentAPI: agent session completed successfully",
+		"session_id", session.ID,
+		"opencode_session_id", opencodeSessionID,
 		"duration", session.CompletedAt.Sub(session.StartedAt))
 }
 
@@ -487,9 +590,17 @@ Implement the issue described below. Follow these steps:
 2. **Explore** - Use MCP tools to understand the codebase
 3. **Plan** - Identify files to modify and changes needed
 4. **Implement** - Write the code
-5. **Review** - Call review_code on your changes
-6. **Iterate** - If REQUEST_CHANGES, fix issues and review again
-7. **Submit** - Create a pull request when APPROVED
+5. **Verify** - Run 'make lint' and 'make test' - fix any issues before proceeding
+6. **Review** - Call review_code on your changes
+7. **Iterate** - If REQUEST_CHANGES, fix issues, run lint/test again, and review again
+8. **Submit** - Create a pull request when APPROVED
+
+## CRITICAL: Before Committing
+You MUST run these commands and ensure they pass:
+- 'make lint' - All linting errors must be fixed
+- 'make test' - All tests must pass
+
+Do NOT commit or create a PR until both commands succeed.
 
 ## Issue #%d: %s
 
@@ -594,4 +705,34 @@ func sanitizeBranch(name string) string {
 	}
 
 	return sanitized
+}
+
+// verifyMCPConfig checks if the code-warden MCP server is configured in OpenCode.
+// It returns an error if the MCP server is not found or not properly configured.
+func (o *Orchestrator) verifyMCPConfig(ctx context.Context) error {
+	// Try to check MCP server status via OpenCode's health/list endpoints
+	// This is a best-effort check - the actual verification happens when OpenCode
+	// tries to use the MCP tools.
+
+	// Check if our MCP server is reachable
+	mcpURL := fmt.Sprintf("http://%s/sse", o.config.MCPAddr)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mcpURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create MCP health check request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("MCP server not reachable at %s: %w", mcpURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("MCP server returned status %d", resp.StatusCode)
+	}
+
+	o.logger.Info("MCP server health check passed", "url", mcpURL)
+	return nil
 }

@@ -260,7 +260,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 	chain := chains.NewMapReduceChain(
 		r.consensusMapFunc(event, promptData, &modelResults, &modelResultsMu, reviewsDir, timestamp),
 		r.consensusReduceFunc(repoConfig, event, contextString, changedFiles, contextBuildTime),
-		chains.WithMaxConcurrency[string, ComparisonResult, string](5),
+		chains.WithMaxConcurrency[string, ComparisonResult, string](2),
 		chains.WithQuorum[string, ComparisonResult, string](r.cfg.AI.ConsensusQuorum),
 	)
 

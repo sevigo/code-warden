@@ -50,6 +50,9 @@ type AgentConfig struct {
 	// MCPAddr is the address for the MCP server.
 	MCPAddr string `mapstructure:"mcp_addr"`
 
+	// OpencodeAddr is the address of the opencode server API.
+	OpencodeAddr string `mapstructure:"opencode_addr"`
+
 	// WorkingDir is the directory for agent workspaces.
 	WorkingDir string `mapstructure:"working_dir"`
 }
@@ -375,6 +378,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.timeout", "30m")
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
+	v.SetDefault("agent.opencode_addr", "http://127.0.0.1:8000")
 	v.SetDefault("agent.working_dir", "") // Empty means disabled/no default; must be explicitly set
 }
 

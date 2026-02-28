@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
@@ -26,6 +28,17 @@ type Server struct {
 	projectRoot string
 	logger      *slog.Logger
 	tools       map[string]Tool
+
+	// SSE session management
+	sessionsMu sync.RWMutex
+	sessions   map[string]*sseSession
+}
+
+// sseSession represents an active SSE connection.
+type sseSession struct {
+	id       string
+	messages chan []byte
+	done     chan struct{}
 }
 
 // Tool represents an MCP tool that can be called by an agent.
@@ -69,6 +82,7 @@ func NewServer(
 		projectRoot: projectRoot,
 		logger:      logger,
 		tools:       make(map[string]Tool),
+		sessions:    make(map[string]*sseSession),
 	}
 
 	// Register default tools
@@ -156,11 +170,100 @@ type Error struct {
 }
 
 // ServeHTTP implements http.Handler for the MCP server.
+// It supports both SSE transport (GET /sse, POST /message) and direct JSON-RPC (POST /).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/sse":
+		s.handleSSE(w, r)
+	case "/message":
+		s.handleMessage(w, r)
+	default:
+		// Direct JSON-RPC for backwards compatibility
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleJSONRPC(w, r)
+	}
+}
+
+// handleSSE handles SSE transport connections.
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if flusher is supported
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Generate session ID
+	sessionID := generateSessionID()
+
+	// Create session
+	session := &sseSession{
+		id:       sessionID,
+		messages: make(chan []byte, 100),
+		done:     make(chan struct{}),
+	}
+
+	s.sessionsMu.Lock()
+	s.sessions[sessionID] = session
+	s.sessionsMu.Unlock()
+
+	defer func() {
+		s.sessionsMu.Lock()
+		delete(s.sessions, sessionID)
+		s.sessionsMu.Unlock()
+		close(session.done)
+	}()
+
+	// Send endpoint event - tells client where to send messages
+	endpointEvent := fmt.Sprintf("event: endpoint\ndata: /message?sessionId=%s\n\n", sessionID)
+	fmt.Fprint(w, endpointEvent)
+	flusher.Flush()
+
+	s.logger.Info("SSE client connected", "session_id", sessionID)
+
+	// Keep connection alive and send messages
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			s.logger.Info("SSE client disconnected", "session_id", sessionID)
+			return
+		case msg := <-session.messages:
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+			flusher.Flush()
+		case <-ticker.C:
+			// Send keepalive comment
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// handleMessage handles JSON-RPC messages from SSE clients.
+func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Get session ID from query
+	sessionID := r.URL.Query().Get("sessionId")
 
 	var req Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -168,35 +271,89 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var result any
-	var err error
+	// Process the request
+	result, err := s.processRequest(r.Context(), &req)
+	if err != nil {
+		s.writeError(w, req.ID, err.Code, err.Message)
+		return
+	}
 
+	// If we have a session, send response via SSE
+	if sessionID != "" {
+		s.sessionsMu.RLock()
+		session, ok := s.sessions[sessionID]
+		s.sessionsMu.RUnlock()
+
+		if ok {
+			resp := Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  result,
+			}
+			respBytes, _ := json.Marshal(resp)
+			select {
+			case session.messages <- respBytes:
+			default:
+				s.logger.Warn("session message channel full", "session_id", sessionID)
+			}
+		}
+	}
+
+	// Also send HTTP response for acknowledgement
+	s.writeResult(w, req.ID, result)
+}
+
+// handleJSONRPC handles direct JSON-RPC requests (backwards compatibility).
+func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
+	var req Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, nil, -32700, "parse error")
+		return
+	}
+
+	result, err := s.processRequest(r.Context(), &req)
+	if err != nil {
+		s.writeError(w, req.ID, err.Code, err.Message)
+		return
+	}
+
+	s.writeResult(w, req.ID, result)
+}
+
+// jsonRPCError represents a JSON-RPC error.
+type jsonRPCError struct {
+	Code    int
+	Message string
+}
+
+// processRequest processes a JSON-RPC request and returns the result.
+func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRPCError) {
 	switch req.Method {
 	case "tools/list":
-		result = map[string]any{
+		return map[string]any{
 			"tools": s.ListTools(),
-		}
+		}, nil
+
 	case "tools/call":
 		var params struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			s.writeError(w, req.ID, -32602, "invalid params")
-			return
+			return nil, &jsonRPCError{Code: -32602, Message: "invalid params"}
 		}
-		result, err = s.CallTool(r.Context(), params.Name, params.Arguments)
+		result, err := s.CallTool(ctx, params.Name, params.Arguments)
 		if err != nil {
-			s.writeError(w, req.ID, -32603, err.Error())
-			return
+			return nil, &jsonRPCError{Code: -32603, Message: err.Error()}
 		}
-		result = map[string]any{
+		return map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": mustMarshal(result)},
 			},
-		}
+		}, nil
+
 	case "initialize":
-		result = map[string]any{
+		return map[string]any{
 			"protocolVersion": "2024-11-05",
 			"serverInfo": map[string]any{
 				"name":    "code-warden-mcp",
@@ -205,13 +362,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
 			},
-		}
-	default:
-		s.writeError(w, req.ID, -32601, "method not found")
-		return
-	}
+		}, nil
 
-	s.writeResult(w, req.ID, result)
+	case "ping":
+		return map[string]any{}, nil
+
+	default:
+		return nil, &jsonRPCError{Code: -32601, Message: "method not found"}
+	}
 }
 
 func (s *Server) writeResult(w http.ResponseWriter, id any, result any) {
@@ -246,4 +404,9 @@ func (s *Server) writeError(w http.ResponseWriter, id any, code int, message str
 func mustMarshal(v any) string {
 	b, _ := json.MarshalIndent(v, "", "  ")
 	return string(b)
+}
+
+// generateSessionID creates a unique session ID for SSE connections.
+func generateSessionID() string {
+	return fmt.Sprintf("sess_%d", time.Now().UnixNano())
 }

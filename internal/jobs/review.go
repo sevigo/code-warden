@@ -163,6 +163,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			Timeout:       timeout,
 			MaxIterations: j.cfg.Agent.MaxIterations,
 			MCPAddr:       j.cfg.Agent.MCPAddr,
+			OpencodeAddr:  j.cfg.Agent.OpencodeAddr,
 			WorkingDir:    j.cfg.Agent.WorkingDir,
 		},
 		j.logger,
