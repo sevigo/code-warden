@@ -1,4 +1,10 @@
-// Package agent provides the OpenCode client for interacting with the OpenCode server.
+// Package agent provides the OpenCode HTTP client and orchestrator for autonomous coding.
+// It handles communication with the OpenCode server for executing agent tasks like
+// creating branches, committing changes, and creating pull requests.
+//
+// The package supports two modes:
+//   - CLI mode: Executes OpenCode CLI directly (recommended for actual code execution)
+//   - HTTP API mode: Communicates with OpenCode server via HTTP (for remote execution)
 package agent
 
 import (
@@ -15,11 +21,17 @@ import (
 	"time"
 )
 
-// safeBranchNameRegex validates that branch names contain only safe characters.
-var safeBranchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
+// Input validation constants.
+const (
+	// maxBranchNameLength is the maximum length for git branch names (git limit is 255 bytes).
+	maxBranchNameLength = 255
+	// DefaultAgent is the default OpenCode agent type.
+	DefaultAgent = "build"
+)
 
-// maxBranchNameLength is the maximum length for git branch names.
-const maxBranchNameLength = 255
+// safeBranchNameRegex validates that branch names contain only safe characters.
+// This prevents shell injection and ensures valid git branch names.
+var safeBranchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
 // shellQuote safely quotes a string for shell execution by wrapping in single quotes
 // and escaping any existing single quotes.
@@ -60,9 +72,6 @@ func (e *APIError) Error() string {
 	}
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
 }
-
-// DefaultAgent is the default OpenCode agent type.
-const DefaultAgent = "build"
 
 // OpenCodeClient handles communication with the OpenCode HTTP API.
 type OpenCodeClient struct {

@@ -95,6 +95,8 @@ opencode serve &>/tmp/opencode.log &
 
 When connected, the agent has access to these MCP tools:
 
+### Code Understanding Tools
+
 | Tool | Description |
 |------|-------------|
 | `search_code` | Search for code using semantic similarity |
@@ -102,6 +104,49 @@ When connected, the agent has access to these MCP tools:
 | `get_symbol` | Get type/function definition by name |
 | `get_structure` | Get project structure overview |
 | `review_code` | Request internal code review |
+
+### GitHub Integration Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_pull_request` | Create a pull request with title, body, and branch |
+| `list_issues` | List repository issues with filtering options |
+| `get_issue` | Get detailed information about a specific issue |
+
+These tools allow agents to:
+1. Understand what needs to be implemented (`get_issue`, `list_issues`)
+2. Explore the codebase (`search_code`, `get_arch_context`, `get_symbol`)
+3. Validate changes (`review_code`)
+4. Submit work (`create_pull_request`)
+
+## Agent Modes
+
+### CLI Mode (Recommended)
+
+When `opencode_addr` is empty or not set, the agent uses CLI mode:
+
+```yaml
+agent:
+  enabled: true
+  opencode_addr: ""  # Empty = CLI mode
+```
+
+CLI mode is recommended because:
+- ✅ Actually executes commands (git, make, etc.)
+- ✅ Better integration with MCP tools
+- ✅ Simpler architecture
+
+### HTTP API Mode
+
+When `opencode_addr` is set, the agent uses HTTP API mode:
+
+```yaml
+agent:
+  enabled: true
+  opencode_addr: "http://127.0.0.1:4096"
+```
+
+⚠️ **Note**: HTTP API mode may not execute commands automatically. The agent responds to prompts but may not run shell commands or use MCP tools without additional configuration.
 
 ## Troubleshooting
 

@@ -1,5 +1,20 @@
-// Package main provides a simple MCP server for testing tool calling.
-// Run: go run ./cmd/mcp-test
+// Package main provides a standalone MCP test server for validating tool calling.
+//
+// This is a simple MCP server that implements three fun tools:
+//   - roll_dice: Roll dice and get random results (great for making decisions!)
+//   - echo: Echo back messages with customizable enthusiasm levels
+//   - get_time: Get the current time in various formats
+//
+// Usage:
+//
+//	go run ./cmd/mcp-test
+//	curl http://127.0.0.1:8082/tools
+//	curl -X POST http://127.0.0.1:8082/ -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"roll_dice","arguments":{"sides":20,"count":3}}}'
+//
+// This server is useful for:
+//   - Testing MCP client implementations
+//   - Validating tool discovery and execution
+//   - Debugging SSE transport issues
 package main
 
 import (

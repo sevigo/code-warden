@@ -1,3 +1,6 @@
+// Package mcp provides GitHub-related MCP tools for agent operations.
+// These tools allow agents to interact with GitHub issues and pull requests
+// through the Model Context Protocol interface.
 package mcp
 
 import (
@@ -8,7 +11,8 @@ import (
 	"github.com/sevigo/code-warden/internal/github"
 )
 
-// CreatePRTool creates a pull request.
+// CreatePRTool creates a pull request in the repository.
+// It requires the agent to have write access to the repository.
 type CreatePRTool struct {
 	ghClient github.Client
 	repo     struct {
