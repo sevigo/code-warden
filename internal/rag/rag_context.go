@@ -20,14 +20,15 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+// buildContextForPrompt formats retrieved documents into a prompt-ready string,
+// grouped by source file with deduplication.
 func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	if len(docs) == 0 {
 		return ""
 	}
 
-	// Dedup by key
 	seenDocs := make(map[string]struct{})
-	unique := docs[:0]
+	unique := make([]schema.Document, 0, len(docs))
 	for _, doc := range docs {
 		key := r.getDocKey(doc)
 		if _, exists := seenDocs[key]; exists {
@@ -77,7 +78,8 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 	return contextBuilder.String()
 }
 
-// mergeChunksForFile merges consecutive chunks from the same source file.
+// mergeChunksForFile joins consecutive document chunks from the same file,
+// detecting and removing overlapping content between adjacent chunks.
 func mergeChunksForFile(docs []schema.Document, r *ragService) string {
 	if len(docs) == 1 {
 		return r.getDocContent(docs[0])
@@ -103,7 +105,8 @@ func mergeChunksForFile(docs []schema.Document, r *ragService) string {
 	return merged.String()
 }
 
-// findOverlapStart returns the length of the longest suffix of prev that is also a prefix of curr.
+// findOverlapStart returns the length of the longest suffix of prev
+// that is also a prefix of curr, capped at 300 characters.
 func findOverlapStart(prev, curr string) int {
 	const maxOverlap = 300
 	overlap := len(prev)
@@ -124,7 +127,7 @@ func findOverlapStart(prev, curr string) int {
 	return 0
 }
 
-// filterAddedLines extracts only the added ('+') lines from a git patch.
+// filterAddedLines extracts only added ('+') lines from a unified diff patch.
 func filterAddedLines(patch string) string {
 	lines := strings.Split(patch, "\n")
 	var added []string
@@ -136,17 +139,15 @@ func filterAddedLines(patch string) string {
 	return strings.Join(added, "\n")
 }
 
-// extractSymbolsFromPatch extracts potential type/function names from a git patch.
+// extractSymbolsFromPatch extracts type and function names from added lines in a diff patch.
 func extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
 
-	// Only extract from added lines — never from deleted lines.
 	addedOnly := filterAddedLines(patch)
 	if addedOnly == "" {
 		return nil
 	}
 
-	// Use pre-compiled regexes from package level
 	patterns := []*regexp.Regexp{
 		symbolTypeDefRegex,
 		symbolFuncDefRegex,
@@ -171,25 +172,26 @@ func extractSymbolsFromPatch(patch string) []string {
 	return result
 }
 
-// resolvedDefinition holds a resolved symbol definition for building the output.
+// resolvedDefinition holds a resolved symbol definition.
 type resolvedDefinition struct {
 	Symbol  string
 	Source  string
 	Content string
 }
 
-// maxDepth0Symbols caps the number of symbols from Depth-0 (diff extraction).
+// maxDepth0Symbols caps the number of symbols extracted from the diff.
 const maxDepth0Symbols = 25
 
-// maxDepth2Symbols caps the number of transitive symbols resolved at Depth-2.
+// maxDepth2Symbols caps the number of transitive symbols resolved.
 const maxDepth2Symbols = 15
 
-// maxSymbolWorkers limits concurrent DefinitionRetriever lookups at each depth.
+// maxSymbolWorkers limits concurrent definition lookups per depth level.
 const maxSymbolWorkers = 10
 
-// gatherDefinitionsContext extracts symbols from changed files and retrieves their definitions.
+// gatherDefinitionsContext extracts symbols from changed files and resolves
+// their type definitions via the vector store.
 //
-//nolint:unparam // error is always nil for now but required for errgroup consistency
+//nolint:unparam // error always nil but signature required for errgroup
 func (r *ragService) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile) (string, error) {
 	if len(changedFiles) == 0 {
 		return "", nil
@@ -366,14 +368,15 @@ func (r *ragService) extractTransitiveSymbols(source, content string) []string {
 	return symbols
 }
 
-// mapKeysToSlice converts a map's keys to a slice, capping at maxLen.
+// mapKeysToSlice converts a map's keys to a sorted slice, capped at maxLen.
 func mapKeysToSlice(m map[string]struct{}, maxLen int) []string {
-	result := make([]string, 0, min(len(m), maxLen))
+	result := make([]string, 0, len(m))
 	for k := range m {
 		result = append(result, k)
-		if len(result) >= maxLen {
-			break
-		}
+	}
+	sort.Strings(result)
+	if len(result) > maxLen {
+		result = result[:maxLen]
 	}
 	return result
 }
@@ -410,7 +413,9 @@ func (r *ragService) resolveSymbolDefinition(ctx context.Context, symbol string,
 	return source, content, true
 }
 
-// buildRelevantContext performs similarity searches to find related code snippets.
+// buildRelevantContext performs similarity searches to gather context for a review.
+// It runs 5 stages concurrently: arch context, HyDE, impact analysis,
+// description matching, and symbol resolution.
 func (r *ragService) buildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string) {
 	if len(changedFiles) == 0 {
 		return "", ""
@@ -509,7 +514,8 @@ func (r *ragService) buildContextConcurrently(
 	return results
 }
 
-//nolint:unparam // error is always nil for now but required for errgroup consistency
+//
+//nolint:unparam // error always nil but signature required for errgroup
 func (r *ragService) gatherArchContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) (string, error) {
 	r.logger.Info("stage started", "name", "ArchitecturalContext")
 	ac := r.getArchContext(ctx, store, files)
@@ -517,8 +523,7 @@ func (r *ragService) gatherArchContextSafe(ctx context.Context, store storage.Sc
 	return ac, nil
 }
 
-// mergeAndDedup merges document slices and deduplicates them by a key function.
-// The output order is deterministic: docs are sorted by key after dedup.
+// mergeAndDedup deduplicates documents by key and returns them sorted by source.
 func mergeAndDedup(docs []schema.Document, keyFn func(schema.Document) string) []schema.Document {
 	seen := make(map[string]schema.Document, len(docs))
 	for _, d := range docs {
@@ -539,7 +544,8 @@ func mergeAndDedup(docs []schema.Document, keyFn func(schema.Document) string) [
 	return unique
 }
 
-// splitAndFormatDocs splits merged docs back into impact/description buckets and formats them.
+// splitAndFormatDocs splits merged docs into impact and description buckets,
+// validates description snippets for relevance, and formats both.
 func (r *ragService) splitAndFormatDocs(
 	ctx context.Context,
 	allDocs []schema.Document,
@@ -631,7 +637,7 @@ func (r *ragService) formatSplitDocs(
 	return impactBuilder.String(), descCtx
 }
 
-// gatherDescriptionDocs finds documents related to the PR description.
+// gatherDescriptionDocs retrieves documents semantically similar to the PR description.
 func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embedder, description string) ([]schema.Document, error) {
 	r.logger.Info("stage started", "name", "DescriptionContext")
 
@@ -672,7 +678,7 @@ func (r *ragService) gatherDescriptionDocs(ctx context.Context, collection, embe
 	return allDocs, nil
 }
 
-// gatherImpactDocs returns raw impact docs without formatting.
+// gatherImpactDocs retrieves documents for callers and usages of changed symbols.
 func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) ([]schema.Document, error) {
 	r.logger.Info("stage started", "name", "ImpactAnalysis")
 	docs, err := r.getImpactDocs(ctx, store, repoPath, files)
@@ -680,24 +686,24 @@ func (r *ragService) gatherImpactDocs(ctx context.Context, store storage.ScopedV
 	return docs, err
 }
 
-// assembleContext assembles the final prompt context using the contextpacker.
+// assembleContext packs all context sections into a single string
+// within the configured token budget.
 func (r *ragService) assembleContext(
 	ctx context.Context,
 	arch, impact, description, definitions string,
 	hyde [][]schema.Document, indices []int,
 	files []internalgithub.ChangedFile,
 ) string {
-	// Build documents with priority-based ordering for the packer
-	// Priority (highest first): Definitions > Description > Impact > Arch > HyDE
+	// Priority order: Definitions > Description > Impact > Arch > HyDE.
 	docs := r.buildContextDocuments(arch, impact, description, definitions, hyde, indices, files)
 
-	// Nil check for defensive programming
+	// Nil check for defensive programming.
 	if r.contextPacker == nil {
 		r.logger.Error("context packer not initialized, using limited fallback")
 		return r.fallbackConcat(docs)
 	}
 
-	// Pack documents using the contextpacker with proper context propagation
+	// Pack documents within the token budget.
 	result, err := r.contextPacker.Pack(ctx, docs)
 	if err != nil {
 		r.logger.Error("context packer failed, using limited fallback - token budget may not be enforced", "error", err)
@@ -719,13 +725,13 @@ func (r *ragService) assembleContext(
 	return result.Content
 }
 
-// fallbackConcat provides a safe fallback when contextpacker is unavailable.
-// It uses character-based estimation to respect token budget.
+// fallbackConcat concatenates documents with a character-based token budget
+// when the context packer is unavailable.
 func (r *ragService) fallbackConcat(docs []schema.Document) string {
-	const tokensPerChar = 3
-	maxChars := r.cfg.AI.ContextTokenBudget * tokensPerChar
+	const charsPerToken = 4
+	maxChars := r.cfg.AI.ContextTokenBudget * charsPerToken
 	if maxChars <= 0 {
-		maxChars = 48000 // Default: 16000 tokens * 3
+		maxChars = 64000 // Default: 16000 tokens * 4
 	}
 
 	var fallback strings.Builder
@@ -891,7 +897,8 @@ func (r *ragService) isArchDocument(doc schema.Document) bool {
 	return ok && ct == "arch"
 }
 
-// stripPatchNoise removes git metadata and deleted lines, preserving additions and context for semantic search.
+// stripPatchNoise removes git metadata and deleted lines from a patch,
+// preserving additions and context for semantic search.
 func stripPatchNoise(query string) string {
 	if query == "" {
 		return ""
@@ -928,8 +935,7 @@ func stripPatchNoise(query string) string {
 	return strings.Join(cleanLines, "\n")
 }
 
-// preFilterBM25 performs a simple keyword-overlap based ranking to trim results
-// before sending them to the expensive reranker.
+// preFilterBM25 ranks docs by keyword overlap with the query and returns the top-K.
 func preFilterBM25(query string, docs []schema.Document, topK int) []schema.Document {
 	if len(docs) <= topK {
 		return docs
@@ -977,6 +983,7 @@ func preFilterBM25(query string, docs []schema.Document, topK int) []schema.Docu
 	return result
 }
 
+// getDocKey returns a deduplication key for a document.
 func (r *ragService) getDocKey(doc schema.Document) string {
 	source, _ := doc.Metadata["source"].(string)
 	identifier, _ := doc.Metadata["identifier"].(string)
@@ -994,6 +1001,8 @@ func (r *ragService) getDocKey(doc schema.Document) string {
 	return hex.EncodeToString(h[:])
 }
 
+// getDocContent returns the best available content for a document,
+// preferring the full parent text over the chunk content.
 func (r *ragService) getDocContent(doc schema.Document) string {
 	if parentText, ok := doc.Metadata["full_parent_text"].(string); ok && parentText != "" {
 		return parentText

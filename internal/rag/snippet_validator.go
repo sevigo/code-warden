@@ -11,13 +11,13 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 )
 
-// snippetValidator validates whether code snippets are relevant to a PR description.
+// snippetValidator validates code snippet relevance to a PR via batch LLM calls.
 type snippetValidator struct {
 	validatorLLM llms.Model
 	promptMgr    *llm.PromptManager
 }
 
-// newSnippetValidator creates a new validator.
+// newSnippetValidator creates a new [snippetValidator].
 func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) *snippetValidator {
 	return &snippetValidator{
 		validatorLLM: validatorLLM,
@@ -25,11 +25,10 @@ func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) 
 	}
 }
 
-// batchValidationResult is the parsed JSON result from a batch validation call:
-// {"0": true, "1": false, ...}
+// batchValidationResult maps snippet index (as string) to relevance boolean.
 type batchValidationResult map[string]bool
 
-// validateBatch validates all snippets in a single call.
+// validateBatch validates all snippets in a single LLM call, returning relevance per index.
 func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string, prContext string) map[int]bool {
 	result := make(map[int]bool, len(snippets))
 	for i := range snippets {
@@ -60,7 +59,7 @@ func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string,
 	return result
 }
 
-// buildBatchPrompt constructs the prompt for batch validation.
+// buildBatchPrompt constructs the prompt for batch snippet validation.
 func (v *snippetValidator) buildBatchPrompt(snippets []string, prContext string) (string, error) {
 	var snippetList strings.Builder
 	for i, s := range snippets {
@@ -82,7 +81,7 @@ func (v *snippetValidator) buildBatchPrompt(snippets []string, prContext string)
 	})
 }
 
-// applyParsedResults applies the relevance decisions to the result map.
+// applyParsedResults maps LLM validation results back to the result map by index.
 func applyParsedResults(parsed batchValidationResult, snippetCount int, result map[int]bool) {
 	for k, relevant := range parsed {
 		idx, err := strconv.Atoi(strings.TrimSpace(k))

@@ -19,7 +19,7 @@ type depRequest struct {
 	File    internalgithub.ChangedFile
 }
 
-// getImpactDocs returns related documents for impact analysis.
+// getImpactDocs retrieves documents for callers and dependents of changed code.
 func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) ([]schema.Document, error) {
 	retriever, err := vectorstores.NewDependencyRetriever(store)
 	if err != nil {
@@ -45,6 +45,8 @@ func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVect
 	return docs, nil
 }
 
+// buildImpactRequests extracts package names and imports from changed files
+// to construct dependency retrieval queries.
 func (r *ragService) buildImpactRequests(repoPath string, files []internalgithub.ChangedFile) []depRequest {
 	reqs := make([]depRequest, 0, len(files))
 	for _, f := range files {

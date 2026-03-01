@@ -21,9 +21,10 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// SetupRepoContext processes a repository for the first time or re-indexes it using Smart Scan.
+// SetupRepoContext indexes a repository for the first time or re-indexes
+// using smart scan (file-hash based skipping).
 //
-//nolint:cyclop,gocyclo,gocognit,funlen // Orchestrates complex smart-scan workflow.
+//nolint:cyclop,gocyclo,gocognit,funlen // orchestrates complex smart-scan workflow
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
 	r.logger.Info("performing smart indexing with GoFrame GitLoader",
 		"path", repoPath,
@@ -291,7 +292,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	return nil
 }
 
-// computeFileHash calculates SHA256 hash of a file
+// computeFileHash returns the SHA-256 hex digest of a file.
 func computeFileHash(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -306,7 +307,9 @@ func computeFileHash(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// UpdateRepoContext incrementally updates the vector store based on file changes.
+// UpdateRepoContext incrementally updates the vector store for changed files.
+//
+//nolint:gocognit,nestif,funlen // incremental sync has inherently complex control flow
 func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -398,6 +401,27 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		if _, err := scopedStore.AddDocuments(ctx, allDocs); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
+
+		// Update file hashes so smart-scan can skip these files next time.
+		var fileRecords []storage.FileRecord
+		for _, f := range filesToProcess {
+			fullPath := filepath.Join(repoPath, f)
+			hash, err := computeFileHash(fullPath)
+			if err != nil {
+				r.logger.Warn("failed to hash file for tracking", "file", f, "error", err)
+				continue
+			}
+			fileRecords = append(fileRecords, storage.FileRecord{
+				RepositoryID: repo.ID,
+				FilePath:     f,
+				FileHash:     hash,
+			})
+		}
+		if len(fileRecords) > 0 {
+			if err := r.store.UpsertFiles(ctx, repo.ID, fileRecords); err != nil {
+				r.logger.Warn("failed to update file hashes in DB", "error", err)
+			}
+		}
 	}
 
 	// Trigger targeted arch summary re-generation
@@ -408,7 +432,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	return nil
 }
 
-// ProcessFile reads, parses, and chunks a single file.
+// ProcessFile reads, parses, and chunks a single file for indexing.
 func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 
@@ -419,9 +443,7 @@ func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []s
 		return nil
 	}
 
-	// Sanitize content to ensure valid UTF-8.
-	// Use GoFrame's code-aware splitter for OOM protection and exact graph navigation.
-	// We wrap the raw content in a schema.Document and let the splitter handle it.
+	// Ensure valid UTF-8 and create a document for the splitter.
 	validContent := strings.ToValidUTF8(string(contentBytes), "")
 	doc := schema.NewDocument(validContent, map[string]any{
 		"source": file,
@@ -469,14 +491,13 @@ func isTestFile(path string) bool {
 	return false
 }
 
-// isLogicFile returns true if the file is a likely code/logic file.
+// isLogicFile returns true if the file has a recognized code extension.
 func isLogicFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return llm.IsCodeExtension(ext)
 }
 
-// filterFilesByExtensions removes files from a slice if their extension matches
-// one of the provided excluded extensions.
+// filterFilesByExtensions removes files whose extension matches an excluded extension.
 func filterFilesByExtensions(files []string, excludeExts []string) []string {
 	if len(excludeExts) == 0 {
 		return files
@@ -499,8 +520,7 @@ func filterFilesByExtensions(files []string, excludeExts []string) []string {
 	return filtered
 }
 
-// filterFilesByValidExtensions removes files from a slice if their extension is not
-// in the whitelist of supported extensions. This ensures consistency with the scanner.
+// filterFilesByValidExtensions keeps only files with whitelisted extensions.
 func filterFilesByValidExtensions(files []string) []string {
 	filtered := make([]string, 0, len(files))
 	for _, file := range files {
@@ -512,14 +532,12 @@ func filterFilesByValidExtensions(files []string) []string {
 	return filtered
 }
 
-// buildExcludeDirs creates the final list of directories to exclude, combining
-// application defaults with user-configured exclusions.
+// buildExcludeDirs combines default and user-configured directory exclusions.
 func (r *ragService) buildExcludeDirs(repoConfig *core.RepoConfig) []string {
 	return core.BuildExcludeDirs(repoConfig.ExcludeDirs)
 }
 
-// filterFilesByDirectories removes files from a slice if they are located within
-// any of the excluded directories.
+// filterFilesByDirectories removes files located within any excluded directory.
 func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []string) []string {
 	if len(excludeDirs) == 0 {
 		return files
@@ -527,7 +545,6 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 
 	filtered := make([]string, 0, len(files))
 	for _, file := range files {
-		// Normalize the file path to forward slashes for cross-platform consistency
 		cleanFile := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(file, string(filepath.Separator))))
 
 		isExcluded := false
@@ -556,8 +573,7 @@ func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []stri
 	return filtered
 }
 
-// filterFilesBySpecificFiles removes files from a slice if their path matches
-// one of the provided excluded specific files.
+// filterFilesBySpecificFiles removes files matching any excluded file path.
 func filterFilesBySpecificFiles(files []string, excludeFiles []string) []string {
 	if len(excludeFiles) == 0 {
 		return files

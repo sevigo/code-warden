@@ -12,12 +12,14 @@ import (
 	"github.com/sevigo/goframe/vectorstores"
 )
 
+// QuestionPromptData holds data for the Q&A prompt template.
 type QuestionPromptData struct {
 	History  string
 	Context  string
 	Question string
 }
 
+// AnswerQuestion retrieves relevant documents and generates an answer via LLM.
 func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
 	r.logger.Info("answering question", "collection", collectionName)
 
@@ -47,7 +49,7 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 	return r.answerWithoutValidation(ctx, retriever, question, history)
 }
 
-// answerWithValidation uses ValidatingRetrievalQA to validate context before answering.
+// answerWithValidation uses a fast validator LLM to filter irrelevant context before answering.
 func (r *ragService) answerWithValidation(ctx context.Context, retriever schema.Retriever, validatorLLM llms.Model, question string, history []string) (string, error) {
 	chain, err := chains.NewValidatingRetrievalQA(
 		retriever,
@@ -73,7 +75,7 @@ func (r *ragService) answerWithValidation(ctx context.Context, retriever schema.
 	return answer, nil
 }
 
-// answerWithoutValidation uses standard RetrievalQA without context validation.
+// answerWithoutValidation uses standard RetrievalQA without context filtering.
 func (r *ragService) answerWithoutValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
 	chain, err := chains.NewRetrievalQA(
 		retriever,
@@ -106,9 +108,8 @@ func (r *ragService) answerWithoutValidation(ctx context.Context, retriever sche
 	return answer, nil
 }
 
-// enrichAnswerWithContext adds conversation history context to the answer when needed.
-// The history parameter is currently unused but reserved for future implementation
-// of multi-turn conversation support with GoFrame's validation prompts extension.
+// enrichAnswerWithContext is a placeholder for future multi-turn conversation support.
+// Currently returns the answer unchanged.
 func (r *ragService) enrichAnswerWithContext(answer string, _ []string) string {
 	// TODO: Implement history incorporation with GoFrame's validation prompts extension.
 	// The ValidatingRetrievalQA already considers context relevance.

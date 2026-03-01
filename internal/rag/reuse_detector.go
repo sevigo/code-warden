@@ -21,7 +21,7 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// ReuseSuggestion represents a detected potential code redundancy.
+// ReuseSuggestion represents a detected code redundancy with confidence score.
 type ReuseSuggestion struct {
 	FilePath     string  `json:"file_path"`
 	LineNumber   int     `json:"line_number"`
@@ -39,7 +39,7 @@ type extractedFunction struct {
 	LineNum  int // Approximate line number in the file
 }
 
-// ReuseDetector detects potential code redundancies using the Intent-Match pattern.
+// ReuseDetector detects code redundancies using intent-match similarity search.
 type ReuseDetector struct {
 	llm         llms.Model
 	promptMgr   *llm.PromptManager
@@ -50,7 +50,7 @@ type ReuseDetector struct {
 	funcPattern *regexp.Regexp
 }
 
-// verificationResult represents the LLM's verdict on code redundancy.
+// verificationResult holds the LLM's verdict on whether code is redundant.
 type verificationResult struct {
 	IsRedundant bool    `json:"is_redundant"`
 	Confidence  float64 `json:"confidence"`
@@ -75,7 +75,7 @@ func NewReuseDetector(
 	}
 }
 
-// DetectRedundancies analyzes changed files and returns potential reuse suggestions.
+// DetectRedundancies analyzes changed files and returns reuse suggestions.
 func (d *ReuseDetector) DetectRedundancies(
 	ctx context.Context,
 	collectionName string,
@@ -133,7 +133,7 @@ func (d *ReuseDetector) DetectRedundancies(
 	return suggestions, nil
 }
 
-// extractNewFunctions extracts function definitions from a changed file's patch.
+// extractNewFunctions extracts function definitions from added lines in a patch.
 func (d *ReuseDetector) extractNewFunctions(file internalgithub.ChangedFile) []extractedFunction {
 	if file.Patch == "" {
 		return nil
@@ -184,7 +184,7 @@ func (d *ReuseDetector) extractNewFunctions(file internalgithub.ChangedFile) []e
 	return functions
 }
 
-// extractFunctionBody extracts the complete function body from the patch.
+// extractFunctionBody extracts lines of a function body by matching braces.
 func (d *ReuseDetector) extractFunctionBody(lines []string, startIdx int) []string {
 	var body []string
 	braceCount := 0
@@ -218,7 +218,7 @@ func (d *ReuseDetector) extractFunctionBody(lines []string, startIdx int) []stri
 	return body
 }
 
-// processFunction handles a single function: intent extraction, retrieval, and verification.
+// processFunction runs intent extraction, retrieval, and verification for one function.
 func (d *ReuseDetector) processFunction(
 	ctx context.Context,
 	collectionName string,
@@ -250,7 +250,7 @@ func (d *ReuseDetector) processFunction(
 	return d.verifyRedundancy(ctx, fn, candidates)
 }
 
-// extractIntent uses an LLM to generate a semantic description of the function's purpose.
+// extractIntent uses an LLM to generate a semantic description of a function's purpose.
 func (d *ReuseDetector) extractIntent(ctx context.Context, fn extractedFunction) (string, error) {
 	promptData := map[string]string{
 		"Code": fn.Content,
@@ -277,7 +277,7 @@ func (d *ReuseDetector) extractIntent(ctx context.Context, fn extractedFunction)
 	return result, nil
 }
 
-// retrieveSimilarCode performs vector similarity search, excluding the current file.
+// retrieveSimilarCode searches the vector store for similar code, excluding the source file.
 func (d *ReuseDetector) retrieveSimilarCode(
 	ctx context.Context,
 	collectionName string,
@@ -302,7 +302,7 @@ func (d *ReuseDetector) retrieveSimilarCode(
 	return results, nil
 }
 
-// verifyRedundancy uses an LLM to compare the new function against retrieved candidates.
+// verifyRedundancy uses an LLM to compare a new function against retrieved candidates.
 func (d *ReuseDetector) verifyRedundancy(
 	ctx context.Context,
 	newFunc extractedFunction,
@@ -361,7 +361,7 @@ func (d *ReuseDetector) verifyRedundancy(
 	return nil, nil
 }
 
-// parseHunkStartLine extracts the starting line number from a git hunk header.
+// parseHunkStartLine extracts the new-file start line number from a hunk header.
 func parseHunkStartLine(hunkHeader string) int {
 	// Format: @@ -oldStart,oldCount +newStart,newCount @@
 	// Example: @@ -1,5 +10,7 @@

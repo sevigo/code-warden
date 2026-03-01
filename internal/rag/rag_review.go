@@ -47,7 +47,7 @@ func (p *structuredReviewParser) Parse(ctx context.Context, outputStr string) (*
 	return parsed, nil
 }
 
-// GenerateReview builds the review using pre-fetched diff and changed files.
+// GenerateReview generates a structured code review using the RAG pipeline.
 func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -118,7 +118,7 @@ func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoCo
 	return structuredReview, parser.raw, nil
 }
 
-// ParseDiff parses a unified git diff into a slice of ChangedFile.
+// ParseDiff splits a unified diff string into per-file [internalgithub.ChangedFile] entries.
 func ParseDiff(diff string) []internalgithub.ChangedFile {
 	var files []internalgithub.ChangedFile
 	var currentFile *internalgithub.ChangedFile
@@ -256,6 +256,7 @@ func (r *ragService) consensusReduceFunc(repoConfig *core.RepoConfig, event *cor
 	}
 }
 
+// GenerateConsensusReview generates reviews from multiple models and synthesizes a consensus.
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	startTime := time.Now()
 	if repoConfig == nil {
@@ -462,6 +463,7 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 	return rawConsensus, validReviews, nil
 }
 
+// ensureReviewsDir creates the reviews output directory if it doesn't exist.
 func (r *ragService) ensureReviewsDir(reviewsDir string) error {
 	absReviewsDir, err := filepath.Abs(reviewsDir)
 	if err != nil {
@@ -524,6 +526,7 @@ func (r *ragService) saveConsensusArtifact(dir, raw, ts string, event *core.GitH
 	}
 }
 
+// SanitizeModelForFilename converts a model name into a safe filename component.
 func SanitizeModelForFilename(modelName string) string {
 	sanitized := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
