@@ -2,17 +2,17 @@
 
 ## High Priority
 
-### ~~Fix `mergeChunksForFile` O(n²) String Copying~~
-- [ ] Track only the last `maxOverlap` bytes instead of calling `merged.String()` per iteration
-- [ ] Benchmark before/after with large chunk counts
+### ~~Fix `mergeChunksForFile` O(n²) String Copying~~ ✅
+- [x] Track only the last `maxOverlap` bytes instead of calling `merged.String()` per iteration
+- [x] Benchmark before/after with large chunk counts
 
 ### ~~Fix `buildContextForPrompt` Input Slice Mutation~~ ✅
 - [x] Replace `unique := docs[:0]` with `unique := make([]schema.Document, 0, len(docs))`
 - [x] Audit other functions for similar in-place slice mutations
 
-### Fix `ensureReviewsDir` Relative Path from CWD
-- [ ] Derive reviews directory from repo path or a configured data directory
-- [ ] Remove CWD dependency (`os.Getwd()` call)
+### ~~Fix `ensureReviewsDir` Relative Path from CWD~~ ✅
+- [x] Derive reviews directory from repo path or a configured data directory
+- [x] `reviewsDir := filepath.Join(filepath.Dir(repo.ClonePath), "reviews")`
 
 ### ~~Fix `UpdateRepoContext` Missing File Hash Updates~~ ✅
 - [x] Call `r.store.UpsertFiles` after processing changed files (mirrors `SetupRepoContext`)
@@ -31,13 +31,13 @@
 ### ~~Deduplicate LLM Instance Creation (`getOrCreateLLM`)~~ ✅
 - [x] Use `singleflight.Group` to prevent concurrent creation of same model
 
-### Make `saveConsensusArtifact` Synchronous
-- [ ] Remove `go` prefix — it's just a file write, negligible cost
-- [ ] Prevents silently lost artifacts on shutdown
+### ~~Make `saveConsensusArtifact` Synchronous~~ ✅
+- [x] Remove `go` prefix — it's just a file write, negligible cost
+- [x] Prevents goroutine leaks or incomplete writes if process exits
 
-### Fix `fetchImpactResults` Potential Data Race
-- [ ] Return map only after `wg.Wait()` (currently safe but fragile)
-- [ ] Consider returning a slice instead of a map for deterministic order
+### ~~Fix `fetchImpactResults` Map Race Condition~~ ✅
+- [x] `depResults` is read concurrently with potential ongoing writes if `wg.Wait()` has a race
+- [x] Alternatively, the returned map is exposed to data races by callers. Move `wg.Wait()` and safe handoff
 
 ### Add Test Coverage for `SetupRepoContext`
 - [ ] Test worker pool shutdown on context cancellation
