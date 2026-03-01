@@ -129,6 +129,7 @@ func (s *Server) registerTools() {
 			s.tools["create_pull_request"] = NewCreatePRTool(s.ghClient, owner, name, s.logger)
 			s.tools["list_issues"] = NewListIssuesTool(s.ghClient, owner, name, s.logger)
 			s.tools["get_issue"] = NewGetIssueTool(s.ghClient, owner, name, s.logger)
+			s.tools["push_branch"] = NewPushBranchTool(s.ProjectRoot, s.logger)
 		}
 	}
 }

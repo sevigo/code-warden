@@ -483,6 +483,13 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 		return
 	}
 
+	//- [x] Fix SSE 30s timeout reconnection loop
+	//- [x] Ensure MCP tools use isolated workspace pathing
+	//- [x] Add GitHub tools to agent system prompt
+	//- [/] Increase AI LLM timeouts in config (to 15m+)
+	//- [ ] Implement `push_branch` MCP tool
+	//- [ ] Update Orchestrator to support branch pushing
+	//- [ ] Update System Prompt with push-before-PR instruction
 	// Update MCP server to point to the isolated workspace for this session
 	// This ensures that tools like get_structure see the files in the workspace
 	o.mcpServer.ProjectRoot = workspaceDir
@@ -650,6 +657,7 @@ func (o *Orchestrator) buildSystemPrompt(issue Issue) string {
   - create_pull_request(title, body, head, base) - Create a GitHub PR
   - list_issues(state, labels) - List repository issues
   - get_issue(number) - Get issue details
+  - push_branch(branch) - Push local branch to remote (MANDATORY before create_pull_request)
 
 ## Your Task
 Implement the issue described below. Follow these steps IN ORDER:
@@ -665,13 +673,15 @@ Implement the issue described below. Follow these steps IN ORDER:
    - Only proceed when BOTH commands pass with exit code 0
 6. **Review** - Call review_code on your changes
 7. **Iterate** - If REQUEST_CHANGES, fix issues, run lint/test again, and review again
-8. **Submit** - Create a pull request ONLY after steps 5-7 are complete
+8. **Sync** - Call push_branch(branch) to sync local changes to GitHub
+9. **Submit** - Create a pull request ONLY after steps 5-8 are complete
 
 ## MANDATORY REQUIREMENTS (DO NOT SKIP):
 1. You MUST run 'make lint' and it MUST pass (exit code 0)
 2. You MUST run 'make test' and it MUST pass (exit code 0)
 3. You MUST call review_code tool for code review
-4. You MUST NOT create a PR until all above steps pass
+4. You MUST call push_branch before create_pull_request
+5. You MUST NOT create a PR until all above steps pass
 
 If you cannot complete any step, report what failed and why.
 

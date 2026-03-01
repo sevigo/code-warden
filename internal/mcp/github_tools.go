@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os/exec"
 
 	"github.com/sevigo/code-warden/internal/github"
 )
@@ -304,4 +305,76 @@ func (t *GetIssueTool) Execute(ctx context.Context, args map[string]any) (any, e
 	}
 
 	return issue, nil
+}
+
+// PushBranchTool pushes a local branch to the remote repository.
+type PushBranchTool struct {
+	logger      *slog.Logger
+	projectRoot string
+}
+
+// NewPushBranchTool creates a new PushBranchTool.
+func NewPushBranchTool(projectRoot string, logger *slog.Logger) *PushBranchTool {
+	return &PushBranchTool{
+		projectRoot: projectRoot,
+		logger:      logger,
+	}
+}
+
+func (t *PushBranchTool) Name() string {
+	return "push_branch"
+}
+
+func (t *PushBranchTool) Description() string {
+	return `Push current local changes to a remote branch.
+You MUST call this before create_pull_request to ensure the remote branch exists.`
+}
+
+func (t *PushBranchTool) InputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"branch": map[string]any{
+				"type":        "string",
+				"description": "The branch name to push (e.g., 'agent/issue-123')",
+			},
+			"force": map[string]any{
+				"type":        "boolean",
+				"description": "Whether to force push",
+				"default":     false,
+			},
+		},
+		"required": []string{"branch"},
+	}
+}
+
+func (t *PushBranchTool) Execute(ctx context.Context, args map[string]any) (any, error) {
+	branch, ok := args["branch"].(string)
+	if !ok || branch == "" {
+		return nil, fmt.Errorf("branch is required")
+	}
+
+	force, _ := args["force"].(bool)
+
+	t.logger.Info("push_branch: pushing branch", "branch", branch, "force", force)
+
+	argsList := []string{"push", "origin", branch}
+	if force {
+		argsList = append(argsList, "--force")
+	}
+
+	cmd := exec.CommandContext(ctx, "git", argsList...)
+	cmd.Dir = t.projectRoot
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.logger.Error("push_branch: failed", "error", err, "output", string(output))
+		return nil, fmt.Errorf("failed to push branch: %w (output: %s)", err, string(output))
+	}
+
+	return map[string]string{
+		"status":  "success",
+		"message": fmt.Sprintf("Successfully pushed branch %s to origin", branch),
+		"output":  string(output),
+	}, nil
 }
