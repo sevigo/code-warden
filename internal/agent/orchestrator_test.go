@@ -88,9 +88,10 @@ AGENT_ITERATION: 2
 AGENT_RESULT: {"pr_number": 2, "verdict": "APPROVED"}
 `,
 			expected: &Result{
-				PRNumber:   1,
-				Verdict:    "FAILED",
-				Iterations: 0, // Result parsing doesn't count iterations
+				PRNumber:     1,
+				Verdict:      "FAILED",
+				FilesChanged: []string{}, // Consistency: always empty slice, never nil
+				Iterations:   0,          // Result parsing doesn't count iterations
 			},
 		},
 	}
