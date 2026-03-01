@@ -39,7 +39,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	wire.Build(
 		app.NewApp,
 		server.NewServer,
-		config.LoadConfig,
+		provideValidatedConfig,
 		db.NewDatabase,
 		storage.NewStore,
 		repomanager.New,
@@ -61,6 +61,17 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		provideSQLXDB,
 	)
 	return &app.App{}, nil, nil
+}
+
+func provideValidatedConfig() (*config.Config, error) {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
 }
 
 func provideSQLXDB(db *db.DB) *sqlx.DB {

@@ -39,39 +39,39 @@ import (
 // Injectors from wire.go:
 
 func InitializeApp(ctx context.Context) (*app.App, func(), error) {
-	configConfig, err := config.LoadConfig()
+	config, err := provideValidatedConfig()
 	if err != nil {
 		return nil, nil, err
 	}
-	dbConfig := provideDBConfig(configConfig)
+	dbConfig := provideDBConfig(config)
 	dbDB, cleanup, err := db.NewDatabase(dbConfig)
 	if err != nil {
 		return nil, nil, err
 	}
 	sqlxDB := provideSQLXDB(dbDB)
 	store := storage.NewStore(sqlxDB)
-	loggerConfig := provideLoggerConfig(configConfig)
-	writer := provideLogWriter(configConfig)
+	loggerConfig := provideLoggerConfig(config)
+	writer := provideLogWriter(config)
 	logger := provideSlogLogger(loggerConfig, writer)
-	embedder, err := provideEmbedder(ctx, configConfig, logger)
+	embedder, err := provideEmbedder(ctx, config, logger)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	vectorStore := provideVectorStore(configConfig, embedder, logger)
+	vectorStore := provideVectorStore(config, embedder, logger)
 	client := gitutil.NewClient(logger)
-	repoManager := repomanager.New(configConfig, store, vectorStore, client, logger)
+	repoManager := repomanager.New(config, store, vectorStore, client, logger)
 	promptManager, err := llm.NewPromptManager()
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	model, err := provideGeneratorLLM(ctx, configConfig, logger)
+	model, err := provideGeneratorLLM(ctx, config, logger)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	reranker, err := provideReranker(ctx, configConfig, logger, promptManager)
+	reranker, err := provideReranker(ctx, config, logger, promptManager)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -86,21 +86,32 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	service, err := rag.NewService(configConfig, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
+	service, err := rag.NewService(config, promptManager, vectorStore, store, model, reranker, parserRegistry, textSplitter, logger)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	job := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger)
-	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
-	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)
-	appApp := app.NewApp(configConfig, dbDB, store, vectorStore, repoManager, jobDispatcher, service, serverServer, client, logger)
+	job := jobs.NewReviewJob(config, service, store, vectorStore, repoManager, logger)
+	jobDispatcher := jobs.NewDispatcher(ctx, job, config, logger)
+	serverServer := server.NewServer(ctx, config, jobDispatcher, logger)
+	appApp := app.NewApp(config, dbDB, store, vectorStore, repoManager, jobDispatcher, service, serverServer, client, logger)
 	return appApp, func() {
 		cleanup()
 	}, nil
 }
 
 // wire.go:
+
+func provideValidatedConfig() (*config.Config, error) {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
+}
 
 func provideSQLXDB(db2 *db.DB) *sqlx.DB {
 	return db2.DB
