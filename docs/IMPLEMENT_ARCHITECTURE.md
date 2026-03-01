@@ -123,7 +123,6 @@ Manages the agent lifecycle:
 |--------|---------|
 | `SpawnAgent()` | Creates a new agent session |
 | `runAgent()` | Main agent execution loop |
-| `runAgentAPI()` | Execute via OpenCode HTTP API |
 | `runAgentCLI()` | Execute via OpenCode CLI binary |
 | `buildSystemPrompt()` | Constructs instructions for the agent |
 | `prepareWorkspace()` | Clones repo to isolated directory |
