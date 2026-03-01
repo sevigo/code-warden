@@ -62,15 +62,15 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 
 	// Use ValidatingRetrievalQA if a validator LLM is configured.
 	if s.cfg.ValidatorLLM != nil {
-		return s.AnswerWithValidation(ctx, retriever, question, history)
+		return s.answerWithValidation(ctx, retriever, question, history)
 	}
 
 	// Fallback to standard RetrievalQA without validation
-	return s.AnswerWithoutValidation(ctx, retriever, question, history)
+	return s.answerWithoutValidation(ctx, retriever, question, history)
 }
 
-// AnswerWithValidation uses a fast validator LLM to filter irrelevant context before answering.
-func (s *QAService) AnswerWithValidation(ctx context.Context, retriever schema.Retriever, question string, _ []string) (string, error) {
+// answerWithValidation uses a fast validator LLM to filter irrelevant context before answering.
+func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string, _ []string) (string, error) {
 	chain, err := chains.NewValidatingRetrievalQA(
 		retriever,
 		s.cfg.GeneratorLLM,
@@ -90,8 +90,8 @@ func (s *QAService) AnswerWithValidation(ctx context.Context, retriever schema.R
 	return answer, nil
 }
 
-// AnswerWithoutValidation uses standard RetrievalQA without context filtering.
-func (s *QAService) AnswerWithoutValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
+// answerWithoutValidation uses standard RetrievalQA without context filtering.
+func (s *QAService) answerWithoutValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
 	chain, err := chains.NewRetrievalQA(
 		retriever,
 		s.cfg.GeneratorLLM,
