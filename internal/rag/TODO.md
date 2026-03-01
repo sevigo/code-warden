@@ -164,11 +164,11 @@ Each step is a standalone PR that compiles and passes tests.
 - [x] Update imports in callers
 - [x] Verify: `make lint && make test`
 
-#### Phase 3: Extract `index/`
-- [ ] Move `SetupRepoContext`, `UpdateRepoContext`, `ProcessFile` → `index/indexer.go`
-- [ ] Move `filterFilesByExtensions`, `filterFilesByDirectories`, `filterFilesBySpecificFiles`, `filterFilesByValidExtensions`, `buildExcludeDirs` → `index/filter.go`
-- [ ] Move `computeFileHash`, `isTestFile`, `isLogicFile` → `index/hash.go`
-- [ ] Verify: `make lint && make test`
+#### Phase 3: ~~Extract `index/`~~ ✅
+- [x] Move `SetupRepoContext`, `UpdateRepoContext`, `ProcessFile` → `index/indexer.go`
+- [x] Move `filterFilesByExtensions`, `filterFilesByDirectories`, `filterFilesBySpecificFiles`, `filterFilesByValidExtensions`, `buildExcludeDirs` → `index/filter.go`
+- [x] Move `computeFileHash`, `isTestFile`, `isLogicFile` → `index/hash.go`
+- [x] Verify: `make lint && make test`
 
 #### Phase 4: Extract `review/`
 - [ ] Move `GenerateReview`, `GenerateReReview` → `review/review.go`

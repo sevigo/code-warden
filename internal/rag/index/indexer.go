@@ -1,11 +1,9 @@
-package rag
+package index
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,19 +12,39 @@ import (
 
 	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/embeddings/sparse"
+	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
+	"github.com/sevigo/goframe/textsplitter"
 
 	"github.com/sevigo/code-warden/internal/core"
-	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
+
+// Config holds dependencies for the Indexer.
+type Config struct {
+	Store          storage.Store
+	VectorStore    storage.VectorStore
+	ParserRegistry parsers.ParserRegistry
+	Splitter       textsplitter.TextSplitter
+	Logger         *slog.Logger
+}
+
+// Indexer handles document ingestion and semantic chunking.
+type Indexer struct {
+	cfg Config
+}
+
+// New creates a new [Indexer] instance.
+func New(cfg Config) *Indexer {
+	return &Indexer{cfg: cfg}
+}
 
 // SetupRepoContext indexes a repository for the first time or re-indexes
 // using smart scan (file-hash based skipping).
 //
 //nolint:cyclop,gocyclo,gocognit,funlen // orchestrates complex smart-scan workflow
-func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
-	r.logger.Info("performing smart indexing with GoFrame GitLoader",
+func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
+	i.cfg.Logger.Info("performing smart indexing with GoFrame GitLoader",
 		"path", repoPath,
 		"collection", repo.QdrantCollectionName,
 	)
@@ -34,13 +52,13 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
+	finalExcludeDirs := BuildExcludeDirs(repoConfig)
 	startTime := time.Now()
 
 	// Smart Scan: Fetch existing file states for fast skipping
-	existingFiles, err := r.store.GetFilesForRepo(ctx, repo.ID)
+	existingFiles, err := i.cfg.Store.GetFilesForRepo(ctx, repo.ID)
 	if err != nil {
-		r.logger.Warn("failed to fetch existing file states", "error", err)
+		i.cfg.Logger.Warn("failed to fetch existing file states", "error", err)
 		existingFiles = make(map[string]storage.FileRecord)
 	}
 
@@ -51,7 +69,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 
 	// Initialize GoFrame's GitLoader for streaming ingestion
-	loader, err := documentloaders.NewGit(repoPath, r.parserRegistry,
+	loader, err := documentloaders.NewGit(repoPath, i.cfg.ParserRegistry,
 		documentloaders.WithExcludeDirs(finalExcludeDirs),
 		documentloaders.WithExcludeExts(repoConfig.ExcludeExts),
 		documentloaders.WithWorkerCount(4),
@@ -61,7 +79,7 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		return fmt.Errorf("failed to initialize git loader: %w", err)
 	}
 
-	scopedStore := r.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+	scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
 	var processedCount int
 	var skippedCount int
 	var mu sync.Mutex
@@ -113,10 +131,10 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 					var hash string
 					var hashErr error
 					if work.filePath != "" {
-						hash, hashErr = computeFileHash(work.filePath)
+						hash, hashErr = ComputeFileHash(work.filePath)
 					}
 					if hashErr != nil {
-						r.logger.Warn("hash failed, will re-process", "file", work.file, "error", hashErr)
+						i.cfg.Logger.Warn("hash failed, will re-process", "file", work.file, "error", hashErr)
 					}
 
 					// Check if we can skip this file (using copied map)
@@ -128,9 +146,9 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 					}
 
 					// Apply Code-Aware chunking
-					split, err := r.splitter.SplitDocuments(ctx, work.docs)
+					split, err := i.cfg.Splitter.SplitDocuments(ctx, work.docs)
 					if err != nil {
-						r.logger.Warn("splitting failed, using original chunks", "file", work.file, "error", err)
+						i.cfg.Logger.Warn("splitting failed, using original chunks", "file", work.file, "error", err)
 						split = work.docs
 					}
 
@@ -175,10 +193,10 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 			// Flush batch when full
 			if len(batchDocs) >= batchSize {
 				if _, err := scopedStore.AddDocuments(ctx, batchDocs); err != nil {
-					r.logger.Error("failed to add vectors in batch", "error", err)
+					i.cfg.Logger.Error("failed to add vectors in batch", "error", err)
 				}
-				if err := r.store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
-					r.logger.Error("failed to update file state in DB", "error", err)
+				if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
+					i.cfg.Logger.Error("failed to update file state in DB", "error", err)
 				}
 				// Clear batches but keep capacity
 				batchDocs = batchDocs[:0]
@@ -229,10 +247,10 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	// Flush remaining batch (no mutex needed - collector goroutine has finished)
 	if len(batchDocs) > 0 {
 		if _, err := scopedStore.AddDocuments(ctx, batchDocs); err != nil {
-			r.logger.Error("failed to add vectors in final batch", "error", err)
+			i.cfg.Logger.Error("failed to add vectors in final batch", "error", err)
 		}
-		if err := r.store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
-			r.logger.Error("failed to update file state in final DB batch", "error", err)
+		if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
+			i.cfg.Logger.Error("failed to update file state in final DB batch", "error", err)
 		}
 	}
 
@@ -263,27 +281,22 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	}
 
 	if len(pathsToDelete) > 0 {
-		r.logger.Info("pruning deleted files from tracking", "count", len(pathsToDelete))
-		if err := r.store.DeleteFiles(ctx, repo.ID, pathsToDelete); err != nil {
-			r.logger.Warn("failed to delete stale file records", "error", err)
+		i.cfg.Logger.Info("pruning deleted files from tracking", "count", len(pathsToDelete))
+		if err := i.cfg.Store.DeleteFiles(ctx, repo.ID, pathsToDelete); err != nil {
+			i.cfg.Logger.Warn("failed to delete stale file records", "error", err)
 		}
 		// Also remove from Qdrant?
 		// We assume Qdrant clean up is handled via re-indexing or manual pruned?
 		// Actually `processFilesParallel` handles UPSERT.
 		// Deleting from Qdrant requires `DeleteDocumentsByFilter` ("source" in pathsToDelete).
 		if len(pathsToDelete) > 0 && repo.QdrantCollectionName != "" {
-			if err := r.vectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, map[string]any{"source": pathsToDelete}); err != nil {
-				r.logger.Warn("failed to delete vectors for removed files", "error", err)
+			if err := i.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, map[string]any{"source": pathsToDelete}); err != nil {
+				i.cfg.Logger.Warn("failed to delete vectors for removed files", "error", err)
 			}
 		}
 	}
 
-	// Generate architectural summaries for directories (post-processing)
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, nil); err != nil {
-		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
-	}
-
-	r.logger.Info("repository setup complete",
+	i.cfg.Logger.Info("repository setup complete",
 		"indexed_files", processedCount,
 		"skipped_files", skippedCount,
 		"duration", time.Since(startTime).Round(time.Second),
@@ -292,47 +305,32 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	return nil
 }
 
-// computeFileHash returns the SHA-256 hex digest of a file.
-func computeFileHash(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 // UpdateRepoContext incrementally updates the vector store for changed files.
 //
 //nolint:gocognit,nestif,funlen // incremental sync has inherently complex control flow
-func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error {
+func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
 
 	// Get the same exclude directories configuration as SetupRepoContext
-	finalExcludeDirs := r.buildExcludeDirs(repoConfig)
+	finalExcludeDirs := BuildExcludeDirs(repoConfig)
 
 	// Apply directory filtering first, then extension filtering, then specific file filtering
-	filesToProcess = r.filterFilesByDirectories(filesToProcess, finalExcludeDirs)
-	filesToDelete = r.filterFilesByDirectories(filesToDelete, finalExcludeDirs)
+	filesToProcess = FilterFilesByDirectories(filesToProcess, finalExcludeDirs)
+	filesToDelete = FilterFilesByDirectories(filesToDelete, finalExcludeDirs)
 
 	// Apply valid extension whitelist (same as scanner)
-	filesToProcess = filterFilesByValidExtensions(filesToProcess)
-	filesToDelete = filterFilesByValidExtensions(filesToDelete)
+	filesToProcess = FilterFilesByValidExtensions(filesToProcess)
+	filesToDelete = FilterFilesByValidExtensions(filesToDelete)
 
-	filesToProcess = filterFilesByExtensions(filesToProcess, repoConfig.ExcludeExts)
-	filesToDelete = filterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
+	filesToProcess = FilterFilesByExtensions(filesToProcess, repoConfig.ExcludeExts)
+	filesToDelete = FilterFilesByExtensions(filesToDelete, repoConfig.ExcludeExts)
 
-	filesToProcess = filterFilesBySpecificFiles(filesToProcess, repoConfig.ExcludeFiles)
-	filesToDelete = filterFilesBySpecificFiles(filesToDelete, repoConfig.ExcludeFiles)
+	filesToProcess = FilterFilesBySpecificFiles(filesToProcess, repoConfig.ExcludeFiles)
+	filesToDelete = FilterFilesBySpecificFiles(filesToDelete, repoConfig.ExcludeFiles)
 
-	r.logger.Info("updating repository context after filtering",
+	i.cfg.Logger.Info("updating repository context after filtering",
 		"collection", repo.QdrantCollectionName,
 		"process", len(filesToProcess),
 		"delete", len(filesToDelete),
@@ -343,9 +341,9 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
-		r.logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
-		if err := r.vectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete); err != nil {
-			r.logger.Error("failed to delete some embeddings", "error", err)
+		i.cfg.Logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
+		if err := i.cfg.VectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete); err != nil {
+			i.cfg.Logger.Error("failed to delete some embeddings", "error", err)
 		}
 	}
 
@@ -369,7 +367,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		go func() {
 			defer wg.Done()
 			for f := range fileChan {
-				docs := r.ProcessFile(ctx, repoPath, f)
+				docs := i.ProcessFile(ctx, repoPath, f)
 				resultChan <- fileResult{docs: docs}
 			}
 		}()
@@ -396,8 +394,8 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	}
 
 	if len(allDocs) > 0 {
-		r.logger.Info("adding/updating documents in vector store", "count", len(allDocs))
-		scopedStore := r.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+		i.cfg.Logger.Info("adding/updating documents in vector store", "count", len(allDocs))
+		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
 		if _, err := scopedStore.AddDocuments(ctx, allDocs); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
@@ -406,9 +404,9 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		var fileRecords []storage.FileRecord
 		for _, f := range filesToProcess {
 			fullPath := filepath.Join(repoPath, f)
-			hash, err := computeFileHash(fullPath)
+			hash, err := ComputeFileHash(fullPath)
 			if err != nil {
-				r.logger.Warn("failed to hash file for tracking", "file", f, "error", err)
+				i.cfg.Logger.Warn("failed to hash file for tracking", "file", f, "error", err)
 				continue
 			}
 			fileRecords = append(fileRecords, storage.FileRecord{
@@ -418,28 +416,23 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 			})
 		}
 		if len(fileRecords) > 0 {
-			if err := r.store.UpsertFiles(ctx, repo.ID, fileRecords); err != nil {
-				r.logger.Warn("failed to update file hashes in DB", "error", err)
+			if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, fileRecords); err != nil {
+				i.cfg.Logger.Warn("failed to update file hashes in DB", "error", err)
 			}
 		}
-	}
-
-	// Trigger targeted arch summary re-generation
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, append(filesToProcess, filesToDelete...)); err != nil {
-		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
 	}
 
 	return nil
 }
 
 // ProcessFile reads, parses, and chunks a single file for indexing.
-func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
+func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 
 	// Read file for chunking
 	contentBytes, err := os.ReadFile(fullPath)
 	if err != nil {
-		r.logger.Error("failed to read file for processing", "file", file, "error", err)
+		i.cfg.Logger.Error("failed to read file for processing", "file", file, "error", err)
 		return nil
 	}
 
@@ -449,9 +442,9 @@ func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []s
 		"source": file,
 	})
 
-	splitDocs, err := r.splitter.SplitDocuments(ctx, []schema.Document{doc})
+	splitDocs, err := i.cfg.Splitter.SplitDocuments(ctx, []schema.Document{doc})
 	if err != nil {
-		r.logger.Error("failed to split document with code-aware splitter", "file", file, "error", err)
+		i.cfg.Logger.Error("failed to split document with code-aware splitter", "file", file, "error", err)
 		return nil
 	}
 
@@ -463,133 +456,9 @@ func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []s
 		}
 
 		// Polyfill: Ensure is_test is set based on filename
-		if isTestFile(file) {
+		if IsTestFile(file) {
 			splitDocs[i].Metadata["is_test"] = true
 		}
 	}
 	return splitDocs
-}
-
-func isTestFile(path string) bool {
-	ext := filepath.Ext(path)
-	base := filepath.Base(path)
-
-	switch ext {
-	case ".go":
-		return strings.HasSuffix(base, "_test.go")
-	case ".ts", ".js", ".tsx", ".jsx":
-		return strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".test.js") ||
-			strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".spec.js") ||
-			strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx")
-	case ".py":
-		return strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")
-	case ".rs":
-		return strings.HasSuffix(base, "_test.rs") // Rust conventions vary but often in-file or test_*.rs
-	case ".java":
-		return strings.HasSuffix(base, "Test.java") || strings.HasSuffix(base, "Tests.java")
-	}
-	return false
-}
-
-// isLogicFile returns true if the file has a recognized code extension.
-func isLogicFile(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	return llm.IsCodeExtension(ext)
-}
-
-// filterFilesByExtensions removes files whose extension matches an excluded extension.
-func filterFilesByExtensions(files []string, excludeExts []string) []string {
-	if len(excludeExts) == 0 {
-		return files
-	}
-
-	excludeMap := make(map[string]struct{}, len(excludeExts))
-	for _, ext := range excludeExts {
-		normalizedExt := strings.ToLower(strings.TrimPrefix(ext, "."))
-		excludeMap[normalizedExt] = struct{}{}
-	}
-
-	filtered := make([]string, 0, len(files))
-	for _, file := range files {
-		fileExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(file), "."))
-		if _, isExcluded := excludeMap[fileExt]; !isExcluded {
-			filtered = append(filtered, file)
-		}
-	}
-
-	return filtered
-}
-
-// filterFilesByValidExtensions keeps only files with whitelisted extensions.
-func filterFilesByValidExtensions(files []string) []string {
-	filtered := make([]string, 0, len(files))
-	for _, file := range files {
-		ext := strings.ToLower(filepath.Ext(file))
-		if core.IsValidExtension(ext) {
-			filtered = append(filtered, file)
-		}
-	}
-	return filtered
-}
-
-// buildExcludeDirs combines default and user-configured directory exclusions.
-func (r *ragService) buildExcludeDirs(repoConfig *core.RepoConfig) []string {
-	return core.BuildExcludeDirs(repoConfig.ExcludeDirs)
-}
-
-// filterFilesByDirectories removes files located within any excluded directory.
-func (r *ragService) filterFilesByDirectories(files []string, excludeDirs []string) []string {
-	if len(excludeDirs) == 0 {
-		return files
-	}
-
-	filtered := make([]string, 0, len(files))
-	for _, file := range files {
-		cleanFile := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(file, string(filepath.Separator))))
-
-		isExcluded := false
-		for _, excludeDir := range excludeDirs {
-			cleanExcludeDir := filepath.Clean(excludeDir)
-
-			// Check if the file path is exactly the excluded directory
-			if cleanFile == cleanExcludeDir {
-				isExcluded = true
-				break
-			}
-
-			// Check if the file path starts with the excluded directory followed by a separator
-			// Use forward slash for cross-platform consistency
-			if strings.HasPrefix(cleanFile, cleanExcludeDir+"/") {
-				isExcluded = true
-				break
-			}
-		}
-
-		if !isExcluded {
-			filtered = append(filtered, file)
-		}
-	}
-
-	return filtered
-}
-
-// filterFilesBySpecificFiles removes files matching any excluded file path.
-func filterFilesBySpecificFiles(files []string, excludeFiles []string) []string {
-	if len(excludeFiles) == 0 {
-		return files
-	}
-
-	excludeMap := make(map[string]struct{}, len(excludeFiles))
-	for _, f := range excludeFiles {
-		excludeMap[filepath.ToSlash(filepath.Clean(f))] = struct{}{}
-	}
-
-	filtered := make([]string, 0, len(files))
-	for _, file := range files {
-		if _, isExcluded := excludeMap[filepath.ToSlash(filepath.Clean(file))]; !isExcluded {
-			filtered = append(filtered, file)
-		}
-	}
-
-	return filtered
 }
