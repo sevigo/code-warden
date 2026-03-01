@@ -158,9 +158,11 @@ Each step is a standalone PR that compiles and passes tests.
 - [x] Move `ReuseDetector` + types → `internal/rag/detect/reuse.go`
 - [x] Move `snippetValidator` → `internal/rag/detect/validator.go`
 - [x] Easy first step: they are completely self-contained, no cyclic dependencies
-- [ ] Move `AnswerQuestion`, `answerWithValidation`, `answerWithoutValidation` → `internal/rag/question/qa.go`
-- [ ] Update imports in callers
-- [ ] Verify: `make lint && make test`
+
+### ~~Extract `question/` Package~~ ✅
+- [x] Move `AnswerQuestion`, `answerWithValidation`, `answerWithoutValidation` → `internal/rag/question/qa.go`
+- [x] Update imports in callers
+- [x] Verify: `make lint && make test`
 
 #### Phase 3: Extract `index/`
 - [ ] Move `SetupRepoContext`, `UpdateRepoContext`, `ProcessFile` → `index/indexer.go`
