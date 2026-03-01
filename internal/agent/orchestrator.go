@@ -129,7 +129,7 @@ func (o *Orchestrator) Start() error {
 		Addr:              o.config.MCPAddr,
 		Handler:           o.mcpServer,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      0, // Disable for long-lived SSE connections
 		IdleTimeout:       120 * time.Second,
 	}
 

@@ -260,7 +260,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("SSE client connected", "session_id", sessionID)
 
 	// Keep connection alive and send messages
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
