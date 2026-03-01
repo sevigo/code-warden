@@ -163,6 +163,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			Timeout:       timeout,
 			MaxIterations: j.cfg.Agent.MaxIterations,
 			MCPAddr:       j.cfg.Agent.MCPAddr,
+			OpencodeAddr:  j.cfg.Agent.OpencodeAddr,
 			WorkingDir:    j.cfg.Agent.WorkingDir,
 		},
 		j.logger,
@@ -212,7 +213,7 @@ func (j *ReviewJob) waitForAgentSession(ctx context.Context, orchestrator *agent
 		"session_id", session.ID,
 		"timeout", timeout)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)

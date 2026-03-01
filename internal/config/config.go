@@ -35,7 +35,7 @@ type AgentConfig struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Provider is the agent provider (currently only "opencode").
+	// Provider is the agent provider: "goose" or "opencode".
 	Provider string `mapstructure:"provider"`
 
 	// Model is the LLM model to use for the agent.
@@ -47,8 +47,15 @@ type AgentConfig struct {
 	// MaxIterations is the maximum review iterations before escalation.
 	MaxIterations int `mapstructure:"max_iterations"`
 
+	// MaxConcurrentSessions is the maximum number of concurrent agent sessions.
+	// When reached, new /implement requests will be rejected. Default: 3.
+	MaxConcurrentSessions int `mapstructure:"max_concurrent_sessions"`
+
 	// MCPAddr is the address for the MCP server.
 	MCPAddr string `mapstructure:"mcp_addr"`
+
+	// OpencodeAddr is the address of the opencode server API (only for opencode provider).
+	OpencodeAddr string `mapstructure:"opencode_addr"`
 
 	// WorkingDir is the directory for agent workspaces.
 	WorkingDir string `mapstructure:"working_dir"`
@@ -83,6 +90,11 @@ func (c *AgentConfig) Validate() error {
 	// Validate max iterations
 	if c.MaxIterations < 1 {
 		return errors.New("agent.max_iterations must be >= 1")
+	}
+
+	// Validate max concurrent sessions (default to 3 if not set)
+	if c.MaxConcurrentSessions < 1 {
+		c.MaxConcurrentSessions = 3
 	}
 
 	// Validate MCP address
@@ -371,41 +383,148 @@ func setDefaults(v *viper.Viper) {
 	// Agent
 	v.SetDefault("agent.enabled", false)
 	v.SetDefault("agent.provider", "opencode")
-	v.SetDefault("agent.model", "llama3.1:70b")
+	v.SetDefault("agent.model", "qwen2.5-coder")
 	v.SetDefault("agent.timeout", "30m")
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
-	v.SetDefault("agent.working_dir", "") // Empty means disabled/no default; must be explicitly set
+	v.SetDefault("agent.opencode_addr", "") // Empty = CLI mode (recommended), non-empty = HTTP API mode
+	v.SetDefault("agent.working_dir", "")   // Empty means disabled/no default; must be explicitly set
+}
+
+func (c *Config) Validate() error {
+	var errs []string
+
+	if err := c.validateAI(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := c.validateServer(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := c.validateDatabase(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := c.validateStorage(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (c *Config) validateAI() error {
+	var errs []string
+
+	if c.AI.LLMProvider == "" {
+		errs = append(errs, "ai.llm_provider is required")
+	} else if c.AI.LLMProvider != "ollama" && c.AI.LLMProvider != llmProviderGemini {
+		errs = append(errs, "ai.llm_provider must be 'ollama' or 'gemini'")
+	}
+
+	if c.AI.GeneratorModel == "" {
+		errs = append(errs, "ai.generator_model is required")
+	}
+
+	if c.AI.EmbedderModel == "" {
+		errs = append(errs, "ai.embedder_model is required")
+	}
+
+	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
+		errs = append(errs, "ai.gemini_api_key is required for gemini provider")
+	}
+
+	if err := c.AI.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (c *Config) validateServer() error {
+	if c.Server.MaxWorkers <= 0 {
+		return errors.New("server.max_workers must be positive")
+	}
+	return nil
+}
+
+func (c *Config) validateDatabase() error {
+	var errs []string
+
+	if c.Database.Host == "" {
+		errs = append(errs, "database.host is required")
+	}
+	if c.Database.Port < 1 || c.Database.Port > 65535 {
+		errs = append(errs, "database.port must be between 1 and 65535")
+	}
+	if c.Database.Database == "" {
+		errs = append(errs, "database.database is required")
+	}
+	if c.Database.Username == "" {
+		errs = append(errs, "database.username is required")
+	}
+
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func (c *Config) validateStorage() error {
+	if c.Storage.QdrantHost == "" {
+		return errors.New("storage.qdrant_host is required")
+	}
+	return nil
+}
+
+func (c *Config) validateGitHub() error {
+	var errs []string
+	if c.GitHub.AppID == 0 {
+		errs = append(errs, "github.app_id is required")
+	}
+	if c.GitHub.WebhookSecret == "" {
+		errs = append(errs, "github.webhook_secret is required")
+	}
+	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
+		errs = append(errs, fmt.Sprintf("github private key not found at path: %s", c.GitHub.PrivateKeyPath))
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 func (c *Config) ValidateForServer() error {
-	if c.GitHub.AppID == 0 {
-		return errors.New("github.app_id is required")
+	var errs []string
+
+	if err := c.Validate(); err != nil {
+		errs = append(errs, err.Error())
 	}
-	if c.GitHub.WebhookSecret == "" {
-		return errors.New("github.webhook_secret is required")
-	}
-	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
-		return fmt.Errorf("github private key not found at path: %s", c.GitHub.PrivateKeyPath)
-	}
-	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
-		return errors.New("ai.gemini_api_key is required for gemini provider")
-	}
-	if err := c.AI.Validate(); err != nil {
-		return fmt.Errorf("ai config invalid: %w", err)
+	if err := c.validateGitHub(); err != nil {
+		errs = append(errs, err.Error())
 	}
 	if err := c.Agent.Validate(); err != nil {
-		return fmt.Errorf("agent config invalid: %w", err)
+		errs = append(errs, err.Error())
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
 
 func (c *Config) ValidateForCLI() error {
-	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
-		return errors.New("ai.gemini_api_key is required for gemini provider")
+	var errs []string
+
+	if err := c.Validate(); err != nil {
+		errs = append(errs, err.Error())
 	}
-	if err := c.AI.Validate(); err != nil {
-		return fmt.Errorf("ai config invalid: %w", err)
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
