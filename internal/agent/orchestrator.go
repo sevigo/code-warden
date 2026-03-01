@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -682,18 +684,57 @@ func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) err
 	return nil
 }
 
-// TODO: Implement actual parsing when OpenCode output format is defined.
-func (o *Orchestrator) parseAgentOutput(_ string) *Result {
-	// TODO: Parse structured output from OpenCode
-	// This will depend on the actual OpenCode output format
-	o.logger.Debug("parseAgentOutput: parsing agent output (placeholder)")
-	return &Result{
-		PRNumber:     0,
-		Branch:       "",
-		FilesChanged: []string{},
-		Verdict:      "UNKNOWN",
-		Iterations:   1,
+// parseAgentOutput extracts the result from agent output.
+func (o *Orchestrator) parseAgentOutput(output string) *Result {
+	const sentinel = "AGENT_RESULT:"
+	lines := strings.Split(output, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, sentinel) {
+			jsonStr := strings.TrimPrefix(line, sentinel)
+			jsonStr = strings.TrimSpace(jsonStr)
+
+			var res Result
+			if err := json.Unmarshal([]byte(jsonStr), &res); err != nil {
+				o.logger.Warn("parseAgentOutput: failed to unmarshal agent result", "error", err, "line", line)
+				continue
+			}
+			o.logger.Debug("parseAgentOutput: successfully parsed agent result", "pr_number", res.PRNumber)
+			return &res
+		}
 	}
+
+	// Fallback: Infer what we can from the output and environment
+	o.logger.Warn("parseAgentOutput: no AGENT_RESULT sentinel found, attempting to infer result")
+	res := &Result{
+		Verdict:    "UNKNOWN",
+		Iterations: 0,
+	}
+
+	// Try to infer iterations from logs
+	for _, line := range lines {
+		if strings.Contains(strings.ToLower(line), "iteration") {
+			res.Iterations++
+		}
+	}
+	if res.Iterations == 0 {
+		res.Iterations = 1 // At least one iteration if it ran
+	}
+
+	// Try to infer branch from common patterns or env if possible
+	// In a real scenario, we might have stored the branch in the session
+	// but here we just look for "Pushing branch" or similar.
+	for _, line := range lines {
+		if strings.Contains(line, "Pushing branch") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				res.Branch = parts[2]
+			}
+		}
+	}
+
+	return res
 }
 
 // generateSessionID creates a unique session ID using cryptographic random.
