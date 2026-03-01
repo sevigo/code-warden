@@ -143,6 +143,9 @@ func ParseDiff(diff string) []internalgithub.ChangedFile {
 		case strings.HasPrefix(line, "@@"):
 			// Hunk header — skip, not part of the patch body
 			continue
+		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+			// Diff file headers — skip, not part of the patch body
+			continue
 		case currentFile != nil:
 			// Append line to current file patch
 			currentFile.Patch += line + "\n"
