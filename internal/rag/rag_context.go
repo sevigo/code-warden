@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/rag/detect"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -595,8 +596,8 @@ func (r *ragService) filterValidDescriptionDocs(ctx context.Context, descKeys ma
 	if len(snippets) > 0 && prDescription != "" {
 		validatorLLM, err := r.getOrCreateLLM(ctx, r.cfg.AI.FastModel)
 		if err == nil {
-			v := newSnippetValidator(validatorLLM, r.promptMgr)
-			relevanceMap = v.validateBatch(ctx, snippets, prDescription)
+			v := detect.NewSnippetValidator(validatorLLM, r.promptMgr)
+			relevanceMap = v.ValidateBatch(ctx, snippets, prDescription)
 		} else {
 			for i := range snippets {
 				relevanceMap[i] = true
