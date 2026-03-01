@@ -109,22 +109,30 @@ func (t *CreatePRTool) Execute(ctx context.Context, args map[string]any) (any, e
 	if !ok || body == "" {
 		return nil, fmt.Errorf("body is required")
 	}
+	if len(body) > maxBodyLength {
+		return nil, fmt.Errorf("body exceeds maximum length of %d characters", maxBodyLength)
+	}
 
 	head, ok := args["head"].(string)
 	if !ok || head == "" {
 		return nil, fmt.Errorf("head branch is required")
 	}
 
+	base := "main"
+	if b, ok := args["base"].(string); ok && b != "" {
+		base = b
+	}
+
+	// Validate base branch exists
+	if _, err := t.ghClient.GetBranch(ctx, t.repo.owner, t.repo.name, base); err != nil {
+		return nil, fmt.Errorf("base branch %q does not exist: %w", base, err)
+	}
+
 	opts := github.PullRequestOptions{
 		Title: title,
 		Body:  body,
 		Head:  head,
-	}
-
-	if base, ok := args["base"].(string); ok && base != "" {
-		opts.Base = base
-	} else {
-		opts.Base = "main"
+		Base:  base,
 	}
 
 	if draft, ok := args["draft"].(bool); ok {

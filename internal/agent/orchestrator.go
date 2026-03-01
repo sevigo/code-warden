@@ -140,7 +140,7 @@ func (o *Orchestrator) Start() error {
 		Addr:              o.config.MCPAddr,
 		Handler:           o.mcpServer,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      0, // Disable for long-lived SSE connections
+		WriteTimeout:      30 * time.Minute, // Sufficient for long-lived agent tasks
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -171,11 +171,9 @@ func (o *Orchestrator) Start() error {
 	// Wait for the server to be ready (with timeout)
 	select {
 	case <-ready:
-		// Small delay to ensure the server is fully ready
-		time.Sleep(100 * time.Millisecond)
 		o.logger.Info("MCP HTTP server is ready", "addr", o.config.MCPAddr)
 	case <-time.After(5 * time.Second):
-		return fmt.Errorf("timeout waiting for MCP server to start")
+		return fmt.Errorf("timeout waiting for MCP server to start on %s", o.config.MCPAddr)
 	}
 
 	// Start session cleanup goroutine
@@ -483,18 +481,24 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	// Create session workspace
 	workspaceDir := filepath.Join(o.config.WorkingDir, session.ID)
 	if err := os.MkdirAll(workspaceDir, 0750); err != nil {
-		o.logger.Error("runAgentCLI: failed to create workspace directory", "session_id", session.ID, "dir", workspaceDir, "error", err)
+		o.logger.Error("runAgentCLI: failed to create workspace directory",
+			"session_id", session.ID,
+			"path", workspaceDir,
+			"error", err)
 		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("Failed to create workspace: %v", err))
+		session.SetError(fmt.Sprintf("failed to create workspace directory %s: %v", workspaceDir, err))
 		return
 	}
 
 	// Clone project into workspace
 	o.logger.Info("runAgentCLI: preparing workspace", "session_id", session.ID, "dir", workspaceDir)
 	if err := o.prepareWorkspace(ctx, workspaceDir); err != nil {
-		o.logger.Error("runAgentCLI: failed to prepare workspace", "session_id", session.ID, "error", err)
+		o.logger.Error("runAgentCLI: failed to prepare workspace",
+			"session_id", session.ID,
+			"path", workspaceDir,
+			"error", err)
 		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("Failed to prepare workspace: %v", err))
+		session.SetError(fmt.Sprintf("failed to prepare workspace at %s: %v", workspaceDir, err))
 		return
 	}
 

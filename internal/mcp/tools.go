@@ -19,6 +19,7 @@ const (
 	minResultLimit   = 1
 	maxDiffLength    = 1000000 // 1MB max diff
 	maxTitleLength   = 500
+	maxBodyLength    = 65536 // GitHub limit is 64KB
 	maxSymbolLength  = 200
 	maxDirPathLength = 500
 )

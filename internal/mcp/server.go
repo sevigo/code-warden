@@ -41,6 +41,8 @@ type sseSession struct {
 	id       string
 	messages chan []byte
 	done     chan struct{}
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // Tool represents an MCP tool that can be called by an agent.
@@ -233,11 +235,14 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Generate session ID
 	sessionID := generateSessionID()
 
-	// Create session
+	// Create a per-session context that is cancelled when the client disconnects
+	sessionCtx, sessionCancel := context.WithCancel(r.Context())
 	session := &sseSession{
 		id:       sessionID,
 		messages: make(chan []byte, 100),
 		done:     make(chan struct{}),
+		ctx:      sessionCtx,
+		cancel:   sessionCancel,
 	}
 
 	s.sessionsMu.Lock()
@@ -245,6 +250,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	s.sessionsMu.Unlock()
 
 	defer func() {
+		session.cancel() // Cancel context first
 		s.sessionsMu.Lock()
 		delete(s.sessions, sessionID)
 		s.sessionsMu.Unlock()
@@ -294,8 +300,32 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process the request
-	result, err := s.processRequest(r.Context(), &req)
+	// Process the request with a context that combines the POST request context
+	// and the long-lived SSE session context.
+	s.sessionsMu.RLock()
+	session, exists := s.sessions[sessionID]
+	s.sessionsMu.RUnlock()
+
+	var toolCtx context.Context
+	var cancel context.CancelFunc
+
+	if exists {
+		// Create a context that is cancelled if either the POST request ends
+		// OR the underlying SSE stream is closed.
+		toolCtx, cancel = context.WithCancel(r.Context())
+		defer cancel()
+		go func() {
+			select {
+			case <-session.ctx.Done():
+				cancel()
+			case <-toolCtx.Done():
+			}
+		}()
+	} else {
+		toolCtx = r.Context()
+	}
+
+	result, err := s.processRequest(toolCtx, &req)
 	if err != nil {
 		s.writeError(w, req.ID, err.Code, err.Message)
 		return
