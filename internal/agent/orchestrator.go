@@ -647,6 +647,9 @@ func (o *Orchestrator) buildSystemPrompt(issue Issue) string {
   - get_symbol(name) - Get type/function definition
   - get_structure() - Get project structure
   - review_code(diff) - Request internal code review
+  - create_pull_request(title, body, head, base) - Create a GitHub PR
+  - list_issues(state, labels) - List repository issues
+  - get_issue(number) - Get issue details
 
 ## Your Task
 Implement the issue described below. Follow these steps IN ORDER:
