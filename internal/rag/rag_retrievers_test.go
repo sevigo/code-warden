@@ -13,9 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/mocks"
 )
 
@@ -560,87 +558,4 @@ func TestProcessRelatedSnippet_TopFilesLimit(t *testing.T) {
 	assert.Contains(t, topFiles, "file2.go")
 	assert.Contains(t, topFiles, "file3.go")
 	assert.NotContains(t, topFiles, "file4.go")
-}
-
-// TestValidateConsensusParams tests parameter validation
-func TestValidateConsensusParams(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
-
-	tests := []struct {
-		name    string
-		repo    *storage.Repository
-		event   *core.GitHubEvent
-		models  []string
-		wantErr string
-	}{
-		{
-			name:    "nil repo",
-			repo:    nil,
-			event:   &core.GitHubEvent{},
-			models:  []string{"model1"},
-			wantErr: "repo cannot be nil",
-		},
-		{
-			name:    "nil event",
-			repo:    &storage.Repository{},
-			event:   nil,
-			models:  []string{"model1"},
-			wantErr: "event cannot be nil",
-		},
-		{
-			name:    "empty models",
-			repo:    &storage.Repository{},
-			event:   &core.GitHubEvent{},
-			models:  []string{},
-			wantErr: "consensus review requires at least one model",
-		},
-		{
-			name:    "valid params",
-			repo:    &storage.Repository{},
-			event:   &core.GitHubEvent{},
-			models:  []string{"model1"},
-			wantErr: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := service.validateConsensusParams(tt.repo, tt.event, tt.models)
-			if tt.wantErr != "" {
-				assert.ErrorContains(t, err, tt.wantErr)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-// TestSanitizeModelForFilename_AdditionalCases tests edge cases
-func TestSanitizeModelForFilename_AdditionalCases(t *testing.T) {
-	testCases := []struct {
-		input    string
-		contains string
-	}{
-		{"", "model"},                      // Empty -> "model"
-		{"__", "model"},                    // Only separators -> "model"
-		{"a", "a"},                         // Single char
-		{"COM1", "safe_COM1"},              // Windows reserved
-		{"com1", "safe_com1"},              // Case insensitive
-		{"COM1.txt", "safe_COM1"},          // With extension
-		{"../../etc/passwd", "etc_passwd"}, // Path traversal attempt
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.input, func(t *testing.T) {
-			got := SanitizeModelForFilename(tc.input)
-			assert.Contains(t, got, tc.contains)
-
-			// Should always have a hash suffix (16 chars after underscore)
-			parts := strings.Split(got, "_")
-			if len(parts) > 0 {
-				hashPart := parts[len(parts)-1]
-				assert.Len(t, hashPart, 16, "Expected 16 char hash suffix")
-			}
-		})
-	}
 }

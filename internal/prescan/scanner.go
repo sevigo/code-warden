@@ -12,6 +12,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/rag"
+	"github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -161,7 +162,7 @@ func (s *Scanner) generateArchitecturalComparisons(ctx context.Context, localPat
 	}
 
 	for modelName, summaries := range results {
-		sanitizedModel := rag.SanitizeModelForFilename(modelName)
+		sanitizedModel := review.SanitizeModelForFilename(modelName)
 		fileName := fmt.Sprintf("arch_comparison_%s.md", sanitizedModel)
 		filePath := filepath.Join(localPath, fileName)
 

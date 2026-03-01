@@ -1,14 +1,14 @@
-package rag
+package review
 
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
-	"github.com/sevigo/goframe/output"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 
@@ -18,34 +18,58 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+// Pre-compiled regexes for review comment cleaning.
+var (
+	statusRegex     = regexp.MustCompile(`(?i)\*\*status:\*\*\s*(unresolved|partial|fixed|new critical bug)\s*`)
+	obsRegex        = regexp.MustCompile(`(?i)\*\*observation:\*\*`)
+	rootCauseRegex  = regexp.MustCompile(`(?i)\*\*root cause:\*\*`)
+	fixRegex        = regexp.MustCompile(`(?i)\*\*fix:\*\*`)
+	whitespaceRegex = regexp.MustCompile(`\s+`)
+)
+
+func getDocKey(doc schema.Document) string {
+	source, _ := doc.Metadata["source"].(string)
+	lineStart, _ := doc.Metadata["lineStart"].(int)
+	lineEnd, _ := doc.Metadata["lineEnd"].(int)
+	return fmt.Sprintf("%s:%d-%d", source, lineStart, lineEnd)
+}
+
+func getDocContent(doc schema.Document) string {
+	content := doc.PageContent
+	if doc.Metadata["type"] == "signature" && len(content) > 500 {
+		return content[:500] + "..."
+	}
+	return content
+}
+
 // GenerateReReview generates a follow-up review by comparing the new diff
 // against the original review's suggestions, using feedback-driven retrieval.
-func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
-	r.logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
+func (s *Service) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	s.cfg.Logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	newDiff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get new PR diff: %w", err)
 	}
 	if strings.TrimSpace(newDiff) == "" {
-		r.logger.Info("no new code changes found to re-review", "pr", event.PRNumber)
+		s.cfg.Logger.Info("no new code changes found to re-review", "pr", event.PRNumber)
 		return &core.StructuredReview{
 			Summary: "This pull request contains no new code changes to re-review.",
 		}, "This pull request contains no new code changes to re-review.", nil
 	}
 
 	// Build standard context
-	standardContext, definitionsContext := r.buildRelevantContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	standardContext, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 
 	// Extract search queries from original review
-	feedbackQueries := r.extractCommentsFromReview(ctx, originalReview.ReviewContent)
-	r.logger.Info("extracted feedback-driven search queries", "count", len(feedbackQueries))
+	feedbackQueries := s.extractCommentsFromReview(ctx, originalReview.ReviewContent)
+	s.cfg.Logger.Info("extracted feedback-driven search queries", "count", len(feedbackQueries))
 
 	// Feedback-driven searches
-	feedbackContext := r.buildFeedbackDrivenContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, feedbackQueries, event.UserInstructions)
+	feedbackContext := s.buildFeedbackDrivenContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, feedbackQueries, event.UserInstructions)
 
 	// Combine contexts
-	combinedContext := r.combineReReviewContext(standardContext, feedbackContext)
+	combinedContext := s.combineReReviewContext(standardContext, feedbackContext)
 
 	promptData := core.ReReviewData{
 		Language:         event.Language,
@@ -56,20 +80,16 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 		Definitions:      definitionsContext,
 	}
 
-	rawReview, err := r.generateResponseWithPrompt(ctx, event, llm.ReReviewPrompt, promptData)
+	rawReview, err := s.generateResponseWithPrompt(ctx, event, llm.ReReviewPrompt, promptData)
 	if err != nil {
 		return nil, "", err
 	}
 
-	xmlParser := output.NewXMLParser[*core.StructuredReview]("review")
-	structuredReview, err := xmlParser.Parse(ctx, rawReview)
+	parser := NewStructuredReviewParser(s.cfg.Logger)
+	structuredReview, err := parser.Parse(ctx, rawReview)
 	if err != nil {
-		r.logger.Warn("failed to parse re-review, trying legacy markdown", "error", err)
-		structuredReview, err = llm.ParseLegacyMarkdownReview(rawReview)
-		if err != nil {
-			r.logger.Warn("failed to parse legacy re-review, using raw output", "error", err)
-			structuredReview = &core.StructuredReview{Summary: rawReview}
-		}
+		s.cfg.Logger.Warn("failed to parse legacy re-review, using raw output", "error", err)
+		structuredReview = &core.StructuredReview{Summary: rawReview}
 	}
 
 	if structuredReview.Title == "" {
@@ -83,12 +103,16 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 }
 
 // buildFeedbackDrivenContext performs vector searches based on original review comments.
-func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionName, embedderModelName string, feedbackQueries []string, userInstructions string) string {
+func (s *Service) buildFeedbackDrivenContext(ctx context.Context, collectionName, embedderModelName string, feedbackQueries []string, userInstructions string) string {
 	if len(feedbackQueries) == 0 && userInstructions == "" {
 		return ""
 	}
 
-	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+	if s.cfg.VectorStore == nil {
+		s.cfg.Logger.Warn("vector store not configured; skipping feedback-driven search")
+		return ""
+	}
+	scopedStore := s.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
 	seenDocs := make(map[string]struct{})
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -106,7 +130,7 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 		semaphore <- struct{}{}
 		go func(q string) {
 			defer func() { <-semaphore }()
-			r.performReReviewSearch(ctx, scopedStore, q, "feedback query", "Relevant to", resultChan, seenDocs, &mu, &wg)
+			s.performReReviewSearch(ctx, scopedStore, q, "feedback query", "Relevant to", resultChan, seenDocs, &mu, &wg)
 		}(query)
 	}
 
@@ -115,7 +139,7 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 		semaphore <- struct{}{}
 		go func() {
 			defer func() { <-semaphore }()
-			r.performReReviewSearch(ctx, scopedStore, userInstructions, "user instructions", "Relevant to user focus", resultChan, seenDocs, &mu, &wg)
+			s.performReReviewSearch(ctx, scopedStore, userInstructions, "user instructions", "Relevant to user focus", resultChan, seenDocs, &mu, &wg)
 		}()
 	}
 
@@ -132,7 +156,7 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 		contextBuilder.WriteString(result)
 	}
 
-	r.logger.Info("feedback-driven context built", "queries", len(feedbackQueries), "unique_docs", len(seenDocs))
+	s.cfg.Logger.Info("feedback-driven context built", "queries", len(feedbackQueries), "unique_docs", len(seenDocs))
 
 	if len(seenDocs) == 0 {
 		return ""
@@ -142,7 +166,7 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 }
 
 // performReReviewSearch executes a similarity search for a single re-review query.
-func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType, headerPrefix string, resultChan chan<- string, seenDocs map[string]struct{}, mu *sync.Mutex, wg *sync.WaitGroup) {
+func (s *Service) performReReviewSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType, headerPrefix string, resultChan chan<- string, seenDocs map[string]struct{}, mu *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	select {
@@ -152,12 +176,12 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 	}
 
 	if queryType == "user instructions" {
-		r.logger.Info("performing targeted search for user instructions", "instructions", query)
+		s.cfg.Logger.Info("performing targeted search for user instructions", "instructions", query)
 	}
 
-	docs := r.performSearch(ctx, scopedStore, query, queryType)
+	docs := s.performSearch(ctx, scopedStore, query, queryType)
 	if len(docs) == 0 {
-		r.logger.Debug("no documents found for query", "query", query[:min(50, len(query))], "type", queryType)
+		s.cfg.Logger.Debug("no documents found for query", "query", query[:min(50, len(query))], "type", queryType)
 		return
 	}
 
@@ -170,7 +194,7 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 		default:
 		}
 
-		docKey := r.getDocKey(doc)
+		docKey := getDocKey(doc)
 
 		mu.Lock()
 		if _, exists := seenDocs[docKey]; exists {
@@ -181,7 +205,7 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 		mu.Unlock()
 
 		source, _ := doc.Metadata["source"].(string)
-		content := r.getDocContent(doc)
+		content := getDocContent(doc)
 
 		_, _ = fmt.Fprintf(&builder, "## %s: %s\n", headerPrefix, source)
 		builder.WriteString("```\n")
@@ -195,7 +219,7 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 }
 
 // performSearch executes a similarity search with sparse vector support and exponential backoff.
-func (r *ragService) performSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType string) []schema.Document {
+func (s *Service) performSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType string) []schema.Document {
 	const maxRetries = 3
 	const baseDelay = 500 * time.Millisecond
 
@@ -203,7 +227,7 @@ func (r *ragService) performSearch(ctx context.Context, scopedStore storage.Scop
 	for attempt := range maxRetries {
 		select {
 		case <-ctx.Done():
-			r.logger.Debug("search cancelled by context", "queryType", queryType)
+			s.cfg.Logger.Debug("search cancelled by context", "queryType", queryType)
 			return nil
 		default:
 		}
@@ -211,19 +235,19 @@ func (r *ragService) performSearch(ctx context.Context, scopedStore storage.Scop
 		var searchOpts []vectorstores.Option
 		sparseVec, err := sparse.GenerateSparseVector(ctx, query)
 		if err != nil {
-			r.logger.Debug("sparse vector generation failed, using dense only", "query", query[:min(50, len(query))], "error", err)
+			s.cfg.Logger.Debug("sparse vector generation failed, using dense only", "query", query[:min(50, len(query))], "error", err)
 		} else {
 			searchOpts = append(searchOpts, vectorstores.WithSparseQuery(sparseVec))
 		}
 
 		docs, err := scopedStore.SimilaritySearch(ctx, query, 5, searchOpts...)
 		if err == nil {
-			r.logger.Debug("re-review search complete", "queryType", queryType, "docs_found", len(docs), "attempt", attempt+1)
+			s.cfg.Logger.Debug("re-review search complete", "queryType", queryType, "docs_found", len(docs), "attempt", attempt+1)
 			return docs
 		}
 
 		lastErr = err
-		r.logger.Warn("re-review search failed, will retry",
+		s.cfg.Logger.Warn("re-review search failed, will retry",
 			"queryType", queryType,
 			"attempt", attempt+1,
 			"max_retries", maxRetries,
@@ -241,12 +265,12 @@ func (r *ragService) performSearch(ctx context.Context, scopedStore storage.Scop
 		}
 	}
 
-	r.logger.Warn("re-review search failed after all retries", "queryType", queryType, "error", lastErr)
+	s.cfg.Logger.Warn("re-review search failed after all retries", "queryType", queryType, "error", lastErr)
 	return nil
 }
 
 // combineReReviewContext merges standard and feedback-driven context blocks.
-func (r *ragService) combineReReviewContext(standardContext, feedbackContext string) string {
+func (s *Service) combineReReviewContext(standardContext, feedbackContext string) string {
 	if feedbackContext == "" {
 		return standardContext
 	}
@@ -261,23 +285,19 @@ func (r *ragService) combineReReviewContext(standardContext, feedbackContext str
 
 // extractCommentsFromReview parses review content to extract search queries
 // from each suggestion's comment field.
-func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewContent string) []string {
+func (s *Service) extractCommentsFromReview(ctx context.Context, reviewContent string) []string {
 	var queries []string
 
-	xmlParser := output.NewXMLParser[*core.StructuredReview]("review")
-	parsedReview, err := xmlParser.Parse(ctx, reviewContent)
+	parser := NewStructuredReviewParser(s.cfg.Logger)
+	parsedReview, err := parser.Parse(ctx, reviewContent)
 	if err != nil {
-		r.logger.Warn("extractCommentsFromReview: failed to parse XML review, trying legacy", "error", err)
-		parsedReview, err = llm.ParseLegacyMarkdownReview(reviewContent)
-		if err != nil {
-			r.logger.Warn("extractCommentsFromReview: failed to parse legacy review", "error", err)
-			return queries
-		}
+		s.cfg.Logger.Warn("extractCommentsFromReview: failed to parse review", "error", err)
+		return queries
 	}
 
-	for _, s := range parsedReview.Suggestions {
-		if strings.TrimSpace(s.Comment) != "" {
-			cleaned := r.cleanCommentForQuery(s.Comment)
+	for _, sug := range parsedReview.Suggestions {
+		if strings.TrimSpace(sug.Comment) != "" {
+			cleaned := s.cleanCommentForQuery(sug.Comment)
 			if cleaned != "" {
 				queries = append(queries, cleaned)
 			}
@@ -288,7 +308,7 @@ func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewConten
 }
 
 // cleanCommentForQuery strips formatting artifacts and truncates a comment for use as a search query.
-func (r *ragService) cleanCommentForQuery(comment string) string {
+func (s *Service) cleanCommentForQuery(comment string) string {
 	comment = strings.ReplaceAll(comment, "```", " ")
 	comment = strings.ReplaceAll(comment, "`", " ")
 

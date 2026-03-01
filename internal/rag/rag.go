@@ -28,16 +28,8 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 	indexpkg "github.com/sevigo/code-warden/internal/rag/index"
 	questionpkg "github.com/sevigo/code-warden/internal/rag/question"
+	reviewpkg "github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/storage"
-)
-
-// Pre-compiled regexes for review comment cleaning.
-var (
-	statusRegex     = regexp.MustCompile(`(?i)\*\*status:\*\*\s*(unresolved|partial|fixed|new critical bug)\s*`)
-	obsRegex        = regexp.MustCompile(`(?i)\*\*observation:\*\*`)
-	rootCauseRegex  = regexp.MustCompile(`(?i)\*\*root cause:\*\*`)
-	fixRegex        = regexp.MustCompile(`(?i)\*\*fix:\*\*`)
-	whitespaceRegex = regexp.MustCompile(`\s+`)
 )
 
 // Pre-compiled regexes for Go symbol extraction from diffs.
@@ -139,6 +131,7 @@ type ragService struct {
 	llmGroup       singleflight.Group
 	qaService      *questionpkg.QAService
 	indexer        *indexpkg.Indexer
+	reviewService  *reviewpkg.Service
 	logger         *slog.Logger
 	hydeCache      *ttlCache // patchHash -> hydeSnippet
 	llmCache       *ttlCache // modelName -> LLM instance
@@ -208,7 +201,7 @@ func NewService(
 		Logger:         logger,
 	}
 
-	return &ragService{
+	r := &ragService{
 		cfg:            cfg,
 		promptMgr:      promptMgr,
 		vectorStore:    vs,
@@ -224,7 +217,21 @@ func NewService(
 		indexer:        indexpkg.New(indexerCfg),
 		hydeCache:      newTTLCache(30*time.Minute, 500),
 		llmCache:       newTTLCache(1*time.Hour, 20),
-	}, nil
+	}
+
+	reviewCfg := reviewpkg.Config{
+		VectorStore:      vs,
+		PromptMgr:        promptMgr,
+		GeneratorLLM:     gen,
+		GetLLM:           r.getOrCreateLLM,
+		Logger:           logger,
+		ConsensusTimeout: cfg.AI.ConsensusTimeout,
+		ConsensusQuorum:  cfg.AI.ConsensusQuorum,
+		BuildContext:     r.buildRelevantContext,
+	}
+	r.reviewService = reviewpkg.NewService(reviewCfg)
+
+	return r, nil
 }
 
 // GetTextSplitter returns the configured text splitter.
@@ -304,33 +311,6 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 	return llmModel, nil
 }
 
-// generateResponseWithPrompt renders a prompt template and calls the generator LLM.
-func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core.GitHubEvent, promptKey llm.PromptKey, promptData any) (string, error) {
-	llmModel, err := r.getOrCreateLLM(ctx, r.cfg.AI.GeneratorModel)
-	if err != nil {
-		return "", fmt.Errorf("failed to get LLM model: %w", err)
-	}
-
-	prompt, err := r.promptMgr.Render(promptKey, promptData)
-	if err != nil {
-		return "", fmt.Errorf("could not render prompt '%s': %w", promptKey, err)
-	}
-
-	r.logger.Info("calling LLM for response generation",
-		"repo", event.RepoFullName,
-		"pr", event.PRNumber,
-		"prompt_key", promptKey,
-	)
-
-	response, err := llmModel.Call(ctx, prompt)
-	if err != nil {
-		return "", fmt.Errorf("LLM generation failed for prompt '%s': %w", promptKey, err)
-	}
-
-	r.logger.Info("LLM response generated successfully", "chars", len(response))
-	return response, nil
-}
-
 // hashPatch returns a 128-bit hex hash of the patch content for cache keying.
 func (r *ragService) hashPatch(patch string) string {
 	hash := sha256.Sum256([]byte(patch))
@@ -389,4 +369,16 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 
 func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	return r.indexer.ProcessFile(ctx, repoPath, file)
+}
+
+func (r *ragService) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	return r.reviewService.GenerateReview(ctx, repoConfig, repo, event, diff, changedFiles)
+}
+
+func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	return r.reviewService.GenerateReReview(ctx, repo, event, originalReview, ghClient, changedFiles)
+}
+
+func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	return r.reviewService.GenerateConsensusReview(ctx, repoConfig, repo, event, models, diff, changedFiles)
 }
