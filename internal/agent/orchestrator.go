@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -544,7 +546,7 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 		"output_length", len(output))
 
 	// Parse result
-	result := o.parseAgentOutput(string(output))
+	result := o.parseAgentOutput(string(output), branch)
 
 	session.SetResult(result)
 	session.SetStatus(StatusCompleted)
@@ -592,6 +594,7 @@ Implement the issue described below. Follow these steps IN ORDER:
    - If EITHER command fails, you MUST fix the issues and run BOTH commands again
    - Only proceed when BOTH commands pass with exit code 0
 6. **Review** - Call review_code on your changes
+   - CRITICAL: At the start of each review iteration, you MUST print 'AGENT_ITERATION: X' (where X is the current iteration number) on its own line.
 7. **Iterate** - If REQUEST_CHANGES, fix issues, run lint/test again, and review again
 8. **Push** - Run: git push origin HEAD (or use push_branch tool)
    - CRITICAL: Your branch MUST exist on GitHub before creating a PR
@@ -613,6 +616,9 @@ Example sequence:
   2. create_pull_request(...)         <- Only after push succeeds
 
 If you cannot complete any step, report what failed and why.
+At the very end of your final message, you MUST emit a structured JSON result prefixed with 'AGENT_RESULT:' on its own line.
+The JSON should follow this format:
+AGENT_RESULT: {"pr_number": 123, "pr_url": "...", "branch": "...", "files_changed": ["..."], "verdict": "...", "iterations": 1}
 
 ## Issue #%d: %s
 
@@ -682,18 +688,56 @@ func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) err
 	return nil
 }
 
-// TODO: Implement actual parsing when OpenCode output format is defined.
-func (o *Orchestrator) parseAgentOutput(_ string) *Result {
-	// TODO: Parse structured output from OpenCode
-	// This will depend on the actual OpenCode output format
-	o.logger.Debug("parseAgentOutput: parsing agent output (placeholder)")
-	return &Result{
-		PRNumber:     0,
-		Branch:       "",
-		FilesChanged: []string{},
-		Verdict:      "UNKNOWN",
-		Iterations:   1,
+// parseAgentOutput extracts the result from agent output.
+func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Result {
+	const resultSentinel = "AGENT_RESULT:"
+	const iterationSentinel = "AGENT_ITERATION:"
+	lines := strings.Split(output, "\n")
+
+	// 1. First, scan for the final result JSON.
+	var finalResult *Result
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, resultSentinel) {
+			jsonStr := strings.TrimPrefix(line, resultSentinel)
+			jsonStr = strings.TrimSpace(jsonStr)
+
+			var res Result
+			if err := json.Unmarshal([]byte(jsonStr), &res); err != nil {
+				o.logger.Warn("parseAgentOutput: failed to unmarshal agent result", "error", err, "line", line)
+				continue
+			}
+			o.logger.Debug("parseAgentOutput: successfully parsed agent result", "pr_number", res.PRNumber)
+			finalResult = &res
+			break // Use the first valid AGENT_RESULT found
+		}
 	}
+
+	if finalResult != nil {
+		return finalResult
+	}
+
+	// 2. Fallback: No final result found, infer from logs.
+	o.logger.Warn("parseAgentOutput: no AGENT_RESULT sentinel found, attempting to infer result")
+	res := &Result{
+		Branch:       sessionBranch,
+		FilesChanged: []string{}, // Consistency: empty slice instead of nil
+		Verdict:      "UNKNOWN",
+		Iterations:   0, // Will be at least 1 after counting
+	}
+
+	// Count occurrences of AGENT_ITERATION: X
+	for _, line := range lines {
+		if strings.Contains(line, iterationSentinel) {
+			res.Iterations++
+		}
+	}
+
+	if res.Iterations == 0 {
+		res.Iterations = 1 // Minimum 1 iteration if it ran at all
+	}
+
+	return res
 }
 
 // generateSessionID creates a unique session ID using cryptographic random.
