@@ -231,31 +231,6 @@ func TestPreFilterBM25_TopKLimits(t *testing.T) {
 	assert.Len(t, result, 5)
 }
 
-// TestIsLogicFile tests the file type detection for HyDE processing
-func TestIsLogicFile(t *testing.T) {
-	testCases := []struct {
-		filename string
-		expected bool
-	}{
-		{"main.go", true},
-		{"internal/rag/rag.go", true},
-		{"README.md", false},
-		{"docs/api.yaml", false},
-		{"Dockerfile", false},
-		{".github/workflows/ci.yml", false},
-		{"vendor/lib.js", true}, // .js is a code extension
-		{"package.json", false},
-		{"", false},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.filename, func(t *testing.T) {
-			result := isLogicFile(tc.filename)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
-
 // TestGetDocKey tests the document key generation
 func TestGetDocKey(t *testing.T) {
 	service := &ragService{logger: slog.Default()}

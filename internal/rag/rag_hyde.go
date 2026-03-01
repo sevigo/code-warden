@@ -14,6 +14,7 @@ import (
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	indexpkg "github.com/sevigo/code-warden/internal/rag/index"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -105,7 +106,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 			var docs []schema.Document
 			var err error
 
-			if isLogicFile(f.Filename) {
+			if indexpkg.IsLogicFile(f.Filename) {
 				docs, err = retriever.GetRelevantDocuments(ctx, f.Patch)
 			} else {
 				baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, f.Filename, f.Patch)

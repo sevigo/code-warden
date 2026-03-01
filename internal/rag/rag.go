@@ -26,6 +26,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	indexpkg "github.com/sevigo/code-warden/internal/rag/index"
 	questionpkg "github.com/sevigo/code-warden/internal/rag/question"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -136,6 +137,8 @@ type ragService struct {
 	splitter       textsplitter.TextSplitter
 	contextPacker  *contextpacker.Packer
 	llmGroup       singleflight.Group
+	qaService      *questionpkg.QAService
+	indexer        *indexpkg.Indexer
 	logger         *slog.Logger
 	hydeCache      *ttlCache // patchHash -> hydeSnippet
 	llmCache       *ttlCache // modelName -> LLM instance
@@ -179,6 +182,32 @@ func NewService(
 		}
 	}
 
+	qaCfg := questionpkg.Config{
+		VectorStore:  vs,
+		GeneratorLLM: gen,
+		PromptMgr:    promptMgr,
+		Logger:       logger,
+		ContextFormat: func(docs []schema.Document) string {
+			if len(docs) == 0 {
+				return ""
+			}
+			res, err := contextPacker.Pack(context.Background(), docs)
+			if err != nil {
+				logger.Warn("Failed to pack context, returning empty", "error", err)
+				return ""
+			}
+			return res.Content
+		},
+	}
+
+	indexerCfg := indexpkg.Config{
+		Store:          dbStore,
+		VectorStore:    vs,
+		ParserRegistry: pr,
+		Splitter:       splitter,
+		Logger:         logger,
+	}
+
 	return &ragService{
 		cfg:            cfg,
 		promptMgr:      promptMgr,
@@ -191,6 +220,8 @@ func NewService(
 		contextPacker:  contextPacker,
 		llmGroup:       singleflight.Group{},
 		logger:         logger,
+		qaService:      questionpkg.NewService(qaCfg),
+		indexer:        indexpkg.New(indexerCfg),
 		hydeCache:      newTTLCache(30*time.Minute, 500),
 		llmCache:       newTTLCache(1*time.Hour, 20),
 	}, nil
@@ -330,4 +361,32 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 
 	svc := questionpkg.NewService(qaCfg)
 	return svc.AnswerQuestion(ctx, collectionName, embedderModelName, question, history)
+}
+
+func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
+	err := r.indexer.SetupRepoContext(ctx, repoConfig, repo, repoPath)
+	if err != nil {
+		return err
+	}
+	// Generate architectural summaries for directories (post-processing)
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, nil); err != nil {
+		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
+	}
+	return nil
+}
+
+func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error {
+	err := r.indexer.UpdateRepoContext(ctx, repoConfig, repo, repoPath, filesToProcess, filesToDelete)
+	if err != nil {
+		return err
+	}
+	// Trigger targeted arch summary re-generation
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, append(filesToProcess, filesToDelete...)); err != nil {
+		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
+	}
+	return nil
+}
+
+func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
+	return r.indexer.ProcessFile(ctx, repoPath, file)
 }
