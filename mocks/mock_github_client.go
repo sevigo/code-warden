@@ -100,6 +100,21 @@ func (mr *MockClientMockRecorder) CreateReview(ctx, owner, repo, number, commitS
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateReview", reflect.TypeOf((*MockClient)(nil).CreateReview), ctx, owner, repo, number, commitSHA, body, comments)
 }
 
+// GetBranch mocks base method.
+func (m *MockClient) GetBranch(ctx context.Context, owner, repo, branch string) (*github.Branch, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetBranch", ctx, owner, repo, branch)
+	ret0, _ := ret[0].(*github.Branch)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetBranch indicates an expected call of GetBranch.
+func (mr *MockClientMockRecorder) GetBranch(ctx, owner, repo, branch any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBranch", reflect.TypeOf((*MockClient)(nil).GetBranch), ctx, owner, repo, branch)
+}
+
 // GetChangedFiles mocks base method.
 func (m *MockClient) GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]github0.ChangedFile, error) {
 	m.ctrl.T.Helper()

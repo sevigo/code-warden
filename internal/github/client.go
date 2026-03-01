@@ -70,6 +70,7 @@ type Client interface {
 	CreatePullRequest(ctx context.Context, owner, repo string, opts PullRequestOptions) (*github.PullRequest, error)
 	ListIssues(ctx context.Context, owner, repo string, opts IssueOptions) ([]Issue, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
+	GetBranch(ctx context.Context, owner, repo, branch string) (*github.Branch, error)
 }
 
 type gitHubClient struct {
@@ -339,4 +340,14 @@ func (g *gitHubClient) GetIssue(ctx context.Context, owner, repo string, number 
 		Assignees: assignees,
 		URL:       issue.GetHTMLURL(),
 	}, nil
+}
+
+// GetBranch retrieves a single branch by its name.
+func (g *gitHubClient) GetBranch(ctx context.Context, owner, repo, branch string) (*github.Branch, error) {
+	b, _, err := g.client.Repositories.GetBranch(ctx, owner, repo, branch, 0)
+	if err != nil {
+		g.logger.Warn("failed to get branch", "owner", owner, "repo", repo, "branch", branch, "error", err)
+		return nil, err
+	}
+	return b, nil
 }
