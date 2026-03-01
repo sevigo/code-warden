@@ -28,6 +28,10 @@ var statusCmd = &cobra.Command{
 		}
 		defer cleanup()
 
+		if err := app.Cfg.ValidateForCLI(); err != nil {
+			return fmt.Errorf("configuration validation failed: %w", err)
+		}
+
 		repos, err := app.Store.GetAllRepositories(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve repositories: %w", err)

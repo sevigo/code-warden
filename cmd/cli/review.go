@@ -91,6 +91,27 @@ func (t *stepTimer) infof(format string, args ...any) {
 	}
 }
 
+type appInitResult struct {
+	app     *app.App
+	cleanup func()
+}
+
+func initApp(ctx context.Context) (*appInitResult, error) {
+	appInstance, cleanup, err := wire.InitializeApp(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)
+	}
+	if err := appInstance.Cfg.ValidateForCLI(); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+	if err := appInstance.DB.RunMigrations(); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
+	}
+	return &appInitResult{app: appInstance, cleanup: cleanup}, nil
+}
+
 func runReview(_ *cobra.Command, args []string) error {
 	ctx := context.Background()
 	prURL := args[0]
@@ -100,22 +121,17 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	printHeader(prURL)
 
-	// 1. Initialize Application
 	timer.step("Initializing application")
-	appInstance, cleanup, err := wire.InitializeApp(ctx)
+	initResult, err := initApp(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)
+		return err
 	}
-	defer cleanup()
-
-	if err := appInstance.DB.RunMigrations(); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
-	}
+	defer initResult.cleanup()
 	timer.done()
 
 	// 2. Parse URL and fetch PR metadata
 	timer.step("Fetching PR metadata")
-	event, ghClient, err := fetchPRMetadata(ctx, appInstance, prURL, timer)
+	event, ghClient, err := fetchPRMetadata(ctx, initResult.app, prURL, timer)
 	if err != nil {
 		return err
 	}
@@ -123,7 +139,7 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	// 3. Sync Repository
 	timer.step("Syncing repository")
-	syncResult, repo, err := syncRepository(ctx, appInstance, event, timer)
+	syncResult, repo, err := syncRepository(ctx, initResult.app, event, timer)
 	if err != nil {
 		return err
 	}
@@ -131,12 +147,12 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	// 4. Indexing
 	timer.step("Updating index")
-	if err := handleIndexing(ctx, appInstance, syncResult, repo, timer); err != nil {
+	if err := handleIndexing(ctx, initResult.app, syncResult, repo, timer); err != nil {
 		return err
 	}
 	// Save the indexed SHA before the LLM call so we don't lose indexing progress if review fails
 	if event.HeadSHA != "" {
-		if err := appInstance.RepoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
+		if err := initResult.app.RepoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
 			return fmt.Errorf("failed to update repo SHA: %w", err)
 		}
 	}
@@ -157,18 +173,18 @@ func runReview(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get changed files: %w", err)
 	}
 
-	if numModels := len(appInstance.Cfg.AI.ComparisonModels); numModels > 0 {
+	if numModels := len(initResult.app.Cfg.AI.ComparisonModels); numModels > 0 {
 		if numModels < 2 {
 			return fmt.Errorf("consensus review requires at least 2 models, got %d", numModels)
 		}
 
 		timer.infof("Running consensus review with %d models...", numModels)
-		review, _, err = appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, appInstance.Cfg.AI.ComparisonModels, diff, changedFiles)
+		review, _, err = initResult.app.RAGService.GenerateConsensusReview(ctx, nil, repo, event, initResult.app.Cfg.AI.ComparisonModels, diff, changedFiles)
 		if err != nil {
 			return fmt.Errorf("consensus review failed: %w", err)
 		}
 	} else {
-		review, err = generateReview(ctx, appInstance, repo, event, diff, changedFiles, timer)
+		review, err = generateReview(ctx, initResult.app, repo, event, diff, changedFiles, timer)
 		if err != nil {
 			return err
 		}

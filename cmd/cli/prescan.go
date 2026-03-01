@@ -35,6 +35,10 @@ var prescanCmd = &cobra.Command{
 		}
 		defer cleanup()
 
+		if err := app.Cfg.ValidateForCLI(); err != nil {
+			return fmt.Errorf("configuration validation failed: %w", err)
+		}
+
 		// Initialize Prescan Components
 		// We could wire this in wire.go, but for now construct manually using app dependencies
 		prescanMgr := prescan.NewManager(app.Cfg, app.Store, app.GitClient, slog.Default())

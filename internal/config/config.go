@@ -382,7 +382,70 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.working_dir", "")   // Empty means disabled/no default; must be explicitly set
 }
 
+func (c *Config) Validate() error {
+	var errs []string
+
+	if c.AI.LLMProvider == "" {
+		errs = append(errs, "ai.llm_provider is required")
+	} else if c.AI.LLMProvider != "ollama" && c.AI.LLMProvider != llmProviderGemini {
+		errs = append(errs, "ai.llm_provider must be 'ollama' or 'gemini'")
+	}
+
+	if c.AI.GeneratorModel == "" {
+		errs = append(errs, "ai.generator_model is required")
+	}
+
+	if c.AI.EmbedderModel == "" {
+		errs = append(errs, "ai.embedder_model is required")
+	}
+
+	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
+		errs = append(errs, "ai.gemini_api_key is required for gemini provider")
+	}
+
+	if c.Server.MaxWorkers <= 0 {
+		errs = append(errs, "server.max_workers must be positive")
+	}
+
+	if c.Database.Host == "" {
+		errs = append(errs, "database.host is required")
+	}
+
+	if c.Database.Port < 1 || c.Database.Port > 65535 {
+		errs = append(errs, "database.port must be between 1 and 65535")
+	}
+
+	if c.Database.Database == "" {
+		errs = append(errs, "database.database is required")
+	}
+
+	if c.Database.Username == "" {
+		errs = append(errs, "database.username is required")
+	}
+
+	if c.Storage.QdrantHost == "" {
+		errs = append(errs, "storage.qdrant_host is required")
+	}
+
+	if err := c.AI.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	if err := c.Agent.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 func (c *Config) ValidateForServer() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+
 	if c.GitHub.AppID == 0 {
 		return errors.New("github.app_id is required")
 	}
@@ -392,26 +455,11 @@ func (c *Config) ValidateForServer() error {
 	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
 		return fmt.Errorf("github private key not found at path: %s", c.GitHub.PrivateKeyPath)
 	}
-	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
-		return errors.New("ai.gemini_api_key is required for gemini provider")
-	}
-	if err := c.AI.Validate(); err != nil {
-		return fmt.Errorf("ai config invalid: %w", err)
-	}
-	if err := c.Agent.Validate(); err != nil {
-		return fmt.Errorf("agent config invalid: %w", err)
-	}
 	return nil
 }
 
 func (c *Config) ValidateForCLI() error {
-	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
-		return errors.New("ai.gemini_api_key is required for gemini provider")
-	}
-	if err := c.AI.Validate(); err != nil {
-		return fmt.Errorf("ai config invalid: %w", err)
-	}
-	return nil
+	return c.Validate()
 }
 
 func (db *DBConfig) GetDSN() string {
