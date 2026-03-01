@@ -1,4 +1,4 @@
-package rag
+package detect
 
 import (
 	"context"
@@ -11,15 +11,15 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 )
 
-// snippetValidator validates code snippet relevance to a PR via batch LLM calls.
-type snippetValidator struct {
+// SnippetValidator validates code snippet relevance to a PR via batch LLM calls.
+type SnippetValidator struct {
 	validatorLLM llms.Model
 	promptMgr    *llm.PromptManager
 }
 
-// newSnippetValidator creates a new [snippetValidator].
-func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) *snippetValidator {
-	return &snippetValidator{
+// NewSnippetValidator creates a new [SnippetValidator].
+func NewSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) *SnippetValidator {
+	return &SnippetValidator{
 		validatorLLM: validatorLLM,
 		promptMgr:    promptMgr,
 	}
@@ -28,8 +28,8 @@ func newSnippetValidator(validatorLLM llms.Model, promptMgr *llm.PromptManager) 
 // batchValidationResult maps snippet index (as string) to relevance boolean.
 type batchValidationResult map[string]bool
 
-// validateBatch validates all snippets in a single LLM call, returning relevance per index.
-func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string, prContext string) map[int]bool {
+// ValidateBatch validates all snippets in a single LLM call, returning relevance per index.
+func (v *SnippetValidator) ValidateBatch(ctx context.Context, snippets []string, prContext string) map[int]bool {
 	result := make(map[int]bool, len(snippets))
 	for i := range snippets {
 		result[i] = true // fail-open default
@@ -60,7 +60,7 @@ func (v *snippetValidator) validateBatch(ctx context.Context, snippets []string,
 }
 
 // buildBatchPrompt constructs the prompt for batch snippet validation.
-func (v *snippetValidator) buildBatchPrompt(snippets []string, prContext string) (string, error) {
+func (v *SnippetValidator) buildBatchPrompt(snippets []string, prContext string) (string, error) {
 	var snippetList strings.Builder
 	for i, s := range snippets {
 		preview := s

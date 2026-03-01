@@ -153,9 +153,11 @@ Each step is a standalone PR that compiles and passes tests.
 - [ ] Define `ContextBuilder` interface, make `ragService.GenerateReview` call it
 - [ ] Verify: `make lint && make test`
 
-#### Phase 2: Move `detect/` and `question/` (already self-contained)
-- [ ] Move `ReuseDetector` + types → `internal/rag/detect/reuse.go`
-- [ ] Move `snippetValidator` → `internal/rag/detect/validator.go`
+#### Phase 2: ~~Move `detect/` and `question/`~~ ✅
+### ~~Extract `detect/` Package~~ ✅
+- [x] Move `ReuseDetector` + types → `internal/rag/detect/reuse.go`
+- [x] Move `snippetValidator` → `internal/rag/detect/validator.go`
+- [x] Easy first step: they are completely self-contained, no cyclic dependencies
 - [ ] Move `AnswerQuestion`, `answerWithValidation`, `answerWithoutValidation` → `internal/rag/question/qa.go`
 - [ ] Update imports in callers
 - [ ] Verify: `make lint && make test`
