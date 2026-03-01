@@ -503,6 +503,9 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	}
 
 	o.mcpServer.ProjectRoot = workspaceDir
+	defer func() {
+		o.mcpServer.ProjectRoot = o.projectRoot // Restore original after session
+	}()
 
 	// Build OpenCode command
 	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
