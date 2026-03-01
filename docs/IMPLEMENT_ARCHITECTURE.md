@@ -126,7 +126,6 @@ Manages the agent lifecycle:
 | `runAgentCLI()` | Execute via OpenCode CLI binary |
 | `buildSystemPrompt()` | Constructs instructions for the agent |
 | `prepareWorkspace()` | Clones repo to isolated directory |
-| `verifyMCPConfig()` | Validates MCP server connectivity |
 
 **Configuration (`internal/config/config.go`)**:
 
