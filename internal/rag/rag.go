@@ -26,6 +26,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	questionpkg "github.com/sevigo/code-warden/internal/rag/question"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -303,4 +304,30 @@ func (r *ragService) generateResponseWithPrompt(ctx context.Context, event *core
 func (r *ragService) hashPatch(patch string) string {
 	hash := sha256.Sum256([]byte(patch))
 	return hex.EncodeToString(hash[:16])
+}
+
+// AnswerQuestion retrieves relevant documents and generates an answer via LLM.
+func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
+	// Dynamically fetch the validator LLM if configured
+	var validatorLLM llms.Model
+	var err error
+	if r.cfg.AI.FastModel != "" {
+		validatorLLM, err = r.getOrCreateLLM(ctx, r.cfg.AI.FastModel)
+		if err != nil {
+			r.logger.Warn("failed to create validator LLM for QA, falling back to basic QA", "error", err)
+			validatorLLM = nil
+		}
+	}
+
+	qaCfg := questionpkg.Config{
+		VectorStore:   r.vectorStore,
+		GeneratorLLM:  r.generatorLLM,
+		ValidatorLLM:  validatorLLM,
+		PromptMgr:     r.promptMgr,
+		Logger:        r.logger,
+		ContextFormat: r.buildContextForPrompt,
+	}
+
+	svc := questionpkg.NewService(qaCfg)
+	return svc.AnswerQuestion(ctx, collectionName, embedderModelName, question, history)
 }
