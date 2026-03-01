@@ -594,7 +594,7 @@ Implement the issue described below. Follow these steps IN ORDER:
    - If EITHER command fails, you MUST fix the issues and run BOTH commands again
    - Only proceed when BOTH commands pass with exit code 0
 6. **Review** - Call review_code on your changes
-   - CRITICAL: At the start of each review iteration, you MUST print 'AGENT_ITERATION: X' (where X is the current iteration number) on its own line.
+   - CRITICAL: At the start of each review cycle, you MUST print 'AGENT_ITERATION: X' (where X is the current iteration number) on its own line.
 7. **Iterate** - If REQUEST_CHANGES, fix issues, run lint/test again, and review again
 8. **Push** - Run: git push origin HEAD (or use push_branch tool)
    - CRITICAL: Your branch MUST exist on GitHub before creating a PR
@@ -616,9 +616,9 @@ Example sequence:
   2. create_pull_request(...)         <- Only after push succeeds
 
 If you cannot complete any step, report what failed and why.
-At the very end of your final message, you MUST emit a structured JSON result prefixed with 'AGENT_RESULT:' on its own line.
-The JSON should follow this format:
-AGENT_RESULT: {"pr_number": 123, "pr_url": "...", "branch": "...", "files_changed": ["..."], "verdict": "...", "iterations": 1}
+At the end of your run, you MUST print exactly one line in this format:
+AGENT_RESULT: {"pr_number": <n>, "pr_url": "<url>", "branch": "<branch>", "files_changed": ["<file>", ...], "verdict": "<APPROVED|REQUEST_CHANGES|UNKNOWN>", "iterations": <n>}
+This line must be the last line of your output.
 
 ## Issue #%d: %s
 
@@ -707,6 +707,9 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 				o.logger.Warn("parseAgentOutput: failed to unmarshal agent result", "error", err, "line", line)
 				continue
 			}
+			if res.FilesChanged == nil {
+				res.FilesChanged = []string{}
+			}
 			o.logger.Debug("parseAgentOutput: successfully parsed agent result", "pr_number", res.PRNumber)
 			finalResult = &res
 			break // Use the first valid AGENT_RESULT found
@@ -721,20 +724,20 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 	o.logger.Warn("parseAgentOutput: no AGENT_RESULT sentinel found, attempting to infer result")
 	res := &Result{
 		Branch:       sessionBranch,
-		FilesChanged: []string{}, // Consistency: empty slice instead of nil
+		FilesChanged: []string{}, // Consistency: always empty slice, never nil
 		Verdict:      "UNKNOWN",
-		Iterations:   0, // Will be at least 1 after counting
+		Iterations:   1, // Initialise to 1; will be incremented for each visible sentinel
 	}
 
-	// Count occurrences of AGENT_ITERATION: X
+	foundIterations := 0
 	for _, line := range lines {
 		if strings.Contains(line, iterationSentinel) {
-			res.Iterations++
+			foundIterations++
 		}
 	}
 
-	if res.Iterations == 0 {
-		res.Iterations = 1 // Minimum 1 iteration if it ran at all
+	if foundIterations > 0 {
+		res.Iterations = foundIterations
 	}
 
 	return res
