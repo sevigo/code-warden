@@ -164,7 +164,7 @@ func (r *ragService) generateHyDESnippet(ctx context.Context, q string) (string,
 	}
 
 	snippet, err := r.generatorLLM.Call(ctx, prompt)
-	if snippet != "" {
+	if err == nil && snippet != "" {
 		r.hydeCache.Store(patchHash, snippet)
 	}
 	return snippet, err

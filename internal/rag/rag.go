@@ -56,6 +56,70 @@ type Service interface {
 	GetTextSplitter() textsplitter.TextSplitter
 }
 
+// ttlCacheEntry holds a cached value with an expiry timestamp.
+type ttlCacheEntry struct {
+	value     any
+	expiresAt time.Time
+}
+
+// ttlCache is a simple bounded cache with TTL-based eviction.
+// It is safe for concurrent use.
+type ttlCache struct {
+	mu      sync.Mutex
+	entries map[string]ttlCacheEntry
+	ttl     time.Duration
+	maxSize int
+}
+
+func newTTLCache(ttl time.Duration, maxSize int) *ttlCache {
+	return &ttlCache{
+		entries: make(map[string]ttlCacheEntry, maxSize),
+		ttl:     ttl,
+		maxSize: maxSize,
+	}
+}
+
+func (c *ttlCache) Load(key string) (any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(c.entries, key)
+		return nil, false
+	}
+	return entry.value, true
+}
+
+func (c *ttlCache) Store(key string, value any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Evict expired entries if at capacity
+	if len(c.entries) >= c.maxSize {
+		now := time.Now()
+		for k, e := range c.entries {
+			if now.After(e.expiresAt) {
+				delete(c.entries, k)
+			}
+		}
+		// If still at capacity after evicting expired, drop oldest
+		if len(c.entries) >= c.maxSize {
+			var oldestKey string
+			var oldestTime time.Time
+			for k, e := range c.entries {
+				if oldestKey == "" || e.expiresAt.Before(oldestTime) {
+					oldestKey = k
+					oldestTime = e.expiresAt
+				}
+			}
+			delete(c.entries, oldestKey)
+		}
+	}
+	c.entries[key] = ttlCacheEntry{value: value, expiresAt: time.Now().Add(c.ttl)}
+}
+
 type ragService struct {
 	cfg            *config.Config
 	promptMgr      *llm.PromptManager
@@ -67,8 +131,8 @@ type ragService struct {
 	splitter       textsplitter.TextSplitter
 	contextPacker  *contextpacker.Packer
 	logger         *slog.Logger
-	hydeCache      sync.Map // map[string]string: patchHash -> hydeSnippet
-	llmCache       sync.Map // map[string]llms.Model: modelName -> LLM instance
+	hydeCache      *ttlCache // patchHash -> hydeSnippet
+	llmCache       *ttlCache // modelName -> LLM instance
 }
 
 // NewService creates a new RAG service.
@@ -120,6 +184,8 @@ func NewService(
 		splitter:       splitter,
 		contextPacker:  contextPacker,
 		logger:         logger,
+		hydeCache:      newTTLCache(30*time.Minute, 500),
+		llmCache:       newTTLCache(1*time.Hour, 20),
 	}, nil
 }
 
@@ -133,7 +199,7 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 		return r.generatorLLM, nil
 	}
 
-	// Check cache first (read-only lock-free lookup)
+	// Check cache first
 	if cached, ok := r.llmCache.Load(modelName); ok {
 		if llmModel, valid := cached.(llms.Model); valid {
 			return llmModel, nil
