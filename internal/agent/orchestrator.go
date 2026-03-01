@@ -594,6 +594,7 @@ Implement the issue described below. Follow these steps IN ORDER:
    - If EITHER command fails, you MUST fix the issues and run BOTH commands again
    - Only proceed when BOTH commands pass with exit code 0
 6. **Review** - Call review_code on your changes
+   - CRITICAL: At the start of each review iteration, you MUST print 'AGENT_ITERATION: X' (where X is the current iteration number) on its own line.
 7. **Iterate** - If REQUEST_CHANGES, fix issues, run lint/test again, and review again
 8. **Push** - Run: git push origin HEAD (or use push_branch tool)
    - CRITICAL: Your branch MUST exist on GitHub before creating a PR
@@ -688,44 +689,52 @@ func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) err
 }
 
 // parseAgentOutput extracts the result from agent output.
-func (o *Orchestrator) parseAgentOutput(output string, defaultBranch string) *Result {
-	const sentinel = "AGENT_RESULT:"
+func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Result {
+	const resultSentinel = "AGENT_RESULT:"
+	const iterationSentinel = "AGENT_ITERATION:"
 	lines := strings.Split(output, "\n")
 
+	// 1. First, scan for the final result JSON.
+	var finalResult *Result
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, sentinel) {
-			jsonStr := strings.TrimPrefix(line, sentinel)
+		if strings.HasPrefix(line, resultSentinel) {
+			jsonStr := strings.TrimPrefix(line, resultSentinel)
 			jsonStr = strings.TrimSpace(jsonStr)
 
 			var res Result
 			if err := json.Unmarshal([]byte(jsonStr), &res); err != nil {
 				o.logger.Warn("parseAgentOutput: failed to unmarshal agent result", "error", err, "line", line)
-				// continue to try other lines if they exist, in case of multiple sentinels
 				continue
 			}
 			o.logger.Debug("parseAgentOutput: successfully parsed agent result", "pr_number", res.PRNumber)
-			return &res
+			finalResult = &res
+			break // Use the first valid AGENT_RESULT found
 		}
 	}
 
-	// Fallback: Infer what we can from the output and use provided branch
-	o.logger.Warn("parseAgentOutput: no AGENT_RESULT sentinel found, attempting to infer result")
-	res := &Result{
-		Branch:       defaultBranch,
-		FilesChanged: []string{}, // Consistency: empty slice instead of nil
-		Verdict:      "UNKNOWN",
-		Iterations:   0,
+	if finalResult != nil {
+		return finalResult
 	}
 
-	// Try to infer iterations from logs using a more specific pattern
+	// 2. Fallback: No final result found, infer from logs.
+	o.logger.Warn("parseAgentOutput: no AGENT_RESULT sentinel found, attempting to infer result")
+	res := &Result{
+		Branch:       sessionBranch,
+		FilesChanged: []string{}, // Consistency: empty slice instead of nil
+		Verdict:      "UNKNOWN",
+		Iterations:   0, // Will be at least 1 after counting
+	}
+
+	// Count occurrences of AGENT_ITERATION: X
 	for _, line := range lines {
-		if strings.Contains(line, "AGENT_ITERATION:") {
+		if strings.Contains(line, iterationSentinel) {
 			res.Iterations++
 		}
 	}
+
 	if res.Iterations == 0 {
-		res.Iterations = 1 // Minimum 1 if it ran
+		res.Iterations = 1 // Minimum 1 iteration if it ran at all
 	}
 
 	return res

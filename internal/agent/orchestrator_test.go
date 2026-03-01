@@ -79,6 +79,20 @@ AGENT_ITERATION: 2
 				Iterations:   2,
 			},
 		},
+		{
+			name: "multiple AGENT_RESULT lines - uses first valid",
+			output: `
+AGENT_ITERATION: 1
+AGENT_RESULT: {"pr_number": 1, "verdict": "FAILED"}
+AGENT_ITERATION: 2
+AGENT_RESULT: {"pr_number": 2, "verdict": "APPROVED"}
+`,
+			expected: &Result{
+				PRNumber:   1,
+				Verdict:    "FAILED",
+				Iterations: 0, // Result parsing doesn't count iterations
+			},
+		},
 	}
 
 	for _, tt := range tests {
