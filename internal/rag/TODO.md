@@ -58,13 +58,13 @@
 - [ ] Deduplicate `sha256.Sum256 → hex.EncodeToString` pattern across 4+ locations
 - [ ] Parameterize truncation length (8 bytes vs 16 bytes vs full)
 
-### Remove `enrichAnswerWithContext` No-Op
-- [ ] Either implement conversation history support or remove the wrapper
-- [ ] Currently returns input unchanged, adding dead code
+### ~~Remove `enrichAnswerWithContext` No-Op~~ ✅
+- [x] Either implement conversation history support or remove the wrapper
+- [x] Currently returns input unchanged, adding dead code
 
-### Remove `defer close(sem)` in `GenerateComparisonSummaries`
-- [ ] Channel GC handles cleanup; closing a shared channel can panic if goroutines are still writing
-- [ ] Safe today (after `g.Wait()`) but unnecessarily fragile
+### ~~Remove `defer close(sem)` in `GenerateComparisonSummaries`~~ ✅
+- [x] Channel GC handles cleanup; closing a shared channel can panic if goroutines are still writing
+- [x] Safe today (after `g.Wait()`) but unnecessarily fragile
 
 ## Architecture: Split `ragService` God Object
 
@@ -170,18 +170,18 @@ Each step is a standalone PR that compiles and passes tests.
 - [x] Move `computeFileHash`, `isTestFile`, `isLogicFile` → `index/hash.go`
 - [x] Verify: `make lint && make test`
 
-#### Phase 4: Extract `review/`
-- [ ] Move `GenerateReview`, `GenerateReReview` → `review/review.go`
-- [ ] Move `GenerateConsensusReview`, `synthesizeConsensus`, consensus map/reduce funcs → `review/consensus.go`
-- [ ] Move `ParseDiff`, `structuredReviewParser`, `SanitizeModelForFilename` → `review/parser.go`
-- [ ] Move `saveReviewArtifact`, `saveConsensusArtifact`, `ensureReviewsDir` → `review/artifact.go`
-- [ ] Verify: `make lint && make test`
+#### Phase 4: ~~Extract `review/`~~ ✅
+- [x] Move `GenerateReview`, `GenerateReReview` → `review/review.go`
+- [x] Move `GenerateConsensusReview`, `synthesizeConsensus`, consensus map/reduce funcs → `review/consensus.go`
+- [x] Move `ParseDiff`, `structuredReviewParser`, `SanitizeModelForFilename` → `review/parser.go`
+- [x] Move `saveReviewArtifact`, `saveConsensusArtifact`, `ensureReviewsDir` → `review/artifact.go`
+- [x] Verify: `make lint && make test`
 
-#### Phase 5: Slim down `service.go`
-- [ ] `ragService` becomes a thin factory wiring all subsystems
-- [ ] `NewService` creates subsystems and composes them
-- [ ] `Service` interface delegates to subsystem methods
-- [ ] Verify: `make lint && make test`
+#### Phase 5: ~~Slim down `service.go`~~ ✅
+- [x] `ragService` becomes a thin factory wiring all subsystems
+- [x] `NewService` creates subsystems and composes them
+- [x] `Service` interface delegates to subsystem methods
+- [x] Verify: `make lint && make test`
 
 ### Add Metrics/Observability
 - [ ] Track: context build time, LLM call duration, cache hit rates, symbol resolution depth

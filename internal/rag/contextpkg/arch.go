@@ -456,8 +456,6 @@ func (b *builderImpl) GenerateComparisonSummaries(ctx context.Context, models []
 
 	g, ctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, 10)
-	defer close(sem)
-
 	for _, relPath := range relPaths {
 		g.Go(func() error {
 			return b.processDirectorySummaries(ctx, models, llmInstances, repoPath, relPath, results, resultsMu, sem)

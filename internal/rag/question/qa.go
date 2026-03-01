@@ -70,7 +70,7 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 }
 
 // answerWithValidation uses a fast validator LLM to filter irrelevant context before answering.
-func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
+func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string, _ []string) (string, error) {
 	chain, err := chains.NewValidatingRetrievalQA(
 		retriever,
 		s.cfg.GeneratorLLM,
@@ -84,11 +84,6 @@ func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.R
 	answer, err := chain.Call(ctx, question)
 	if err != nil {
 		return "", fmt.Errorf("validating QA chain failed: %w", err)
-	}
-
-	// If there's conversation history, we need to incorporate it.
-	if len(history) > 0 {
-		answer = s.enrichAnswerWithContext(answer, history)
 	}
 
 	s.cfg.Logger.Debug("answer with validation generated", "answer_len", len(answer))
@@ -126,13 +121,4 @@ func (s *QAService) answerWithoutValidation(ctx context.Context, retriever schem
 
 	s.cfg.Logger.Debug("answer without validation generated", "answer_len", len(answer))
 	return answer, nil
-}
-
-// enrichAnswerWithContext is a placeholder for future multi-turn conversation support.
-// Currently returns the answer unchanged.
-func (s *QAService) enrichAnswerWithContext(answer string, _ []string) string {
-	// TODO: Implement history incorporation with GoFrame's validation prompts extension.
-	// The ValidatingRetrievalQA already considers context relevance.
-	// History support can be added by extending GoFrame's validation prompts.
-	return answer
 }
