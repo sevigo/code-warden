@@ -16,46 +16,25 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
+
+	"github.com/sevigo/code-warden/internal/gitutil"
 )
 
 // Input validation constants.
 const (
-	// maxBranchNameLength is the maximum length for git branch names (git limit is 255 bytes).
-	maxBranchNameLength = 255
 	// DefaultAgent is the default OpenCode agent type.
 	DefaultAgent = "build"
 )
 
-// safeBranchNameRegex validates that branch names contain only safe characters.
-// This prevents shell injection and ensures valid git branch names.
-var safeBranchNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
+// validateBranchName delegates to the shared gitutil implementation.
+var validateBranchName = gitutil.ValidateBranchName
 
 // shellQuote safely quotes a string for shell execution by wrapping in single quotes
 // and escaping any existing single quotes.
 func shellQuote(s string) string {
-	// Replace single quotes with '\'' (end quote, escaped quote, start quote)
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-// validateBranchName checks if a branch name is safe for shell execution.
-func validateBranchName(name string) error {
-	if name == "" {
-		return fmt.Errorf("branch name cannot be empty")
-	}
-	if len(name) > maxBranchNameLength {
-		return fmt.Errorf("branch name exceeds maximum length of %d bytes", maxBranchNameLength)
-	}
-	if !safeBranchNameRegex.MatchString(name) {
-		return fmt.Errorf("invalid branch name: contains unsafe characters")
-	}
-	// Check for consecutive dots which could lead to directory traversal
-	if strings.Contains(name, "..") {
-		return fmt.Errorf("branch name cannot contain consecutive dots")
-	}
-	return nil
 }
 
 // APIError represents an error response from the OpenCode API.

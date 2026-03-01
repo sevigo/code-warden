@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,25 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+// contextKey is an unexported type for context keys in this package.
+type contextKey string
+
+const projectRootKey contextKey = "projectRoot"
+
+// ProjectRootFromContext returns the per-session project root from context,
+// or empty string if not set.
+func ProjectRootFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(projectRootKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// withProjectRoot returns a context with the given project root.
+func withProjectRoot(ctx context.Context, root string) context.Context {
+	return context.WithValue(ctx, projectRootKey, root)
+}
+
 // Server implements an MCP server for code-warden.
 type Server struct {
 	store       storage.Store
@@ -27,22 +47,27 @@ type Server struct {
 	ghClient    github.Client
 	repo        *storage.Repository
 	repoConfig  *core.RepoConfig
-	ProjectRoot string
+	projectRoot string
 	logger      *slog.Logger
 	tools       map[string]Tool
 
 	// SSE session management
 	sessionsMu sync.RWMutex
 	sessions   map[string]*sseSession
+
+	// Per-session workspace overrides (maps workspace token -> project root path)
+	workspacesMu sync.RWMutex
+	workspaces   map[string]string
 }
 
 // sseSession represents an active SSE connection.
 type sseSession struct {
-	id       string
-	messages chan []byte
-	done     chan struct{}
-	ctx      context.Context
-	cancel   context.CancelFunc
+	id          string
+	messages    chan []byte
+	done        chan struct{}
+	ctx         context.Context
+	cancel      context.CancelFunc
+	projectRoot string // per-session workspace root
 }
 
 // Tool represents an MCP tool that can be called by an agent.
@@ -83,10 +108,11 @@ func NewServer(
 		ghClient:    ghClient,
 		repo:        repo,
 		repoConfig:  repoConfig,
-		ProjectRoot: projectRoot,
+		projectRoot: projectRoot,
 		logger:      logger,
 		tools:       make(map[string]Tool),
 		sessions:    make(map[string]*sseSession),
+		workspaces:  make(map[string]string),
 	}
 
 	// Register default tools
@@ -111,7 +137,7 @@ func (s *Server) registerTools() {
 	}
 	s.tools["get_structure"] = &GetStructureTool{
 		vectorStore: s.vectorStore,
-		projectRoot: s.ProjectRoot,
+		projectRoot: s.projectRoot,
 		logger:      s.logger,
 	}
 	s.tools["review_code"] = &ReviewCodeTool{
@@ -129,7 +155,7 @@ func (s *Server) registerTools() {
 			s.tools["create_pull_request"] = NewCreatePRTool(s.ghClient, owner, name, s.logger)
 			s.tools["list_issues"] = NewListIssuesTool(s.ghClient, owner, name, s.logger)
 			s.tools["get_issue"] = NewGetIssueTool(s.ghClient, owner, name, s.logger)
-			s.tools["push_branch"] = NewPushBranchTool(s.ProjectRoot, s.logger)
+			s.tools["push_branch"] = NewPushBranchTool(s.projectRoot, s.logger)
 		}
 	}
 }
@@ -143,7 +169,24 @@ func parseRepoFullName(fullName string) (owner, name string) {
 	return "", fullName
 }
 
-// ListTools returns all available tools.
+// RegisterWorkspace associates a workspace token with a project root path.
+// The token is passed by the agent via the SSE connection URL.
+func (s *Server) RegisterWorkspace(token, projectRoot string) {
+	s.workspacesMu.Lock()
+	s.workspaces[token] = projectRoot
+	s.workspacesMu.Unlock()
+	s.logger.Info("workspace registered", "token", token, "project_root", projectRoot)
+}
+
+// UnregisterWorkspace removes a workspace association.
+func (s *Server) UnregisterWorkspace(token string) {
+	s.workspacesMu.Lock()
+	delete(s.workspaces, token)
+	s.workspacesMu.Unlock()
+	s.logger.Debug("workspace unregistered", "token", token)
+}
+
+// ListTools returns all available tools in deterministic order.
 func (s *Server) ListTools() []ToolInfo {
 	tools := make([]ToolInfo, 0, len(s.tools))
 	for name, tool := range s.tools {
@@ -153,6 +196,9 @@ func (s *Server) ListTools() []ToolInfo {
 			InputSchema: tool.InputSchema(),
 		})
 	}
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
 	return tools
 }
 
@@ -235,14 +281,27 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Generate session ID
 	sessionID := generateSessionID()
 
+	// Resolve per-session project root from workspace token
+	workspaceToken := r.URL.Query().Get("workspace")
+	projectRoot := s.projectRoot // default
+	if workspaceToken != "" {
+		s.workspacesMu.RLock()
+		if override, ok := s.workspaces[workspaceToken]; ok {
+			projectRoot = override
+		}
+		s.workspacesMu.RUnlock()
+		s.logger.Debug("SSE session workspace resolved", "session_id", sessionID, "workspace", workspaceToken, "project_root", projectRoot)
+	}
+
 	// Create a per-session context that is cancelled when the client disconnects
 	sessionCtx, sessionCancel := context.WithCancel(r.Context())
 	session := &sseSession{
-		id:       sessionID,
-		messages: make(chan []byte, 100),
-		done:     make(chan struct{}),
-		ctx:      sessionCtx,
-		cancel:   sessionCancel,
+		id:          sessionID,
+		messages:    make(chan []byte, 100),
+		done:        make(chan struct{}),
+		ctx:         sessionCtx,
+		cancel:      sessionCancel,
+		projectRoot: projectRoot,
 	}
 
 	s.sessionsMu.Lock()
@@ -321,6 +380,10 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 			case <-toolCtx.Done():
 			}
 		}()
+		// Inject per-session project root into tool context
+		if session.projectRoot != "" {
+			toolCtx = withProjectRoot(toolCtx, session.projectRoot)
+		}
 	} else {
 		toolCtx = r.Context()
 	}

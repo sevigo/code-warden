@@ -13,12 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sync"
 	"time"
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/mcp"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -38,6 +38,9 @@ type Orchestrator struct {
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
+
+	// done is closed when the orchestrator is shutting down.
+	done chan struct{}
 }
 
 // Config holds configuration for the agent orchestrator.
@@ -126,6 +129,7 @@ func NewOrchestrator(
 		projectRoot: absRoot,
 		sessions:    make(map[string]*Session),
 		sessionsMu:  sync.RWMutex{},
+		done:        make(chan struct{}),
 	}
 }
 
@@ -187,6 +191,7 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	o.logger.Info("shutting down agent orchestrator")
 
 	// Cancel all running sessions
+	close(o.done) // Signal cleanupLoop to stop
 	o.sessionsMu.Lock()
 	for _, session := range o.sessions {
 		if session.cancel != nil {
@@ -212,8 +217,13 @@ func (o *Orchestrator) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		o.cleanupOldSessions()
+	for {
+		select {
+		case <-o.done:
+			return
+		case <-ticker.C:
+			o.cleanupOldSessions()
+		}
 	}
 }
 
@@ -373,12 +383,11 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 		return nil, fmt.Errorf("agent functionality is disabled")
 	}
 
-	// Check concurrent session limit
-	o.sessionsMu.RLock()
+	// Check concurrent session limit and insert atomically
+	o.sessionsMu.Lock()
 	activeCount := len(o.sessions)
-	o.sessionsMu.RUnlock()
-
 	if activeCount >= o.config.MaxConcurrentSessions {
+		o.sessionsMu.Unlock()
 		return nil, fmt.Errorf("maximum concurrent sessions reached (%d), please retry later", o.config.MaxConcurrentSessions)
 	}
 
@@ -389,8 +398,6 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 		status:    StatusPending,
 		StartedAt: time.Now(),
 	}
-
-	o.sessionsMu.Lock()
 	o.sessions[sessionID] = session
 	o.sessionsMu.Unlock()
 
@@ -465,7 +472,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"prompt_length", len(systemPrompt))
 
 	// Create branch name (sanitize for git safety)
-	branch := sanitizeBranch(fmt.Sprintf("agent/%s", session.ID))
+	branch := gitutil.SanitizeBranch(fmt.Sprintf("agent/%s", session.ID))
 	o.logger.Info("runAgent: created branch name",
 		"session_id", session.ID,
 		"branch", branch)
@@ -502,13 +509,12 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 		return
 	}
 
-	o.mcpServer.ProjectRoot = workspaceDir
-	defer func() {
-		o.mcpServer.ProjectRoot = o.projectRoot // Restore original after session
-	}()
+	// Register per-session workspace so MCP tools use the correct project root
+	o.mcpServer.RegisterWorkspace(session.ID, workspaceDir)
+	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
 	// Build OpenCode command
-	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
+	cmd := o.buildOpenCodeCommand(ctx, session.ID, session.Issue, systemPrompt, branch)
 	cmd.Dir = workspaceDir // Run in the isolated workspace
 
 	o.logger.Info("runAgentCLI: starting OpenCode process",
@@ -632,7 +638,7 @@ Work in the current isolated workspace. Create a branch named 'agent/%s' for you
 }
 
 // buildOpenCodeCommand creates the command to run OpenCode.
-func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch string) *exec.Cmd {
+func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, sessionID string, issue Issue, systemPrompt, branch string) *exec.Cmd {
 	// OpenCode CLI usage: opencode run [message..]
 	// The prompt is passed as positional arguments after "run"
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for agent execution
@@ -646,7 +652,7 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 	// Command construction (cmd.Dir is set by the caller)
 
 	// Dynamically configure MCP server for this run
-	mcpConfig := fmt.Sprintf(`{"mcp": {"code-warden": {"type": "remote", "url": "http://%s/sse", "enabled": true}}}`, o.config.MCPAddr)
+	mcpConfig := fmt.Sprintf(`{"mcp": {"code-warden": {"type": "remote", "url": "http://%s/sse?workspace=%s", "enabled": true}}}`, o.config.MCPAddr, sessionID)
 
 	// Set environment variables for MCP and iteration config
 	cmd.Env = append(os.Environ(),
@@ -707,29 +713,6 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-// sanitizeBranch sanitizes a string to be a valid git branch name.
-// Git branch names cannot contain spaces, ~, ^, :, *, ?, [, \\, or start with -.
-func sanitizeBranch(name string) string {
-	// Replace invalid characters with hyphens
-	re := regexp.MustCompile(`[\s~^:?*\[\\]`)
-	sanitized := re.ReplaceAllString(name, "-")
-
-	// Remove leading/trailing hyphens and dots
-	for len(sanitized) > 0 && (sanitized[0] == '-' || sanitized[0] == '.') {
-		sanitized = sanitized[1:]
-	}
-	for len(sanitized) > 0 && (sanitized[len(sanitized)-1] == '-' || sanitized[len(sanitized)-1] == '.') {
-		sanitized = sanitized[:len(sanitized)-1]
-	}
-
-	// Limit length to 200 characters
-	if len(sanitized) > 200 {
-		sanitized = sanitized[:200]
-	}
-
-	return sanitized
 }
 
 // cleanupWorkspace removes the session's isolated workspace directory.

@@ -8,29 +8,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
-	"regexp"
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/gitutil"
 )
 
-// validBranchName matches safe Git branch names: alphanumeric, slashes, hyphens, underscores, dots.
-// Rejects empty strings, double dots (..), and leading or trailing slashes.
-var validBranchName = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9/_\-\.]*[a-zA-Z0-9])?$`)
-
 // validateBranchName checks that a branch name is safe to pass to exec.CommandContext.
-func validateBranchName(name string) error {
-	if name == "" {
-		return fmt.Errorf("branch name cannot be empty")
-	}
-	if len(name) > 255 {
-		return fmt.Errorf("branch name too long (max 255 chars)")
-	}
-	if !validBranchName.MatchString(name) {
-		return fmt.Errorf("branch name %q contains invalid characters", name)
-	}
-	return nil
-}
+var validateBranchName = gitutil.ValidateBranchName
 
 // CreatePRTool creates a pull request in the repository.
 // It requires the agent to have write access to the repository.
@@ -116,6 +101,9 @@ func (t *CreatePRTool) Execute(ctx context.Context, args map[string]any) (any, e
 	head, ok := args["head"].(string)
 	if !ok || head == "" {
 		return nil, fmt.Errorf("head branch is required")
+	}
+	if err := validateBranchName(head); err != nil {
+		return nil, fmt.Errorf("invalid head branch: %w", err)
 	}
 
 	base := "main"
@@ -410,8 +398,12 @@ func (t *PushBranchTool) Execute(ctx context.Context, args map[string]any) (any,
 
 // ensureBranch checks out or creates the target branch if not already on it.
 func (t *PushBranchTool) ensureBranch(ctx context.Context, branch string) error {
+	projectRoot := ProjectRootFromContext(ctx)
+	if projectRoot == "" {
+		projectRoot = t.projectRoot
+	}
 	cmd := exec.CommandContext(ctx, "git", "branch", "--show-current")
-	cmd.Dir = t.projectRoot
+	cmd.Dir = projectRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to get current branch: %w", err)
@@ -426,10 +418,10 @@ func (t *PushBranchTool) ensureBranch(ctx context.Context, branch string) error 
 
 	// Try existing branch first, then create
 	checkout := exec.CommandContext(ctx, "git", "checkout", branch)
-	checkout.Dir = t.projectRoot
+	checkout.Dir = projectRoot
 	if _, err := checkout.CombinedOutput(); err != nil {
 		create := exec.CommandContext(ctx, "git", "checkout", "-b", branch)
-		create.Dir = t.projectRoot
+		create.Dir = projectRoot
 		if out, err := create.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to create branch '%s': %w (output: %s)", branch, err, string(out))
 		}
@@ -439,8 +431,12 @@ func (t *PushBranchTool) ensureBranch(ctx context.Context, branch string) error 
 
 // commitPendingChanges stages and commits any uncommitted changes.
 func (t *PushBranchTool) commitPendingChanges(ctx context.Context) error {
+	projectRoot := ProjectRootFromContext(ctx)
+	if projectRoot == "" {
+		projectRoot = t.projectRoot
+	}
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	statusCmd.Dir = t.projectRoot
+	statusCmd.Dir = projectRoot
 	out, err := statusCmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to check git status: %w", err)
@@ -451,14 +447,14 @@ func (t *PushBranchTool) commitPendingChanges(ctx context.Context) error {
 
 	t.logger.Info("push_branch: committing uncommitted changes")
 
-	addCmd := exec.CommandContext(ctx, "git", "add", "-A")
-	addCmd.Dir = t.projectRoot
+	addCmd := exec.CommandContext(ctx, "git", "add", "-u")
+	addCmd.Dir = projectRoot
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add changes: %w (output: %s)", err, string(out))
 	}
 
 	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", "Automated commit from code-warden agent")
-	commitCmd.Dir = t.projectRoot
+	commitCmd.Dir = projectRoot
 	if out, err := commitCmd.CombinedOutput(); err != nil {
 		if !strings.Contains(string(out), "nothing to commit") {
 			return fmt.Errorf("failed to commit changes: %w (output: %s)", err, string(out))
@@ -469,13 +465,17 @@ func (t *PushBranchTool) commitPendingChanges(ctx context.Context) error {
 
 // pushToOrigin pushes the branch to the remote origin.
 func (t *PushBranchTool) pushToOrigin(ctx context.Context, branch string, force bool) (string, error) {
+	projectRoot := ProjectRootFromContext(ctx)
+	if projectRoot == "" {
+		projectRoot = t.projectRoot
+	}
 	args := []string{"push", "-u", "origin", branch}
 	if force {
 		args = append(args, "--force")
 	}
 
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = t.projectRoot
+	cmd.Dir = projectRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to push branch '%s': %w (output: %s)", branch, err, string(out))

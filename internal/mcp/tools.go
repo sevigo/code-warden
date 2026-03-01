@@ -346,6 +346,11 @@ func (t *GetStructureTool) InputSchema() map[string]any {
 }
 
 func (t *GetStructureTool) Execute(ctx context.Context, _ map[string]any) (any, error) {
+	projectRoot := ProjectRootFromContext(ctx)
+	if projectRoot == "" {
+		projectRoot = t.projectRoot
+	}
+
 	// Get root-level architectural summary
 	query := "project structure architecture overview main directories"
 	docs, err := t.vectorStore.SimilaritySearch(ctx, query, 10,
@@ -380,7 +385,7 @@ func (t *GetStructureTool) Execute(ctx context.Context, _ map[string]any) (any, 
 	}
 
 	return StructureResponse{
-		ProjectRoot: t.projectRoot,
+		ProjectRoot: projectRoot,
 		Directories: directories,
 	}, nil
 }

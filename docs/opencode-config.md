@@ -109,6 +109,7 @@ When connected, the agent has access to these MCP tools:
 
 | Tool | Description |
 |------|-------------|
+| `push_branch` | Push local branch to remote origin |
 | `create_pull_request` | Create a pull request with title, body, and branch |
 | `list_issues` | List repository issues with filtering options |
 | `get_issue` | Get detailed information about a specific issue |
