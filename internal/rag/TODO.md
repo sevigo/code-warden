@@ -16,7 +16,7 @@
 
 ### ~~Fix `UpdateRepoContext` Missing File Hash Updates~~ ✅
 - [x] Call `r.store.UpsertFiles` after processing changed files (mirrors `SetupRepoContext`)
-- [ ] Add integration test to verify smart-scan skips re-indexed files
+- [x] Add integration test to verify smart-scan skips re-indexed files
 
 ### ~~Fix `mapKeysToSlice` Non-Deterministic Truncation~~ ✅
 - [x] Sort map keys before truncating to `maxLen`
@@ -39,10 +39,11 @@
 - [x] `depResults` is read concurrently with potential ongoing writes if `wg.Wait()` has a race
 - [x] Alternatively, the returned map is exposed to data races by callers. Move `wg.Wait()` and safe handoff
 
-### Add Test Coverage for `SetupRepoContext`
-- [ ] Test worker pool shutdown on context cancellation
-- [ ] Test batch flushing at boundary conditions (exactly `batchSize` docs)
-- [ ] Test deletion pruning for removed files
+### ~~Add Test Coverage for `SetupRepoContext`~~ ✅
+- [ ] Test worker pool shutdown on context cancellation (needs refactor to expose pool)
+- [x] Test batch flushing at boundary conditions (exactly `batchSize` docs)
+- [x] Test deletion pruning for removed files
+- [x] Test incremental updates via `UpdateRepoContext`
 
 ### Parse `getConsensusTimeout` Once at Construction
 - [ ] Move `time.ParseDuration` to `NewService` or first call
@@ -142,16 +143,16 @@ type ReviewService struct {
 
 Each step is a standalone PR that compiles and passes tests.
 
-#### Phase 1: Extract `context/` (biggest win — 1000+ lines)
-- [ ] Create `internal/rag/context/` package
-- [ ] Move `buildRelevantContext`, `buildContextConcurrently`, `assembleContext`, `buildContextDocuments`, `fallbackConcat` → `context/builder.go`
-- [ ] Move `gatherDefinitionsContext`, `resolveSymbolsConcurrently`, `extractSymbolsFromPatch`, `extractDepth0Symbols`, `resolveDepth2Symbols` → `context/symbols.go`
-- [ ] Move `getImpactDocs`, `buildImpactRequests`, `fetchImpactResults` → `context/impact.go`
-- [ ] Move `gatherHyDEContext`, `generateHyDESnippet`, `stripPatchNoise`, `preFilterBM25` → `context/hyde.go`
-- [ ] Move `getArchContext`, `GenerateArchSummaries`, `scanDirectoryOnDisk`, `validateAndJoinPath` → `context/arch.go`
-- [ ] Move `buildContextForPrompt`, `mergeChunksForFile`, `getDocKey`, `getDocContent` → `context/format.go`
-- [ ] Define `ContextBuilder` interface, make `ragService.GenerateReview` call it
-- [ ] Verify: `make lint && make test`
+#### ~~Phase 1: Extract `context/` (biggest win — 1000+ lines)~~ ✅
+- [x] Create `internal/rag/contextpkg/` package
+- [x] Move `buildRelevantContext`, `assembleContext`, etc. → `contextpkg/builder.go`
+- [x] Move symbol extraction logic → `contextpkg/symbols.go`
+- [x] Move impact analysis logic → `contextpkg/impact.go`
+- [x] Move HyDE logic → `contextpkg/hyde.go`
+- [x] Move architectural context logic → `contextpkg/arch.go`
+- [x] Move formatting utilities → `contextpkg/format.go`
+- [x] Define `Builder` interface, wire into `ragService`
+- [x] Verify: `make lint && make test`
 
 #### Phase 2: ~~Move `detect/` and `question/`~~ ✅
 ### ~~Extract `detect/` Package~~ ✅
