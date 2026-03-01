@@ -28,9 +28,6 @@ import (
 
 // Orchestrator manages agent sessions and their lifecycle.
 type Orchestrator struct {
-	store       storage.Store
-	vectorStore storage.ScopedVectorStore
-	ragService  rag.Service
 	ghClient    github.Client
 	mcpServer   *mcp.Server
 	httpServer  *http.Server
@@ -68,9 +65,6 @@ type Config struct {
 	// MCPAddr is the address for the MCP server.
 	MCPAddr string `yaml:"mcp_addr"`
 
-	// OpencodeAddr is the address for the OpenCode HTTP API.
-	OpencodeAddr string `yaml:"opencode_addr"`
-
 	// WorkingDir is the directory for agent workspaces.
 	WorkingDir string `yaml:"working_dir"`
 }
@@ -84,8 +78,7 @@ func DefaultConfig() Config {
 		Timeout:               30 * time.Minute,
 		MaxIterations:         3,
 		MaxConcurrentSessions: 3,
-		MCPAddr:               "127.0.0.1:8081", // Bind to localhost only for security
-		OpencodeAddr:          "http://127.0.0.1:8000",
+		MCPAddr:               "127.0.0.1:8081",
 		WorkingDir:            "/tmp/code-warden-agents",
 	}
 }
@@ -121,9 +114,6 @@ func NewOrchestrator(
 	}
 
 	return &Orchestrator{
-		store:       store,
-		vectorStore: vectorStore,
-		ragService:  ragService,
 		ghClient:    ghClient,
 		mcpServer:   mcpServer,
 		logger:      logger,
@@ -362,7 +352,6 @@ type SessionStatus string
 const (
 	StatusPending   SessionStatus = "pending"
 	StatusRunning   SessionStatus = "running"
-	StatusReviewing SessionStatus = "reviewing"
 	StatusCompleted SessionStatus = "completed"
 	StatusFailed    SessionStatus = "failed"
 	StatusCancelled SessionStatus = "cancelled"
@@ -466,18 +455,18 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 
 	session.SetStatus(StatusRunning)
 
-	// Build the system prompt
-	o.logger.Debug("runAgent: building system prompt", "session_id", session.ID)
-	systemPrompt := o.buildSystemPrompt(session.Issue)
-	o.logger.Debug("runAgent: system prompt built",
-		"session_id", session.ID,
-		"prompt_length", len(systemPrompt))
-
 	// Create branch name (sanitize for git safety)
 	branch := gitutil.SanitizeBranch(fmt.Sprintf("agent/%s", session.ID))
 	o.logger.Info("runAgent: created branch name",
 		"session_id", session.ID,
 		"branch", branch)
+
+	// Build the system prompt
+	o.logger.Debug("runAgent: building system prompt", "session_id", session.ID)
+	systemPrompt := o.buildSystemPrompt(session.Issue, branch)
+	o.logger.Debug("runAgent: system prompt built",
+		"session_id", session.ID,
+		"prompt_length", len(systemPrompt))
 
 	o.runAgentCLI(ctx, session, systemPrompt, branch)
 }
@@ -566,8 +555,8 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 }
 
 // buildSystemPrompt creates the system prompt for the agent.
-func (o *Orchestrator) buildSystemPrompt(issue Issue) string {
-	return fmt.Sprintf(`You are an autonomous coding agent working on the code-warden project.
+func (o *Orchestrator) buildSystemPrompt(issue Issue, branch string) string {
+	return fmt.Sprintf(`You are an autonomous coding agent working on the %s project.
 
 ## Your Tools
 - MCP server available at %s with these tools:
@@ -631,15 +620,16 @@ This line must be the last line of your output.
 Connect to the MCP server at %s to access project context.
 
 ## Working Directory
-Work in the current isolated workspace. Create a branch named 'agent/%s' for your changes.
+Work in the current isolated workspace. Your changes MUST be in the branch named '%s'.
 `,
+		issue.RepoOwner+"/"+issue.RepoName,
 		o.config.MCPAddr,
 		issue.Number,
 		issue.Title,
 		issue.Body,
 		issue.Instructions,
 		o.config.MCPAddr,
-		sessionIDFromIssue(issue),
+		branch,
 	)
 }
 
@@ -674,7 +664,6 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, sessionID strin
 	return cmd
 }
 
-// parseAgentOutput extracts the result from agent output.
 // prepareWorkspace clones the project into the isolated workspace.
 func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) error {
 	// Simple approach: rsync or cp -r, but git clone is better for a clean state
@@ -694,7 +683,7 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 	const iterationSentinel = "AGENT_ITERATION:"
 	lines := strings.Split(output, "\n")
 
-	// 1. First, scan for the final result JSON.
+	// scan for the final result JSON.
 	var finalResult *Result
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -720,7 +709,7 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 		return finalResult
 	}
 
-	// 2. Fallback: No final result found, infer from logs.
+	// fallback: No final result found, infer from logs.
 	o.logger.Warn("parseAgentOutput: no AGENT_RESULT sentinel found, attempting to infer result")
 	res := &Result{
 		Branch:       sessionBranch,
@@ -743,15 +732,10 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 	return res
 }
 
-// generateSessionID creates a unique session ID using cryptographic random.
 func generateSessionID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("agent-%x", b)
-}
-
-func sessionIDFromIssue(issue Issue) string {
-	return fmt.Sprintf("issue-%d-%d", issue.Number, time.Now().Unix())
 }
 
 // truncateString truncates a string to maxLen characters.

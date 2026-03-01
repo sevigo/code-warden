@@ -61,7 +61,6 @@ Create or edit `~/.config/opencode/opencode.json`:
 agent:
   enabled: true
   mcp_addr: "127.0.0.1:8081"
-  opencode_addr: "http://127.0.0.1:4096"
   model: "qwen2.5-coder"
   timeout: "30m"
   max_iterations: 3
@@ -119,35 +118,6 @@ These tools allow agents to:
 2. Explore the codebase (`search_code`, `get_arch_context`, `get_symbol`)
 3. Validate changes (`review_code`)
 4. Submit work (`create_pull_request`)
-
-## Agent Modes
-
-### CLI Mode (Recommended)
-
-When `opencode_addr` is empty or not set, the agent uses CLI mode:
-
-```yaml
-agent:
-  enabled: true
-  opencode_addr: ""  # Empty = CLI mode
-```
-
-CLI mode is recommended because:
-- ✅ Actually executes commands (git, make, etc.)
-- ✅ Better integration with MCP tools
-- ✅ Simpler architecture
-
-### HTTP API Mode
-
-When `opencode_addr` is set, the agent uses HTTP API mode:
-
-```yaml
-agent:
-  enabled: true
-  opencode_addr: "http://127.0.0.1:4096"
-```
-
-⚠️ **Note**: HTTP API mode may not execute commands automatically. The agent responds to prompts but may not run shell commands or use MCP tools without additional configuration.
 
 ## Troubleshooting
 
