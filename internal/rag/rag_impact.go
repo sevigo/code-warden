@@ -105,5 +105,13 @@ func (r *ragService) fetchImpactResults(ctx context.Context, retriever *vectorst
 		}(req)
 	}
 	wg.Wait()
-	return depResults
+
+	// Return a snapshot under the lock to prevent races if callers modify the map.
+	depMu.Lock()
+	defer depMu.Unlock()
+	result := make(map[string][]schema.Document, len(depResults))
+	for k, v := range depResults {
+		result[k] = v
+	}
+	return result
 }

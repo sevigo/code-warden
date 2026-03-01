@@ -224,13 +224,13 @@ func (r *ragService) consensusMapFunc(event *core.GitHubEvent, promptData map[st
 	}
 }
 
-func (r *ragService) consensusReduceFunc(repoConfig *core.RepoConfig, event *core.GitHubEvent, contextString string, changedFiles []internalgithub.ChangedFile, contextBuildTime time.Duration) func(ctx context.Context, results []ComparisonResult) (string, error) {
+func (r *ragService) consensusReduceFunc(repoConfig *core.RepoConfig, event *core.GitHubEvent, contextString string, changedFiles []internalgithub.ChangedFile, contextBuildTime time.Duration, reviewsDir string) func(ctx context.Context, results []ComparisonResult) (string, error) {
 	return func(ctx context.Context, results []ComparisonResult) (string, error) {
 		r.logger.Info("quorum reached, starting consensus synthesis",
 			"models_participating", len(results),
 			"models", getSuccessfulModels(results))
 		synthStart := time.Now()
-		rawConsensus, validReviews, err := r.synthesizeConsensus(ctx, repoConfig, event, results, contextString, changedFiles, contextBuildTime)
+		rawConsensus, validReviews, err := r.synthesizeConsensus(ctx, repoConfig, event, results, contextString, changedFiles, contextBuildTime, reviewsDir)
 		synthTime := time.Since(synthStart)
 
 		if err != nil {
@@ -294,7 +294,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	// Prepare for artifact saving
 	timestamp := time.Now().Format("20060102_150405_000000000")
-	reviewsDir := "reviews"
+	reviewsDir := filepath.Join(filepath.Dir(repo.ClonePath), "reviews")
 	if err := r.ensureReviewsDir(reviewsDir); err != nil {
 		r.logger.Warn("failed to ensure reviews directory, artifacts might not be saved", "error", err)
 	}
@@ -307,7 +307,7 @@ func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *co
 
 	chain := chains.NewMapReduceChain(
 		r.consensusMapFunc(event, promptData, &modelResults, &modelResultsMu, reviewsDir, timestamp),
-		r.consensusReduceFunc(repoConfig, event, contextString, changedFiles, contextBuildTime),
+		r.consensusReduceFunc(repoConfig, event, contextString, changedFiles, contextBuildTime, reviewsDir),
 		chains.WithMaxConcurrency[string, ComparisonResult, string](2),
 		chains.WithQuorum[string, ComparisonResult, string](r.cfg.AI.ConsensusQuorum),
 	)
@@ -416,7 +416,7 @@ func (r *ragService) validateConsensusParams(repo *storage.Repository, event *co
 	return nil
 }
 
-func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.RepoConfig, event *core.GitHubEvent, results []ComparisonResult, context string, changedFiles []internalgithub.ChangedFile, contextBuildTime time.Duration) (string, []string, error) {
+func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.RepoConfig, event *core.GitHubEvent, results []ComparisonResult, context string, changedFiles []internalgithub.ChangedFile, contextBuildTime time.Duration, reviewsDir string) (string, []string, error) {
 	var validReviews []string
 	var reviewsBuilder strings.Builder
 	timestampStart := time.Now()
@@ -458,38 +458,14 @@ func (r *ragService) synthesizeConsensus(ctx context.Context, repoConfig *core.R
 	totalSynthesisTime := time.Since(timestampStart)
 	r.logger.Debug("consensus synthesis complete", "valid_reviews", len(validReviews), "duration", totalSynthesisTime.String())
 
-	reviewsDir := "reviews"
-	go r.saveConsensusArtifact(reviewsDir, rawConsensus, timestamp, event, totalSynthesisTime, validReviews, contextBuildTime)
+	r.saveConsensusArtifact(reviewsDir, rawConsensus, timestamp, event, totalSynthesisTime, validReviews, contextBuildTime)
 	return rawConsensus, validReviews, nil
 }
 
 // ensureReviewsDir creates the reviews output directory if it doesn't exist.
 func (r *ragService) ensureReviewsDir(reviewsDir string) error {
-	absReviewsDir, err := filepath.Abs(reviewsDir)
-	if err != nil {
-		return fmt.Errorf("failed to resolve reviews dir: %w", err)
-	}
-
-	resolvedDir, err := filepath.EvalSymlinks(absReviewsDir)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to check reviews directory: %w", err)
-	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
-	}
-	absCwd, _ := filepath.Abs(cwd)
-
-	if resolvedDir != "" {
-		rel, err := filepath.Rel(absCwd, resolvedDir)
-		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			return fmt.Errorf("reviews directory resolved outside base path")
-		}
-	}
-
 	if err := os.MkdirAll(reviewsDir, 0700); err != nil {
-		r.logger.Warn("failed to create reviews directory", "error", err)
+		return fmt.Errorf("failed to create reviews directory %s: %w", reviewsDir, err)
 	}
 	return nil
 }

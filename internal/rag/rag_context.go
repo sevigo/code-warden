@@ -80,26 +80,44 @@ func (r *ragService) buildContextForPrompt(docs []schema.Document) string {
 
 // mergeChunksForFile joins consecutive document chunks from the same file,
 // detecting and removing overlapping content between adjacent chunks.
+// It tracks only the tail of the merged content to avoid O(n²) string copying.
 func mergeChunksForFile(docs []schema.Document, r *ragService) string {
 	if len(docs) == 1 {
 		return r.getDocContent(docs[0])
 	}
 
+	first := r.getDocContent(docs[0])
 	var merged strings.Builder
-	merged.WriteString(r.getDocContent(docs[0]))
+	merged.WriteString(first)
+
+	// Track the tail of the merged content for overlap detection.
+	// Only the last maxOverlapTail characters are needed by findOverlapStart.
+	const maxOverlapTail = 300
+	tail := first
+	if len(tail) > maxOverlapTail {
+		tail = tail[len(tail)-maxOverlapTail:]
+	}
 
 	for i := 1; i < len(docs); i++ {
-		prev := merged.String()
 		curr := r.getDocContent(docs[i])
 
-		// Try to detect and remove the overlapping prefix
-		overlapStart := findOverlapStart(prev, curr)
+		overlapStart := findOverlapStart(tail, curr)
 		if overlapStart > 0 {
-			// curr[0:overlapStart] is already present at the end of prev
 			merged.WriteString(curr[overlapStart:])
 		} else {
 			merged.WriteString("\n")
 			merged.WriteString(curr)
+		}
+
+		// Update tail from the new content.
+		if len(curr) >= maxOverlapTail {
+			tail = curr[len(curr)-maxOverlapTail:]
+		} else {
+			// Append new content to existing tail, then trim.
+			tail += curr
+			if len(tail) > maxOverlapTail {
+				tail = tail[len(tail)-maxOverlapTail:]
+			}
 		}
 	}
 	return merged.String()
