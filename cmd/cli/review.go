@@ -102,78 +102,18 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	// 1. Initialize Application
 	timer.step("Initializing application")
-	appInstance, cleanup, err := wire.InitializeApp(ctx)
+	appInstance, cleanup, err := initializeReviewApp(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)
+		return err
 	}
 	defer cleanup()
-
-	if err := appInstance.DB.RunMigrations(); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
-	}
 	timer.done()
 
-	// 2. Parse URL and fetch PR metadata
-	timer.step("Fetching PR metadata")
-	event, ghClient, err := fetchPRMetadata(ctx, appInstance, prURL, timer)
+	// 2-5. Execute Review Flow
+	review, err := executeReviewFlow(ctx, appInstance, prURL, timer)
 	if err != nil {
 		return err
 	}
-	timer.done()
-
-	// 3. Sync Repository
-	timer.step("Syncing repository")
-	syncResult, repo, err := syncRepository(ctx, appInstance, event, timer)
-	if err != nil {
-		return err
-	}
-	timer.done()
-
-	// 4. Indexing
-	timer.step("Updating index")
-	if err := handleIndexing(ctx, appInstance, syncResult, repo, timer); err != nil {
-		return err
-	}
-	// Save the indexed SHA before the LLM call so we don't lose indexing progress if review fails
-	if event.HeadSHA != "" {
-		if err := appInstance.RepoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
-			return fmt.Errorf("failed to update repo SHA: %w", err)
-		}
-	}
-	timer.done()
-
-	// 5. Generate Review
-	timer.step("Generating review")
-
-	var review *core.StructuredReview
-
-	// Fetch diff and changed files once for both review paths
-	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return fmt.Errorf("failed to get PR diff: %w", err)
-	}
-	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		return fmt.Errorf("failed to get changed files: %w", err)
-	}
-
-	if numModels := len(appInstance.Cfg.AI.ComparisonModels); numModels > 0 {
-		if numModels < 2 {
-			return fmt.Errorf("consensus review requires at least 2 models, got %d", numModels)
-		}
-
-		timer.infof("Running consensus review with %d models...", numModels)
-		review, _, err = appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, appInstance.Cfg.AI.ComparisonModels, diff, changedFiles)
-		if err != nil {
-			return fmt.Errorf("consensus review failed: %w", err)
-		}
-	} else {
-		review, err = generateReview(ctx, appInstance, repo, event, diff, changedFiles, timer)
-		if err != nil {
-			return err
-		}
-	}
-	timer.done()
 
 	// Print results
 	if verbose {
@@ -183,6 +123,92 @@ func runReview(_ *cobra.Command, args []string) error {
 
 	printReview(review)
 	return nil
+}
+
+func initializeReviewApp(ctx context.Context) (*app.App, func(), error) {
+	appInstance, cleanup, err := wire.InitializeApp(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)
+	}
+
+	if err := appInstance.Cfg.ValidateForCLI(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("configuration validation failed: %w", err)
+	}
+
+	if err := appInstance.DB.RunMigrations(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	return appInstance, cleanup, nil
+}
+
+func executeReviewFlow(ctx context.Context, appInstance *app.App, prURL string, timer *stepTimer) (*core.StructuredReview, error) {
+	// 2. Parse URL and fetch PR metadata
+	timer.step("Fetching PR metadata")
+	event, ghClient, err := fetchPRMetadata(ctx, appInstance, prURL, timer)
+	if err != nil {
+		return nil, err
+	}
+	timer.done()
+
+	// 3. Sync Repository
+	timer.step("Syncing repository")
+	syncResult, repo, err := syncRepository(ctx, appInstance, event, timer)
+	if err != nil {
+		return nil, err
+	}
+	timer.done()
+
+	// 4. Indexing
+	timer.step("Updating index")
+	if err := handleIndexing(ctx, appInstance, syncResult, repo, timer); err != nil {
+		return nil, err
+	}
+	// Save the indexed SHA before the LLM call so we don't lose indexing progress if review fails
+	if event.HeadSHA != "" {
+		if err := appInstance.RepoMgr.UpdateRepoSHA(ctx, event.RepoFullName, event.HeadSHA); err != nil {
+			return nil, fmt.Errorf("failed to update repo SHA: %w", err)
+		}
+	}
+	timer.done()
+
+	// 5. Generate Review
+	timer.step("Generating review")
+	review, err := generateReviewWithModels(ctx, appInstance, repo, event, ghClient, timer)
+	if err != nil {
+		return nil, err
+	}
+	timer.done()
+
+	return review, nil
+}
+
+func generateReviewWithModels(ctx context.Context, appInstance *app.App, repo *storage.Repository, event *core.GitHubEvent, ghClient github.Client, timer *stepTimer) (*core.StructuredReview, error) {
+	diff, err := ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PR diff: %w", err)
+	}
+	changedFiles, err := ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get changed files: %w", err)
+	}
+
+	if numModels := len(appInstance.Cfg.AI.ComparisonModels); numModels > 0 {
+		if numModels < 2 {
+			return nil, fmt.Errorf("consensus review requires at least 2 models, got %d", numModels)
+		}
+
+		timer.infof("Running consensus review with %d models...", numModels)
+		review, _, err := appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, appInstance.Cfg.AI.ComparisonModels, diff, changedFiles)
+		if err != nil {
+			return nil, fmt.Errorf("consensus review failed: %w", err)
+		}
+		return review, nil
+	}
+
+	return generateReview(ctx, appInstance, repo, event, diff, changedFiles, timer)
 }
 
 func printHeader(prURL string) {

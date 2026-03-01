@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -457,8 +458,27 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 
 // runAgentCLI executes the agent workflow using the local OpenCode binary.
 func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, systemPrompt, branch string) {
+	// Create session workspace
+	workspaceDir := filepath.Join(o.config.WorkingDir, session.ID)
+	if err := os.MkdirAll(workspaceDir, 0750); err != nil {
+		o.logger.Error("runAgentCLI: failed to create workspace directory", "session_id", session.ID, "dir", workspaceDir, "error", err)
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Failed to create workspace: %v", err))
+		return
+	}
+
+	// Clone project into workspace
+	o.logger.Info("runAgentCLI: preparing workspace", "session_id", session.ID, "dir", workspaceDir)
+	if err := o.prepareWorkspace(ctx, workspaceDir); err != nil {
+		o.logger.Error("runAgentCLI: failed to prepare workspace", "session_id", session.ID, "error", err)
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Failed to prepare workspace: %v", err))
+		return
+	}
+
 	// Build OpenCode command
 	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
+	cmd.Dir = workspaceDir // Run in the isolated workspace
 
 	o.logger.Info("runAgentCLI: starting OpenCode process",
 		"session_id", session.ID,
@@ -652,7 +672,7 @@ If you cannot complete any step, report what failed and why.
 Connect to the MCP server at %s to access project context.
 
 ## Working Directory
-Work in the current directory. Create a branch named 'agent/%s' for your changes.
+Work in the current isolated workspace. Create a branch named 'agent/%s' for your changes.
 `,
 		o.config.MCPAddr,
 		issue.Number,
@@ -676,8 +696,7 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 		systemPrompt,
 	)
 
-	// Set working directory to the repository path
-	cmd.Dir = o.projectRoot
+	// Command construction (cmd.Dir is set by the caller)
 
 	// Dynamically configure MCP server for this run
 	mcpConfig := fmt.Sprintf(`{"mcp": {"code-warden": {"type": "remote", "url": "http://%s/sse", "enabled": true}}}`, o.config.MCPAddr)
@@ -697,6 +716,19 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 }
 
 // parseAgentOutput extracts the result from agent output.
+// prepareWorkspace clones the project into the isolated workspace.
+func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) error {
+	// Simple approach: rsync or cp -r, but git clone is better for a clean state
+	// Since we are already in a git repo, we can clone from o.projectRoot
+	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for workspace preparation
+	cmd := exec.CommandContext(ctx, "git", "clone", o.projectRoot, ".")
+	cmd.Dir = destDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git clone failed: %w (output: %s)", err, string(output))
+	}
+	return nil
+}
+
 // TODO: Implement actual parsing when OpenCode output format is defined.
 func (o *Orchestrator) parseAgentOutput(_ string) *Result {
 	// TODO: Parse structured output from OpenCode
