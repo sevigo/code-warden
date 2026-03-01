@@ -672,14 +672,19 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 	cmd := exec.CommandContext(ctx, "opencode",
 		"run",
 		"--model", o.config.Model,
+		"--agent", "build",
 		systemPrompt,
 	)
 
 	// Set working directory to the repository path
 	cmd.Dir = o.projectRoot
 
+	// Dynamically configure MCP server for this run
+	mcpConfig := fmt.Sprintf(`{"mcp": {"code-warden": {"type": "remote", "url": "http://%s/sse", "enabled": true}}}`, o.config.MCPAddr)
+
 	// Set environment variables for MCP and iteration config
 	cmd.Env = append(os.Environ(),
+		"OPENCODE_CONFIG_CONTENT="+mcpConfig,
 		"OPENCODE_MCP_SERVER="+o.config.MCPAddr,
 		"OPENCODE_MAX_ITERATIONS="+fmt.Sprintf("%d", o.config.MaxIterations),
 		"OPENCODE_BRANCH="+branch,
