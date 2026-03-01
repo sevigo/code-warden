@@ -1,4 +1,4 @@
-package rag
+package contextpkg
 
 import (
 	"os"
@@ -23,7 +23,7 @@ func TestValidateAndJoinPath_Security(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	service := &ragService{} // Method is on *ragService
+	service := &builderImpl{} // Method is on *ragService
 
 	tests := []struct {
 		name      string
@@ -103,7 +103,7 @@ func TestValidateAndJoinPath_Symlinks(t *testing.T) {
 		t.Skipf("Skipping symlink test due to error (likely permissions): %v", err)
 	}
 
-	service := &ragService{}
+	service := &builderImpl{}
 
 	tests := []struct {
 		name      string
