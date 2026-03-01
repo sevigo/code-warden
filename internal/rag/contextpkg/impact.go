@@ -1,4 +1,4 @@
-package rag
+package contextpkg
 
 import (
 	"context"
@@ -19,14 +19,20 @@ type depRequest struct {
 	File    internalgithub.ChangedFile
 }
 
-// getImpactDocs retrieves documents for callers and dependents of changed code.
-func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) ([]schema.Document, error) {
+func (b *builderImpl) gatherImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) ([]schema.Document, error) {
+	b.cfg.Logger.Info("stage started", "name", "ImpactAnalysis")
+	docs, err := b.getImpactDocs(ctx, store, repoPath, files)
+	b.cfg.Logger.Info("stage completed", "name", "ImpactAnalysis", "docs", len(docs))
+	return docs, err
+}
+
+func (b *builderImpl) getImpactDocs(ctx context.Context, store storage.ScopedVectorStore, repoPath string, files []internalgithub.ChangedFile) ([]schema.Document, error) {
 	retriever, err := vectorstores.NewDependencyRetriever(store)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dependency retriever: %w", err)
 	}
-	reqs := r.buildImpactRequests(repoPath, files)
-	depResults := r.fetchImpactResults(ctx, retriever, reqs)
+	reqs := b.buildImpactRequests(repoPath, files)
+	depResults := b.fetchImpactResults(ctx, retriever, reqs)
 
 	const maxImpactSnippets = 10
 	var docs []schema.Document
@@ -45,17 +51,15 @@ func (r *ragService) getImpactDocs(ctx context.Context, store storage.ScopedVect
 	return docs, nil
 }
 
-// buildImpactRequests extracts package names and imports from changed files
-// to construct dependency retrieval queries.
-func (r *ragService) buildImpactRequests(repoPath string, files []internalgithub.ChangedFile) []depRequest {
+func (b *builderImpl) buildImpactRequests(repoPath string, files []internalgithub.ChangedFile) []depRequest {
 	reqs := make([]depRequest, 0, len(files))
 	for _, f := range files {
-		parser, err := r.parserRegistry.GetParserForFile(f.Filename, nil)
+		parser, err := b.cfg.ParserRegistry.GetParserForFile(f.Filename, nil)
 		if err != nil {
 			continue
 		}
 
-		fullPath, err := r.validateAndJoinPath(repoPath, f.Filename)
+		fullPath, err := b.validateAndJoinPath(repoPath, f.Filename)
 		if err != nil {
 			continue
 		}
@@ -79,7 +83,7 @@ func (r *ragService) buildImpactRequests(repoPath string, files []internalgithub
 	return reqs
 }
 
-func (r *ragService) fetchImpactResults(ctx context.Context, retriever *vectorstores.DependencyRetriever, reqs []depRequest) map[string][]schema.Document {
+func (b *builderImpl) fetchImpactResults(ctx context.Context, retriever *vectorstores.DependencyRetriever, reqs []depRequest) map[string][]schema.Document {
 	const maxConcurrentDepCalls = 10
 	sem := make(chan struct{}, maxConcurrentDepCalls)
 	depResults := make(map[string][]schema.Document)
@@ -100,13 +104,12 @@ func (r *ragService) fetchImpactResults(ctx context.Context, retriever *vectorst
 
 			depMu.Lock()
 			depResults[dr.File.Filename] = network.Dependents
-			r.logger.Debug("impact graph fetched", "file", dr.File.Filename, "dependents", len(network.Dependents))
+			b.cfg.Logger.Debug("impact graph fetched", "file", dr.File.Filename, "dependents", len(network.Dependents))
 			depMu.Unlock()
 		}(req)
 	}
 	wg.Wait()
 
-	// Return a snapshot under the lock to prevent races if callers modify the map.
 	depMu.Lock()
 	defer depMu.Unlock()
 	result := make(map[string][]schema.Document, len(depResults))

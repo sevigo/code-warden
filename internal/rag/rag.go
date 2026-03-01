@@ -2,11 +2,8 @@ package rag
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sync"
 	"time"
 
@@ -26,19 +23,11 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag/contextpkg"
 	indexpkg "github.com/sevigo/code-warden/internal/rag/index"
 	questionpkg "github.com/sevigo/code-warden/internal/rag/question"
 	reviewpkg "github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/storage"
-)
-
-// Pre-compiled regexes for Go symbol extraction from diffs.
-var (
-	symbolTypeDefRegex      = regexp.MustCompile(`(?m)^\+?\s*type\s+(\w+)\s+(?:struct|interface)`)
-	symbolFuncDefRegex      = regexp.MustCompile(`(?m)^\+?\s*func\s+(?:\([^)]+\))?\s*(\w+)`)
-	symbolVarDeclRegex      = regexp.MustCompile(`(?m)\bvar\s+\w+\s+(\w+)`)
-	symbolTypeAssertRegex   = regexp.MustCompile(`(?m)\b([A-Z]\w*)\{`)
-	symbolExportedTypeRegex = regexp.MustCompile(`\b([A-Z]\w+)(?:\.|\{)`)
 )
 
 // Service is the main RAG pipeline interface for indexing, review, and Q&A.
@@ -127,13 +116,12 @@ type ragService struct {
 	reranker       schema.Reranker
 	parserRegistry parsers.ParserRegistry
 	splitter       textsplitter.TextSplitter
-	contextPacker  *contextpacker.Packer
+	contextBuilder contextpkg.Builder
 	llmGroup       singleflight.Group
 	qaService      *questionpkg.QAService
 	indexer        *indexpkg.Indexer
 	reviewService  *reviewpkg.Service
 	logger         *slog.Logger
-	hydeCache      *ttlCache // patchHash -> hydeSnippet
 	llmCache       *ttlCache // modelName -> LLM instance
 }
 
@@ -210,14 +198,26 @@ func NewService(
 		reranker:       reranker,
 		parserRegistry: pr,
 		splitter:       splitter,
-		contextPacker:  contextPacker,
 		llmGroup:       singleflight.Group{},
 		logger:         logger,
 		qaService:      questionpkg.NewService(qaCfg),
 		indexer:        indexpkg.New(indexerCfg),
-		hydeCache:      newTTLCache(30*time.Minute, 500),
 		llmCache:       newTTLCache(1*time.Hour, 20),
 	}
+
+	contextCfg := contextpkg.Config{
+		AIConfig:       cfg.AI,
+		VectorStore:    vs,
+		PromptMgr:      promptMgr,
+		ParserRegistry: pr,
+		GeneratorLLM:   gen,
+		GetLLM:         r.getOrCreateLLM,
+		Reranker:       reranker,
+		ContextPacker:  contextPacker,
+		HyDECache:      newTTLCache(30*time.Minute, 500),
+		Logger:         logger.With("component", "context_builder"),
+	}
+	r.contextBuilder = contextpkg.NewBuilder(contextCfg)
 
 	reviewCfg := reviewpkg.Config{
 		VectorStore:      vs,
@@ -227,7 +227,7 @@ func NewService(
 		Logger:           logger,
 		ConsensusTimeout: cfg.AI.ConsensusTimeout,
 		ConsensusQuorum:  cfg.AI.ConsensusQuorum,
-		BuildContext:     r.buildRelevantContext,
+		BuildContext:     r.contextBuilder.BuildRelevantContext,
 	}
 	r.reviewService = reviewpkg.NewService(reviewCfg)
 
@@ -311,12 +311,6 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 	return llmModel, nil
 }
 
-// hashPatch returns a 128-bit hex hash of the patch content for cache keying.
-func (r *ragService) hashPatch(patch string) string {
-	hash := sha256.Sum256([]byte(patch))
-	return hex.EncodeToString(hash[:16])
-}
-
 // AnswerQuestion retrieves relevant documents and generates an answer via LLM.
 func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
 	// Dynamically fetch the validator LLM if configured
@@ -336,7 +330,7 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 		ValidatorLLM:  validatorLLM,
 		PromptMgr:     r.promptMgr,
 		Logger:        r.logger,
-		ContextFormat: r.buildContextForPrompt,
+		ContextFormat: r.contextBuilder.BuildContextForPrompt,
 	}
 
 	svc := questionpkg.NewService(qaCfg)
@@ -381,4 +375,14 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 
 func (r *ragService) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	return r.reviewService.GenerateConsensusReview(ctx, repoConfig, repo, event, models, diff, changedFiles)
+}
+
+// GenerateComparisonSummaries generates architectural summaries for multiple directories.
+func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
+	return r.contextBuilder.GenerateComparisonSummaries(ctx, models, repoPath, relPaths)
+}
+
+// GenerateArchSummaries generates architectural summaries for the repository.
+func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error {
+	return r.contextBuilder.GenerateArchSummaries(ctx, collectionName, embedderModelName, repoPath, targetPaths)
 }

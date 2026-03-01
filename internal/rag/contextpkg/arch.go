@@ -1,4 +1,4 @@
-package rag
+package contextpkg
 
 import (
 	"context"
@@ -18,6 +18,7 @@ import (
 	"github.com/sevigo/goframe/vectorstores"
 	"golang.org/x/sync/errgroup"
 
+	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -43,23 +44,23 @@ type DirectoryInfo struct {
 
 // GenerateArchSummaries generates architectural summaries for directories.
 // If targetPaths is empty, all directories are processed.
-func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error {
-	r.logger.Info("generating architectural summaries",
+func (b *builderImpl) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error {
+	b.cfg.Logger.Info("generating architectural summaries",
 		"collection", collectionName,
 		"repoPath", repoPath,
 		"target_paths_count", len(targetPaths),
 	)
 
-	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
-	summaryCache := r.fetchSummaryCache(ctx, scopedStore)
+	scopedStore := b.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
+	summaryCache := b.fetchSummaryCache(ctx, scopedStore)
 
 	// Walk filesystem to discover directories and check cache
-	dirsToProcess, cachedCount, err := r.discoverDirectories(repoPath, targetPaths, summaryCache)
+	dirsToProcess, cachedCount, err := b.discoverDirectories(repoPath, targetPaths, summaryCache)
 	if err != nil {
 		return fmt.Errorf("failed to walk directories: %w", err)
 	}
 
-	r.logger.Info("architectural summary cache check complete",
+	b.cfg.Logger.Info("architectural summary cache check complete",
 		"cached", cachedCount,
 		"queued", len(dirsToProcess),
 	)
@@ -73,10 +74,10 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 	// Generate summaries with a worker pool
 	// Use 5 workers by default for better throughput with LLM API rate limits
 	const defaultArchSummaryWorkers = 5
-	archDocs := r.generateSummariesWithWorkerPool(ctx, dirsToProcess, defaultArchSummaryWorkers)
+	archDocs := b.generateSummariesWithWorkerPool(ctx, dirsToProcess, defaultArchSummaryWorkers)
 
 	if len(archDocs) == 0 {
-		r.logger.Warn("no architectural summaries generated")
+		b.cfg.Logger.Warn("no architectural summaries generated")
 		return nil
 	}
 
@@ -86,7 +87,7 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 		return fmt.Errorf("failed to store architectural summaries: %w", err)
 	}
 
-	r.logger.Info("architectural summaries generated and stored",
+	b.cfg.Logger.Info("architectural summaries generated and stored",
 		"summaries", len(archDocs),
 	)
 
@@ -94,14 +95,14 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 }
 
 // fetchSummaryCache loads existing arch summaries from the vector store for cache comparison.
-func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.ScopedVectorStore) map[string]string {
+func (b *builderImpl) fetchSummaryCache(ctx context.Context, scopedStore storage.ScopedVectorStore) map[string]string {
 	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 500,
 		vectorstores.WithFilters(map[string]any{
 			"chunk_type": "arch",
 		}),
 	)
 	if err != nil {
-		r.logger.Warn("failed to fetch existing summaries for cache", "error", err)
+		b.cfg.Logger.Warn("failed to fetch existing summaries for cache", "error", err)
 		return make(map[string]string)
 	}
 
@@ -113,14 +114,14 @@ func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.
 			summaryCache[source] = hash
 		}
 	}
-	r.logger.Debug("built summary cache from qdrant", "count", len(summaryCache))
+	b.cfg.Logger.Debug("built summary cache from qdrant", "count", len(summaryCache))
 	return summaryCache
 }
 
 // discoverDirectories walks the repo and returns directories needing summary updates.
 //
 //nolint:gocognit
-func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, summaryCache map[string]string) (map[string]*DirectoryInfo, int, error) {
+func (b *builderImpl) discoverDirectories(repoPath string, targetPaths []string, summaryCache map[string]string) (map[string]*DirectoryInfo, int, error) {
 	dirsToProcess := make(map[string]*DirectoryInfo)
 	cachedCount := 0
 
@@ -143,7 +144,7 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 			}
 			relPath = strings.ReplaceAll(relPath, "\\", "/")
 
-			return r.processSingleDir(repoPath, path, relPath, summaryCache, dirsToProcess, &cachedCount)
+			return b.processSingleDir(repoPath, path, relPath, summaryCache, dirsToProcess, &cachedCount)
 		})
 		return dirsToProcess, cachedCount, err
 	}
@@ -152,9 +153,9 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 	uniqueDirs := make(map[string]struct{})
 
 	for _, p := range targetPaths {
-		_, err := r.validateAndJoinPath(repoPath, p)
+		_, err := b.validateAndJoinPath(repoPath, p)
 		if err != nil {
-			r.logger.Warn("invalid target path", "path", p, "error", err)
+			b.cfg.Logger.Warn("invalid target path", "path", p, "error", err)
 			continue
 		}
 
@@ -174,9 +175,9 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 
 	for relDir := range uniqueDirs {
 		// Securely join using validateAndJoinPath to prevent traversal and handle symlinks correctly
-		fullPath, err := r.validateAndJoinPath(repoPath, relDir)
+		fullPath, err := b.validateAndJoinPath(repoPath, relDir)
 		if err != nil {
-			r.logger.Warn("directory traversal detected or invalid path", "path", relDir, "error", err)
+			b.cfg.Logger.Warn("directory traversal detected or invalid path", "path", relDir, "error", err)
 			continue
 		}
 
@@ -190,16 +191,16 @@ func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, 
 		}
 		displayRelPath = strings.ReplaceAll(displayRelPath, "\\", "/")
 
-		if err := r.processSingleDir(repoPath, fullPath, displayRelPath, summaryCache, dirsToProcess, &cachedCount); err != nil {
-			r.logger.Warn("targeted scan failed for directory", "path", relDir, "error", err)
+		if err := b.processSingleDir(repoPath, fullPath, displayRelPath, summaryCache, dirsToProcess, &cachedCount); err != nil {
+			b.cfg.Logger.Warn("targeted scan failed for directory", "path", relDir, "error", err)
 		}
 	}
 
 	return dirsToProcess, cachedCount, nil
 }
 
-func (r *ragService) processSingleDir(repoPath, fullPath, relPath string, summaryCache map[string]string, dirsToProcess map[string]*DirectoryInfo, cachedCount *int) error {
-	info, hash, scanErr := r.scanDirectoryOnDisk(repoPath, fullPath, relPath)
+func (b *builderImpl) processSingleDir(repoPath, fullPath, relPath string, summaryCache map[string]string, dirsToProcess map[string]*DirectoryInfo, cachedCount *int) error {
+	info, hash, scanErr := b.scanDirectoryOnDisk(repoPath, fullPath, relPath)
 	if scanErr != nil {
 		return scanErr
 	}
@@ -217,44 +218,8 @@ func (r *ragService) processSingleDir(repoPath, fullPath, relPath string, summar
 	return nil
 }
 
-func (r *ragService) getDirectoryPath(doc schema.Document) string {
-	source, _ := doc.Metadata["source"].(string)
-	if source == "" {
-		return ""
-	}
-
-	dirPath := path.Dir(strings.ReplaceAll(source, "\\", "/"))
-	if dirPath == "." {
-		return rootDir
-	}
-	return dirPath
-}
-
-func (r *ragService) extractDocMetadata(doc schema.Document, info *DirectoryInfo) {
-	source, _ := doc.Metadata["source"].(string)
-	fileName := path.Base(strings.ReplaceAll(source, "\\", "/"))
-	if !containsString(info.Files, fileName) {
-		info.Files = append(info.Files, fileName)
-	}
-
-	identifier, _ := doc.Metadata["identifier"].(string)
-	if identifier != "" {
-		if !containsString(info.Symbols, identifier) {
-			info.Symbols = append(info.Symbols, identifier)
-		}
-	}
-
-	chunkType, _ := doc.Metadata["chunk_type"].(string)
-	if chunkType != "" && identifier != "" {
-		symbolDesc := fmt.Sprintf("%s: %s", chunkType, identifier)
-		if !containsString(info.Symbols, symbolDesc) {
-			info.Symbols = append(info.Symbols, symbolDesc)
-		}
-	}
-}
-
 // generateSummariesWithWorkerPool generates summaries using a bounded worker pool.
-func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInfos map[string]*DirectoryInfo, workers int) []schema.Document {
+func (b *builderImpl) generateSummariesWithWorkerPool(ctx context.Context, dirInfos map[string]*DirectoryInfo, workers int) []schema.Document {
 	type result struct {
 		doc schema.Document
 		err error
@@ -271,7 +236,7 @@ func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInf
 		go func() {
 			defer wg.Done()
 			for info := range jobs {
-				doc, err := r.generateSummaryForDirectory(ctx, info)
+				doc, err := b.generateSummaryForDirectory(ctx, info)
 				results <- result{doc: doc, err: err}
 			}
 		}()
@@ -293,7 +258,7 @@ func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInf
 	var archDocs []schema.Document
 	for res := range results {
 		if res.err != nil {
-			r.logger.Warn("failed to generate summary", "error", res.err)
+			b.cfg.Logger.Warn("failed to generate summary", "error", res.err)
 			continue
 		}
 		if res.doc.PageContent != "" {
@@ -305,7 +270,7 @@ func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInf
 }
 
 // generateSummaryForDirectory generates an LLM-based architectural summary for one directory.
-func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *DirectoryInfo) (schema.Document, error) {
+func (b *builderImpl) generateSummaryForDirectory(ctx context.Context, info *DirectoryInfo) (schema.Document, error) {
 	// Prepare prompt data
 	promptData := ArchSummaryData{
 		Path:    info.Path,
@@ -314,13 +279,13 @@ func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *Dire
 		Imports: strings.Join(info.Imports, "\n"),
 	}
 
-	prompt, err := r.promptMgr.Render(llm.ArchSummaryPrompt, promptData)
+	prompt, err := b.cfg.PromptMgr.Render(llm.ArchSummaryPrompt, promptData)
 	if err != nil {
 		return schema.Document{}, fmt.Errorf("failed to render arch summary prompt: %w", err)
 	}
 
 	// Generate with LLM
-	response, err := llms.GenerateFromSinglePrompt(ctx, r.generatorLLM, prompt)
+	response, err := llms.GenerateFromSinglePrompt(ctx, b.cfg.GeneratorLLM, prompt)
 	if err != nil {
 		return schema.Document{}, fmt.Errorf("failed to generate summary for %s: %w", info.Path, err)
 	}
@@ -334,7 +299,7 @@ func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *Dire
 		"file_count":   len(info.Files),
 	})
 
-	r.logger.Debug("generated architectural summary",
+	b.cfg.Logger.Debug("generated architectural summary",
 		"path", info.Path,
 		"summary_length", len(response),
 	)
@@ -342,26 +307,9 @@ func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *Dire
 	return doc, nil
 }
 
-// calculateDirectoryHash returns a short content hash for cache invalidation.
-func calculateDirectoryHash(info *DirectoryInfo) string {
-	content := strings.Join(info.Files, "|") + "||" + strings.Join(info.Symbols, "|")
-	hash := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(hash[:8]) // First 8 bytes for brevity
-}
-
-// containsString checks if a slice contains a string.
-func containsString(slice []string, s string) bool {
-	for _, item := range slice {
-		if item == s {
-			return true
-		}
-	}
-	return false
-}
-
 // GetArchContextForPaths retrieves architectural summaries for the directories
 // containing the given file paths.
-func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore storage.ScopedVectorStore, paths []string) (string, error) {
+func (b *builderImpl) GetArchContextForPaths(ctx context.Context, scopedStore storage.ScopedVectorStore, paths []string) (string, error) {
 	// Extract unique directories from paths
 	dirs := make(map[string]struct{})
 	for _, p := range paths {
@@ -394,7 +342,7 @@ func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore sto
 			}),
 		)
 		if err != nil {
-			r.logger.Debug("failed to search arch summaries", "dir", dir, "error", err)
+			b.cfg.Logger.Debug("failed to search arch summaries", "dir", dir, "error", err)
 			continue
 		}
 
@@ -412,8 +360,32 @@ func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore sto
 	return archContext.String(), nil
 }
 
+//nolint:unparam // error always nil but signature required for errgroup
+func (b *builderImpl) gatherArchContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) (string, error) {
+	b.cfg.Logger.Info("stage started", "name", "ArchitecturalContext")
+	ac := b.getArchContext(ctx, store, files)
+	b.cfg.Logger.Info("stage completed", "name", "ArchitecturalContext")
+	return ac, nil
+}
+
+func (b *builderImpl) getArchContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+	filePaths := make([]string, len(files))
+	for i, f := range files {
+		filePaths[i] = f.Filename
+	}
+	archContext, err := b.GetArchContextForPaths(ctx, scopedStore, filePaths)
+	if err != nil {
+		b.cfg.Logger.Warn("failed to get architectural context", "error", err)
+		return ""
+	}
+	if archContext != "" {
+		b.cfg.Logger.Debug("retrieved architectural context", "folders_count", len(filePaths))
+	}
+	return archContext
+}
+
 // scanDirectoryOnDisk lists code files in a directory and computes a hash for cache invalidation.
-func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*DirectoryInfo, string, error) {
+func (b *builderImpl) scanDirectoryOnDisk(_, fullPath, relPath string) (*DirectoryInfo, string, error) {
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
 		return nil, "", err
@@ -464,8 +436,8 @@ func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*Director
 // directories using multiple LLM models in parallel.
 //
 
-func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
-	r.logger.Info("generating multi-directory comparison summaries", "models", models, "paths", relPaths)
+func (b *builderImpl) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
+	b.cfg.Logger.Info("generating multi-directory comparison summaries", "models", models, "paths", relPaths)
 
 	results := make(map[string]map[string]string)
 	resultsMu := &sync.RWMutex{}
@@ -475,10 +447,10 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 
 	llmInstances := make(map[string]llms.Model)
 	for _, modelName := range models {
-		if llm, err := r.getOrCreateLLM(ctx, modelName); err == nil {
+		if llm, err := b.cfg.GetLLM(ctx, modelName); err == nil {
 			llmInstances[modelName] = llm
 		} else {
-			r.logger.Warn("failed to pre-fetch LLM", "model", modelName, "error", err)
+			b.cfg.Logger.Warn("failed to pre-fetch LLM", "model", modelName, "error", err)
 		}
 	}
 
@@ -488,7 +460,7 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 
 	for _, relPath := range relPaths {
 		g.Go(func() error {
-			return r.processDirectorySummaries(ctx, models, llmInstances, repoPath, relPath, results, resultsMu, sem)
+			return b.processDirectorySummaries(ctx, models, llmInstances, repoPath, relPath, results, resultsMu, sem)
 		})
 	}
 
@@ -499,7 +471,7 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 	return results, nil
 }
 
-func (r *ragService) processDirectorySummaries(ctx context.Context, models []string, llmInstances map[string]llms.Model, repoPath, relPath string, results map[string]map[string]string, resultsMu *sync.RWMutex, sem chan struct{}) error {
+func (b *builderImpl) processDirectorySummaries(ctx context.Context, models []string, llmInstances map[string]llms.Model, repoPath, relPath string, results map[string]map[string]string, resultsMu *sync.RWMutex, sem chan struct{}) error {
 	// Acquire semaphore
 	select {
 	case sem <- struct{}{}:
@@ -508,14 +480,14 @@ func (r *ragService) processDirectorySummaries(ctx context.Context, models []str
 		return ctx.Err()
 	}
 
-	path, err := r.validateAndJoinPath(repoPath, relPath)
+	path, err := b.validateAndJoinPath(repoPath, relPath)
 	if err != nil {
 		return err
 	}
 
-	info, _, err := r.scanDirectoryOnDisk(repoPath, path, relPath)
+	info, _, err := b.scanDirectoryOnDisk(repoPath, path, relPath)
 	if err != nil {
-		r.logger.Warn("failed to scan directory for comparison", "path", relPath, "error", err)
+		b.cfg.Logger.Warn("failed to scan directory for comparison", "path", relPath, "error", err)
 		return nil
 	}
 	if info == nil {
@@ -526,7 +498,7 @@ func (r *ragService) processDirectorySummaries(ctx context.Context, models []str
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		summary := r.generateSingleSummary(ctx, info, llmInstances[modelName])
+		summary := b.generateSingleSummary(ctx, info, llmInstances[modelName])
 		resultsMu.Lock()
 		results[modelName][relPath] = summary
 		resultsMu.Unlock()
@@ -536,7 +508,7 @@ func (r *ragService) processDirectorySummaries(ctx context.Context, models []str
 
 // validateAndJoinPath safely joins repoPath and relPath,
 // guarding against directory traversal and symlink escapes.
-func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, error) {
+func (b *builderImpl) validateAndJoinPath(repoPath, relPath string) (string, error) {
 	cleanRepo, err := filepath.Abs(repoPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid repo path: %w", err)
@@ -597,7 +569,7 @@ func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, erro
 	return resolvedPath, nil
 }
 
-func (r *ragService) generateSingleSummary(ctx context.Context, info *DirectoryInfo, generator llms.Model) string {
+func (b *builderImpl) generateSingleSummary(ctx context.Context, info *DirectoryInfo, generator llms.Model) string {
 	if generator == nil {
 		return "Error: LLM not initialized"
 	}
@@ -609,7 +581,7 @@ func (r *ragService) generateSingleSummary(ctx context.Context, info *DirectoryI
 		Imports: "N/A (Comparison Mode)",
 	}
 
-	prompt, err := r.promptMgr.Render(llm.ArchSummaryPrompt, promptData)
+	prompt, err := b.cfg.PromptMgr.Render(llm.ArchSummaryPrompt, promptData)
 	if err != nil {
 		return fmt.Sprintf("Error rendering prompt: %v", err)
 	}

@@ -1,11 +1,9 @@
-package rag
+package contextpkg
 
 import (
 	"context"
 	"log/slog"
-	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sevigo/goframe/schema"
@@ -13,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/mocks"
 )
 
@@ -81,7 +78,7 @@ func TestDynamicSparseRetriever_GetRelevantDocuments(t *testing.T) {
 			retriever := dynamicSparseRetriever{
 				store:   mockSVS,
 				numDocs: 10,
-				logger:  slog.Default(),
+				builder: &builderImpl{cfg: Config{Logger: slog.Default()}},
 			}
 
 			docs, err := retriever.GetRelevantDocuments(context.Background(), tc.query)
@@ -99,7 +96,7 @@ func TestDynamicSparseRetriever_GetRelevantDocuments(t *testing.T) {
 // TestBuildContextForPrompt_Deduplication tests that buildContextForPrompt
 // correctly deduplicates documents by their keys
 func TestBuildContextForPrompt_Deduplication(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
+	service := &builderImpl{cfg: Config{Logger: slog.Default()}}
 
 	docs := []schema.Document{
 		{
@@ -122,7 +119,7 @@ func TestBuildContextForPrompt_Deduplication(t *testing.T) {
 		},
 	}
 
-	context := service.buildContextForPrompt(docs)
+	context := service.BuildContextForPrompt(docs)
 
 	// Should contain all 3 unique functions
 	assert.Contains(t, context, "func A()")
@@ -137,7 +134,7 @@ func TestBuildContextForPrompt_Deduplication(t *testing.T) {
 
 // TestBuildContextForPrompt_WithParentText tests that full_parent_text is preferred
 func TestBuildContextForPrompt_WithParentText(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
+	service := &builderImpl{cfg: Config{Logger: slog.Default()}}
 
 	docs := []schema.Document{
 		{
@@ -146,7 +143,7 @@ func TestBuildContextForPrompt_WithParentText(t *testing.T) {
 		},
 	}
 
-	context := service.buildContextForPrompt(docs)
+	context := service.BuildContextForPrompt(docs)
 
 	assert.Contains(t, context, "full function with context")
 	assert.NotContains(t, context, "chunk of code")
@@ -154,7 +151,7 @@ func TestBuildContextForPrompt_WithParentText(t *testing.T) {
 
 // TestBuildContextForPrompt_WithPackageName tests package name inclusion
 func TestBuildContextForPrompt_WithPackageName(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
+	service := &builderImpl{cfg: Config{Logger: slog.Default()}}
 
 	docs := []schema.Document{
 		{
@@ -163,7 +160,7 @@ func TestBuildContextForPrompt_WithPackageName(t *testing.T) {
 		},
 	}
 
-	context := service.buildContextForPrompt(docs)
+	context := service.BuildContextForPrompt(docs)
 
 	assert.Contains(t, context, "Package: rag")
 	assert.Contains(t, context, "File: internal/rag/rag.go")
@@ -171,7 +168,7 @@ func TestBuildContextForPrompt_WithPackageName(t *testing.T) {
 
 // TestBuildContextForPrompt_WithIdentifier tests identifier inclusion
 func TestBuildContextForPrompt_WithIdentifier(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
+	service := &builderImpl{cfg: Config{Logger: slog.Default()}}
 
 	docs := []schema.Document{
 		{
@@ -180,7 +177,7 @@ func TestBuildContextForPrompt_WithIdentifier(t *testing.T) {
 		},
 	}
 
-	context := service.buildContextForPrompt(docs)
+	context := service.BuildContextForPrompt(docs)
 
 	assert.Contains(t, context, "Identifier: Config")
 }
@@ -231,7 +228,7 @@ func TestPreFilterBM25_TopKLimits(t *testing.T) {
 
 // TestGetDocKey tests the document key generation
 func TestGetDocKey(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
+	service := &builderImpl{cfg: Config{Logger: slog.Default()}}
 
 	testCases := []struct {
 		name     string
@@ -292,7 +289,7 @@ func TestGetDocKey(t *testing.T) {
 
 // TestGetDocContent tests content retrieval with fallback
 func TestGetDocContent(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
+	service := &builderImpl{cfg: Config{Logger: slog.Default()}}
 
 	testCases := []struct {
 		name     string
@@ -335,7 +332,7 @@ func TestGetDocContent(t *testing.T) {
 
 // TestHashPatch tests the patch hashing function
 func TestHashPatch(t *testing.T) {
-	service := &ragService{logger: slog.Default()}
+	service := &builderImpl{cfg: Config{Logger: slog.Default()}}
 
 	patch1 := "+func A() {}"
 	patch2 := "+func B() {}"
@@ -464,98 +461,4 @@ func TestExtractSymbolsFromPatch_Comprehensive(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestProcessRelatedSnippet_Deduplication tests concurrency-safe deduplication
-func TestProcessRelatedSnippet_Deduplication(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	service := &ragService{logger: logger}
-
-	seenDocs := make(map[string]struct{})
-	var mu sync.RWMutex
-	var wg sync.WaitGroup
-
-	doc := schema.Document{
-		PageContent: "some content",
-		Metadata:    map[string]any{"source": "file.go"},
-	}
-	file := internalgithub.ChangedFile{Filename: "file.go"}
-
-	// Launch many goroutines to try and trigger a race on seenDocs
-	results := make([]string, 100)
-	for i := range 100 {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			var builder strings.Builder
-			service.processRelatedSnippet(doc, file, idx%3, seenDocs, &mu, []string{}, &builder)
-			results[idx] = builder.String()
-		}(i)
-	}
-	wg.Wait()
-
-	// Only one goroutine should have written content
-	writtenCount := 0
-	for _, r := range results {
-		if r != "" {
-			writtenCount++
-		}
-	}
-
-	// Due to race conditions, we might get 1 or slightly more, but definitely not 100
-	assert.Less(t, writtenCount, 50, "Expected deduplication to prevent most writes")
-}
-
-// TestProcessRelatedSnippet_TopFilesLimit tests the top 3 files tracking
-func TestProcessRelatedSnippet_TopFilesLimit(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	service := &ragService{logger: logger}
-
-	seenDocs := make(map[string]struct{})
-	var mu sync.RWMutex
-
-	testCases := []struct {
-		doc      schema.Document
-		file     internalgithub.ChangedFile
-		rank     int
-		expected int // expected len of topFiles after processing
-	}{
-		{
-			doc:      schema.Document{Metadata: map[string]any{"source": "file1.go"}},
-			file:     internalgithub.ChangedFile{Filename: "file1.go"},
-			rank:     0,
-			expected: 1,
-		},
-		{
-			doc:      schema.Document{Metadata: map[string]any{"source": "file2.go"}},
-			file:     internalgithub.ChangedFile{Filename: "file2.go"},
-			rank:     0,
-			expected: 2,
-		},
-		{
-			doc:      schema.Document{Metadata: map[string]any{"source": "file3.go"}},
-			file:     internalgithub.ChangedFile{Filename: "file3.go"},
-			rank:     0,
-			expected: 3,
-		},
-		{
-			// 4th file should not be added (limit is 3)
-			doc:      schema.Document{Metadata: map[string]any{"source": "file4.go"}},
-			file:     internalgithub.ChangedFile{Filename: "file4.go"},
-			rank:     0,
-			expected: 3,
-		},
-	}
-
-	var topFiles []string
-	for _, tc := range testCases {
-		var builder strings.Builder
-		topFiles = service.processRelatedSnippet(tc.doc, tc.file, tc.rank, seenDocs, &mu, topFiles, &builder)
-	}
-
-	assert.Len(t, topFiles, 3)
-	assert.Contains(t, topFiles, "file1.go")
-	assert.Contains(t, topFiles, "file2.go")
-	assert.Contains(t, topFiles, "file3.go")
-	assert.NotContains(t, topFiles, "file4.go")
 }
