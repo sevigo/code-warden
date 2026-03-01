@@ -29,7 +29,7 @@ type Server struct {
 	ghClient    github.Client
 	repo        *storage.Repository
 	repoConfig  *core.RepoConfig
-	projectRoot string
+	ProjectRoot string
 	logger      *slog.Logger
 	tools       map[string]Tool
 
@@ -83,7 +83,7 @@ func NewServer(
 		ghClient:    ghClient,
 		repo:        repo,
 		repoConfig:  repoConfig,
-		projectRoot: projectRoot,
+		ProjectRoot: projectRoot,
 		logger:      logger,
 		tools:       make(map[string]Tool),
 		sessions:    make(map[string]*sseSession),
@@ -111,7 +111,7 @@ func (s *Server) registerTools() {
 	}
 	s.tools["get_structure"] = &GetStructureTool{
 		vectorStore: s.vectorStore,
-		projectRoot: s.projectRoot,
+		projectRoot: s.ProjectRoot,
 		logger:      s.logger,
 	}
 	s.tools["review_code"] = &ReviewCodeTool{

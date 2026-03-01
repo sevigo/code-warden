@@ -105,6 +105,12 @@ func NewOrchestrator(
 		logger,
 	)
 
+	absRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		logger.Error("NewOrchestrator: failed to resolve absolute path for projectRoot", "projectRoot", projectRoot, "error", err)
+		absRoot = projectRoot
+	}
+
 	return &Orchestrator{
 		store:       store,
 		vectorStore: vectorStore,
@@ -113,8 +119,9 @@ func NewOrchestrator(
 		mcpServer:   mcpServer,
 		logger:      logger,
 		config:      config,
-		projectRoot: projectRoot,
+		projectRoot: absRoot,
 		sessions:    make(map[string]*Session),
+		sessionsMu:  sync.RWMutex{},
 	}
 }
 
@@ -475,6 +482,10 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 		session.SetError(fmt.Sprintf("Failed to prepare workspace: %v", err))
 		return
 	}
+
+	// Update MCP server to point to the isolated workspace for this session
+	// This ensures that tools like get_structure see the files in the workspace
+	o.mcpServer.ProjectRoot = workspaceDir
 
 	// Build OpenCode command
 	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
