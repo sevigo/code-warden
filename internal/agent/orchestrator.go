@@ -546,7 +546,7 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 		"output_length", len(output))
 
 	// Parse result
-	result := o.parseAgentOutput(string(output))
+	result := o.parseAgentOutput(string(output), branch)
 
 	session.SetResult(result)
 	session.SetStatus(StatusCompleted)
@@ -615,6 +615,9 @@ Example sequence:
   2. create_pull_request(...)         <- Only after push succeeds
 
 If you cannot complete any step, report what failed and why.
+At the very end of your final message, you MUST emit a structured JSON result prefixed with 'AGENT_RESULT:' on its own line.
+The JSON should follow this format:
+AGENT_RESULT: {"pr_number": 123, "pr_url": "...", "branch": "...", "files_changed": ["..."], "verdict": "...", "iterations": 1}
 
 ## Issue #%d: %s
 
@@ -685,7 +688,7 @@ func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) err
 }
 
 // parseAgentOutput extracts the result from agent output.
-func (o *Orchestrator) parseAgentOutput(output string) *Result {
+func (o *Orchestrator) parseAgentOutput(output string, defaultBranch string) *Result {
 	const sentinel = "AGENT_RESULT:"
 	lines := strings.Split(output, "\n")
 
@@ -698,6 +701,7 @@ func (o *Orchestrator) parseAgentOutput(output string) *Result {
 			var res Result
 			if err := json.Unmarshal([]byte(jsonStr), &res); err != nil {
 				o.logger.Warn("parseAgentOutput: failed to unmarshal agent result", "error", err, "line", line)
+				// continue to try other lines if they exist, in case of multiple sentinels
 				continue
 			}
 			o.logger.Debug("parseAgentOutput: successfully parsed agent result", "pr_number", res.PRNumber)
@@ -705,33 +709,23 @@ func (o *Orchestrator) parseAgentOutput(output string) *Result {
 		}
 	}
 
-	// Fallback: Infer what we can from the output and environment
+	// Fallback: Infer what we can from the output and use provided branch
 	o.logger.Warn("parseAgentOutput: no AGENT_RESULT sentinel found, attempting to infer result")
 	res := &Result{
-		Verdict:    "UNKNOWN",
-		Iterations: 0,
+		Branch:       defaultBranch,
+		FilesChanged: []string{}, // Consistency: empty slice instead of nil
+		Verdict:      "UNKNOWN",
+		Iterations:   0,
 	}
 
-	// Try to infer iterations from logs
+	// Try to infer iterations from logs using a more specific pattern
 	for _, line := range lines {
-		if strings.Contains(strings.ToLower(line), "iteration") {
+		if strings.Contains(line, "AGENT_ITERATION:") {
 			res.Iterations++
 		}
 	}
 	if res.Iterations == 0 {
-		res.Iterations = 1 // At least one iteration if it ran
-	}
-
-	// Try to infer branch from common patterns or env if possible
-	// In a real scenario, we might have stored the branch in the session
-	// but here we just look for "Pushing branch" or similar.
-	for _, line := range lines {
-		if strings.Contains(line, "Pushing branch") {
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				res.Branch = parts[2]
-			}
-		}
+		res.Iterations = 1 // Minimum 1 if it ran
 	}
 
 	return res

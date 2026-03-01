@@ -50,16 +50,15 @@ Cleanup...
 		{
 			name: "no envelope - fallback branch and iterations",
 			output: `
-Iteration 1: failed
-Iteration 2: success
-Pushing branch agent/fallback to origin
+AGENT_ITERATION: 1
+AGENT_ITERATION: 2
 Done.
 `,
 			expected: &Result{
 				PRNumber:     0,
 				PRURL:        "",
-				Branch:       "agent/fallback",
-				FilesChanged: nil,
+				Branch:       "agent/default",
+				FilesChanged: []string{},
 				Verdict:      "UNKNOWN",
 				Iterations:   2,
 			},
@@ -67,16 +66,15 @@ Done.
 		{
 			name: "malformed JSON in sentinel - fallback",
 			output: `
-Iteration 1: starting
+AGENT_ITERATION: 1
 AGENT_RESULT: {invalid json}
-Iteration 2: next
-Pushing branch agent/malformed to origin
+AGENT_ITERATION: 2
 `,
 			expected: &Result{
 				PRNumber:     0,
 				PRURL:        "",
-				Branch:       "agent/malformed",
-				FilesChanged: nil,
+				Branch:       "agent/default",
+				FilesChanged: []string{},
 				Verdict:      "UNKNOWN",
 				Iterations:   2,
 			},
@@ -85,7 +83,7 @@ Pushing branch agent/malformed to origin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := o.parseAgentOutput(tt.output)
+			got := o.parseAgentOutput(tt.output, "agent/default")
 			if !reflect.DeepEqual(got, tt.expected) {
 				gotJSON, _ := json.Marshal(got)
 				expJSON, _ := json.Marshal(tt.expected)
