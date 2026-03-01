@@ -41,7 +41,8 @@ type DirectoryInfo struct {
 	ContentHash string
 }
 
-// GenerateArchSummaries generates architectural summaries for specified directories (or all if none provided).
+// GenerateArchSummaries generates architectural summaries for directories.
+// If targetPaths is empty, all directories are processed.
 func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error {
 	r.logger.Info("generating architectural summaries",
 		"collection", collectionName,
@@ -92,7 +93,7 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 	return nil
 }
 
-// fetchSummaryCache fetches existing architectural summaries from Qdrant to build a cache map.
+// fetchSummaryCache loads existing arch summaries from the vector store for cache comparison.
 func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.ScopedVectorStore) map[string]string {
 	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 500,
 		vectorstores.WithFilters(map[string]any{
@@ -116,10 +117,9 @@ func (r *ragService) fetchSummaryCache(ctx context.Context, scopedStore storage.
 	return summaryCache
 }
 
-// discoverDirectories walks the repo filesystem and returns directories needing summary updates.
-// If targetPaths is provided, it ONLY scans those specific directories and their parents (up to root).
+// discoverDirectories walks the repo and returns directories needing summary updates.
 //
-//nolint:gocognit // Complex logic for discovery vs targeted scan is better kept together for readability
+//nolint:gocognit
 func (r *ragService) discoverDirectories(repoPath string, targetPaths []string, summaryCache map[string]string) (map[string]*DirectoryInfo, int, error) {
 	dirsToProcess := make(map[string]*DirectoryInfo)
 	cachedCount := 0
@@ -253,7 +253,7 @@ func (r *ragService) extractDocMetadata(doc schema.Document, info *DirectoryInfo
 	}
 }
 
-// generateSummariesWithWorkerPool generates summaries using a limited worker pool.
+// generateSummariesWithWorkerPool generates summaries using a bounded worker pool.
 func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInfos map[string]*DirectoryInfo, workers int) []schema.Document {
 	type result struct {
 		doc schema.Document
@@ -304,7 +304,7 @@ func (r *ragService) generateSummariesWithWorkerPool(ctx context.Context, dirInf
 	return archDocs
 }
 
-// generateSummaryForDirectory generates an architectural summary for a single directory.
+// generateSummaryForDirectory generates an LLM-based architectural summary for one directory.
 func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *DirectoryInfo) (schema.Document, error) {
 	// Prepare prompt data
 	promptData := ArchSummaryData{
@@ -342,7 +342,7 @@ func (r *ragService) generateSummaryForDirectory(ctx context.Context, info *Dire
 	return doc, nil
 }
 
-// calculateDirectoryHash creates a hash of directory contents for cache invalidation.
+// calculateDirectoryHash returns a short content hash for cache invalidation.
 func calculateDirectoryHash(info *DirectoryInfo) string {
 	content := strings.Join(info.Files, "|") + "||" + strings.Join(info.Symbols, "|")
 	hash := sha256.Sum256([]byte(content))
@@ -359,8 +359,8 @@ func containsString(slice []string, s string) bool {
 	return false
 }
 
-// GetArchContextForPaths retrieves architectural summaries for given file paths.
-// It extracts unique directories and searches for arch summaries with filters.
+// GetArchContextForPaths retrieves architectural summaries for the directories
+// containing the given file paths.
 func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore storage.ScopedVectorStore, paths []string) (string, error) {
 	// Extract unique directories from paths
 	dirs := make(map[string]struct{})
@@ -412,8 +412,7 @@ func (r *ragService) GetArchContextForPaths(ctx context.Context, scopedStore sto
 	return archContext.String(), nil
 }
 
-// scanDirectoryOnDisk finds code files in a directory and computes a hash for cache invalidation.
-// Uses mtime+size for speed; robust enough for typical development workflows.
+// scanDirectoryOnDisk lists code files in a directory and computes a hash for cache invalidation.
 func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*DirectoryInfo, string, error) {
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
@@ -461,9 +460,8 @@ func (r *ragService) scanDirectoryOnDisk(_, fullPath, relPath string) (*Director
 	return info, hexHash, nil
 }
 
-// GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
-// GenerateComparisonSummaries generates architectural summaries for multiple directories using multiple models.
-// It uses parallel execution to speed up the process, with a semaphore to limit concurrency.
+// GenerateComparisonSummaries generates architectural summaries for multiple
+// directories using multiple LLM models in parallel.
 //
 
 func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error) {
@@ -536,6 +534,8 @@ func (r *ragService) processDirectorySummaries(ctx context.Context, models []str
 	return nil
 }
 
+// validateAndJoinPath safely joins repoPath and relPath,
+// guarding against directory traversal and symlink escapes.
 func (r *ragService) validateAndJoinPath(repoPath, relPath string) (string, error) {
 	cleanRepo, err := filepath.Abs(repoPath)
 	if err != nil {

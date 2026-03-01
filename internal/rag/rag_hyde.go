@@ -42,6 +42,8 @@ func (d dynamicSparseRetriever) GetRelevantDocuments(ctx context.Context, query 
 	return d.store.SimilaritySearch(ctx, semanticQuery, d.numDocs, searchOpts...)
 }
 
+// gatherHyDEContext generates hypothetical documents for each changed file
+// and retrieves similar code snippets using sparse+dense hybrid search.
 func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder string, files []internalgithub.ChangedFile) ([][]schema.Document, []int, error) {
 	r.logger.Info("stage started", "name", "HyDE")
 
@@ -149,7 +151,7 @@ func (r *ragService) gatherHyDEContext(ctx context.Context, collection, embedder
 	return finalResults, finalIndices, nil
 }
 
-// generateHyDESnippet generates a HyDE snippet.
+// generateHyDESnippet generates a hypothetical code snippet from a diff patch via LLM.
 func (r *ragService) generateHyDESnippet(ctx context.Context, q string) (string, error) {
 	patchHash := r.hashPatch(q)
 	if cached, ok := r.hydeCache.Load(patchHash); ok {

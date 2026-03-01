@@ -18,7 +18,8 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// GenerateReReview performs feedback-driven retrieval for verifying fixes.
+// GenerateReReview generates a follow-up review by comparing the new diff
+// against the original review's suggestions, using feedback-driven retrieval.
 func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	r.logger.Info("preparing data for a re-review", "repo", event.RepoFullName, "pr", event.PRNumber)
 
@@ -81,7 +82,7 @@ func (r *ragService) GenerateReReview(ctx context.Context, repo *storage.Reposit
 	return structuredReview, rawReview, nil
 }
 
-// buildFeedbackDrivenContext performs vector searches based on feedback.
+// buildFeedbackDrivenContext performs vector searches based on original review comments.
 func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionName, embedderModelName string, feedbackQueries []string, userInstructions string) string {
 	if len(feedbackQueries) == 0 && userInstructions == "" {
 		return ""
@@ -140,7 +141,7 @@ func (r *ragService) buildFeedbackDrivenContext(ctx context.Context, collectionN
 	return contextBuilder.String()
 }
 
-// performReReviewSearch executes a search query for re-review context.
+// performReReviewSearch executes a similarity search for a single re-review query.
 func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType, headerPrefix string, resultChan chan<- string, seenDocs map[string]struct{}, mu *sync.Mutex, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -193,7 +194,7 @@ func (r *ragService) performReReviewSearch(ctx context.Context, scopedStore stor
 	}
 }
 
-// performSearch executes a similarity search with sparse vector fallback and retry logic.
+// performSearch executes a similarity search with sparse vector support and exponential backoff.
 func (r *ragService) performSearch(ctx context.Context, scopedStore storage.ScopedVectorStore, query, queryType string) []schema.Document {
 	const maxRetries = 3
 	const baseDelay = 500 * time.Millisecond
@@ -244,7 +245,7 @@ func (r *ragService) performSearch(ctx context.Context, scopedStore storage.Scop
 	return nil
 }
 
-// combineReReviewContext merges standard context with feedback-driven context.
+// combineReReviewContext merges standard and feedback-driven context blocks.
 func (r *ragService) combineReReviewContext(standardContext, feedbackContext string) string {
 	if feedbackContext == "" {
 		return standardContext
@@ -258,7 +259,8 @@ func (r *ragService) combineReReviewContext(standardContext, feedbackContext str
 	return result.String()
 }
 
-// extractCommentsFromReview parses the review content to extract search queries.
+// extractCommentsFromReview parses review content to extract search queries
+// from each suggestion's comment field.
 func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewContent string) []string {
 	var queries []string
 
@@ -285,7 +287,7 @@ func (r *ragService) extractCommentsFromReview(ctx context.Context, reviewConten
 	return queries
 }
 
-// cleanCommentForQuery prepares a comment for use as a search query.
+// cleanCommentForQuery strips formatting artifacts and truncates a comment for use as a search query.
 func (r *ragService) cleanCommentForQuery(comment string) string {
 	comment = strings.ReplaceAll(comment, "```", " ")
 	comment = strings.ReplaceAll(comment, "`", " ")
