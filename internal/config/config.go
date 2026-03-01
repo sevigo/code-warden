@@ -386,6 +386,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.model", "qwen2.5-coder")
 	v.SetDefault("agent.timeout", "30m")
 	v.SetDefault("agent.max_iterations", 3)
+	v.SetDefault("agent.max_concurrent_sessions", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
 	v.SetDefault("agent.opencode_addr", "") // Empty = CLI mode (recommended), non-empty = HTTP API mode
 	v.SetDefault("agent.working_dir", "")   // Empty means disabled/no default; must be explicitly set
