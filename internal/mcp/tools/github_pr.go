@@ -82,7 +82,7 @@ func (t *CreatePullRequest) InputSchema() map[string]any {
 func (t *CreatePullRequest) Execute(ctx context.Context, args map[string]any) (any, error) {
 	// Enforce review approval - ReviewTracker must be configured
 	if t.ReviewTracker == nil {
-		return nil, fmt.Errorf("ReviewTracker not configured: PR creation is blocked. This is a configuration error.")
+		return nil, fmt.Errorf("ReviewTracker not configured: PR creation is blocked. This is a configuration error")
 	}
 
 	diffHash, _ := args["diff_hash"].(string)

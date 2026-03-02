@@ -35,7 +35,3 @@ type ReviewTracker interface {
 	// The diffHash parameter should match the hash of the current diff to detect changes.
 	CheckApproval(diffHash string) error
 }
-
-// Note: The Server in internal/mcp package implements this interface.
-// We cannot use the standard compile-time check pattern here due to
-// the circular import between mcp and tools packages.

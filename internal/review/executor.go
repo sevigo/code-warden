@@ -64,6 +64,9 @@ type Executor struct {
 
 // NewExecutor creates a new review executor.
 func NewExecutor(ragService rag.Service, config Config) *Executor {
+	if config.Logger == nil {
+		config.Logger = slog.Default()
+	}
 	return &Executor{
 		ragService: ragService,
 		config:     config,
