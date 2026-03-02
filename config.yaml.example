@@ -105,8 +105,26 @@ ai:
   # Timeout for waiting for the first byte of an LLM response (headers).
   # Increase this if you see "timeout awaiting response headers" errors
   # when using heavy cloud models via Ollama proxy.
-  # default: "120s"
+  # default: "180s" (3 minutes)
   http_response_header_timeout: "15m"
+
+  # Overall HTTP request timeout (including body transfer).
+  # This is a safety net for very long-running requests.
+  # Set to "0" or omit to disable (rely only on response_header_timeout).
+  # default: "0" (disabled - recommended for most cases)
+  # http_request_timeout: "0"
+
+  # Overall HTTP request timeout (including body transfer).
+  # This is a safety net for very long-running requests.
+  # Set to "0" or omit to disable (rely only on response_header_timeout).
+  # default: "0" (disabled - recommended for most cases)
+  # http_request_timeout: "0"
+
+  # Overall HTTP request timeout (including body transfer).
+  # Set to 0 or omit to disable (rely only on response_header_timeout).
+  # This is a safety net for very long-running requests.
+  # default: "600s" (10 minutes)
+  # http_request_timeout: "30m"
 
   # Context Assembly
   # Maximum tokens for RAG context (retrieved code snippets, definitions, etc.)

@@ -151,11 +151,20 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
+		logger.Info("configuring Ollama HTTP client for generator",
+			"response_header_timeout", headerTimeout,
+			"request_timeout", requestTimeout,
+			"model", cfg.AI.GeneratorModel,
+		)
+
 		clientCfg := httpclient.NewConfig(
 			httpclient.WithResponseHeaderTimeout(headerTimeout),
 		)
+		// Set overall timeout: use configured value, or 0 (no limit) to rely on ResponseHeaderTimeout
 		if requestTimeout > 0 {
 			clientCfg.Timeout = requestTimeout
+		} else {
+			clientCfg.Timeout = 0 // Disable overall timeout, let ResponseHeaderTimeout control
 		}
 
 		opts := []ollama.Option{
@@ -198,11 +207,20 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
+		logger.Info("configuring Ollama HTTP client for embedder",
+			"response_header_timeout", headerTimeout,
+			"request_timeout", requestTimeout,
+			"model", cfg.AI.EmbedderModel,
+		)
+
 		clientCfg := httpclient.NewConfig(
 			httpclient.WithResponseHeaderTimeout(headerTimeout),
 		)
+		// Set overall timeout: use configured value, or 0 (no limit) to rely on ResponseHeaderTimeout
 		if requestTimeout > 0 {
 			clientCfg.Timeout = requestTimeout
+		} else {
+			clientCfg.Timeout = 0 // Disable overall timeout, let ResponseHeaderTimeout control
 		}
 
 		opts := []ollama.Option{
@@ -291,11 +309,20 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 	requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
+	logger.Info("configuring Ollama HTTP client for reranker",
+		"response_header_timeout", headerTimeout,
+		"request_timeout", requestTimeout,
+		"model", cfg.AI.RerankerModel,
+	)
+
 	clientCfg := httpclient.NewConfig(
 		httpclient.WithResponseHeaderTimeout(headerTimeout),
 	)
+	// Set overall timeout: use configured value, or 0 (no limit) to rely on ResponseHeaderTimeout
 	if requestTimeout > 0 {
 		clientCfg.Timeout = requestTimeout
+	} else {
+		clientCfg.Timeout = 0 // Disable overall timeout, let ResponseHeaderTimeout control
 	}
 
 	opts := []ollama.Option{
