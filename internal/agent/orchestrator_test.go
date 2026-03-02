@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -238,5 +239,37 @@ func TestCleanupOldSessions(t *testing.T) {
 	// Verify workspace cleanup
 	if _, err := os.Stat(oldWorkspace); !os.IsNotExist(err) {
 		t.Errorf("cleanupOldSessions() failed to remove old workspace directory")
+	}
+}
+
+func TestReadLogFile_Capping(t *testing.T) {
+	o := &Orchestrator{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "large.log")
+
+	// Create a log file larger than the cap
+	capSize := int64(50)
+	sentinel := "AGENT_RESULT: {\"pr_number\": 123}"
+	// Total size will be 100 + len(sentinel)
+	content := strings.Repeat("A", 100) + sentinel
+	err := os.WriteFile(logPath, []byte(content), 0644)
+	if err != nil {
+		t.Fatalf("failed to create mock log file: %v", err)
+	}
+
+	got, err := o.readLogFile(logPath, capSize)
+	if err != nil {
+		t.Fatalf("readLogFile() error: %v", err)
+	}
+
+	if int64(len(got)) != capSize {
+		t.Errorf("readLogFile() expected length %d, got %d", capSize, len(got))
+	}
+
+	// Verify it contains the end of the sentinel which was at the end of the file
+	if !strings.Contains(string(got), "AGENT_RESULT:") {
+		t.Errorf("readLogFile() failed to capture trailing sentinel. Content: %s", string(got))
 	}
 }
