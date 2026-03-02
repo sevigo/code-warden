@@ -7,12 +7,15 @@ Below are architectural summaries for various directories in the repository:
 Based ONLY on the provided summaries, synthesize a single, concise "Project Context Document".
 Your goal is to identify the global, repository-wide rules, technologies, and patterns so an autonomous coding agent knows how to work within this codebase.
 
-Focus on:
-1. Core Architecture: What are the main packages/modules and their responsibilities?
-2. Coding Standards:
-   - What logging framework is used? (e.g., standard log, slog, zap) How is it passed around?
-   - What testing framework or approach is used? (e.g., standard testing, table-driven tests, testify)
-   - How are errors handled?
-3. Key Dependencies/Frameworks: Any dominant libraries or frameworks that dictate how code should be written.
+IMPORTANT: Only report facts that are explicitly stated in the summaries above. If information is not available in the summaries, write "Not specified" rather than guessing.
 
-Format your response in Markdown. Do NOT include greetings or extraneous text. Be concise and authoritative.
+Focus on:
+1. Core Architecture: What are the main packages/modules and their responsibilities? (based on directory structure and exported symbols)
+2. Coding Standards:
+   - What logging framework is used? (look for imports like log/slog, zap, zerolog, logrus)
+   - What testing framework is used? (look for imports like testing, testify, gomock)
+   - How are errors handled? (look for error handling patterns in descriptions)
+3. Key Dependencies: List ONLY the dependencies explicitly mentioned in the imports sections. Do NOT invent dependencies.
+
+Format your response in Markdown. Do NOT include greetings or extraneous text. Be concise and factual.
+If you cannot determine something from the provided summaries, omit that section entirely rather than speculating.
