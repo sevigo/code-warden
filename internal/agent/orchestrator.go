@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -508,34 +510,65 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	cmd := o.buildOpenCodeCommand(ctx, session.ID, session.Issue, systemPrompt, branch)
 	cmd.Dir = workspaceDir // Run in the isolated workspace
 
+	// Setup log file for streaming.
+	// Note: We open the file here for writing, and readLogFile opens it again for reading.
+	// This is safe on Unix-like systems (macOS/Linux) as the OS handles concurrent access.
+	logPath := filepath.Join(workspaceDir, "agent.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		o.logger.Error("runAgentCLI: failed to create log file", "session_id", session.ID, "path", logPath, "error", err)
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("failed to create log file: %v", err))
+		return
+	}
+	defer logFile.Close()
+
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
 	o.logger.Info("runAgentCLI: starting OpenCode process",
 		"session_id", session.ID,
 		"command", cmd.String(),
 		"working_dir", cmd.Dir,
+		"log_file", logPath,
 		"timeout", o.config.Timeout)
 
 	// Run the agent
-	output, err := cmd.CombinedOutput()
+	err = cmd.Run()
+
+	// Read log file (capped at 10MB)
+	outputBytes, readErr := o.readLogFile(logPath, 10*1024*1024)
+	if readErr != nil {
+		o.logger.Warn("runAgentCLI: failed to read log file", "session_id", session.ID, "path", logPath, "error", readErr)
+	}
+	output := string(outputBytes)
+
 	if err != nil {
 		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("Agent failed: %v\nOutput: %s", err, string(output)))
+		// Include tail of output in the session error for context.
+		// We use truncateTail here to capture the most recent (failure-related) output,
+		// while truncateString below captures the early logs for the internal logger.
+		tail := truncateTail(output, 2000)
+		session.SetError(fmt.Sprintf("Agent failed: %v\nTail of output:\n%s", err, tail))
 		session.mu.Lock()
 		session.CompletedAt = time.Now()
 		session.mu.Unlock()
 		o.logger.Error("runAgentCLI: agent process failed",
 			"session_id", session.ID,
 			"error", err,
+			"log_file", logPath,
 			"output_length", len(output),
-			"output_preview", truncateString(string(output), 500))
+			"output_preview", truncateString(output, 500))
 		return
 	}
 
 	o.logger.Info("runAgentCLI: agent process completed successfully",
 		"session_id", session.ID,
+		"log_file", logPath,
 		"output_length", len(output))
 
-	// Parse result
-	result := o.parseAgentOutput(string(output), branch)
+	// Parse result from the streamed output
+	result := o.parseAgentOutput(output, branch)
 
 	session.SetResult(result)
 	session.SetStatus(StatusCompleted)
@@ -744,6 +777,54 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// truncateTail returns the last maxLen characters of a string.
+func truncateTail(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return "... [truncated] ...\n" + s[len(s)-maxLen:]
+}
+
+// readLogFile reads the content of a file up to maxBytes.
+// If the file exceeds maxBytes, it reads the *last* maxBytes to ensure
+// the AGENT_RESULT: sentinel (typically at the end) is captured.
+func (o *Orchestrator) readLogFile(path string, maxBytes int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	size := info.Size()
+	var offset int64
+	readSize := size
+
+	if size > maxBytes {
+		o.logger.Warn("readLogFile: log file exceeds size cap, truncating read from the end",
+			"path", path, "size", size, "cap", maxBytes)
+		offset = size - maxBytes
+		readSize = maxBytes
+
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("failed to seek in log file: %w", err)
+		}
+	}
+
+	// Read up to readSize
+	buf := make([]byte, readSize)
+	_, err = io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+
+	return buf, nil
 }
 
 // cleanupWorkspace removes the session's isolated workspace directory.
