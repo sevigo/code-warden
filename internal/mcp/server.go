@@ -476,7 +476,7 @@ func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRP
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return nil, &jsonRPCError{Code: -32602, Message: "invalid params"}
 		}
-		s.logger.Info("MCP tool call started", "tool", params.Name, "arguments", params.Arguments)
+		s.logger.Info("MCP tool call started", "tool", params.Name)
 		result, err := s.CallTool(ctx, params.Name, params.Arguments)
 		if err != nil {
 			s.logger.Error("MCP tool call failed", "tool", params.Name, "error", err)
