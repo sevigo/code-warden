@@ -80,13 +80,15 @@ func (t *CreatePullRequest) InputSchema() map[string]any {
 }
 
 func (t *CreatePullRequest) Execute(ctx context.Context, args map[string]any) (any, error) {
-	// Check for approved review if tracker is available
-	if t.ReviewTracker != nil {
-		diffHash, _ := args["diff_hash"].(string)
-		if err := t.ReviewTracker.CheckApproval(diffHash); err != nil {
-			t.Logger.Error("PR creation blocked: no approved review", "error", err)
-			return nil, fmt.Errorf("PR creation blocked: %w", err)
-		}
+	// Enforce review approval - ReviewTracker must be configured
+	if t.ReviewTracker == nil {
+		return nil, fmt.Errorf("ReviewTracker not configured: PR creation is blocked. This is a configuration error.")
+	}
+
+	diffHash, _ := args["diff_hash"].(string)
+	if err := t.ReviewTracker.CheckApproval(diffHash); err != nil {
+		t.Logger.Error("PR creation blocked: no approved review", "error", err)
+		return nil, fmt.Errorf("PR creation blocked: %w", err)
 	}
 
 	title, ok := args["title"].(string)

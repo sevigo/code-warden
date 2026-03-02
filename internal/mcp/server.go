@@ -48,11 +48,11 @@ type Server struct {
 
 	// Review tracking for PR enforcement
 	reviewMu         sync.RWMutex
-	lastReviewResult *ReviewResult
+	lastReviewResult *reviewResult
 }
 
-// ReviewResult tracks the last code review result for enforcement.
-type ReviewResult struct {
+// reviewResult tracks the last code review result for enforcement.
+type reviewResult struct {
 	Verdict   string
 	Timestamp time.Time
 	DiffHash  string // Hash of the reviewed diff to detect changes
@@ -103,36 +103,29 @@ func NewServer(
 	repoConfig *core.RepoConfig,
 	projectRoot string,
 	logger *slog.Logger,
+	config Config,
 ) *Server {
 	s := &Server{
-		store:       store,
-		vectorStore: vectorStore,
-		ragService:  ragService,
-		ghClient:    ghClient,
-		ghToken:     ghToken,
-		repo:        repo,
-		repoConfig:  repoConfig,
-		projectRoot: projectRoot,
-		logger:      logger,
-		tools:       make(map[string]Tool),
-		sessions:    make(map[string]*sseSession),
-		workspaces:  make(map[string]string),
+		store:            store,
+		vectorStore:      vectorStore,
+		ragService:       ragService,
+		ghClient:         ghClient,
+		ghToken:          ghToken,
+		repo:             repo,
+		repoConfig:       repoConfig,
+		projectRoot:      projectRoot,
+		logger:           logger,
+		tools:            make(map[string]Tool),
+		sessions:         make(map[string]*sseSession),
+		workspaces:       make(map[string]string),
+		comparisonModels: config.ComparisonModels,
+		reviewsDir:       config.ReviewsDir,
 	}
 
 	// Register default tools
 	s.registerTools()
 
 	return s
-}
-
-// SetComparisonModels sets the models for consensus review.
-func (s *Server) SetComparisonModels(models []string) {
-	s.comparisonModels = models
-}
-
-// SetReviewsDir sets the directory for saving review artifacts.
-func (s *Server) SetReviewsDir(dir string) {
-	s.reviewsDir = dir
 }
 
 // registerTools registers all available MCP tools.
@@ -238,6 +231,9 @@ func (s *Server) ListTools() []ToolInfo {
 
 // Review tracking constants
 const (
+	// maxReviewAge is the maximum age of a review before it's considered stale.
+	// This is a policy decision: 30 minutes provides reasonable security while
+	// allowing time for agent iteration. Tests should mock time or use short durations.
 	maxReviewAge = 30 * time.Minute
 )
 
@@ -245,7 +241,7 @@ const (
 func (s *Server) RecordReview(verdict, diffHash string) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
-	s.lastReviewResult = &ReviewResult{
+	s.lastReviewResult = &reviewResult{
 		Verdict:   verdict,
 		Timestamp: time.Now(),
 		DiffHash:  diffHash,

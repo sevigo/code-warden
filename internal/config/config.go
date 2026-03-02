@@ -169,7 +169,8 @@ type AIConfig struct {
 	ContextTokenBudget int `mapstructure:"context_token_budget"` // Max tokens for RAG context (default: 16000)
 
 	// Review Output Options
-	EnableCodeSuggestions bool `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
+	EnableCodeSuggestions bool   `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
+	ReviewsDir            string `mapstructure:"reviews_dir"`             // Directory to save review artifacts (default: "reviews")
 }
 
 func (c *AIConfig) Validate() error {

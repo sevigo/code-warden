@@ -167,7 +167,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			MCPAddr:               j.cfg.Agent.MCPAddr,
 			WorkingDir:            j.cfg.Agent.WorkingDir,
 			ComparisonModels:      j.cfg.AI.ComparisonModels,
-			ReviewsDir:            "reviews",
+			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 		},
 		j.logger,
 	)
@@ -739,4 +739,15 @@ func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *cor
 		return core.DefaultRepoConfig()
 	}
 	return repoConfig
+}
+
+// firstNonEmpty returns the first non-empty string from the given strings.
+// If all strings are empty, returns the empty string.
+func firstNonEmpty(strings ...string) string {
+	for _, s := range strings {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
