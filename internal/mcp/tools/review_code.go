@@ -18,7 +18,6 @@ import (
 const (
 	maxDiffLength  = 1000000 // 1MB max diff
 	maxTitleLength = 500
-	reviewMaxAge   = 30 * time.Minute
 )
 
 // ReviewCode performs an internal code review.
@@ -38,7 +37,8 @@ type ReviewCodeResponse struct {
 	Confidence  int               `json:"confidence"`
 	Summary     string            `json:"summary"`
 	Suggestions []core.Suggestion `json:"suggestions,omitempty"`
-	ModelsUsed  []string          `json:"models_used,omitempty"` // Models used in consensus
+	DiffHash    string            `json:"diff_hash,omitempty"` // Hash for tracking changes
+	ModelsUsed  []string          `json:"models_used,omitempty"`
 }
 
 func (t *ReviewCode) Name() string {
@@ -52,7 +52,8 @@ Verdict values:
 - "APPROVE" - Code is approved, proceed to create PR
 - "REQUEST_CHANGES" - Issues found, fix them and review again
 - "COMMENT" - General feedback, treat as REQUEST_CHANGES
-IMPORTANT: You MUST wait for APPROVE verdict before creating a PR.`
+IMPORTANT: You MUST wait for APPROVE verdict before creating a PR.
+Pass the returned diff_hash to create_pull_request to ensure code hasn't changed.`
 }
 
 func (t *ReviewCode) InputSchema() map[string]any {
@@ -77,7 +78,7 @@ func (t *ReviewCode) InputSchema() map[string]any {
 }
 
 func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, error) {
-	t.Logger.Info("review_code: executing tool", "args", args)
+	t.Logger.Info("review_code: executing tool")
 	diff, ok := args["diff"].(string)
 	if !ok || diff == "" {
 		return nil, fmt.Errorf("diff is required")
@@ -148,7 +149,7 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		result := review.ComparisonResult{
 			Model:    "internal-review",
 			Review:   rawReview,
-			Duration: 0, // Not tracked for single review
+			Duration: 0,
 			Error:    nil,
 		}
 		review.SaveReviewArtifact(t.Logger, t.ReviewsDir, result, event, ts)
@@ -171,6 +172,7 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		Confidence:  structuredReview.Confidence,
 		Summary:     structuredReview.Summary,
 		Suggestions: structuredReview.Suggestions,
+		DiffHash:    diffHash,
 	}
 
 	if len(t.ComparisonModels) > 0 {
@@ -183,5 +185,5 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 // hashDiff creates a short hash of the diff for tracking changes.
 func hashDiff(diff string) string {
 	h := sha256.Sum256([]byte(diff))
-	return hex.EncodeToString(h[:8])
+	return hex.EncodeToString(h[:])
 }

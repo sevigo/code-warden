@@ -3,6 +3,8 @@ package tools
 import "time"
 
 // ReviewTracker tracks code review results for PR enforcement.
+// This interface is implemented by the MCP Server to enforce review approval
+// before allowing PR creation.
 type ReviewTracker interface {
 	// RecordReview stores the review result for enforcement.
 	RecordReview(verdict, diffHash string)
@@ -15,3 +17,7 @@ type ReviewTracker interface {
 	// Returns error if no review found, review is not approved, or review is stale.
 	CheckApproval(diffHash string) error
 }
+
+// Note: The Server in internal/mcp package implements this interface.
+// We cannot use the standard compile-time check pattern here due to
+// the circular import between mcp and tools packages.
