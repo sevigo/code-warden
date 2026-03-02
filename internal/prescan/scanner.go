@@ -163,23 +163,33 @@ func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, genera
 
 	// 7. Auto-generate Project Context document if we scanned files
 	if progress.ProcessedFiles > 0 {
-		s.Manager.logger.Info("Auto-generating Project Context after successful scan")
-		contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
-		if err != nil {
-			s.Manager.logger.Warn("failed to update project context automatically", "error", err)
-		} else if contextDoc != "" {
-			repoRecord.GeneratedContext = contextDoc
-			repoRecord.ContextUpdatedAt.Time = time.Now()
-			repoRecord.ContextUpdatedAt.Valid = true
-			if dbErr := s.Manager.store.UpdateRepository(ctx, repoRecord); dbErr != nil {
-				s.Manager.logger.Warn("failed to save auto-generated context to DB", "error", dbErr)
-			} else {
-				s.Manager.logger.Info("✅ Project Context successfully updated in database")
-			}
-		}
+		s.autoGenerateProjectContext(ctx, repoRecord)
 	}
 
 	return s.updateRepoIndexVersion(ctx, localPath, repoRecord)
+}
+
+// autoGenerateProjectContext generates and saves a project context document.
+func (s *Scanner) autoGenerateProjectContext(ctx context.Context, repoRecord *storage.Repository) {
+	s.Manager.logger.Info("Auto-generating Project Context after successful scan")
+	contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
+	if err != nil {
+		s.Manager.logger.Warn("failed to update project context automatically", "error", err)
+		return
+	}
+	if contextDoc == "" {
+		return
+	}
+
+	repoRecord.GeneratedContext = contextDoc
+	repoRecord.ContextUpdatedAt.Time = time.Now()
+	repoRecord.ContextUpdatedAt.Valid = true
+
+	if dbErr := s.Manager.store.UpdateRepository(ctx, repoRecord); dbErr != nil {
+		s.Manager.logger.Warn("failed to save auto-generated context to DB", "error", dbErr)
+		return
+	}
+	s.Manager.logger.Info("✅ Project Context successfully updated in database")
 }
 
 func (s *Scanner) generateArchitecturalComparisons(ctx context.Context, localPath string) {

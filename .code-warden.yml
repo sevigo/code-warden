@@ -18,6 +18,9 @@ custom_instructions:
 verify_commands:
   - "make lint"
   - "make test"
+  - "go generate ./..."
+  - "make build"
+  - "go vet ./..."
 
 # Directories to completely exclude from indexing. This is for performance.
 # These are added to the application's built-in defaults like '.git' and 'node_modules'.
