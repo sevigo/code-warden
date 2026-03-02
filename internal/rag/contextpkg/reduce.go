@@ -20,9 +20,14 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
 
 	scopedStore := b.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
 
+	limit := b.cfg.AIConfig.MaxContextSummaries
+	if limit <= 0 {
+		limit = 1000
+	}
+
 	// 1. Fetch all architectural summaries for the repository
 	// Using a generic search "summary" with a high limit to get all of them
-	docs, err := scopedStore.SimilaritySearch(ctx, "summary", 1000,
+	docs, err := scopedStore.SimilaritySearch(ctx, "summary", limit,
 		vectorstores.WithFilters(map[string]any{
 			"chunk_type": "arch",
 		}),

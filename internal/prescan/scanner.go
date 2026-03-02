@@ -57,7 +57,7 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 }
 
 //nolint:gocognit,funlen // Main scanning loop with state management
-func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, onlyContext bool) error {
+func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, generateContextOnly bool) error {
 	s.Verbose = verbose
 	s.startTime = time.Now()
 
@@ -79,11 +79,15 @@ func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, onlyCo
 	s.printCollection(repoRecord.QdrantCollectionName)
 
 	// 3. Early check for context generation ONLY
-	if onlyContext {
+	if generateContextOnly {
 		s.Manager.logger.Info("Running Context Generation ONLY mode")
 		contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
 		if err != nil {
 			return fmt.Errorf("failed to generate project context: %w", err)
+		}
+		if contextDoc == "" {
+			s.Manager.logger.Warn("Generated project context is empty. Ensure architectural summaries are generated.")
+			return nil
 		}
 
 		repoRecord.GeneratedContext = contextDoc
@@ -156,6 +160,24 @@ func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, onlyCo
 
 	s.printSummary(s.startTime, progress.ProcessedFiles)
 	s.Manager.logger.Info("Scan completed successfully")
+
+	// 7. Auto-generate Project Context document if we scanned files
+	if progress.ProcessedFiles > 0 {
+		s.Manager.logger.Info("Auto-generating Project Context after successful scan")
+		contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
+		if err != nil {
+			s.Manager.logger.Warn("failed to update project context automatically", "error", err)
+		} else if contextDoc != "" {
+			repoRecord.GeneratedContext = contextDoc
+			repoRecord.ContextUpdatedAt.Time = time.Now()
+			repoRecord.ContextUpdatedAt.Valid = true
+			if dbErr := s.Manager.store.UpdateRepository(ctx, repoRecord); dbErr != nil {
+				s.Manager.logger.Warn("failed to save auto-generated context to DB", "error", dbErr)
+			} else {
+				s.Manager.logger.Info("✅ Project Context successfully updated in database")
+			}
+		}
+	}
 
 	return s.updateRepoIndexVersion(ctx, localPath, repoRecord)
 }

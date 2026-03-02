@@ -183,7 +183,8 @@ type AIConfig struct {
 	HTTPRequestTimeout        string `mapstructure:"http_request_timeout"`         // Overall HTTP request timeout including body (e.g., "5m", "10m")
 
 	// Context Assembly
-	ContextTokenBudget int `mapstructure:"context_token_budget"` // Max tokens for RAG context (default: 16000)
+	ContextTokenBudget  int `mapstructure:"context_token_budget"`  // Max tokens for RAG context (default: 16000)
+	MaxContextSummaries int `mapstructure:"max_context_summaries"` // Max number of architectural summaries (default: 1000)
 
 	// Review Output Options
 	EnableCodeSuggestions bool   `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
@@ -362,6 +363,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.enable_hybrid_search", true)
 	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
 	v.SetDefault("ai.enable_hyde", false) // Default to false for performance
+	v.SetDefault("ai.max_context_summaries", 1000)
 	v.SetDefault("ai.hyde_concurrency", 5)
 	v.SetDefault("ai.enable_thinking", false)               // Disabled by default - enable per model
 	v.SetDefault("ai.thinking_effort", "medium")            // "low", "medium", "high"
