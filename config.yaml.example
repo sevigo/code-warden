@@ -137,6 +137,12 @@ ai:
   # Note: Leave room for system prompt (~1K), diff (~4K), and response (~8K-16K)
   context_token_budget: 16000
 
+  # Maximum number of architectural summaries (directories) to load during context generation.
+  # If a repository has more directories than this limit, only the most relevant will be fetched.
+  # Increase this for massive monorepos where you need complete coverage.
+  # default: 1000
+  max_context_summaries: 1000
+
 # ============================================================================
 # Agent Configuration (Autonomous Issue Implementation)
 # ============================================================================
@@ -155,6 +161,8 @@ agent:
   max_concurrent_sessions: 3
   # Address for the internal MCP server
   mcp_addr: "127.0.0.1:8081"
+  # Timeout for the MCP tools inside the agent (e.g., "5m", "10m")
+  mcp_timeout: "5m"
   # Absolute path for agent workspaces (where code is cloned/modified)
   # IMPORTANT: This must be set if agent is enabled.
   working_dir: "/tmp/code-warden-agents"

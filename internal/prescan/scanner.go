@@ -56,7 +56,8 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 	}, nil
 }
 
-func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bool) error {
+//nolint:gocognit,funlen // Main scanning loop with state management
+func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, generateContextOnly bool) error {
 	s.Verbose = verbose
 	s.startTime = time.Now()
 
@@ -77,7 +78,33 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 	}
 	s.printCollection(repoRecord.QdrantCollectionName)
 
-	// 3. Load State & Initialize Progress
+	// 3. Early check for context generation ONLY
+	if generateContextOnly {
+		s.Manager.logger.Info("Running Context Generation ONLY mode")
+		contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
+		if err != nil {
+			return fmt.Errorf("failed to generate project context: %w", err)
+		}
+		if contextDoc == "" {
+			s.Manager.logger.Warn("Generated project context is empty. Ensure architectural summaries are generated.")
+			return nil
+		}
+
+		repoRecord.GeneratedContext = contextDoc
+		now := time.Now()
+		repoRecord.ContextUpdatedAt.Time = now
+		repoRecord.ContextUpdatedAt.Valid = true
+
+		if err := s.Manager.store.UpdateRepository(ctx, repoRecord); err != nil {
+			return fmt.Errorf("failed to save generated context to DB: %w", err)
+		}
+
+		s.Manager.logger.Info("✅ Project Context successfully generated and saved to database.")
+		fmt.Printf("\n========== GENERATED PROJECT CONTEXT ==========\n\n%s\n\n===============================================\n\n", contextDoc)
+		return nil
+	}
+
+	// 4. Load State & Initialize Progress
 	stateMgr := NewStateManager(s.Manager.store, repoRecord.ID)
 	scanState, progress, err := stateMgr.LoadState(ctx)
 	if err != nil {
@@ -134,7 +161,35 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 	s.printSummary(s.startTime, progress.ProcessedFiles)
 	s.Manager.logger.Info("Scan completed successfully")
 
+	// 7. Auto-generate Project Context document if we scanned files
+	if progress.ProcessedFiles > 0 {
+		s.autoGenerateProjectContext(ctx, repoRecord)
+	}
+
 	return s.updateRepoIndexVersion(ctx, localPath, repoRecord)
+}
+
+// autoGenerateProjectContext generates and saves a project context document.
+func (s *Scanner) autoGenerateProjectContext(ctx context.Context, repoRecord *storage.Repository) {
+	s.Manager.logger.Info("Auto-generating Project Context after successful scan")
+	contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
+	if err != nil {
+		s.Manager.logger.Warn("failed to update project context automatically", "error", err)
+		return
+	}
+	if contextDoc == "" {
+		return
+	}
+
+	repoRecord.GeneratedContext = contextDoc
+	repoRecord.ContextUpdatedAt.Time = time.Now()
+	repoRecord.ContextUpdatedAt.Valid = true
+
+	if dbErr := s.Manager.store.UpdateRepository(ctx, repoRecord); dbErr != nil {
+		s.Manager.logger.Warn("failed to save auto-generated context to DB", "error", dbErr)
+		return
+	}
+	s.Manager.logger.Info("✅ Project Context successfully updated in database")
 }
 
 func (s *Scanner) generateArchitecturalComparisons(ctx context.Context, localPath string) {

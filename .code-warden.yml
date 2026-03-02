@@ -1,7 +1,26 @@
 # Custom instructions to guide the AI's review process.
 custom_instructions:
   - "Pay close attention to Go best practices, especially regarding error handling and context propagation."
-  - "The project uses the 'slog' library for structured logging. Ensure all new logging statements follow this standard."
+  - "The project uses the 'slog' package from the standard library for structured logging. Ensure all new logging statements follow this standard."
+  - "Maintain a clean architecture: all business logic goes into `internal/` (e.g., `internal/rag`, `internal/jobs`). Never put core logic in `cmd/`."
+  - "External dependencies (LLMs, Databases, GitHub) MUST be defined as interfaces in the core logic. Inject concrete implementations via `internal/wire`."
+  - "When adding executing subprocesses (e.g., `exec.CommandContext`), verify that it's safe to run and use the comment `//nolint:gosec // G204: <reason>` to suppress linter false positives."
+  - "To run unit tests successfully, run `make test`. Ensure any added functionality is thoroughly tested using the `testing` package."
+  - "Testing uses the standard `testing` package with `testify/assert` and `testify/require` for assertions, and `go.uber.org/mock/gomock` for mocking. Table-driven tests with `t.Run()` are the preferred pattern."
+  - "Error wrapping MUST use `fmt.Errorf(\"failed to <action>: %w\", err)` pattern to preserve error chains."
+  - "Context.Context MUST be the first argument of I/O functions. Pass context through the call chain, do not store it in structs."
+  - "Interface names use the `-er` suffix (e.g., `Reviewer`, `Store`, `ConfigLoader`)."
+  - "Database access uses `jmoiron/sqlx` with `lib/pq` for PostgreSQL. This is NOT an ORM - use SQL queries with struct scanning."
+  - "RAG functionality (LLM, embeddings, vectorstores) uses `github.com/sevigo/goframe`. Check goframe documentation for chain constructors and patterns."
+  - "When modifying interfaces in `internal/wire/wire.go`, regenerate `wire_gen.go` by running `wire ./internal/wire/` or `make build`."
+
+# Commands to run before code review (for autonomous agent verification).
+verify_commands:
+  - "make lint"
+  - "make test"
+  - "go generate ./..."
+  - "make build"
+  - "go vet ./..."
 
 # Directories to completely exclude from indexing. This is for performance.
 # These are added to the application's built-in defaults like '.git' and 'node_modules'.
@@ -34,7 +53,6 @@ exclude_files:
   - "config.yaml"      # Secrets/Local config
   - "config.yaml.example"
   - ".gitignore"
-  - "go.mod"           # Build metadata
   - ".golangci.yml"    # Linter config
   - "Dockerfile"
   - "docker-compose.yml"

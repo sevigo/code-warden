@@ -182,6 +182,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			MaxIterations:         j.cfg.Agent.MaxIterations,
 			MaxConcurrentSessions: j.cfg.Agent.MaxConcurrentSessions,
 			MCPAddr:               j.cfg.Agent.MCPAddr,
+			MCPTimeout:            j.cfg.Agent.GetMCPTimeout(),
 			WorkingDir:            j.cfg.Agent.WorkingDir,
 			ComparisonModels:      agentComparisonModel,
 			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),

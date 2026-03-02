@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	prescanForce   bool
-	prescanVerbose bool
+	prescanForce               bool
+	prescanVerbose             bool
+	prescanGenerateContextOnly bool
 )
 
 var prescanCmd = &cobra.Command{
@@ -40,7 +41,7 @@ var prescanCmd = &cobra.Command{
 		prescanMgr := prescan.NewManager(app.Cfg, app.Store, app.GitClient, slog.Default())
 		scanner := prescan.NewScanner(prescanMgr, app.RAGService)
 
-		if err := scanner.Scan(ctx, input, prescanForce, prescanVerbose); err != nil {
+		if err := scanner.Scan(ctx, input, prescanForce, prescanVerbose, prescanGenerateContextOnly); err != nil {
 			return fmt.Errorf("scan failed: %w", err)
 		}
 
@@ -52,5 +53,6 @@ var prescanCmd = &cobra.Command{
 func init() { //nolint:gochecknoinits // Cobra's init function for command registration
 	prescanCmd.Flags().BoolVar(&prescanForce, "force", false, "Force restart of scan, ignoring previous state.")
 	prescanCmd.Flags().BoolVarP(&prescanVerbose, "verbose", "v", false, "Show detailed progress for each file.")
+	prescanCmd.Flags().BoolVar(&prescanGenerateContextOnly, "generate-context-only", false, "Only run the Project Context generation step (requires a previously indexed repo).")
 	rootCmd.AddCommand(prescanCmd)
 }

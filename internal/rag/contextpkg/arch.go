@@ -384,14 +384,16 @@ func (b *builderImpl) getArchContext(ctx context.Context, scopedStore storage.Sc
 	return archContext
 }
 
-// scanDirectoryOnDisk lists code files in a directory and computes a hash for cache invalidation.
-func (b *builderImpl) scanDirectoryOnDisk(_, fullPath, relPath string) (*DirectoryInfo, string, error) {
+// scanDirectoryOnDisk lists code files in a directory, extracts symbols and imports,
+// and computes a hash for cache invalidation.
+func (b *builderImpl) scanDirectoryOnDisk(_ string, fullPath, relPath string) (*DirectoryInfo, string, error) {
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
 		return nil, "", err
 	}
 
 	var files []string
+	var allImports, allSymbols []string
 	var hashBuilder strings.Builder
 
 	for _, entry := range entries {
@@ -410,6 +412,14 @@ func (b *builderImpl) scanDirectoryOnDisk(_, fullPath, relPath string) (*Directo
 		if err == nil {
 			hashBuilder.WriteString(fmt.Sprintf("%s:%d|", entry.Name(), info.Size()))
 		}
+
+		// Extract symbols and imports using parser registry
+		if b.cfg.ParserRegistry != nil {
+			filePath := filepath.Join(fullPath, entry.Name())
+			imports, symbols := b.extractFileMetadata(filePath, entry.Name())
+			allImports = append(allImports, imports...)
+			allSymbols = append(allSymbols, symbols...)
+		}
 	}
 
 	if len(files) == 0 {
@@ -421,15 +431,77 @@ func (b *builderImpl) scanDirectoryOnDisk(_, fullPath, relPath string) (*Directo
 	hash := sha256.Sum256([]byte(hashBuilder.String()))
 	hexHash := hex.EncodeToString(hash[:8])
 
-	info := &DirectoryInfo{
+	// Deduplicate and sort imports and symbols
+	allImports = dedupeAndSort(allImports, 50)  // Limit to top 50 unique imports
+	allSymbols = dedupeAndSort(allSymbols, 100) // Limit to top 100 unique symbols
+
+	dirInfo := &DirectoryInfo{
 		Path:        relPath,
 		Files:       files,
-		Symbols:     []string{},
-		Imports:     []string{},
+		Symbols:     allSymbols,
+		Imports:     allImports,
 		ContentHash: hexHash,
 	}
 
-	return info, hexHash, nil
+	return dirInfo, hexHash, nil
+}
+
+// extractFileMetadata reads a file and extracts imports and exported symbols.
+func (b *builderImpl) extractFileMetadata(filePath, fileName string) (imports, symbols []string) {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		b.cfg.Logger.Debug("failed to read file for metadata extraction", "file", fileName, "error", err)
+		return nil, nil
+	}
+
+	parser, err := b.cfg.ParserRegistry.GetParserForExtension(filepath.Ext(fileName))
+	if err != nil {
+		b.cfg.Logger.Debug("no parser for extension", "file", fileName, "ext", filepath.Ext(fileName))
+		return nil, nil
+	}
+
+	metadata, err := parser.ExtractMetadata(string(content), filePath)
+	if err != nil {
+		b.cfg.Logger.Debug("failed to extract metadata", "file", fileName, "error", err)
+		return nil, nil
+	}
+
+	// Extract imports
+	imports = append(imports, metadata.Imports...)
+
+	// Extract exported symbols (definitions with public visibility)
+	for _, def := range metadata.Definitions {
+		if def.Visibility == "public" {
+			symbols = append(symbols, fmt.Sprintf("%s %s", def.Name, def.Type))
+		}
+	}
+
+	return imports, symbols
+}
+
+// dedupeAndSort removes duplicates and sorts a slice, limiting to maxLen items.
+func dedupeAndSort(items []string, maxLen int) []string {
+	if len(items) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var result []string
+	for _, item := range items {
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; !exists {
+			seen[item] = struct{}{}
+			result = append(result, item)
+		}
+	}
+
+	sort.Strings(result)
+	if len(result) > maxLen {
+		result = result[:maxLen]
+	}
+	return result
 }
 
 // GenerateComparisonSummaries generates architectural summaries for multiple
