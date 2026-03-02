@@ -27,6 +27,8 @@ type ReviewCode struct {
 	RepoConfig       *core.RepoConfig
 	ComparisonModels []string // Models for consensus review
 	ReviewsDir       string   // Directory to save review artifacts
+	// ReviewTracker records review results for PR enforcement.
+	// Always provided by the MCP server. The nil check is defensive programming.
 	ReviewTracker    ReviewTracker
 	Logger           *slog.Logger
 }
