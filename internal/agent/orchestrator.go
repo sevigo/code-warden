@@ -422,7 +422,8 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	defer ws.logFile.Close()
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
-	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
+	cmd, cleanup := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
+	defer cleanup()
 	cmd.Dir = ws.dir
 	cmd.Stdout = ws.logFile
 	cmd.Stderr = ws.logFile
@@ -607,8 +608,8 @@ func (o *Orchestrator) getVerifyCommands() []string {
 	return []string{"make lint", "make test"}
 }
 
-// buildOpenCodeCommand creates the command to run OpenCode.
-func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch string) *exec.Cmd {
+// buildOpenCodeCommand creates the command to run OpenCode and returns a cleanup function.
+func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch string) (*exec.Cmd, func()) {
 	// OpenCode CLI usage: opencode run [message..]
 	// The prompt is passed as positional arguments after "run"
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for agent execution
@@ -621,6 +622,12 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 
 	// Create OpenCode config with MCP timeout
 	configPath, err := o.createOpenCodeConfig()
+	cleanup := func() {
+		if configPath != "" {
+			_ = os.Remove(configPath)
+		}
+	}
+
 	if err != nil {
 		o.logger.Warn("failed to create OpenCode config, using defaults", "error", err)
 	}
@@ -639,7 +646,7 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 	}
 	cmd.Env = env
 
-	return cmd
+	return cmd, cleanup
 }
 
 // createOpenCodeConfig creates a temporary OpenCode config file with MCP timeout settings.
