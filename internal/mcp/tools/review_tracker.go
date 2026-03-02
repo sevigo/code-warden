@@ -17,7 +17,3 @@ type ReviewTracker interface {
 	// Returns error if no review found, review is not approved, or review is stale.
 	CheckApproval(diffHash string) error
 }
-
-// Note: The Server in internal/mcp package implements this interface.
-// We cannot use the standard compile-time check pattern here due to
-// the circular import between mcp and tools packages.

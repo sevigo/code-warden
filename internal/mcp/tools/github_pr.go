@@ -11,9 +11,9 @@ import (
 
 // CreatePullRequest creates a pull request in the repository.
 type CreatePullRequest struct {
-	GHClient      github.Client
-	Repo          RepoIdentifier
-	Logger        *slog.Logger
+	GHClient github.Client
+	Repo     RepoIdentifier
+	Logger   *slog.Logger
 	// ReviewTracker enforces that an approved review exists before PR creation.
 	// Always provided by the MCP server. The nil check is defensive programming.
 	ReviewTracker ReviewTracker

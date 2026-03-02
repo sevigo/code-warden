@@ -29,8 +29,8 @@ type ReviewCode struct {
 	ReviewsDir       string   // Directory to save review artifacts
 	// ReviewTracker records review results for PR enforcement.
 	// Always provided by the MCP server. The nil check is defensive programming.
-	ReviewTracker    ReviewTracker
-	Logger           *slog.Logger
+	ReviewTracker ReviewTracker
+	Logger        *slog.Logger
 }
 
 // ReviewCodeResponse is the response for review_code tool.
