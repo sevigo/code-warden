@@ -7,6 +7,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/rag"
+	ragreview "github.com/sevigo/code-warden/internal/rag/review"
 	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -87,6 +88,12 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		return nil, fmt.Errorf("diff exceeds maximum size of %d bytes", maxDiffLength)
 	}
 
+	// Parse diff to extract changed files for context retrieval
+	changedFiles := ragreview.ParseDiff(diff)
+	t.Logger.Debug("review_code: parsed diff",
+		"changed_files", len(changedFiles),
+		"diff_length", len(diff))
+
 	// Create a mock event for the review
 	title, _ := args["title"].(string)
 	if title == "" {
@@ -113,10 +120,11 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 	})
 
 	result, err := executor.Execute(ctx, reviewpkg.Params{
-		RepoConfig: t.RepoConfig,
-		Repo:       t.Repo,
-		Event:      event,
-		Diff:       diff,
+		RepoConfig:   t.RepoConfig,
+		Repo:         t.Repo,
+		Event:        event,
+		Diff:         diff,
+		ChangedFiles: changedFiles,
 	})
 	if err != nil {
 		t.Logger.Error("internal review failed", "error", err)
