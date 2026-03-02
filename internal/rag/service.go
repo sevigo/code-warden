@@ -281,13 +281,16 @@ func (r *ragService) getOrCreateLLM(ctx context.Context, modelName string) (llms
 				headerTimeout = 120 * time.Second // use default
 			}
 
+			clientCfg := httpclient.NewConfig(
+				httpclient.WithResponseHeaderTimeout(headerTimeout),
+			)
+			clientCfg.Timeout = 0 // Disable absolute client timeout, rely on Context and ResponseHeaderTimeout
+
 			newLLM, err = ollama.New(
 				ollama.WithServerURL(r.cfg.AI.OllamaHost),
 				ollama.WithAPIKey(r.cfg.AI.OllamaAPIKey),
 				ollama.WithModel(modelName),
-				ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
-					httpclient.WithResponseHeaderTimeout(headerTimeout),
-				))),
+				ollama.WithHTTPClient(httpclient.NewClient(clientCfg)),
 				ollama.WithRetryAttempts(3),
 				ollama.WithRetryDelay(2*time.Second),
 			)

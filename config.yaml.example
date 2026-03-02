@@ -106,7 +106,7 @@ ai:
   # Increase this if you see "timeout awaiting response headers" errors
   # when using heavy cloud models via Ollama proxy.
   # default: "120s"
-  http_response_header_timeout: "120s"
+  http_response_header_timeout: "15m"
 
   # Context Assembly
   # Maximum tokens for RAG context (retrieved code snippets, definitions, etc.)

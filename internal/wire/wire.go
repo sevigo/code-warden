@@ -126,12 +126,15 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 	case "ollama":
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 
+		clientCfg := httpclient.NewConfig(
+			httpclient.WithResponseHeaderTimeout(headerTimeout),
+		)
+		clientCfg.Timeout = 0 // Disable absolute client timeout, rely on Context and ResponseHeaderTimeout
+
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
-			ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
-				httpclient.WithResponseHeaderTimeout(headerTimeout),
-			))),
+			ollama.WithHTTPClient(httpclient.NewClient(clientCfg)),
 			ollama.WithModel(cfg.AI.GeneratorModel),
 			ollama.WithLogger(logger),
 			ollama.WithRetryAttempts(3),
@@ -167,13 +170,16 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	case "ollama":
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 
+		clientCfg := httpclient.NewConfig(
+			httpclient.WithResponseHeaderTimeout(headerTimeout),
+		)
+		clientCfg.Timeout = 0 // Disable absolute client timeout, rely on Context and ResponseHeaderTimeout
+
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
 			ollama.WithModel(cfg.AI.EmbedderModel),
-			ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
-				httpclient.WithResponseHeaderTimeout(headerTimeout),
-			))),
+			ollama.WithHTTPClient(httpclient.NewClient(clientCfg)),
 			ollama.WithLogger(logger),
 			ollama.WithRetryAttempts(3),
 			ollama.WithRetryDelay(2 * time.Second),
@@ -254,12 +260,15 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 
 	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 
+	clientCfg := httpclient.NewConfig(
+		httpclient.WithResponseHeaderTimeout(headerTimeout),
+	)
+	clientCfg.Timeout = 0 // Disable absolute client timeout, rely on Context and ResponseHeaderTimeout
+
 	opts := []ollama.Option{
 		ollama.WithServerURL(cfg.AI.OllamaHost),
 		ollama.WithModel(cfg.AI.RerankerModel),
-		ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
-			httpclient.WithResponseHeaderTimeout(headerTimeout),
-		))),
+		ollama.WithHTTPClient(httpclient.NewClient(clientCfg)),
 		ollama.WithLogger(logger),
 		ollama.WithRetryAttempts(3),
 		ollama.WithRetryDelay(2 * time.Second),
