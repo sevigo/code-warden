@@ -96,6 +96,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, onlyCo
 		}
 
 		s.Manager.logger.Info("✅ Project Context successfully generated and saved to database.")
+		fmt.Printf("\n========== GENERATED PROJECT CONTEXT ==========\n\n%s\n\n===============================================\n\n", contextDoc)
 		return nil
 	}
 
