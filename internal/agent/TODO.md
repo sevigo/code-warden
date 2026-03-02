@@ -2,46 +2,42 @@
 
 ## High Priority
 
-### Implement `parseAgentOutput`
-- [ ] Define structured output format for OpenCode (JSON envelope with PR info, files changed, verdict)
-- [ ] Parse stdout for PR URL/number, branch name, files changed, review verdict
-- [ ] Handle partial output (agent crashed mid-run) gracefully
-- [ ] Extract iteration count from review cycles
-- [ ] Log raw output to file for post-mortem debugging
+### Pre-flight Validation in `SpawnAgent`
+- [ ] Check `opencode` binary is on PATH and executable
+- [ ] Validate config (model exists, working dir is writable)
+- [ ] Verify issue exists and is open via GitHub API before spawning
+- [ ] Verify MCP server is listening (health check)
+- [ ] Confirm VectorStore has indexed data for the target repo
+
+### Streaming Agent Output (replaces `CombinedOutput`)
+- [ ] Replace `cmd.CombinedOutput()` with streaming stdout/stderr to a log file per session
+- [ ] Cap log file size (rotate or truncate at 10MB)
+- [ ] Log raw output path on session completion for post-mortem debugging
+
+### Workspace Setup Optimization
+- [ ] Use `git clone --local --depth 1 --single-branch` for faster clones
+- [ ] Investigate `git worktree add` as a near-zero-cost alternative
+- [ ] Measure and log clone duration
 
 ### Session Persistence
 - [ ] Add `AgentSession` model to PostgreSQL via `storage.Store`
 - [ ] Persist session state transitions (created → running → completed/failed)
-- [ ] Store agent output logs per session
-- [ ] Recover in-progress sessions on server restart (mark as failed with "server restarted")
+- [ ] Store path to agent output log per session
+- [ ] On server startup, query for `pending`/`running` sessions and mark them `failed` with reason `"server restarted"`
 - [ ] Add API endpoint to query session history
-
-### Pre-flight Validation in `SpawnAgent`
-- [ ] Verify issue exists and is open via GitHub API before spawning
-- [ ] Check `opencode` binary is on PATH and executable
-- [ ] Verify MCP server is listening (health check)
-- [ ] Confirm VectorStore has indexed data for the target repo
-- [ ] Validate config (model exists, working dir is writable)
 
 ## Medium Priority
 
 ### Agent Progress Tracking
+- [ ] Post progress comments on GitHub issue at key points ("Agent started", "Running tests...", "Creating PR...")
+- [ ] Add `LastActivity` timestamp to `Session` for stale detection
 - [ ] Periodically poll `git log --oneline` in workspace to detect commits
 - [ ] Track MCP tool calls from server logs (which tools, how often, duration)
-- [ ] Post progress comments on GitHub issue ("Agent is exploring codebase...", "Running tests...")
-- [ ] Add `LastActivity` timestamp to `Session` for stale detection
 
-### Streaming Agent Output
-- [ ] Replace `cmd.CombinedOutput()` with streaming to a log file
-- [ ] Tail the log file for real-time progress updates
-- [ ] Cap log file size (rotate or truncate at 10MB)
-- [ ] Expose log stream via SSE endpoint for dashboard
-
-### Workspace Setup Optimization
-- [ ] Use `git clone --depth 1 --single-branch` for faster clones
-- [ ] Investigate `git worktree add` as alternative to full clone
-- [ ] Cache base clone and copy for each session (copy-on-write if supported)
-- [ ] Measure and log clone duration
+### Auto-Review Agent PRs
+- [ ] After agent creates PR, automatically queue a `/review` job through the existing review pipeline
+- [ ] Post review results as GitHub PR comment
+- [ ] If review returns `REQUEST_CHANGES`, optionally re-spawn agent
 
 ### Failed Session Cleanup
 - [ ] Delete orphaned remote branches (`git push origin --delete <branch>`) on session failure
@@ -63,18 +59,7 @@
 - [ ] Export metrics via Prometheus endpoint or structured logs
 - [ ] Dashboard for active/completed/failed sessions
 
-### Auto-Review Agent PRs
-- [ ] After agent creates PR, automatically queue a `/review` job
-- [ ] Post review results as GitHub PR comment for visibility
-- [ ] If review returns `REQUEST_CHANGES`, optionally re-spawn agent
-
 ### Multi-Repo Support
 - [ ] Scope MCP tools per repository (not global project root)
 - [ ] Support multiple VectorStore collections per repo
 - [ ] Handle different GitHub App installations per org
-
-### OpenCode Client Improvements
-- [ ] Add retry logic with exponential backoff to `doRequest`
-- [ ] Add request/response logging at debug level
-- [ ] Consider replacing `fmt.Sprintf("gh pr create --title %q ...")` with `exec.Command` args
-- [ ] Add connection pooling configuration

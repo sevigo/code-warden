@@ -137,7 +137,6 @@ agent:
   timeout: 30m
   max_iterations: 3
   mcp_addr: "127.0.0.1:8081"
-  opencode_addr: "http://127.0.0.1:8000"
   working_dir: "/tmp/code-warden-agents"
 ```
 
@@ -376,7 +375,6 @@ agent:
   max_iterations: 3                # Max review iterations before failure
   max_concurrent_sessions: 3       # Max parallel agent sessions (default: 3)
   mcp_addr: "127.0.0.1:8081"       # MCP server bind address
-  opencode_addr: "http://127.0.0.1:8000"  # OpenCode API endpoint
   working_dir: "/tmp/code-warden-agents"  # Workspace directory
 
 ai:
