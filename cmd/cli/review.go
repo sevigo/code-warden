@@ -13,6 +13,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/internal/wire"
 )
@@ -195,20 +196,27 @@ func generateReviewWithModels(ctx context.Context, appInstance *app.App, repo *s
 		return nil, fmt.Errorf("failed to get changed files: %w", err)
 	}
 
-	if numModels := len(appInstance.Cfg.AI.ComparisonModels); numModels > 0 {
-		if numModels < 2 {
-			return nil, fmt.Errorf("consensus review requires at least 2 models, got %d", numModels)
-		}
+	executor := reviewpkg.NewExecutor(appInstance.RAGService, reviewpkg.Config{
+		ComparisonModels: appInstance.Cfg.AI.ComparisonModels,
+		ReviewsDir:       appInstance.Cfg.AI.ReviewsDir,
+		Logger:           appInstance.Logger,
+	})
 
-		timer.infof("Running consensus review with %d models...", numModels)
-		review, _, err := appInstance.RAGService.GenerateConsensusReview(ctx, nil, repo, event, appInstance.Cfg.AI.ComparisonModels, diff, changedFiles)
-		if err != nil {
-			return nil, fmt.Errorf("consensus review failed: %w", err)
-		}
-		return review, nil
+	result, err := executor.Execute(ctx, reviewpkg.Params{
+		Repo:         repo,
+		Event:        event,
+		Diff:         diff,
+		ChangedFiles: changedFiles,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("review failed: %w\n\nTip: Check that the LLM service is running", err)
 	}
 
-	return generateReview(ctx, appInstance, repo, event, diff, changedFiles, timer)
+	if len(result.ModelsUsed) > 0 {
+		timer.infof("Consensus review with %d models", len(result.ModelsUsed))
+	}
+	timer.infof("Suggestions: %d", len(result.Review.Suggestions))
+	return result.Review, nil
 }
 
 func printHeader(prURL string) {
@@ -275,15 +283,6 @@ func syncRepository(ctx context.Context, appInstance *app.App, event *core.GitHu
 	}
 
 	return syncResult, repo, nil
-}
-
-func generateReview(ctx context.Context, appInstance *app.App, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile, timer *stepTimer) (*core.StructuredReview, error) {
-	review, _, err := appInstance.RAGService.GenerateReview(ctx, nil, repo, event, diff, changedFiles)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate review: %w\n\nTip: Check that the LLM service is running", err)
-	}
-	timer.infof("Suggestions: %d", len(review.Suggestions))
-	return review, nil
 }
 
 func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResult, repo *storage.Repository, timer *stepTimer) error {
