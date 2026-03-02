@@ -11,9 +11,10 @@ import (
 
 // CreatePullRequest creates a pull request in the repository.
 type CreatePullRequest struct {
-	GHClient github.Client
-	Repo     RepoIdentifier
-	Logger   *slog.Logger
+	GHClient      github.Client
+	Repo          RepoIdentifier
+	Logger        *slog.Logger
+	ReviewTracker ReviewTracker // Optional: enforces approved review before PR
 }
 
 // RepoIdentifier holds owner and name for a repository.
@@ -36,7 +37,9 @@ func (t *CreatePullRequest) Name() string {
 func (t *CreatePullRequest) Description() string {
 	return `Create a pull request in the repository.
 Returns the PR number and URL.
-Use this after making changes and running tests/reviews.`
+
+IMPORTANT: You MUST call review_code and receive APPROVE verdict before creating a PR.
+If you haven't run review_code yet, or if the verdict was REQUEST_CHANGES, this will fail.`
 }
 
 func (t *CreatePullRequest) InputSchema() map[string]any {
@@ -60,6 +63,10 @@ func (t *CreatePullRequest) InputSchema() map[string]any {
 				"description": "The branch to merge into (default: 'main')",
 				"default":     "main",
 			},
+			"diff_hash": map[string]any{
+				"type":        "string",
+				"description": "Optional hash of the reviewed diff (to detect code changes)",
+			},
 			"draft": map[string]any{
 				"type":        "boolean",
 				"description": "Whether to create as a draft PR",
@@ -71,6 +78,15 @@ func (t *CreatePullRequest) InputSchema() map[string]any {
 }
 
 func (t *CreatePullRequest) Execute(ctx context.Context, args map[string]any) (any, error) {
+	// Check for approved review if tracker is available
+	if t.ReviewTracker != nil {
+		diffHash, _ := args["diff_hash"].(string)
+		if err := t.ReviewTracker.CheckApproval(diffHash); err != nil {
+			t.Logger.Error("PR creation blocked: no approved review", "error", err)
+			return nil, fmt.Errorf("PR creation blocked: %w", err)
+		}
+	}
+
 	title, ok := args["title"].(string)
 	if !ok || title == "" {
 		return nil, fmt.Errorf("title is required")

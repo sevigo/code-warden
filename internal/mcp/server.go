@@ -34,6 +34,10 @@ type Server struct {
 	logger      *slog.Logger
 	tools       map[string]Tool
 
+	// Comparison models for consensus review (optional)
+	comparisonModels []string
+	reviewsDir       string
+
 	// SSE session management
 	sessionsMu sync.RWMutex
 	sessions   map[string]*sseSession
@@ -41,6 +45,17 @@ type Server struct {
 	// Per-session workspace overrides (maps workspace token -> project root path)
 	workspacesMu sync.RWMutex
 	workspaces   map[string]string
+
+	// Review tracking for PR enforcement
+	reviewMu         sync.RWMutex
+	lastReviewResult *ReviewResult
+}
+
+// ReviewResult tracks the last code review result for enforcement.
+type ReviewResult struct {
+	Verdict   string
+	Timestamp time.Time
+	DiffHash  string // Hash of the reviewed diff to detect changes
 }
 
 // sseSession represents an active SSE connection.
@@ -71,6 +86,10 @@ type Config struct {
 	Port int
 	// ProjectRoot is the path to the repository root.
 	ProjectRoot string
+	// ComparisonModels are models for consensus review (optional).
+	ComparisonModels []string
+	// ReviewsDir is the directory to save review artifacts (optional).
+	ReviewsDir string
 }
 
 // NewServer creates a new MCP server.
@@ -106,6 +125,16 @@ func NewServer(
 	return s
 }
 
+// SetComparisonModels sets the models for consensus review.
+func (s *Server) SetComparisonModels(models []string) {
+	s.comparisonModels = models
+}
+
+// SetReviewsDir sets the directory for saving review artifacts.
+func (s *Server) SetReviewsDir(dir string) {
+	s.reviewsDir = dir
+}
+
 // registerTools registers all available MCP tools.
 func (s *Server) registerTools() {
 	s.tools["search_code"] = &tools.SearchCode{
@@ -126,10 +155,13 @@ func (s *Server) registerTools() {
 		Logger:      s.logger,
 	}
 	s.tools["review_code"] = &tools.ReviewCode{
-		RagService: s.ragService,
-		Repo:       s.repo,
-		RepoConfig: s.repoConfig,
-		Logger:     s.logger,
+		RagService:       s.ragService,
+		Repo:             s.repo,
+		RepoConfig:       s.repoConfig,
+		ComparisonModels: s.comparisonModels,
+		ReviewsDir:       s.reviewsDir,
+		ReviewTracker:    s,
+		Logger:           s.logger,
 	}
 
 	// Register GitHub tools if ghClient is available
@@ -138,9 +170,10 @@ func (s *Server) registerTools() {
 		owner, name := parseRepoFullName(s.repo.FullName)
 		if owner != "" && name != "" {
 			s.tools["create_pull_request"] = &tools.CreatePullRequest{
-				GHClient: s.ghClient,
-				Repo:     tools.RepoIdentifier{Owner: owner, Name: name},
-				Logger:   s.logger,
+				GHClient:      s.ghClient,
+				Repo:          tools.RepoIdentifier{Owner: owner, Name: name},
+				ReviewTracker: s, // Enforces approved review before PR
+				Logger:        s.logger,
 			}
 			s.tools["list_issues"] = &tools.ListIssues{
 				GHClient: s.ghClient,
@@ -201,6 +234,70 @@ func (s *Server) ListTools() []ToolInfo {
 		return tools[i].Name < tools[j].Name
 	})
 	return tools
+}
+
+// Review tracking constants
+const (
+	maxReviewAge = 30 * time.Minute
+)
+
+// RecordReview stores the review result for enforcement.
+func (s *Server) RecordReview(verdict, diffHash string) {
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+	s.lastReviewResult = &ReviewResult{
+		Verdict:   verdict,
+		Timestamp: time.Now(),
+		DiffHash:  diffHash,
+	}
+	// Truncate diff hash for logging
+	hashLen := 8
+	if len(diffHash) < hashLen {
+		hashLen = len(diffHash)
+	}
+	s.logger.Info("review recorded for PR enforcement",
+		"verdict", verdict,
+		"diff_hash", diffHash[:hashLen])
+}
+
+// GetLastReview returns the last review result.
+func (s *Server) GetLastReview() (verdict string, timestamp time.Time, diffHash string) {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
+	if s.lastReviewResult == nil {
+		return "", time.Time{}, ""
+	}
+	return s.lastReviewResult.Verdict, s.lastReviewResult.Timestamp, s.lastReviewResult.DiffHash
+}
+
+// CheckApproval verifies if there's a recent approved review.
+func (s *Server) CheckApproval(diffHash string) error {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
+
+	if s.lastReviewResult == nil {
+		return fmt.Errorf("no code review found: you must call review_code and receive APPROVE verdict before creating a PR")
+	}
+
+	// Check if review is for the same code (diff hash matches)
+	if diffHash != "" && s.lastReviewResult.DiffHash != "" && diffHash != s.lastReviewResult.DiffHash {
+		return fmt.Errorf("code has changed since last review: please run review_code again")
+	}
+
+	// Check if review is approved
+	if s.lastReviewResult.Verdict != core.VerdictApprove {
+		return fmt.Errorf("last review verdict was %s (not APPROVE): fix issues and run review_code again", s.lastReviewResult.Verdict)
+	}
+
+	// Check if review is recent
+	if time.Since(s.lastReviewResult.Timestamp) > maxReviewAge {
+		return fmt.Errorf("review is stale (older than %v): please run review_code again", maxReviewAge)
+	}
+
+	s.logger.Info("PR creation approved",
+		"review_verdict", s.lastReviewResult.Verdict,
+		"review_age", time.Since(s.lastReviewResult.Timestamp))
+	return nil
 }
 
 // CallTool executes a tool by name.

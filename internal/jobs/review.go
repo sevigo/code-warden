@@ -166,6 +166,8 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			MaxConcurrentSessions: j.cfg.Agent.MaxConcurrentSessions,
 			MCPAddr:               j.cfg.Agent.MCPAddr,
 			WorkingDir:            j.cfg.Agent.WorkingDir,
+			ComparisonModels:      j.cfg.AI.ComparisonModels,
+			ReviewsDir:            "reviews",
 		},
 		j.logger,
 	)

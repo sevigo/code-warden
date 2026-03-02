@@ -66,6 +66,12 @@ type Config struct {
 
 	// WorkingDir is the directory for agent workspaces.
 	WorkingDir string `yaml:"working_dir"`
+
+	// ComparisonModels are models for consensus review (optional).
+	ComparisonModels []string `yaml:"comparison_models"`
+
+	// ReviewsDir is the directory to save review artifacts (optional).
+	ReviewsDir string `yaml:"reviews_dir"`
 }
 
 // DefaultConfig returns default configuration.
@@ -107,6 +113,17 @@ func NewOrchestrator(
 		projectRoot,
 		logger,
 	)
+
+	// Configure consensus review if comparison models are set
+	if len(config.ComparisonModels) > 0 {
+		mcpServer.SetComparisonModels(config.ComparisonModels)
+		logger.Info("MCP server configured for consensus review", "models", config.ComparisonModels)
+	}
+
+	// Set reviews directory for saving artifacts
+	if config.ReviewsDir != "" {
+		mcpServer.SetReviewsDir(config.ReviewsDir)
+	}
 
 	absRoot, err := filepath.Abs(projectRoot)
 	if err != nil {
