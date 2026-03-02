@@ -45,7 +45,7 @@ func NewApp(
 		"embedder_provider", cfg.AI.EmbedderProvider,
 		"generator_model", cfg.AI.GeneratorModel,
 		"embedder_model", cfg.AI.EmbedderModel,
-		"max_workers", cfg.Server.MaxWorkers,
+		"max_workers", cfg.Jobs.MaxWorkers,
 		"repo_path", cfg.Storage.RepoPath,
 	)
 
@@ -67,7 +67,7 @@ func NewApp(
 func (a *App) Start() error {
 	a.Logger.Info("application config",
 		"port", a.Cfg.Server.Port,
-		"max_workers", a.Cfg.Server.MaxWorkers,
+		"max_workers", a.Cfg.Jobs.MaxWorkers,
 	)
 	if err := a.Server.Start(); err != nil {
 		a.Logger.Error("failed to start HTTP server", "error", err)

@@ -29,14 +29,18 @@ type dispatcher struct {
 
 // NewDispatcher initializes a dispatcher with a worker pool.
 func NewDispatcher(ctx context.Context, reviewJob core.Job, cfg *config.Config, logger *slog.Logger) core.JobDispatcher {
-	maxWorkers := cfg.Server.MaxWorkers
+	maxWorkers := cfg.Jobs.MaxWorkers
 	if maxWorkers <= 0 {
 		maxWorkers = 1
+	}
+	queueSize := cfg.Jobs.QueueSize
+	if queueSize <= 0 {
+		queueSize = 100
 	}
 	d := &dispatcher{
 		reviewJob:  reviewJob,
 		maxWorkers: maxWorkers,
-		jobQueue:   make(chan *jobPayload, 100),
+		jobQueue:   make(chan *jobPayload, queueSize),
 		logger:     logger,
 		mainCtx:    ctx,
 	}

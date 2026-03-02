@@ -28,6 +28,12 @@ type Config struct {
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Logging  logger.Config  `mapstructure:"logging"`
 	Features FeaturesConfig `mapstructure:"features"`
+	Jobs     JobsConfig     `mapstructure:"jobs"`
+}
+
+type JobsConfig struct {
+	MaxWorkers int `mapstructure:"max_workers"`
+	QueueSize  int `mapstructure:"queue_size"`
 }
 
 // AgentConfig holds configuration for the autonomous agent system.
@@ -118,7 +124,6 @@ func (c *AgentConfig) Validate() error {
 
 type ServerConfig struct {
 	Port             string `mapstructure:"port"`
-	MaxWorkers       int    `mapstructure:"max_workers"`
 	FastAPIServerURL string `mapstructure:"fastapi_server_url"`
 	SharedSecret     string `mapstructure:"shared_secret"`
 	Theme            string `mapstructure:"theme"`
@@ -163,7 +168,7 @@ type AIConfig struct {
 
 	// HTTP Client Overrides
 	HTTPResponseHeaderTimeout string `mapstructure:"http_response_header_timeout"` // Timeout for waiting for HTTP response headers (e.g., "30s", "120s")
-	HTTPRequestTimeout        string `mapstructure:"http_request_timeout"`        // Overall HTTP request timeout including body (e.g., "5m", "10m")
+	HTTPRequestTimeout        string `mapstructure:"http_request_timeout"`         // Overall HTTP request timeout including body (e.g., "5m", "10m")
 
 	// Context Assembly
 	ContextTokenBudget int `mapstructure:"context_token_budget"` // Max tokens for RAG context (default: 16000)
@@ -322,64 +327,80 @@ func LoadConfig() (*Config, error) {
 }
 
 func setDefaults(v *viper.Viper) {
-	// Server
+	setServerDefaults(v)
+	setGitHubDefaults(v)
+	setAIDefaults(v)
+	setStorageDefaults(v)
+	setLoggingDefaults(v)
+	setDatabaseDefaults(v)
+	setFeaturesDefaults(v)
+	setAgentDefaults(v)
+	setJobsDefaults(v)
+}
+
+func setServerDefaults(v *viper.Viper) {
 	v.SetDefault("server.port", "8080")
-	v.SetDefault("server.max_workers", 5)
 	v.SetDefault("server.fastapi_server_url", "http://127.0.0.1:8000")
+}
 
-	// GitHub
+func setGitHubDefaults(v *viper.Viper) {
 	v.SetDefault("github.private_key_path", "keys/code-warden-app.private-key.pem")
+}
 
-	// AI
+func setAIDefaults(v *viper.Viper) {
 	v.SetDefault("ai.llm_provider", "ollama")
 	v.SetDefault("ai.embedder_provider", "ollama")
 	v.SetDefault("ai.ollama_host", "http://localhost:11434")
 	v.SetDefault("ai.ollama_api_key", "")
 	v.SetDefault("ai.embedder_model", "nomic-embed-text")
 	v.SetDefault("ai.embedder_task_description", "search_document")
-	v.SetDefault("ai.enable_reranking", false)     // Disabled by default for speed
-	v.SetDefault("ai.reranker_model", "gemma2:2b") // Default to a small, fast model
-	v.SetDefault("ai.fast_model", "gemma3:1b")     // Very fast model for variation/validation
+	v.SetDefault("ai.enable_reranking", false)
+	v.SetDefault("ai.reranker_model", "gemma2:2b")
+	v.SetDefault("ai.fast_model", "gemma3:1b")
 	v.SetDefault("ai.enable_hybrid_search", true)
 	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
-	v.SetDefault("ai.enable_hyde", false) // Default to false for performance
+	v.SetDefault("ai.enable_hyde", false)
 	v.SetDefault("ai.hyde_concurrency", 5)
-	v.SetDefault("ai.enable_thinking", false)    // Disabled by default - enable per model
-	v.SetDefault("ai.thinking_effort", "medium") // "low", "medium", "high"
-	v.SetDefault("ai.model_keep_alive", "10m")   // Keep models loaded for 10 minutes
-	v.SetDefault("ai.http_response_header_timeout", "180s") // 3 minutes for slow model loading
-	v.SetDefault("ai.http_request_timeout", "600s")         // 10 minutes overall timeout for large requests
+	v.SetDefault("ai.enable_thinking", false)
+	v.SetDefault("ai.thinking_effort", "medium")
+	v.SetDefault("ai.model_keep_alive", "10m")
+	v.SetDefault("ai.http_response_header_timeout", "180s")
+	v.SetDefault("ai.http_request_timeout", "600s")
 	v.SetDefault("ai.consensus_quorum", 0.66)
-	v.SetDefault("ai.context_token_budget", 16000)   // Reasonable default for 128K context models
-	v.SetDefault("ai.enable_code_suggestions", true) // Include code suggestions by default
+	v.SetDefault("ai.context_token_budget", 16000)
+	v.SetDefault("ai.enable_code_suggestions", true)
+}
 
-	// Storage
+func setStorageDefaults(v *viper.Viper) {
 	v.SetDefault("storage.qdrant_host", "localhost:6334")
 	v.SetDefault("storage.repo_path", "./data/repos")
+}
 
-	// Logging
+func setLoggingDefaults(v *viper.Viper) {
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "text")
 	v.SetDefault("logging.output", "stdout")
+}
 
-	// Database
+func setDatabaseDefaults(v *viper.Viper) {
 	v.SetDefault("database.driver", "postgres")
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 5432)
 	v.SetDefault("database.database", "codewarden")
 	v.SetDefault("database.username", "postgres")
-	// Password has no default
 	v.SetDefault("database.ssl_mode", "disable")
 	v.SetDefault("database.max_open_conns", 25)
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", "5m")
 	v.SetDefault("database.conn_max_idle_time", "5m")
+}
 
-	// Features
+func setFeaturesDefaults(v *viper.Viper) {
 	v.SetDefault("features.enable_binary_quantization", true)
 	v.SetDefault("features.enable_graph_analysis", true)
+}
 
-	// Agent
+func setAgentDefaults(v *viper.Viper) {
 	v.SetDefault("agent.enabled", false)
 	v.SetDefault("agent.provider", "opencode")
 	v.SetDefault("agent.model", "qwen2.5-coder")
@@ -387,7 +408,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.max_concurrent_sessions", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
-	v.SetDefault("agent.working_dir", "") // Empty means disabled/no default; must be explicitly set
+	v.SetDefault("agent.working_dir", "")
+}
+
+func setJobsDefaults(v *viper.Viper) {
+	v.SetDefault("jobs.max_workers", 5)
+	v.SetDefault("jobs.queue_size", 100)
 }
 
 func (c *Config) Validate() error {
@@ -396,7 +422,7 @@ func (c *Config) Validate() error {
 	if err := c.validateAI(); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if err := c.validateServer(); err != nil {
+	if err := c.validateJobs(); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if err := c.validateDatabase(); err != nil {
@@ -443,9 +469,18 @@ func (c *Config) validateAI() error {
 	return nil
 }
 
-func (c *Config) validateServer() error {
-	if c.Server.MaxWorkers <= 0 {
-		return errors.New("server.max_workers must be positive")
+func (c *Config) validateJobs() error {
+	var errs []string
+
+	if c.Jobs.MaxWorkers <= 0 {
+		errs = append(errs, "jobs.max_workers must be greater than 0")
+	}
+	if c.Jobs.QueueSize <= 0 {
+		errs = append(errs, "jobs.queue_size must be greater than 0")
+	}
+
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
 }
