@@ -121,6 +121,8 @@ func NewOrchestrator(
 	// Log configuration
 	if len(config.ComparisonModels) > 0 {
 		logger.Info("MCP server configured for consensus review", "models", config.ComparisonModels)
+	} else {
+		logger.Info("MCP server configured for single-model review (faster for agent iterations)")
 	}
 
 	absRoot, err := filepath.Abs(projectRoot)

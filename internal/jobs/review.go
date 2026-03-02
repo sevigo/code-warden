@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +150,21 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	}
 
 	// 7. Create orchestrator
+	// For agent iterations, use a single randomly-selected comparison model (if configured)
+	// instead of full consensus review. This provides better quality than the generator model
+	// alone while keeping review time within the 60-second MCP tool timeout.
+	// Full consensus review (3 models) takes 90-180+ seconds which causes client timeouts.
+	var agentComparisonModel []string
+	if len(j.cfg.AI.ComparisonModels) > 0 {
+		// Randomly select one model from the comparison models
+		//nolint:gosec // G404: Random selection of review model, not security-sensitive
+		selectedModel := j.cfg.AI.ComparisonModels[rand.IntN(len(j.cfg.AI.ComparisonModels))]
+		agentComparisonModel = []string{selectedModel}
+		j.logger.Info("agent using single comparison model for faster review",
+			"selected_model", selectedModel,
+			"available_models", j.cfg.AI.ComparisonModels)
+	}
+
 	orchestrator := agent.NewOrchestrator(
 		j.store,
 		scopedStore,
@@ -167,7 +183,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			MaxConcurrentSessions: j.cfg.Agent.MaxConcurrentSessions,
 			MCPAddr:               j.cfg.Agent.MCPAddr,
 			WorkingDir:            j.cfg.Agent.WorkingDir,
-			ComparisonModels:      j.cfg.AI.ComparisonModels,
+			ComparisonModels:      agentComparisonModel,
 			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 		},
 		j.logger,
