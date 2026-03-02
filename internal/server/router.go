@@ -32,6 +32,9 @@ func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.L
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
+		helloHandler := handler.NewHelloHandler()
+		r.Get("/hello", helloHandler.Handle)
+
 		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
 		r.Post("/webhook/github", webhookHandler.Handle)
 	})
