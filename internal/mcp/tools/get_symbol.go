@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/vectorstores"
+
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // GetSymbol retrieves definition for a symbol by name.
@@ -58,6 +59,7 @@ func (t *GetSymbol) Execute(ctx context.Context, args map[string]any) (any, erro
 	if !ok || name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
+	t.Logger.Info("get_symbol: executing tool", "name", name)
 	if len(name) > MaxSymbolLength {
 		t.Logger.Warn("get_symbol: symbol name too long", "length", len(name))
 		return nil, fmt.Errorf("symbol name exceeds maximum length of %d characters", MaxSymbolLength)

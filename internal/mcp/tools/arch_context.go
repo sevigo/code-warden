@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/vectorstores"
+
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // GetArchContext retrieves architectural summaries for a directory.
@@ -51,6 +52,7 @@ func (t *GetArchContext) Execute(ctx context.Context, args map[string]any) (any,
 	if !ok || directory == "" {
 		return nil, fmt.Errorf("directory is required")
 	}
+	t.Logger.Info("get_arch_context: executing tool", "directory", directory)
 	if len(directory) > MaxDirPathLength {
 		t.Logger.Warn("get_arch_context: directory path too long", "length", len(directory))
 		return nil, fmt.Errorf("directory path exceeds maximum length of %d characters", MaxDirPathLength)

@@ -64,6 +64,7 @@ func (t *ReviewCode) InputSchema() map[string]any {
 }
 
 func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, error) {
+	t.Logger.Info("review_code: executing tool", "args", args)
 	diff, ok := args["diff"].(string)
 	if !ok || diff == "" {
 		return nil, fmt.Errorf("diff is required")
@@ -84,9 +85,8 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 	description, _ := args["description"].(string)
 
 	event := &core.GitHubEvent{
-		PRTitle: title,
-		PRBody:  description,
-		// These fields are needed but can be mock values for internal review
+		PRTitle:        title,
+		PRBody:         description,
 		RepoFullName:   t.Repo.FullName,
 		HeadSHA:        "internal-review",
 		PRNumber:       0,

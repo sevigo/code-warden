@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/vectorstores"
+
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // GetStructure retrieves overall project structure.
@@ -52,6 +53,7 @@ func (t *GetStructure) Execute(ctx context.Context, _ map[string]any) (any, erro
 	if projectRoot == "" {
 		projectRoot = t.ProjectRoot
 	}
+	t.Logger.Info("get_structure: executing tool", "project_root", projectRoot)
 
 	// Get root-level architectural summary
 	query := "project structure architecture overview main directories"

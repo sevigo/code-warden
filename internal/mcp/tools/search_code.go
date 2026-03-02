@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/vectorstores"
+
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // SearchCode performs a semantic code search.
