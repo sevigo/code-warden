@@ -1,0 +1,1105 @@
+[0m
+
+
+[0m> build · glm-5:cloudI'll implement the hello endpoint for issue #181. Let me start by exploring the codebase structure.
+
+[0m⚙ [0mcode-warden_get_arch_context {"directory":"internal/server"}[0m⚙ [0mcode-warden_get_structure Unknown
+[0m✱ [0mGlob "internal/server/*.go"[90m 2 matches[0m
+Let me examine the existing handlers and routes to understand the pattern:
+[0m→ [0mRead internal/server/server.go
+[0m→ [0mRead internal/server/router.go
+[0m✱ [0mGlob "internal/server/*_test.go"[90m 0 matches[0m
+[0m✱ [0mGlob "internal/server/handler/*.go"[90m 1 match[0m
+[0m→ [0mRead internal/server/handler/webhook.go
+[0m✱ [0mGlob "internal/server/handler/*_test.go"[90m 0 matches[0m
+[0m✱ [0mGlob "**/*_test.go"[90m 33 matches[0m
+Let me check if there are existing tests in the project to understand the testing pattern:
+[0m→ [0mRead internal/logger/logger_test.go
+Now I'll implement the hello endpoint. Let me create the handler, add the route, and write tests:
+[0m
+Wrote file successfully.
+
+
+[0m← [0mWrite internal/server/handler/hello.go[0m[0m← [0mEdit internal/server/router.goIndex: /Users/igorkomlew/sevigo/data/agent-workspaces/core-e3a3f2/internal/server/router.go
+===================================================================
+--- /Users/igorkomlew/sevigo/data/agent-workspaces/core-e3a3f2/internal/server/router.go
++++ /Users/igorkomlew/sevigo/data/agent-workspaces/core-e3a3f2/internal/server/router.go
+@@ -31,8 +31,9 @@
+ })
+ 
+ // API routes
+ r.Route("/api/v1", func(r chi.Router) {
++	r.Get("/hello", handler.HelloHandler)
+ 	webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
+ 	r.Post("/webhook/github", webhookHandler.Handle)
+ })
+ 
+[0m
+
+
+[0m← [0mWrite internal/server/handler/hello_test.go
+
+Wrote file successfully.[0m
+Now let me run lint and test to verify:
+[0m$ [0mmake test
+Running tests...
+?   	github.com/sevigo/code-warden/cmd/cli	[no test files]
+?   	github.com/sevigo/code-warden/cmd/server	[no test files]
+?   	github.com/sevigo/code-warden/cmd/terminal	[no test files]
+=== RUN   TestParseAgentOutput
+=== RUN   TestParseAgentOutput/clean_output_with_envelope
+=== RUN   TestParseAgentOutput/noisy_output_with_embedded_envelope
+=== RUN   TestParseAgentOutput/no_envelope_-_fallback_branch_and_iterations
+=== RUN   TestParseAgentOutput/malformed_JSON_in_sentinel_-_fallback
+=== RUN   TestParseAgentOutput/multiple_AGENT_RESULT_lines_-_uses_first_valid
+--- PASS: TestParseAgentOutput (0.00s)
+    --- PASS: TestParseAgentOutput/clean_output_with_envelope (0.00s)
+    --- PASS: TestParseAgentOutput/noisy_output_with_embedded_envelope (0.00s)
+    --- PASS: TestParseAgentOutput/no_envelope_-_fallback_branch_and_iterations (0.00s)
+    --- PASS: TestParseAgentOutput/malformed_JSON_in_sentinel_-_fallback (0.00s)
+    --- PASS: TestParseAgentOutput/multiple_AGENT_RESULT_lines_-_uses_first_valid (0.00s)
+=== RUN   TestSpawnAgent
+--- PASS: TestSpawnAgent (0.00s)
+=== RUN   TestGetSession
+--- PASS: TestGetSession (0.00s)
+=== RUN   TestCancelSession
+--- PASS: TestCancelSession (0.00s)
+=== RUN   TestCleanupOldSessions
+--- PASS: TestCleanupOldSessions (0.00s)
+=== RUN   TestReadLogFile_Capping
+--- PASS: TestReadLogFile_Capping (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/agent	0.459s
+?   	github.com/sevigo/code-warden/internal/app	[no test files]
+=== RUN   TestValidateComparisonPath
+=== RUN   TestValidateComparisonPath/valid_relative_path
+=== RUN   TestValidateComparisonPath/valid_single_segment
+=== RUN   TestValidateComparisonPath/valid_nested_path
+=== RUN   TestValidateComparisonPath/traversal_with_bare_..
+=== RUN   TestValidateComparisonPath/traversal_at_start
+=== RUN   TestValidateComparisonPath/absolute_unix_path
+=== RUN   TestValidateComparisonPath/backslash_prefix_treated_as_absolute
+=== RUN   TestValidateComparisonPath/non-existent_path_is_fine
+=== RUN   TestValidateComparisonPath/current_dir_is_valid
+--- PASS: TestValidateComparisonPath (0.00s)
+    --- PASS: TestValidateComparisonPath/valid_relative_path (0.00s)
+    --- PASS: TestValidateComparisonPath/valid_single_segment (0.00s)
+    --- PASS: TestValidateComparisonPath/valid_nested_path (0.00s)
+    --- PASS: TestValidateComparisonPath/traversal_with_bare_.. (0.00s)
+    --- PASS: TestValidateComparisonPath/traversal_at_start (0.00s)
+    --- PASS: TestValidateComparisonPath/absolute_unix_path (0.00s)
+    --- PASS: TestValidateComparisonPath/backslash_prefix_treated_as_absolute (0.00s)
+    --- PASS: TestValidateComparisonPath/non-existent_path_is_fine (0.00s)
+    --- PASS: TestValidateComparisonPath/current_dir_is_valid (0.00s)
+=== RUN   TestValidateModels
+=== RUN   TestValidateModels/empty_models_is_valid
+=== RUN   TestValidateModels/valid_unique_models
+=== RUN   TestValidateModels/duplicate_model_name
+=== RUN   TestValidateModels/empty_model_name_in_list
+=== RUN   TestValidateModels/exceeds_max_models
+=== RUN   TestValidateModels/max_comparison_models_exceeded
+--- PASS: TestValidateModels (0.00s)
+    --- PASS: TestValidateModels/empty_models_is_valid (0.00s)
+    --- PASS: TestValidateModels/valid_unique_models (0.00s)
+    --- PASS: TestValidateModels/duplicate_model_name (0.00s)
+    --- PASS: TestValidateModels/empty_model_name_in_list (0.00s)
+    --- PASS: TestValidateModels/exceeds_max_models (0.00s)
+    --- PASS: TestValidateModels/max_comparison_models_exceeded (0.00s)
+=== RUN   TestLoadRepoConfig
+=== RUN   TestLoadRepoConfig/valid_config_file
+=== RUN   TestLoadRepoConfig/missing_config_file_returns_defaults
+=== RUN   TestLoadRepoConfig/invalid_yaml_returns_error
+--- PASS: TestLoadRepoConfig (0.01s)
+    --- PASS: TestLoadRepoConfig/valid_config_file (0.00s)
+    --- PASS: TestLoadRepoConfig/missing_config_file_returns_defaults (0.00s)
+    --- PASS: TestLoadRepoConfig/invalid_yaml_returns_error (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/config	0.586s
+=== RUN   TestIsValidExtension
+=== RUN   TestIsValidExtension/go_extension
+=== RUN   TestIsValidExtension/js_extension
+=== RUN   TestIsValidExtension/ts_extension
+=== RUN   TestIsValidExtension/py_extension
+=== RUN   TestIsValidExtension/java_extension
+=== RUN   TestIsValidExtension/c_extension
+=== RUN   TestIsValidExtension/cpp_extension
+=== RUN   TestIsValidExtension/h_extension
+=== RUN   TestIsValidExtension/rs_extension
+=== RUN   TestIsValidExtension/md_extension
+=== RUN   TestIsValidExtension/json_extension
+=== RUN   TestIsValidExtension/yaml_extension
+=== RUN   TestIsValidExtension/yml_extension
+=== RUN   TestIsValidExtension/go_without_dot
+=== RUN   TestIsValidExtension/js_without_dot
+=== RUN   TestIsValidExtension/sum_extension
+=== RUN   TestIsValidExtension/exe_extension
+=== RUN   TestIsValidExtension/dll_extension
+=== RUN   TestIsValidExtension/unknown_extension
+=== RUN   TestIsValidExtension/empty_string
+=== RUN   TestIsValidExtension/uppercase_GO
+=== RUN   TestIsValidExtension/mixed_case_Js
+=== RUN   TestIsValidExtension/uppercase_without_dot
+--- PASS: TestIsValidExtension (0.00s)
+    --- PASS: TestIsValidExtension/go_extension (0.00s)
+    --- PASS: TestIsValidExtension/js_extension (0.00s)
+    --- PASS: TestIsValidExtension/ts_extension (0.00s)
+    --- PASS: TestIsValidExtension/py_extension (0.00s)
+    --- PASS: TestIsValidExtension/java_extension (0.00s)
+    --- PASS: TestIsValidExtension/c_extension (0.00s)
+    --- PASS: TestIsValidExtension/cpp_extension (0.00s)
+    --- PASS: TestIsValidExtension/h_extension (0.00s)
+    --- PASS: TestIsValidExtension/rs_extension (0.00s)
+    --- PASS: TestIsValidExtension/md_extension (0.00s)
+    --- PASS: TestIsValidExtension/json_extension (0.00s)
+    --- PASS: TestIsValidExtension/yaml_extension (0.00s)
+    --- PASS: TestIsValidExtension/yml_extension (0.00s)
+    --- PASS: TestIsValidExtension/go_without_dot (0.00s)
+    --- PASS: TestIsValidExtension/js_without_dot (0.00s)
+    --- PASS: TestIsValidExtension/sum_extension (0.00s)
+    --- PASS: TestIsValidExtension/exe_extension (0.00s)
+    --- PASS: TestIsValidExtension/dll_extension (0.00s)
+    --- PASS: TestIsValidExtension/unknown_extension (0.00s)
+    --- PASS: TestIsValidExtension/empty_string (0.00s)
+    --- PASS: TestIsValidExtension/uppercase_GO (0.00s)
+    --- PASS: TestIsValidExtension/mixed_case_Js (0.00s)
+    --- PASS: TestIsValidExtension/uppercase_without_dot (0.00s)
+=== RUN   TestBuildExcludeDirs
+=== RUN   TestBuildExcludeDirs/no_user_excludes
+=== RUN   TestBuildExcludeDirs/user_excludes_add_new_dirs
+=== RUN   TestBuildExcludeDirs/user_excludes_duplicate_default
+=== RUN   TestBuildExcludeDirs/empty_string_in_user_excludes
+--- PASS: TestBuildExcludeDirs (0.00s)
+    --- PASS: TestBuildExcludeDirs/no_user_excludes (0.00s)
+    --- PASS: TestBuildExcludeDirs/user_excludes_add_new_dirs (0.00s)
+    --- PASS: TestBuildExcludeDirs/user_excludes_duplicate_default (0.00s)
+    --- PASS: TestBuildExcludeDirs/empty_string_in_user_excludes (0.00s)
+=== RUN   TestDefaultExcludedDirsSet
+--- PASS: TestDefaultExcludedDirsSet (0.00s)
+=== RUN   TestDefaultRepoConfig
+--- PASS: TestDefaultRepoConfig (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/core	0.732s
+?   	github.com/sevigo/code-warden/internal/db	[no test files]
+=== RUN   TestParseValidLinesFromPatch
+=== RUN   TestParseValidLinesFromPatch/Basic_added_lines
+=== RUN   TestParseValidLinesFromPatch/Deleted_lines_only
+=== RUN   TestParseValidLinesFromPatch/Multiple_hunks
+=== RUN   TestParseValidLinesFromPatch/Malformed_hunk_header
+=== RUN   TestParseValidLinesFromPatch/No_hunks
+--- PASS: TestParseValidLinesFromPatch (0.00s)
+    --- PASS: TestParseValidLinesFromPatch/Basic_added_lines (0.00s)
+    --- PASS: TestParseValidLinesFromPatch/Deleted_lines_only (0.00s)
+    --- PASS: TestParseValidLinesFromPatch/Multiple_hunks (0.00s)
+    --- PASS: TestParseValidLinesFromPatch/Malformed_hunk_header (0.00s)
+    --- PASS: TestParseValidLinesFromPatch/No_hunks (0.00s)
+=== RUN   TestParseValidLinesFromPatch_LargeLine
+--- PASS: TestParseValidLinesFromPatch_LargeLine (0.00s)
+=== RUN   TestParseHunkHeader
+=== RUN   TestParseHunkHeader/Single_line_range
+=== RUN   TestParseHunkHeader/Multi_line_range
+=== RUN   TestParseHunkHeader/Mixed_range
+=== RUN   TestParseHunkHeader/Invalid_format
+=== RUN   TestParseHunkHeader/Non-numeric
+--- PASS: TestParseHunkHeader (0.00s)
+    --- PASS: TestParseHunkHeader/Single_line_range (0.00s)
+    --- PASS: TestParseHunkHeader/Multi_line_range (0.00s)
+    --- PASS: TestParseHunkHeader/Mixed_range (0.00s)
+    --- PASS: TestParseHunkHeader/Invalid_format (0.00s)
+    --- PASS: TestParseHunkHeader/Non-numeric (0.00s)
+=== RUN   TestFormatInlineComment
+=== RUN   TestFormatInlineComment/critical_severity_uses_GitHub_alert
+=== RUN   TestFormatInlineComment/high_severity_uses_GitHub_alert
+=== RUN   TestFormatInlineComment/medium_severity_uses_plain_markdown_(no_alert)
+=== RUN   TestFormatInlineComment/low_severity_uses_plain_markdown_(no_alert)
+=== RUN   TestFormatInlineComment/code_block_stays_outside_alert
+=== RUN   TestFormatInlineComment/strips_legacy_###_title_header
+=== RUN   TestFormatInlineComment/converts_####_header_to_bold
+=== RUN   TestFormatInlineComment/empty_comment_returns_empty_string
+=== RUN   TestFormatInlineComment/invalid_line_number_returns_empty_string
+=== RUN   TestFormatInlineComment/no_category_still_works
+=== RUN   TestFormatInlineComment/includes_suggested_code_block_and_footer
+--- PASS: TestFormatInlineComment (0.00s)
+    --- PASS: TestFormatInlineComment/critical_severity_uses_GitHub_alert (0.00s)
+    --- PASS: TestFormatInlineComment/high_severity_uses_GitHub_alert (0.00s)
+    --- PASS: TestFormatInlineComment/medium_severity_uses_plain_markdown_(no_alert) (0.00s)
+    --- PASS: TestFormatInlineComment/low_severity_uses_plain_markdown_(no_alert) (0.00s)
+    --- PASS: TestFormatInlineComment/code_block_stays_outside_alert (0.00s)
+    --- PASS: TestFormatInlineComment/strips_legacy_###_title_header (0.00s)
+    --- PASS: TestFormatInlineComment/converts_####_header_to_bold (0.00s)
+    --- PASS: TestFormatInlineComment/empty_comment_returns_empty_string (0.00s)
+    --- PASS: TestFormatInlineComment/invalid_line_number_returns_empty_string (0.00s)
+    --- PASS: TestFormatInlineComment/no_category_still_works (0.00s)
+    --- PASS: TestFormatInlineComment/includes_suggested_code_block_and_footer (0.00s)
+=== RUN   TestFormatReviewSummary
+=== RUN   TestFormatReviewSummary/summary_with_suggestions_shows_compact_stats
+=== RUN   TestFormatReviewSummary/summary_with_only_critical_shows_only_critical
+=== RUN   TestFormatReviewSummary/summary_with_no_suggestions_has_no_stats
+=== RUN   TestFormatReviewSummary/default_title_when_no_title_provided
+--- PASS: TestFormatReviewSummary (0.00s)
+    --- PASS: TestFormatReviewSummary/summary_with_suggestions_shows_compact_stats (0.00s)
+    --- PASS: TestFormatReviewSummary/summary_with_only_critical_shows_only_critical (0.00s)
+    --- PASS: TestFormatReviewSummary/summary_with_no_suggestions_has_no_stats (0.00s)
+    --- PASS: TestFormatReviewSummary/default_title_when_no_title_provided (0.00s)
+=== RUN   TestSeverityEmoji
+=== RUN   TestSeverityEmoji/Critical
+=== RUN   TestSeverityEmoji/High
+=== RUN   TestSeverityEmoji/Medium
+=== RUN   TestSeverityEmoji/Low
+=== RUN   TestSeverityEmoji/Unknown
+--- PASS: TestSeverityEmoji (0.00s)
+    --- PASS: TestSeverityEmoji/Critical (0.00s)
+    --- PASS: TestSeverityEmoji/High (0.00s)
+    --- PASS: TestSeverityEmoji/Medium (0.00s)
+    --- PASS: TestSeverityEmoji/Low (0.00s)
+    --- PASS: TestSeverityEmoji/Unknown (0.00s)
+=== RUN   TestVerdictIcon
+=== RUN   TestVerdictIcon/APPROVE
+=== RUN   TestVerdictIcon/REQUEST_CHANGES
+=== RUN   TestVerdictIcon/REQUEST_CHANGES#01
+=== RUN   TestVerdictIcon/COMMENT
+=== RUN   TestVerdictIcon/unknown
+--- PASS: TestVerdictIcon (0.00s)
+    --- PASS: TestVerdictIcon/APPROVE (0.00s)
+    --- PASS: TestVerdictIcon/REQUEST_CHANGES (0.00s)
+    --- PASS: TestVerdictIcon/REQUEST_CHANGES#01 (0.00s)
+    --- PASS: TestVerdictIcon/COMMENT (0.00s)
+    --- PASS: TestVerdictIcon/unknown (0.00s)
+=== RUN   TestSeverityAlert
+=== RUN   TestSeverityAlert/Critical
+=== RUN   TestSeverityAlert/High
+=== RUN   TestSeverityAlert/Medium
+=== RUN   TestSeverityAlert/Low
+=== RUN   TestSeverityAlert/Unknown
+--- PASS: TestSeverityAlert (0.00s)
+    --- PASS: TestSeverityAlert/Critical (0.00s)
+    --- PASS: TestSeverityAlert/High (0.00s)
+    --- PASS: TestSeverityAlert/Medium (0.00s)
+    --- PASS: TestSeverityAlert/Low (0.00s)
+    --- PASS: TestSeverityAlert/Unknown (0.00s)
+=== RUN   TestDedent
+=== RUN   TestDedent/empty_string
+=== RUN   TestDedent/simple_string
+=== RUN   TestDedent/indented_block
+=== RUN   TestDedent/uneven_indentation
+=== RUN   TestDedent/empty_lines_at_ends
+=== RUN   TestDedent/multi-line_with_empty_line_in_middle
+--- PASS: TestDedent (0.00s)
+    --- PASS: TestDedent/empty_string (0.00s)
+    --- PASS: TestDedent/simple_string (0.00s)
+    --- PASS: TestDedent/indented_block (0.00s)
+    --- PASS: TestDedent/uneven_indentation (0.00s)
+    --- PASS: TestDedent/empty_lines_at_ends (0.00s)
+    --- PASS: TestDedent/multi-line_with_empty_line_in_middle (0.00s)
+=== RUN   TestDedentComplex
+--- PASS: TestDedentComplex (0.00s)
+=== RUN   TestPostStructuredReview
+--- PASS: TestPostStructuredReview (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/github	0.932s
+=== RUN   TestValidateBranchName
+=== RUN   TestValidateBranchName/valid_simple
+=== RUN   TestValidateBranchName/valid_with_dots
+=== RUN   TestValidateBranchName/valid_with_hyphens
+=== RUN   TestValidateBranchName/valid_single_char
+=== RUN   TestValidateBranchName/valid_alphanumeric
+=== RUN   TestValidateBranchName/empty
+=== RUN   TestValidateBranchName/starts_with_hyphen
+=== RUN   TestValidateBranchName/starts_with_dot
+=== RUN   TestValidateBranchName/ends_with_hyphen
+=== RUN   TestValidateBranchName/ends_with_dot
+=== RUN   TestValidateBranchName/contains_spaces
+=== RUN   TestValidateBranchName/contains_consecutive_dots
+=== RUN   TestValidateBranchName/contains_tilde
+=== RUN   TestValidateBranchName/contains_caret
+=== RUN   TestValidateBranchName/contains_colon
+=== RUN   TestValidateBranchName/contains_backslash
+=== RUN   TestValidateBranchName/too_long
+=== RUN   TestValidateBranchName/max_length
+=== RUN   TestValidateBranchName/valid_agent_branch
+--- PASS: TestValidateBranchName (0.00s)
+    --- PASS: TestValidateBranchName/valid_simple (0.00s)
+    --- PASS: TestValidateBranchName/valid_with_dots (0.00s)
+    --- PASS: TestValidateBranchName/valid_with_hyphens (0.00s)
+    --- PASS: TestValidateBranchName/valid_single_char (0.00s)
+    --- PASS: TestValidateBranchName/valid_alphanumeric (0.00s)
+    --- PASS: TestValidateBranchName/empty (0.00s)
+    --- PASS: TestValidateBranchName/starts_with_hyphen (0.00s)
+    --- PASS: TestValidateBranchName/starts_with_dot (0.00s)
+    --- PASS: TestValidateBranchName/ends_with_hyphen (0.00s)
+    --- PASS: TestValidateBranchName/ends_with_dot (0.00s)
+    --- PASS: TestValidateBranchName/contains_spaces (0.00s)
+    --- PASS: TestValidateBranchName/contains_consecutive_dots (0.00s)
+    --- PASS: TestValidateBranchName/contains_tilde (0.00s)
+    --- PASS: TestValidateBranchName/contains_caret (0.00s)
+    --- PASS: TestValidateBranchName/contains_colon (0.00s)
+    --- PASS: TestValidateBranchName/contains_backslash (0.00s)
+    --- PASS: TestValidateBranchName/too_long (0.00s)
+    --- PASS: TestValidateBranchName/max_length (0.00s)
+    --- PASS: TestValidateBranchName/valid_agent_branch (0.00s)
+=== RUN   TestSanitizeBranch
+=== RUN   TestSanitizeBranch/clean_name
+=== RUN   TestSanitizeBranch/spaces_to_hyphens
+=== RUN   TestSanitizeBranch/tilde_removed
+=== RUN   TestSanitizeBranch/leading_hyphen_stripped
+=== RUN   TestSanitizeBranch/trailing_hyphen_stripped
+=== RUN   TestSanitizeBranch/leading_dot_stripped
+=== RUN   TestSanitizeBranch/trailing_dot_stripped
+=== RUN   TestSanitizeBranch/multiple_invalid_chars
+--- PASS: TestSanitizeBranch (0.00s)
+    --- PASS: TestSanitizeBranch/clean_name (0.00s)
+    --- PASS: TestSanitizeBranch/spaces_to_hyphens (0.00s)
+    --- PASS: TestSanitizeBranch/tilde_removed (0.00s)
+    --- PASS: TestSanitizeBranch/leading_hyphen_stripped (0.00s)
+    --- PASS: TestSanitizeBranch/trailing_hyphen_stripped (0.00s)
+    --- PASS: TestSanitizeBranch/leading_dot_stripped (0.00s)
+    --- PASS: TestSanitizeBranch/trailing_dot_stripped (0.00s)
+    --- PASS: TestSanitizeBranch/multiple_invalid_chars (0.00s)
+=== RUN   TestParsePullRequestURL
+=== RUN   TestParsePullRequestURL/Valid_HTTPS_URL
+=== RUN   TestParsePullRequestURL/Valid_URL_without_scheme
+=== RUN   TestParsePullRequestURL/URL_with_trailing_slash
+=== RUN   TestParsePullRequestURL/Invalid_PR_ID
+=== RUN   TestParsePullRequestURL/Invalid_format_(missing_pull)
+=== RUN   TestParsePullRequestURL/Invalid_format_(too_many_segments)
+--- PASS: TestParsePullRequestURL (0.00s)
+    --- PASS: TestParsePullRequestURL/Valid_HTTPS_URL (0.00s)
+    --- PASS: TestParsePullRequestURL/Valid_URL_without_scheme (0.00s)
+    --- PASS: TestParsePullRequestURL/URL_with_trailing_slash (0.00s)
+    --- PASS: TestParsePullRequestURL/Invalid_PR_ID (0.00s)
+    --- PASS: TestParsePullRequestURL/Invalid_format_(missing_pull) (0.00s)
+    --- PASS: TestParsePullRequestURL/Invalid_format_(too_many_segments) (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/gitutil	1.086s
+=== RUN   TestValidateSuggestionsByLine
+=== RUN   TestValidateSuggestionsByLine/All_valid_inline
+=== RUN   TestValidateSuggestionsByLine/Mix_valid_and_unknown_file
+time=2026-03-02T23:05:29.564+01:00 level=WARN msg="Dropping suggestion (file not in PR)" original=invalid.go normalized=invalid.go
+time=2026-03-02T23:05:29.564+01:00 level=WARN msg="Dropping suggestion (file not in PR)" original=src/old.java normalized=src/old.java
+=== RUN   TestValidateSuggestionsByLine/With_./_prefix
+=== RUN   TestValidateSuggestionsByLine/Valid_file_but_off-diff_line
+time=2026-03-02T23:05:29.564+01:00 level=WARN msg="Moving suggestion to general findings (off-diff line)" original=main.go normalized=main.go line=999
+=== RUN   TestValidateSuggestionsByLine/Mix_inline_and_off-diff
+time=2026-03-02T23:05:29.564+01:00 level=WARN msg="Moving suggestion to general findings (off-diff line)" original=main.go normalized=main.go line=999
+time=2026-03-02T23:05:29.565+01:00 level=WARN msg="Moving suggestion to general findings (off-diff line)" original=pkg/util.go normalized=pkg/util.go line=100
+=== RUN   TestValidateSuggestionsByLine/Zero_line_number_goes_to_off-diff
+time=2026-03-02T23:05:29.565+01:00 level=WARN msg="Moving suggestion to general findings (off-diff line)" original=main.go normalized=main.go line=0
+=== RUN   TestValidateSuggestionsByLine/Unknown_file_is_dropped
+time=2026-03-02T23:05:29.565+01:00 level=WARN msg="Dropping suggestion (file not in PR)" original=ghost.go normalized=ghost.go
+=== RUN   TestValidateSuggestionsByLine/No_valid_files_provided
+time=2026-03-02T23:05:29.565+01:00 level=WARN msg="Valid files map is empty, skipping suggestion validation"
+--- PASS: TestValidateSuggestionsByLine (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/All_valid_inline (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/Mix_valid_and_unknown_file (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/With_./_prefix (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/Valid_file_but_off-diff_line (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/Mix_inline_and_off-diff (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/Zero_line_number_goes_to_off-diff (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/Unknown_file_is_dropped (0.00s)
+    --- PASS: TestValidateSuggestionsByLine/No_valid_files_provided (0.00s)
+=== RUN   TestIsReviewableFile
+=== RUN   TestIsReviewableFile/main.go
+=== RUN   TestIsReviewableFile/app.py
+=== RUN   TestIsReviewableFile/index.ts
+=== RUN   TestIsReviewableFile/Component.tsx
+=== RUN   TestIsReviewableFile/App.java
+=== RUN   TestIsReviewableFile/main.rs
+=== RUN   TestIsReviewableFile/lib.rb
+=== RUN   TestIsReviewableFile/index.php
+=== RUN   TestIsReviewableFile/Program.cs
+=== RUN   TestIsReviewableFile/ViewController.swift
+=== RUN   TestIsReviewableFile/Main.kt
+=== RUN   TestIsReviewableFile/script.sh
+=== RUN   TestIsReviewableFile/query.sql
+=== RUN   TestIsReviewableFile/Component.vue
+=== RUN   TestIsReviewableFile/README.md
+=== RUN   TestIsReviewableFile/CHANGELOG.markdown
+=== RUN   TestIsReviewableFile/docs/guide.rst
+=== RUN   TestIsReviewableFile/INSTALL.adoc
+=== RUN   TestIsReviewableFile/config.yaml
+=== RUN   TestIsReviewableFile/docker-compose.yml
+=== RUN   TestIsReviewableFile/package.json
+=== RUN   TestIsReviewableFile/tsconfig.json
+=== RUN   TestIsReviewableFile/settings.toml
+=== RUN   TestIsReviewableFile/.env
+=== RUN   TestIsReviewableFile/.gitignore
+=== RUN   TestIsReviewableFile/go.sum
+=== RUN   TestIsReviewableFile/package-lock.json
+=== RUN   TestIsReviewableFile/yarn.lock
+=== RUN   TestIsReviewableFile/data.txt
+=== RUN   TestIsReviewableFile/records.csv
+=== RUN   TestIsReviewableFile/config.xml
+=== RUN   TestIsReviewableFile/logo.png
+=== RUN   TestIsReviewableFile/icon.svg
+=== RUN   TestIsReviewableFile/banner.jpg
+=== RUN   TestIsReviewableFile/document.pdf
+=== RUN   TestIsReviewableFile/review.prompt
+=== RUN   TestIsReviewableFile/email.tmpl
+=== RUN   TestIsReviewableFile/schema.graphql
+=== RUN   TestIsReviewableFile/api.proto
+=== RUN   TestIsReviewableFile/Dockerfile
+=== RUN   TestIsReviewableFile/Makefile
+=== RUN   TestIsReviewableFile/./main.go
+=== RUN   TestIsReviewableFile/src/lib/main.go
+=== RUN   TestIsReviewableFile/bundle.min.js
+=== RUN   TestIsReviewableFile/styles.min.css
+=== RUN   TestIsReviewableFile/types.d.ts
+--- PASS: TestIsReviewableFile (0.00s)
+    --- PASS: TestIsReviewableFile/main.go (0.00s)
+    --- PASS: TestIsReviewableFile/app.py (0.00s)
+    --- PASS: TestIsReviewableFile/index.ts (0.00s)
+    --- PASS: TestIsReviewableFile/Component.tsx (0.00s)
+    --- PASS: TestIsReviewableFile/App.java (0.00s)
+    --- PASS: TestIsReviewableFile/main.rs (0.00s)
+    --- PASS: TestIsReviewableFile/lib.rb (0.00s)
+    --- PASS: TestIsReviewableFile/index.php (0.00s)
+    --- PASS: TestIsReviewableFile/Program.cs (0.00s)
+    --- PASS: TestIsReviewableFile/ViewController.swift (0.00s)
+    --- PASS: TestIsReviewableFile/Main.kt (0.00s)
+    --- PASS: TestIsReviewableFile/script.sh (0.00s)
+    --- PASS: TestIsReviewableFile/query.sql (0.00s)
+    --- PASS: TestIsReviewableFile/Component.vue (0.00s)
+    --- PASS: TestIsReviewableFile/README.md (0.00s)
+    --- PASS: TestIsReviewableFile/CHANGELOG.markdown (0.00s)
+    --- PASS: TestIsReviewableFile/docs/guide.rst (0.00s)
+    --- PASS: TestIsReviewableFile/INSTALL.adoc (0.00s)
+    --- PASS: TestIsReviewableFile/config.yaml (0.00s)
+    --- PASS: TestIsReviewableFile/docker-compose.yml (0.00s)
+    --- PASS: TestIsReviewableFile/package.json (0.00s)
+    --- PASS: TestIsReviewableFile/tsconfig.json (0.00s)
+    --- PASS: TestIsReviewableFile/settings.toml (0.00s)
+    --- PASS: TestIsReviewableFile/.env (0.00s)
+    --- PASS: TestIsReviewableFile/.gitignore (0.00s)
+    --- PASS: TestIsReviewableFile/go.sum (0.00s)
+    --- PASS: TestIsReviewableFile/package-lock.json (0.00s)
+    --- PASS: TestIsReviewableFile/yarn.lock (0.00s)
+    --- PASS: TestIsReviewableFile/data.txt (0.00s)
+    --- PASS: TestIsReviewableFile/records.csv (0.00s)
+    --- PASS: TestIsReviewableFile/config.xml (0.00s)
+    --- PASS: TestIsReviewableFile/logo.png (0.00s)
+    --- PASS: TestIsReviewableFile/icon.svg (0.00s)
+    --- PASS: TestIsReviewableFile/banner.jpg (0.00s)
+    --- PASS: TestIsReviewableFile/document.pdf (0.00s)
+    --- PASS: TestIsReviewableFile/review.prompt (0.00s)
+    --- PASS: TestIsReviewableFile/email.tmpl (0.00s)
+    --- PASS: TestIsReviewableFile/schema.graphql (0.00s)
+    --- PASS: TestIsReviewableFile/api.proto (0.00s)
+    --- PASS: TestIsReviewableFile/Dockerfile (0.00s)
+    --- PASS: TestIsReviewableFile/Makefile (0.00s)
+    --- PASS: TestIsReviewableFile/./main.go (0.00s)
+    --- PASS: TestIsReviewableFile/src/lib/main.go (0.00s)
+    --- PASS: TestIsReviewableFile/bundle.min.js (0.00s)
+    --- PASS: TestIsReviewableFile/styles.min.css (0.00s)
+    --- PASS: TestIsReviewableFile/types.d.ts (0.00s)
+=== RUN   TestFilterNonCodeSuggestions
+=== RUN   TestFilterNonCodeSuggestions/filters_out_markdown_files
+=== RUN   TestFilterNonCodeSuggestions/filters_out_yaml_and_json_files
+=== RUN   TestFilterNonCodeSuggestions/keeps_code_files
+=== RUN   TestFilterNonCodeSuggestions/filters_out_lock_and_sum_files
+=== RUN   TestFilterNonCodeSuggestions/filters_out_image_files
+=== RUN   TestFilterNonCodeSuggestions/handles_./_prefix
+=== RUN   TestFilterNonCodeSuggestions/keeps_unknown_extensions
+=== RUN   TestFilterNonCodeSuggestions/filters_out_minified_files
+=== RUN   TestFilterNonCodeSuggestions/empty_input_returns_empty
+--- PASS: TestFilterNonCodeSuggestions (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/filters_out_markdown_files (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/filters_out_yaml_and_json_files (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/keeps_code_files (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/filters_out_lock_and_sum_files (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/filters_out_image_files (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/handles_./_prefix (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/keeps_unknown_extensions (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/filters_out_minified_files (0.00s)
+    --- PASS: TestFilterNonCodeSuggestions/empty_input_returns_empty (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/jobs	1.070s
+=== RUN   TestParseLegacyReview_Security
+=== RUN   TestParseLegacyReview_Security/legacy_summary
+--- PASS: TestParseLegacyReview_Security (0.00s)
+    --- PASS: TestParseLegacyReview_Security/legacy_summary (0.00s)
+=== RUN   TestSanitizePath_Security
+=== RUN   TestSanitizePath_Security/**`path/to/file.go`**
+=== RUN   TestSanitizePath_Security/__some/path.txt__
+=== RUN   TestSanitizePath_Security/"path/with/quotes"
+=== RUN   TestSanitizePath_Security/path*with*stars
+--- PASS: TestSanitizePath_Security (0.00s)
+    --- PASS: TestSanitizePath_Security/**`path/to/file.go`** (0.00s)
+    --- PASS: TestSanitizePath_Security/__some/path.txt__ (0.00s)
+    --- PASS: TestSanitizePath_Security/"path/with/quotes" (0.00s)
+    --- PASS: TestSanitizePath_Security/path*with*stars (0.00s)
+=== RUN   TestDoS_PreambleResilience
+--- PASS: TestDoS_PreambleResilience (0.01s)
+=== RUN   TestParseLegacyMarkdownReview
+=== RUN   TestParseLegacyMarkdownReview/Legacy_Markdown_Review
+--- PASS: TestParseLegacyMarkdownReview (0.00s)
+    --- PASS: TestParseLegacyMarkdownReview/Legacy_Markdown_Review (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/llm	1.252s
+=== RUN   TestNewLogger
+=== RUN   TestNewLogger/Text_Logger_Info_Level
+=== RUN   TestNewLogger/JSON_Logger_Debug_Level
+--- PASS: TestNewLogger (0.00s)
+    --- PASS: TestNewLogger/Text_Logger_Info_Level (0.00s)
+    --- PASS: TestNewLogger/JSON_Logger_Debug_Level (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/logger	1.369s
+?   	github.com/sevigo/code-warden/internal/mcp	[no test files]
+=== RUN   TestProjectRootContext
+--- PASS: TestProjectRootContext (0.00s)
+=== RUN   TestInputValidationLimits
+--- PASS: TestInputValidationLimits (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/mcp/tools	0.292s
+=== RUN   TestValidateRepoPath
+=== RUN   TestValidateRepoPath/Valid_relative_path
+=== RUN   TestValidateRepoPath/Base_directory
+=== RUN   TestValidateRepoPath/Path_traversal_attempt
+=== RUN   TestValidateRepoPath/Absolute_path_(outside)
+--- PASS: TestValidateRepoPath (0.00s)
+    --- PASS: TestValidateRepoPath/Valid_relative_path (0.00s)
+    --- PASS: TestValidateRepoPath/Base_directory (0.00s)
+    --- PASS: TestValidateRepoPath/Path_traversal_attempt (0.00s)
+    --- PASS: TestValidateRepoPath/Absolute_path_(outside) (0.00s)
+=== RUN   TestValidateRepoPath_AdvancedSymlinks
+=== RUN   TestValidateRepoPath_AdvancedSymlinks/Symlink_pointing_outside
+=== RUN   TestValidateRepoPath_AdvancedSymlinks/Symlink_pointing_outside_relative
+=== RUN   TestValidateRepoPath_AdvancedSymlinks/Nested_symlink_pointing_outside
+=== RUN   TestValidateRepoPath_AdvancedSymlinks/Valid_internal_symlink
+--- PASS: TestValidateRepoPath_AdvancedSymlinks (0.00s)
+    --- PASS: TestValidateRepoPath_AdvancedSymlinks/Symlink_pointing_outside (0.00s)
+    --- PASS: TestValidateRepoPath_AdvancedSymlinks/Symlink_pointing_outside_relative (0.00s)
+    --- PASS: TestValidateRepoPath_AdvancedSymlinks/Nested_symlink_pointing_outside (0.00s)
+    --- PASS: TestValidateRepoPath_AdvancedSymlinks/Valid_internal_symlink (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/prescan	0.407s
+=== RUN   TestTTLCache_BasicStoreLoad
+--- PASS: TestTTLCache_BasicStoreLoad (0.00s)
+=== RUN   TestTTLCache_MissReturnsNotFound
+--- PASS: TestTTLCache_MissReturnsNotFound (0.00s)
+=== RUN   TestTTLCache_ExpiredEntryEvicted
+--- PASS: TestTTLCache_ExpiredEntryEvicted (0.01s)
+=== RUN   TestTTLCache_MaxSizeEvictsOldest
+--- PASS: TestTTLCache_MaxSizeEvictsOldest (0.00s)
+=== RUN   TestTTLCache_OverwriteExistingKey
+--- PASS: TestTTLCache_OverwriteExistingKey (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/rag	0.967s
+=== RUN   TestValidateAndJoinPath_Security
+=== RUN   TestValidateAndJoinPath_Security/valid_relative_path
+=== RUN   TestValidateAndJoinPath_Security/simple_traversal_attempt
+=== RUN   TestValidateAndJoinPath_Security/deep_traversal_attempt
+=== RUN   TestValidateAndJoinPath_Security/current_directory_dot
+--- PASS: TestValidateAndJoinPath_Security (0.00s)
+    --- PASS: TestValidateAndJoinPath_Security/valid_relative_path (0.00s)
+    --- PASS: TestValidateAndJoinPath_Security/simple_traversal_attempt (0.00s)
+    --- PASS: TestValidateAndJoinPath_Security/deep_traversal_attempt (0.00s)
+    --- PASS: TestValidateAndJoinPath_Security/current_directory_dot (0.00s)
+=== RUN   TestValidateAndJoinPath_Symlinks
+=== RUN   TestValidateAndJoinPath_Symlinks/symlink_traversal_(link_exists_points_out)
+=== RUN   TestValidateAndJoinPath_Symlinks/lexical_traversal_with_non-existent_path
+--- PASS: TestValidateAndJoinPath_Symlinks (0.00s)
+    --- PASS: TestValidateAndJoinPath_Symlinks/symlink_traversal_(link_exists_points_out) (0.00s)
+    --- PASS: TestValidateAndJoinPath_Symlinks/lexical_traversal_with_non-existent_path (0.00s)
+=== RUN   TestDynamicSparseRetriever_GetRelevantDocuments
+=== RUN   TestDynamicSparseRetriever_GetRelevantDocuments/successful_retrieval_with_sparse_vector
+=== RUN   TestDynamicSparseRetriever_GetRelevantDocuments/empty_query_returns_empty_results
+2026/03/02 23:05:31 WARN sparse vector generation failed, falling back to dense error="text cannot be empty"
+=== RUN   TestDynamicSparseRetriever_GetRelevantDocuments/strips_patch_noise_from_query
+--- PASS: TestDynamicSparseRetriever_GetRelevantDocuments (0.04s)
+    --- PASS: TestDynamicSparseRetriever_GetRelevantDocuments/successful_retrieval_with_sparse_vector (0.03s)
+    --- PASS: TestDynamicSparseRetriever_GetRelevantDocuments/empty_query_returns_empty_results (0.00s)
+    --- PASS: TestDynamicSparseRetriever_GetRelevantDocuments/strips_patch_noise_from_query (0.00s)
+=== RUN   TestBuildContextForPrompt_Deduplication
+--- PASS: TestBuildContextForPrompt_Deduplication (0.00s)
+=== RUN   TestBuildContextForPrompt_WithParentText
+--- PASS: TestBuildContextForPrompt_WithParentText (0.00s)
+=== RUN   TestBuildContextForPrompt_WithPackageName
+--- PASS: TestBuildContextForPrompt_WithPackageName (0.00s)
+=== RUN   TestBuildContextForPrompt_WithIdentifier
+--- PASS: TestBuildContextForPrompt_WithIdentifier (0.00s)
+=== RUN   TestPreFilterBM25_Sorting
+--- PASS: TestPreFilterBM25_Sorting (0.00s)
+=== RUN   TestPreFilterBM25_EmptyQuery
+--- PASS: TestPreFilterBM25_EmptyQuery (0.00s)
+=== RUN   TestPreFilterBM25_TopKLimits
+--- PASS: TestPreFilterBM25_TopKLimits (0.00s)
+=== RUN   TestGetDocKey
+=== RUN   TestGetDocKey/with_parent_id
+=== RUN   TestGetDocKey/with_source_and_identifier
+=== RUN   TestGetDocKey/with_source_only
+=== RUN   TestGetDocKey/no_metadata_-_hash
+--- PASS: TestGetDocKey (0.00s)
+    --- PASS: TestGetDocKey/with_parent_id (0.00s)
+    --- PASS: TestGetDocKey/with_source_and_identifier (0.00s)
+    --- PASS: TestGetDocKey/with_source_only (0.00s)
+    --- PASS: TestGetDocKey/no_metadata_-_hash (0.00s)
+=== RUN   TestGetDocContent
+=== RUN   TestGetDocContent/with_full_parent_text
+=== RUN   TestGetDocContent/without_full_parent_text
+=== RUN   TestGetDocContent/empty_full_parent_text
+--- PASS: TestGetDocContent (0.00s)
+    --- PASS: TestGetDocContent/with_full_parent_text (0.00s)
+    --- PASS: TestGetDocContent/without_full_parent_text (0.00s)
+    --- PASS: TestGetDocContent/empty_full_parent_text (0.00s)
+=== RUN   TestHashPatch
+--- PASS: TestHashPatch (0.00s)
+=== RUN   TestStripPatchNoise_Comprehensive
+=== RUN   TestStripPatchNoise_Comprehensive/empty_string
+=== RUN   TestStripPatchNoise_Comprehensive/only_metadata_lines
+=== RUN   TestStripPatchNoise_Comprehensive/preserves_additions
+=== RUN   TestStripPatchNoise_Comprehensive/removes_deletions
+=== RUN   TestStripPatchNoise_Comprehensive/preserves_context_lines
+=== RUN   TestStripPatchNoise_Comprehensive/complex_patch
+--- PASS: TestStripPatchNoise_Comprehensive (0.00s)
+    --- PASS: TestStripPatchNoise_Comprehensive/empty_string (0.00s)
+    --- PASS: TestStripPatchNoise_Comprehensive/only_metadata_lines (0.00s)
+    --- PASS: TestStripPatchNoise_Comprehensive/preserves_additions (0.00s)
+    --- PASS: TestStripPatchNoise_Comprehensive/removes_deletions (0.00s)
+    --- PASS: TestStripPatchNoise_Comprehensive/preserves_context_lines (0.00s)
+    --- PASS: TestStripPatchNoise_Comprehensive/complex_patch (0.00s)
+=== RUN   TestExtractSymbolsFromPatch_Comprehensive
+=== RUN   TestExtractSymbolsFromPatch_Comprehensive/empty_patch
+=== RUN   TestExtractSymbolsFromPatch_Comprehensive/type_definitions
+=== RUN   TestExtractSymbolsFromPatch_Comprehensive/function_definitions
+=== RUN   TestExtractSymbolsFromPatch_Comprehensive/type_assertions_and_usage
+=== RUN   TestExtractSymbolsFromPatch_Comprehensive/ignores_short_names
+--- PASS: TestExtractSymbolsFromPatch_Comprehensive (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch_Comprehensive/empty_patch (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch_Comprehensive/type_definitions (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch_Comprehensive/function_definitions (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch_Comprehensive/type_assertions_and_usage (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch_Comprehensive/ignores_short_names (0.00s)
+=== RUN   TestStripPatchNoise
+=== RUN   TestStripPatchNoise/empty
+=== RUN   TestStripPatchNoise/only_metadata
+=== RUN   TestStripPatchNoise/mixed
+=== RUN   TestStripPatchNoise/hyde_header_+_patch
+--- PASS: TestStripPatchNoise (0.00s)
+    --- PASS: TestStripPatchNoise/empty (0.00s)
+    --- PASS: TestStripPatchNoise/only_metadata (0.00s)
+    --- PASS: TestStripPatchNoise/mixed (0.00s)
+    --- PASS: TestStripPatchNoise/hyde_header_+_patch (0.00s)
+=== RUN   TestPreFilterBM25
+=== RUN   TestPreFilterBM25/topK_>=_len
+=== RUN   TestPreFilterBM25/topK_<_len
+=== RUN   TestPreFilterBM25/empty_query
+=== RUN   TestPreFilterBM25/empty_docs
+--- PASS: TestPreFilterBM25 (0.00s)
+    --- PASS: TestPreFilterBM25/topK_>=_len (0.00s)
+    --- PASS: TestPreFilterBM25/topK_<_len (0.00s)
+    --- PASS: TestPreFilterBM25/empty_query (0.00s)
+    --- PASS: TestPreFilterBM25/empty_docs (0.00s)
+=== RUN   TestExtractSymbolsFromPatch
+=== RUN   TestExtractSymbolsFromPatch/empty_patch
+=== RUN   TestExtractSymbolsFromPatch/type_definition_in_Go
+=== RUN   TestExtractSymbolsFromPatch/function_definition
+=== RUN   TestExtractSymbolsFromPatch/struct_instantiation
+=== RUN   TestExtractSymbolsFromPatch/method_definition
+=== RUN   TestExtractSymbolsFromPatch/interface_definition
+--- PASS: TestExtractSymbolsFromPatch (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch/empty_patch (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch/type_definition_in_Go (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch/function_definition (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch/struct_instantiation (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch/method_definition (0.00s)
+    --- PASS: TestExtractSymbolsFromPatch/interface_definition (0.00s)
+=== RUN   TestGatherDefinitionsContext_EmptyInput
+--- PASS: TestGatherDefinitionsContext_EmptyInput (0.00s)
+=== RUN   TestGatherDefinitionsContext_NoPatch
+2026/03/02 23:05:31 INFO stage skipped name=SymbolResolution reason=no_symbols_found
+--- PASS: TestGatherDefinitionsContext_NoPatch (0.00s)
+=== RUN   TestGatherDefinitionsContext_WithSymbols
+2026/03/02 23:05:31 INFO stage started name=SymbolResolution depth0_symbols=2
+2026/03/02 23:05:31 INFO depth-1 resolution complete resolved=1
+2026/03/02 23:05:31 INFO stage completed name=SymbolResolution depth1_resolved=1 depth2_resolved=0
+--- PASS: TestGatherDefinitionsContext_WithSymbols (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/rag/contextpkg	1.285s
+=== RUN   TestParseHunkStartLine
+=== RUN   TestParseHunkStartLine/standard_hunk_header
+=== RUN   TestParseHunkStartLine/hunk_header_with_single_line
+=== RUN   TestParseHunkStartLine/hunk_header_with_context
+=== RUN   TestParseHunkStartLine/empty_hunk_header
+=== RUN   TestParseHunkStartLine/invalid_hunk_header
+--- PASS: TestParseHunkStartLine (0.00s)
+    --- PASS: TestParseHunkStartLine/standard_hunk_header (0.00s)
+    --- PASS: TestParseHunkStartLine/hunk_header_with_single_line (0.00s)
+    --- PASS: TestParseHunkStartLine/hunk_header_with_context (0.00s)
+    --- PASS: TestParseHunkStartLine/empty_hunk_header (0.00s)
+    --- PASS: TestParseHunkStartLine/invalid_hunk_header (0.00s)
+=== RUN   TestExtractNewFunctions
+=== RUN   TestExtractNewFunctions/single_new_function
+=== RUN   TestExtractNewFunctions/multiple_new_functions
+=== RUN   TestExtractNewFunctions/small_function_skipped
+=== RUN   TestExtractNewFunctions/no_patch_content
+=== RUN   TestExtractNewFunctions/method_with_receiver
+--- PASS: TestExtractNewFunctions (0.00s)
+    --- PASS: TestExtractNewFunctions/single_new_function (0.00s)
+    --- PASS: TestExtractNewFunctions/multiple_new_functions (0.00s)
+    --- PASS: TestExtractNewFunctions/small_function_skipped (0.00s)
+    --- PASS: TestExtractNewFunctions/no_patch_content (0.00s)
+    --- PASS: TestExtractNewFunctions/method_with_receiver (0.00s)
+=== RUN   TestExtractFunctionBody
+--- PASS: TestExtractFunctionBody (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/rag/detect	0.908s
+=== RUN   TestFiltering
+=== RUN   TestFiltering/FilterFilesByExtensions
+=== RUN   TestFiltering/FilterFilesByExtensions/basic_filtering
+=== RUN   TestFiltering/FilterFilesByExtensions/no_exclusions
+=== RUN   TestFiltering/FilterFilesByExtensions/exclude_all
+=== RUN   TestFiltering/FilterFilesByExtensions/extension_without_dot
+=== RUN   TestFiltering/FilterFilesByDirectories
+=== RUN   TestFiltering/FilterFilesByDirectories/basic_directory_filtering
+=== RUN   TestFiltering/FilterFilesByDirectories/no_exclusions
+=== RUN   TestFiltering/FilterFilesByDirectories/exclude_all
+=== RUN   TestFiltering/FilterFilesBySpecificFiles
+=== RUN   TestFiltering/FilterFilesBySpecificFiles/basic_file_filtering
+=== RUN   TestFiltering/FilterFilesBySpecificFiles/no_exclusions
+=== RUN   TestFiltering/FilterFilesBySpecificFiles/exclude_all
+=== RUN   TestFiltering/FilterFilesBySpecificFiles/path_normalization_with_dot
+=== RUN   TestFiltering/FilterFilesByValidExtensions
+=== RUN   TestFiltering/FilterFilesByValidExtensions/mixed_valid_and_invalid
+=== RUN   TestFiltering/FilterFilesByValidExtensions/all_valid
+=== RUN   TestFiltering/FilterFilesByValidExtensions/all_invalid
+--- PASS: TestFiltering (0.00s)
+    --- PASS: TestFiltering/FilterFilesByExtensions (0.00s)
+        --- PASS: TestFiltering/FilterFilesByExtensions/basic_filtering (0.00s)
+        --- PASS: TestFiltering/FilterFilesByExtensions/no_exclusions (0.00s)
+        --- PASS: TestFiltering/FilterFilesByExtensions/exclude_all (0.00s)
+        --- PASS: TestFiltering/FilterFilesByExtensions/extension_without_dot (0.00s)
+    --- PASS: TestFiltering/FilterFilesByDirectories (0.00s)
+        --- PASS: TestFiltering/FilterFilesByDirectories/basic_directory_filtering (0.00s)
+        --- PASS: TestFiltering/FilterFilesByDirectories/no_exclusions (0.00s)
+        --- PASS: TestFiltering/FilterFilesByDirectories/exclude_all (0.00s)
+    --- PASS: TestFiltering/FilterFilesBySpecificFiles (0.00s)
+        --- PASS: TestFiltering/FilterFilesBySpecificFiles/basic_file_filtering (0.00s)
+        --- PASS: TestFiltering/FilterFilesBySpecificFiles/no_exclusions (0.00s)
+        --- PASS: TestFiltering/FilterFilesBySpecificFiles/exclude_all (0.00s)
+        --- PASS: TestFiltering/FilterFilesBySpecificFiles/path_normalization_with_dot (0.00s)
+    --- PASS: TestFiltering/FilterFilesByValidExtensions (0.00s)
+        --- PASS: TestFiltering/FilterFilesByValidExtensions/mixed_valid_and_invalid (0.00s)
+        --- PASS: TestFiltering/FilterFilesByValidExtensions/all_valid (0.00s)
+        --- PASS: TestFiltering/FilterFilesByValidExtensions/all_invalid (0.00s)
+=== RUN   TestIsLogicFile
+=== RUN   TestIsLogicFile/main.go
+=== RUN   TestIsLogicFile/internal/rag/rag.go
+=== RUN   TestIsLogicFile/README.md
+=== RUN   TestIsLogicFile/docs/api.yaml
+=== RUN   TestIsLogicFile/Dockerfile
+=== RUN   TestIsLogicFile/.github/workflows/ci.yml
+=== RUN   TestIsLogicFile/vendor/lib.js
+=== RUN   TestIsLogicFile/package.json
+=== RUN   TestIsLogicFile/#00
+--- PASS: TestIsLogicFile (0.00s)
+    --- PASS: TestIsLogicFile/main.go (0.00s)
+    --- PASS: TestIsLogicFile/internal/rag/rag.go (0.00s)
+    --- PASS: TestIsLogicFile/README.md (0.00s)
+    --- PASS: TestIsLogicFile/docs/api.yaml (0.00s)
+    --- PASS: TestIsLogicFile/Dockerfile (0.00s)
+    --- PASS: TestIsLogicFile/.github/workflows/ci.yml (0.00s)
+    --- PASS: TestIsLogicFile/vendor/lib.js (0.00s)
+    --- PASS: TestIsLogicFile/package.json (0.00s)
+    --- PASS: TestIsLogicFile/#00 (0.00s)
+=== RUN   TestSetupRepoContext_Basic
+2026/03/02 23:05:32 INFO performing smart indexing with GoFrame GitLoader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_Basic1032084119/001 collection=test_coll
+2026/03/02 23:05:32 INFO Starting streaming repository load component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_Basic1032084119/001
+2026/03/02 23:05:32 WARN No parser available, treating as single document component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_Basic1032084119/001 path=main.go
+2026/03/02 23:05:32 INFO Streaming repository load completed component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_Basic1032084119/001
+2026/03/02 23:05:32 INFO repository setup complete indexed_files=1 skipped_files=0 duration=0s
+--- PASS: TestSetupRepoContext_Basic (0.02s)
+=== RUN   TestSetupRepoContext_SmartScan
+2026/03/02 23:05:32 INFO performing smart indexing with GoFrame GitLoader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_SmartScan4161113071/001 collection=""
+2026/03/02 23:05:32 INFO Starting streaming repository load component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_SmartScan4161113071/001
+2026/03/02 23:05:32 WARN No parser available, treating as single document component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_SmartScan4161113071/001 path=main.go
+2026/03/02 23:05:32 INFO Streaming repository load completed component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_SmartScan4161113071/001
+2026/03/02 23:05:32 INFO repository setup complete indexed_files=1 skipped_files=1 duration=0s
+--- PASS: TestSetupRepoContext_SmartScan (0.00s)
+=== RUN   TestSetupRepoContext_Pruning
+2026/03/02 23:05:32 INFO performing smart indexing with GoFrame GitLoader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_Pruning1498108982/001 collection=test_coll
+2026/03/02 23:05:32 INFO Starting streaming repository load component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_Pruning1498108982/001
+2026/03/02 23:05:32 INFO Streaming repository load completed component=git_loader path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSetupRepoContext_Pruning1498108982/001
+2026/03/02 23:05:32 INFO pruning deleted files from tracking count=1
+2026/03/02 23:05:32 INFO repository setup complete indexed_files=0 skipped_files=0 duration=0s
+--- PASS: TestSetupRepoContext_Pruning (0.00s)
+=== RUN   TestUpdateRepoContext
+2026/03/02 23:05:32 INFO updating repository context after filtering collection=test_coll process=1 delete=1 exclude_dirs="[.git .github vendor node_modules target build]" exclude_exts=[] exclude_files=[]
+2026/03/02 23:05:32 INFO deleting embeddings for removed files count=1
+2026/03/02 23:05:32 INFO adding/updating documents in vector store count=1
+--- PASS: TestUpdateRepoContext (0.04s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/rag/index	1.962s
+=== RUN   TestAnswerQuestion
+2026/03/02 23:05:32 INFO answering question collection=coll
+--- PASS: TestAnswerQuestion (0.04s)
+=== RUN   TestAnswerWithValidation
+2026/03/02 23:05:32 INFO answering question collection=coll
+2026/03/02 23:05:32 INFO Context validated as relevant, generating RAG answer
+--- PASS: TestAnswerWithValidation (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/rag/question	1.602s
+=== RUN   TestValidateConsensusParams
+=== RUN   TestValidateConsensusParams/nil_repo
+=== RUN   TestValidateConsensusParams/nil_event
+=== RUN   TestValidateConsensusParams/empty_models
+=== RUN   TestValidateConsensusParams/valid_params
+--- PASS: TestValidateConsensusParams (0.00s)
+    --- PASS: TestValidateConsensusParams/nil_repo (0.00s)
+    --- PASS: TestValidateConsensusParams/nil_event (0.00s)
+    --- PASS: TestValidateConsensusParams/empty_models (0.00s)
+    --- PASS: TestValidateConsensusParams/valid_params (0.00s)
+=== RUN   TestParseDiff_SkipsDiffMetadata
+--- PASS: TestParseDiff_SkipsDiffMetadata (0.00s)
+=== RUN   TestParseDiff_MultipleFiles
+--- PASS: TestParseDiff_MultipleFiles (0.00s)
+=== RUN   TestParseDiff_EmptyDiff
+--- PASS: TestParseDiff_EmptyDiff (0.00s)
+=== RUN   TestSanitizeModelForFilename
+=== RUN   TestSanitizeModelForFilename/kimi-k2.5:cloud
+=== RUN   TestSanitizeModelForFilename/deepseek/v3
+=== RUN   TestSanitizeModelForFilename/suspicious..name
+=== RUN   TestSanitizeModelForFilename/<invalid>
+=== RUN   TestSanitizeModelForFilename/COM1
+=== RUN   TestSanitizeModelForFilename/CollisionResistance
+--- PASS: TestSanitizeModelForFilename (0.00s)
+    --- PASS: TestSanitizeModelForFilename/kimi-k2.5:cloud (0.00s)
+    --- PASS: TestSanitizeModelForFilename/deepseek/v3 (0.00s)
+    --- PASS: TestSanitizeModelForFilename/suspicious..name (0.00s)
+    --- PASS: TestSanitizeModelForFilename/<invalid> (0.00s)
+    --- PASS: TestSanitizeModelForFilename/COM1 (0.00s)
+    --- PASS: TestSanitizeModelForFilename/CollisionResistance (0.00s)
+=== RUN   TestCombineReReviewContext
+=== RUN   TestCombineReReviewContext/both_contexts_present
+=== RUN   TestCombineReReviewContext/only_standard_context
+=== RUN   TestCombineReReviewContext/only_feedback_context
+=== RUN   TestCombineReReviewContext/both_empty
+--- PASS: TestCombineReReviewContext (0.00s)
+    --- PASS: TestCombineReReviewContext/both_contexts_present (0.00s)
+    --- PASS: TestCombineReReviewContext/only_standard_context (0.00s)
+    --- PASS: TestCombineReReviewContext/only_feedback_context (0.00s)
+    --- PASS: TestCombineReReviewContext/both_empty (0.00s)
+=== RUN   TestContextIsEmpty
+=== RUN   TestContextIsEmpty/both_empty
+=== RUN   TestContextIsEmpty/only_contextString_empty
+=== RUN   TestContextIsEmpty/only_definitionsContext_empty
+=== RUN   TestContextIsEmpty/both_present
+=== RUN   TestContextIsEmpty/contextString_is_whitespace_only
+--- PASS: TestContextIsEmpty (0.00s)
+    --- PASS: TestContextIsEmpty/both_empty (0.00s)
+    --- PASS: TestContextIsEmpty/only_contextString_empty (0.00s)
+    --- PASS: TestContextIsEmpty/only_definitionsContext_empty (0.00s)
+    --- PASS: TestContextIsEmpty/both_present (0.00s)
+    --- PASS: TestContextIsEmpty/contextString_is_whitespace_only (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/rag/review	1.521s
+=== RUN   TestSync_RecoverFromInvalidSHA
+time=2026-03-02T23:05:33.274+01:00 level=INFO msg="fetching latest changes from origin"
+time=2026-03-02T23:05:33.332+01:00 level=INFO msg="fetch complete"
+time=2026-03-02T23:05:33.332+01:00 level=INFO msg="resetting worktree to upstream tracking branch"
+time=2026-03-02T23:05:33.378+01:00 level=WARN msg="git diff failed, falling back to full re-index" repo=test-user/test-repo last_indexed_sha=e184c1c7db6e69f4a29fd310c372d8251a2b4cfb default_branch_sha=bd7dae74db262e8ed124acc6b4ad82713a1d0c89 error="failed to get commit object for old SHA e184c1c7db6e69f4a29fd310c372d8251a2b4cfb: object not found"
+time=2026-03-02T23:05:33.382+01:00 level=INFO msg="initial clone of default branch" repo=test-user/test-repo
+time=2026-03-02T23:05:33.382+01:00 level=INFO msg="cloning repository" url=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSync_RecoverFromInvalidSHA2558015590/001/remote path=/var/folders/5y/k49clh892y7744_2njb3_m7h0000gp/T/TestSync_RecoverFromInvalidSHA2558015590/001/local_storage/test-user/test-repo
+--- PASS: TestSync_RecoverFromInvalidSHA (0.28s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/repomanager	1.885s
+=== RUN   TestHashDiff
+--- PASS: TestHashDiff (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/review	1.423s
+?   	github.com/sevigo/code-warden/internal/server	[no test files]
+=== RUN   TestHelloHandler
+--- PASS: TestHelloHandler (0.00s)
+PASS
+ok  	github.com/sevigo/code-warden/internal/server/handler	1.563s
+?   	github.com/sevigo/code-warden/internal/storage	[no test files]
+?   	github.com/sevigo/code-warden/internal/wire	[no test files]
+?   	github.com/sevigo/code-warden/mocks	[no test files]
+
+[0m[0m$ [0mmake lintLinting Go code...
+golangci-lint v2.5.0 not found or wrong version, installing to /Users/igorkomlew/sevigo/data/agent-workspaces/core-e3a3f2/bin...
+golangci/golangci-lint info checking GitHub for tag 'v2.5.0'
+golangci/golangci-lint info found version: 2.5.0 for v2.5.0/darwin/arm64
+golangci/golangci-lint info installed /Users/igorkomlew/sevigo/data/agent-workspaces/core-e3a3f2/bin/golangci-lint
+/Users/igorkomlew/sevigo/data/agent-workspaces/core-e3a3f2/bin/golangci-lint run ./...
+level=warning msg="[runner/exclusion_rules] Skipped 0 issues by rules: [Text: \"comment on exported \\\\S+ \\\\S+ should be of the form \\\".+\\\"\", Source: \"// ?(nolint|TODO)\", Linters: \"revive, staticcheck\"]"
+level=warning msg="[runner/exclusion_rules] Skipped 0 issues by rules: [Text: \"package comment should be of the form \\\".+\\\"\", Source: \"// ?(nolint|TODO)\", Linters: \"revive\"]"
+0 issues.
+
+
+[0m[0m$ [0mgit diff HEAD
+
+diff --git a/.gitignore b/.gitignore
+index a0a256a..5396036 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,42 +1,3 @@
+-# Binaries for programs and plugins
+-*.exe
+-*.exe~
+-*.dll
+-*.so
+-*.dylib
+-__debug*
+-.DS_Store
+-code-warden.log
+-
+-# Test binary, built with `go test -c`
+-*.test
+-
+-# Output of the go coverage tool, specifically when used with LiteIDE
+-*.out
+-
+-# Dependency directories (remove the comment below to include it)
+-# vendor/
+-
+-# project
+-data/
+-bin/
+-keys/
+-reviews/
+-*.sh
+-
+-# Go workspace file
+-go.work
+-go.work.sum
+-.go_cache/
+-
+-# env file
+-.env
+-config.yaml
+-warden-terminal.log
+-llm_context.md
+-*_test_results*
+-.claude/settings.local.json
+-
+-.agent/
+-.claude/
+-CLAUDE.md
++# Agent workspace files - do not commit
++agent.log
++opencode.json
+diff --git a/internal/server/router.go b/internal/server/router.go
+index 6462f97..3abdaf2 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -32,6 +32,7 @@ func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.L
+ 
+ 	// API routes
+ 	r.Route("/api/v1", func(r chi.Router) {
++		r.Get("/hello", handler.HelloHandler)
+ 		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
+ 		r.Post("/webhook/github", webhookHandler.Handle)
+ 	})
+[0mBoth lint and test pass. Now let me review the code changes:
+[0m
+[0m$ [0mgit statusOn branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .gitignore
+	modified:   internal/server/router.go
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	bin/
+	internal/server/handler/hello.go
+	internal/server/handler/hello_test.go
+
+no changes added to commit (use "git add" and/or "git commit -a")
+
+[0m$ [0mgit restore .gitignore
+The `.gitignore` was changed externally. Let me restore it and only track the relevant files:
+[0m[0m$ [0mgit add internal/server/handler/hello.go internal/server/handler/hello_test.go internal/server/router.go && git diff --cached[0m
+
+
+diff --git a/internal/server/handler/hello.go b/internal/server/handler/hello.go
+new file mode 100644
+index 0000000..b2e9a1e
+--- /dev/null
++++ b/internal/server/handler/hello.go
+@@ -0,0 +1,23 @@
++package handler
++
++import (
++	"encoding/json"
++	"net/http"
++	"time"
++)
++
++type HelloResponse struct {
++	Message   string `json:"message"`
++	Timestamp string `json:"timestamp"`
++}
++
++func HelloHandler(w http.ResponseWriter, _ *http.Request) {
++	response := HelloResponse{
++		Message:   "Hello from Code-Warden!",
++		Timestamp: time.Now().UTC().Format(time.RFC3339),
++	}
++
++	w.Header().Set("Content-Type", "application/json")
++	w.WriteHeader(http.StatusOK)
++	_ = json.NewEncoder(w).Encode(response)
++}
+diff --git a/internal/server/handler/hello_test.go b/internal/server/handler/hello_test.go
+new file mode 100644
+index 0000000..7367e10
+--- /dev/null
++++ b/internal/server/handler/hello_test.go
+@@ -0,0 +1,33 @@
++package handler_test
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++
++	"github.com/sevigo/code-warden/internal/server/handler"
++)
++
++func TestHelloHandler(t *testing.T) {
++	req := httptest.NewRequest(http.MethodGet, "/api/v1/hello", nil)
++	rec := httptest.NewRecorder()
++
++	handler.HelloHandler(rec, req)
++
++	assert.Equal(t, http.StatusOK, rec.Code)
++	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
++
++	var response handler.HelloResponse
++	err := json.NewDecoder(rec.Body).Decode(&response)
++	assert.NoError(t, err)
++
++	assert.Equal(t, "Hello from Code-Warden!", response.Message)
++	assert.NotEmpty(t, response.Timestamp)
++
++	_, parseErr := time.Parse(time.RFC3339, response.Timestamp)
++	assert.NoError(t, parseErr, "timestamp should be valid RFC3339 format")
++}
+diff --git a/internal/server/router.go b/internal/server/router.go
+index 6462f97..3abdaf2 100644
+--- a/internal/server/router.go
++++ b/internal/server/router.go
+@@ -32,6 +32,7 @@ func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.L
+ 
+ 	// API routes
+ 	r.Route("/api/v1", func(r chi.Router) {
++		r.Get("/hello", handler.HelloHandler)
+ 		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
+ 		r.Post("/webhook/github", webhookHandler.Handle)
+ 	})
+[0m✗ [0mcode-warden_review_code failed
+[91m[1mError: [0mMcpError: MCP error -32001: Request timed out
+[0m
+[0m
+[0m$ [0mgit diff --cached --stat
+internal/server/handler/hello.go      | 23 +++++++++++++++++++++++
+ internal/server/handler/hello_test.go | 33 +++++++++++++++++++++++++++++++++
+ internal/server/router.go             |  1 +
+ 3 files changed, 57 insertions(+)
+Let me try the review again:
