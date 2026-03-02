@@ -1,7 +1,11 @@
 # Custom instructions to guide the AI's review process.
 custom_instructions:
   - "Pay close attention to Go best practices, especially regarding error handling and context propagation."
-  - "The project uses the 'slog' library for structured logging. Ensure all new logging statements follow this standard."
+  - "The project uses the 'slog' package from the standard library for structured logging. Ensure all new logging statements follow this standard."
+  - "Maintain a clean architecture: all business logic goes into `internal/` (e.g., `internal/rag`, `internal/jobs`). Never put core logic in `cmd/`."
+  - "External dependencies (LLMs, Databases, GitHub) MUST be defined as interfaces in the core logic. Inject concrete implementations via `internal/wire`."
+  - "When adding executing subprocesses (e.g., `exec.CommandContext`), verify that it's safe to run and use the comment `//nolint:gosec // G204: <reason>` to suppress linter false positives."
+  - "To run unit tests successfully, run `make test`. Ensure any added functionality is thoroughly tested using the `testing` package."
 
 # Directories to completely exclude from indexing. This is for performance.
 # These are added to the application's built-in defaults like '.git' and 'node_modules'.
