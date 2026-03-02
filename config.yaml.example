@@ -120,6 +120,28 @@ ai:
   context_token_budget: 16000
 
 # ============================================================================
+# Agent Configuration (Autonomous Issue Implementation)
+# ============================================================================
+agent:
+  # Enable autonomous agent functionality (/implement command)
+  enabled: false
+  # Agent provider: "opencode"
+  provider: "opencode"
+  # Model to use for the agent (recommended: qwen2.5-coder:32b or 70b)
+  model: "qwen2.5-coder:70b"
+  # Timeout for a single agent session (e.g., "30m", "1h")
+  timeout: "30m"
+  # Maximum iterations for code review feedback cycles
+  max_iterations: 3
+  # Maximum concurrent agent sessions (default: 3)
+  max_concurrent_sessions: 3
+  # Address for the internal MCP server
+  mcp_addr: "127.0.0.1:8081"
+  # Absolute path for agent workspaces (where code is cloned/modified)
+  # IMPORTANT: This must be set if agent is enabled.
+  working_dir: "/tmp/code-warden-agents"
+
+# ============================================================================
 # Storage Configuration
 # ============================================================================
 storage:

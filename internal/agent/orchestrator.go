@@ -5,11 +5,8 @@ package agent
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -269,96 +266,6 @@ type Issue struct {
 	RepoName     string
 }
 
-// Session represents an active agent session.
-type Session struct {
-	mu          sync.Mutex
-	ID          string
-	Issue       Issue
-	status      SessionStatus
-	StartedAt   time.Time
-	CompletedAt time.Time
-	Result      *Result
-	err         string
-	cancel      context.CancelFunc
-}
-
-// GetStatus returns the current session status (thread-safe).
-func (s *Session) GetStatus() SessionStatus {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.status
-}
-
-// SetStatus updates the session status (thread-safe).
-func (s *Session) SetStatus(status SessionStatus) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.status = status
-}
-
-// GetError returns the session error message (thread-safe).
-func (s *Session) GetError() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-// SetError sets the session error message (thread-safe).
-func (s *Session) SetError(err string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.err = err
-}
-
-// GetResult returns the session result (thread-safe).
-func (s *Session) GetResult() *Result {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.Result
-}
-
-// SetResult sets the session result (thread-safe).
-func (s *Session) SetResult(result *Result) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Result = result
-}
-
-// Snapshot returns a thread-safe copy of session state for external reading.
-func (s *Session) Snapshot() SessionSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return SessionSnapshot{
-		ID:          s.ID,
-		Status:      s.status,
-		StartedAt:   s.StartedAt,
-		CompletedAt: s.CompletedAt,
-		Error:       s.err,
-		Result:      s.Result,
-	}
-}
-
-// SessionSnapshot is an immutable snapshot of session state.
-type SessionSnapshot struct {
-	ID          string
-	Status      SessionStatus
-	StartedAt   time.Time
-	CompletedAt time.Time
-	Error       string
-	Result      *Result
-}
-
-// SessionStatus represents the status of an agent session.
-type SessionStatus string
-
-const (
-	StatusPending   SessionStatus = "pending"
-	StatusRunning   SessionStatus = "running"
-	StatusCompleted SessionStatus = "completed"
-	StatusFailed    SessionStatus = "failed"
-	StatusCancelled SessionStatus = "cancelled"
-)
-
 // Result represents the result of an agent session.
 type Result struct {
 	PRNumber      int      `json:"pr_number"`
@@ -475,88 +382,52 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 
 // runAgentCLI executes the agent workflow using the local OpenCode binary.
 func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, systemPrompt, branch string) {
-	// Ensure workspace cleanup on completion
 	defer o.cleanupWorkspace(session.ID)
 
-	// Create session workspace
-	workspaceDir := filepath.Join(o.config.WorkingDir, session.ID)
-	if err := os.MkdirAll(workspaceDir, 0750); err != nil {
-		o.logger.Error("runAgentCLI: failed to create workspace directory",
-			"session_id", session.ID,
-			"path", workspaceDir,
-			"error", err)
+	ws, err := o.prepareAgentWorkspace(ctx, session)
+	if err != nil {
+		o.logger.Error("runAgentCLI: workspace setup failed", "session_id", session.ID, "error", err)
 		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("failed to create workspace directory %s: %v", workspaceDir, err))
+		session.SetError(err.Error())
 		return
 	}
-
-	// Clone project into workspace
-	o.logger.Info("runAgentCLI: preparing workspace", "session_id", session.ID, "dir", workspaceDir)
-	if err := o.prepareWorkspace(ctx, workspaceDir); err != nil {
-		o.logger.Error("runAgentCLI: failed to prepare workspace",
-			"session_id", session.ID,
-			"path", workspaceDir,
-			"error", err)
-		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("failed to prepare workspace at %s: %v", workspaceDir, err))
-		return
-	}
-
-	// Register per-session workspace so MCP tools use the correct project root
-	o.mcpServer.RegisterWorkspace(session.ID, workspaceDir)
+	defer ws.logFile.Close()
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
-	// Build OpenCode command
-	cmd := o.buildOpenCodeCommand(ctx, session.ID, session.Issue, systemPrompt, branch)
-	cmd.Dir = workspaceDir // Run in the isolated workspace
-
-	// Setup log file for streaming.
-	// Note: We open the file here for writing, and readLogFile opens it again for reading.
-	// This is safe on Unix-like systems (macOS/Linux) as the OS handles concurrent access.
-	logPath := filepath.Join(workspaceDir, "agent.log")
-	logFile, err := os.Create(logPath)
-	if err != nil {
-		o.logger.Error("runAgentCLI: failed to create log file", "session_id", session.ID, "path", logPath, "error", err)
-		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("failed to create log file: %v", err))
-		return
-	}
-	defer logFile.Close()
-
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
+	cmd.Dir = ws.dir
+	cmd.Stdout = ws.logFile
+	cmd.Stderr = ws.logFile
 
 	o.logger.Info("runAgentCLI: starting OpenCode process",
 		"session_id", session.ID,
 		"command", cmd.String(),
 		"working_dir", cmd.Dir,
-		"log_file", logPath,
+		"log_file", ws.logPath,
 		"timeout", o.config.Timeout)
 
-	// Run the agent
-	err = cmd.Run()
+	runErr := cmd.Run()
 
-	// Read log file (capped at 10MB)
-	outputBytes, readErr := o.readLogFile(logPath, 10*1024*1024)
+	// Read log file (capped at 10MB, from the end to capture AGENT_RESULT sentinel).
+	outputBytes, readErr := o.readLogFile(ws.logPath, 10*1024*1024)
 	if readErr != nil {
-		o.logger.Warn("runAgentCLI: failed to read log file", "session_id", session.ID, "path", logPath, "error", readErr)
+		o.logger.Warn("runAgentCLI: failed to read log file", "session_id", session.ID, "path", ws.logPath, "error", readErr)
 	}
 	output := string(outputBytes)
 
-	if err != nil {
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+
+	if runErr != nil {
 		session.SetStatus(StatusFailed)
-		// Include tail of output in the session error for context.
-		// We use truncateTail here to capture the most recent (failure-related) output,
-		// while truncateString below captures the early logs for the internal logger.
-		tail := truncateTail(output, 2000)
-		session.SetError(fmt.Sprintf("Agent failed: %v\nTail of output:\n%s", err, tail))
-		session.mu.Lock()
-		session.CompletedAt = time.Now()
-		session.mu.Unlock()
+		// truncateTail captures the most recent (failure-related) output for the error message.
+		// truncateString captures the start of output for the log preview.
+		session.SetError(fmt.Sprintf("Agent failed: %v\nTail of output:\n%s", runErr, truncateTail(output, 2000)))
 		o.logger.Error("runAgentCLI: agent process failed",
 			"session_id", session.ID,
-			"error", err,
-			"log_file", logPath,
+			"error", runErr,
+			"log_file", ws.logPath,
 			"output_length", len(output),
 			"output_preview", truncateString(output, 500))
 		return
@@ -564,17 +435,12 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 
 	o.logger.Info("runAgentCLI: agent process completed successfully",
 		"session_id", session.ID,
-		"log_file", logPath,
+		"log_file", ws.logPath,
 		"output_length", len(output))
 
-	// Parse result from the streamed output
 	result := o.parseAgentOutput(output, branch)
-
 	session.SetResult(result)
 	session.SetStatus(StatusCompleted)
-	session.mu.Lock()
-	session.CompletedAt = time.Now()
-	session.mu.Unlock()
 
 	o.logger.Info("runAgentCLI: agent session completed successfully",
 		"session_id", session.ID,
@@ -667,7 +533,7 @@ Work in the current isolated workspace. Your changes MUST be in the branch named
 }
 
 // buildOpenCodeCommand creates the command to run OpenCode.
-func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, sessionID string, issue Issue, systemPrompt, branch string) *exec.Cmd {
+func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch string) *exec.Cmd {
 	// OpenCode CLI usage: opencode run [message..]
 	// The prompt is passed as positional arguments after "run"
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for agent execution
@@ -678,15 +544,8 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, sessionID strin
 		systemPrompt,
 	)
 
-	// Command construction (cmd.Dir is set by the caller)
-
-	// Dynamically configure MCP server for this run
-	mcpConfig := fmt.Sprintf(`{"mcp": {"code-warden": {"type": "remote", "url": "http://%s/sse?workspace=%s", "enabled": true}}}`, o.config.MCPAddr, sessionID)
-
 	// Set environment variables for MCP and iteration config
 	cmd.Env = append(os.Environ(),
-		"OPENCODE_CONFIG_CONTENT="+mcpConfig,
-		"OPENCODE_MCP_SERVER="+o.config.MCPAddr,
 		"OPENCODE_MAX_ITERATIONS="+fmt.Sprintf("%d", o.config.MaxIterations),
 		"OPENCODE_BRANCH="+branch,
 		"OPENCODE_REPO_OWNER="+issue.RepoOwner,
@@ -695,19 +554,6 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, sessionID strin
 	)
 
 	return cmd
-}
-
-// prepareWorkspace clones the project into the isolated workspace.
-func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) error {
-	// Simple approach: rsync or cp -r, but git clone is better for a clean state
-	// Since we are already in a git repo, we can clone from o.projectRoot
-	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for workspace preparation
-	cmd := exec.CommandContext(ctx, "git", "clone", o.projectRoot, ".")
-	cmd.Dir = destDir
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git clone failed: %w (output: %s)", err, string(output))
-	}
-	return nil
 }
 
 // parseAgentOutput extracts the result from agent output.
@@ -763,95 +609,4 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 	}
 
 	return res
-}
-
-func generateSessionID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("agent-%x", b)
-}
-
-// truncateString truncates a string to maxLen characters.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
-// truncateTail returns the last maxLen characters of a string.
-func truncateTail(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return "... [truncated] ...\n" + s[len(s)-maxLen:]
-}
-
-// readLogFile reads the content of a file up to maxBytes.
-// If the file exceeds maxBytes, it reads the *last* maxBytes to ensure
-// the AGENT_RESULT: sentinel (typically at the end) is captured.
-func (o *Orchestrator) readLogFile(path string, maxBytes int64) ([]byte, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	size := info.Size()
-	var offset int64
-	readSize := size
-
-	if size > maxBytes {
-		o.logger.Warn("readLogFile: log file exceeds size cap, truncating read from the end",
-			"path", path, "size", size, "cap", maxBytes)
-		offset = size - maxBytes
-		readSize = maxBytes
-
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("failed to seek in log file: %w", err)
-		}
-	}
-
-	// Read up to readSize
-	buf := make([]byte, readSize)
-	_, err = io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return nil, err
-	}
-
-	return buf, nil
-}
-
-// cleanupWorkspace removes the session's isolated workspace directory.
-// This should be called after the session completes (success or failure).
-func (o *Orchestrator) cleanupWorkspace(sessionID string) {
-	workspaceDir := filepath.Join(o.config.WorkingDir, sessionID)
-	if workspaceDir == "" || workspaceDir == "/" {
-		// Safety check: don't delete root or empty paths
-		o.logger.Warn("cleanupWorkspace: invalid workspace path, skipping cleanup", "session_id", sessionID)
-		return
-	}
-
-	// Check if directory exists before attempting removal
-	if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
-		o.logger.Debug("cleanupWorkspace: workspace already removed", "session_id", sessionID)
-		return
-	}
-
-	if err := os.RemoveAll(workspaceDir); err != nil {
-		o.logger.Warn("cleanupWorkspace: failed to remove workspace",
-			"session_id", sessionID,
-			"path", workspaceDir,
-			"error", err)
-		return
-	}
-
-	o.logger.Info("cleanupWorkspace: workspace removed",
-		"session_id", sessionID,
-		"path", workspaceDir)
 }
