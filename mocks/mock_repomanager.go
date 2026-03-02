@@ -13,10 +13,9 @@ import (
 	context "context"
 	reflect "reflect"
 
-	gomock "go.uber.org/mock/gomock"
-
 	core "github.com/sevigo/code-warden/internal/core"
 	storage "github.com/sevigo/code-warden/internal/storage"
+	gomock "go.uber.org/mock/gomock"
 )
 
 // MockRepoManager is a mock of RepoManager interface.
@@ -41,6 +40,18 @@ func NewMockRepoManager(ctrl *gomock.Controller) *MockRepoManager {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockRepoManager) EXPECT() *MockRepoManagerMockRecorder {
 	return m.recorder
+}
+
+// ClearLocks mocks base method.
+func (m *MockRepoManager) ClearLocks() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "ClearLocks")
+}
+
+// ClearLocks indicates an expected call of ClearLocks.
+func (mr *MockRepoManagerMockRecorder) ClearLocks() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearLocks", reflect.TypeOf((*MockRepoManager)(nil).ClearLocks))
 }
 
 // GetRepoRecord mocks base method.
