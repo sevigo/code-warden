@@ -118,7 +118,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	}
 
 	// 1. Create GitHub client for the installation
-	ghClient, _, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
 	if err != nil {
 		return fmt.Errorf("failed to create GitHub client: %w", err)
 	}
@@ -153,6 +153,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 		scopedStore,
 		j.ragService,
 		ghClient,
+		ghToken,
 		repo,
 		repoConfig,
 		updateResult.RepoPath,

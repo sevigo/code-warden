@@ -27,6 +27,7 @@ type Server struct {
 	vectorStore storage.ScopedVectorStore
 	ragService  rag.Service
 	ghClient    github.Client
+	ghToken     string
 	repo        *storage.Repository
 	repoConfig  *core.RepoConfig
 	projectRoot string
@@ -78,6 +79,7 @@ func NewServer(
 	vectorStore storage.ScopedVectorStore,
 	ragService rag.Service,
 	ghClient github.Client,
+	ghToken string,
 	repo *storage.Repository,
 	repoConfig *core.RepoConfig,
 	projectRoot string,
@@ -88,6 +90,7 @@ func NewServer(
 		vectorStore: vectorStore,
 		ragService:  ragService,
 		ghClient:    ghClient,
+		ghToken:     ghToken,
 		repo:        repo,
 		repoConfig:  repoConfig,
 		projectRoot: projectRoot,
@@ -151,6 +154,7 @@ func (s *Server) registerTools() {
 			}
 			s.tools["push_branch"] = &tools.PushBranch{
 				ProjectRoot: s.projectRoot,
+				GHToken:     s.ghToken,
 				Logger:      s.logger,
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os/exec"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 // PushBranch pushes a local branch to the remote repository.
 type PushBranch struct {
 	ProjectRoot string
+	GHToken     string // GitHub installation token for authentication
 	Logger      *slog.Logger
 }
 
@@ -141,9 +143,35 @@ func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot strin
 
 // pushToOrigin pushes the branch to the remote origin.
 func (t *PushBranch) pushToOrigin(ctx context.Context, projectRoot, branch string, force bool) (string, error) {
-	args := []string{"push", "-u", "origin", branch}
+	// Get current remote URL
+	getURLCmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	getURLCmd.Dir = projectRoot
+	remoteURLBytes, err := getURLCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get remote URL: %w", err)
+	}
+	remoteURL := strings.TrimSpace(string(remoteURLBytes))
+
+	// Build push arguments
+	args := []string{"push", "-u"}
 	if force {
 		args = append(args, "--force")
+	}
+
+	// If we have a token and the remote is HTTPS, use authenticated URL
+	if t.GHToken != "" && strings.HasPrefix(remoteURL, "https://") {
+		// Parse URL and add authentication
+		parsedURL, parseErr := url.Parse(remoteURL)
+		if parseErr == nil {
+			parsedURL.User = url.UserPassword("x-access-token", t.GHToken)
+			args = append(args, parsedURL.String(), branch)
+		} else {
+			// Fallback to regular push without authentication
+			t.Logger.Warn("failed to parse remote URL for authentication, attempting push without token", "error", parseErr)
+			args = append(args, "origin", branch)
+		}
+	} else {
+		args = append(args, "origin", branch)
 	}
 
 	cmd := exec.CommandContext(ctx, "git", args...)
