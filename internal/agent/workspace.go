@@ -99,7 +99,17 @@ func (o *Orchestrator) writeOpencodeConfig(workspaceDir, sessionID string) error
 }`, o.config.MCPAddr, sessionID)
 
 	path := filepath.Join(workspaceDir, "opencode.json")
-	return os.WriteFile(path, []byte(config), 0600)
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		return err
+	}
+
+	// Write .gitignore to exclude workspace-specific files from commits
+	gitignore := `# Agent workspace files - do not commit
+agent.log
+opencode.json
+`
+	gitignorePath := filepath.Join(workspaceDir, ".gitignore")
+	return os.WriteFile(gitignorePath, []byte(gitignore), 0600)
 }
 
 // cleanupWorkspace removes the session's isolated workspace directory.
