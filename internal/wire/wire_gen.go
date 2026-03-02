@@ -102,6 +102,27 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 
 // wire.go:
 
+func parseHeaderTimeout(s string, logger *slog.Logger) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		logger.Warn("invalid http_response_header_timeout, using default 180s", "error", err)
+		return 180 * time.Second
+	}
+	return d
+}
+
+func parseRequestTimeout(s string, logger *slog.Logger) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		logger.Warn("invalid http_request_timeout, using no timeout", "error", err)
+		return 0
+	}
+	return d
+}
+
 func provideSQLXDB(db2 *db.DB) *sqlx.DB {
 	return db2.DB
 }
@@ -146,7 +167,24 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		}
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
-		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithHTTPClient(httpclient.DefaultClient), ollama.WithModel(cfg.AI.GeneratorModel), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
+		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
+		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
+
+		logger.Info("configuring Ollama HTTP client for generator",
+			"response_header_timeout", headerTimeout,
+			"request_timeout", requestTimeout,
+			"model", cfg.AI.GeneratorModel,
+		)
+
+		clientCfg := httpclient.NewConfig(httpclient.WithResponseHeaderTimeout(headerTimeout))
+
+		if requestTimeout > 0 {
+			clientCfg.Timeout = requestTimeout
+		} else {
+			clientCfg.Timeout = 0
+		}
+
+		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithHTTPClient(httpclient.NewClient(clientCfg)), ollama.WithModel(cfg.AI.GeneratorModel), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
 
 		if cfg.AI.EnableThinking {
 			opts = append(opts, ollama.WithThinking(true))
@@ -172,7 +210,24 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	case "gemini":
 		embedderLLM, err = gemini.New(ctx, gemini.WithEmbeddingModel(cfg.AI.EmbedderModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
-		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithModel(cfg.AI.EmbedderModel), ollama.WithHTTPClient(httpclient.DefaultClient), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
+		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
+		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
+
+		logger.Info("configuring Ollama HTTP client for embedder",
+			"response_header_timeout", headerTimeout,
+			"request_timeout", requestTimeout,
+			"model", cfg.AI.EmbedderModel,
+		)
+
+		clientCfg := httpclient.NewConfig(httpclient.WithResponseHeaderTimeout(headerTimeout))
+
+		if requestTimeout > 0 {
+			clientCfg.Timeout = requestTimeout
+		} else {
+			clientCfg.Timeout = 0
+		}
+
+		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithModel(cfg.AI.EmbedderModel), ollama.WithHTTPClient(httpclient.NewClient(clientCfg)), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
 
 		if cfg.AI.ModelKeepAlive != "" {
 			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
@@ -244,7 +299,24 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logg
 	logger2.
 		Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
 
-	opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithModel(cfg.AI.RerankerModel), ollama.WithHTTPClient(httpclient.DefaultClient), ollama.WithLogger(logger2), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
+	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger2)
+	requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger2)
+	logger2.
+		Info("configuring Ollama HTTP client for reranker",
+			"response_header_timeout", headerTimeout,
+			"request_timeout", requestTimeout,
+			"model", cfg.AI.RerankerModel,
+		)
+
+	clientCfg := httpclient.NewConfig(httpclient.WithResponseHeaderTimeout(headerTimeout))
+
+	if requestTimeout > 0 {
+		clientCfg.Timeout = requestTimeout
+	} else {
+		clientCfg.Timeout = 0
+	}
+
+	opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithModel(cfg.AI.RerankerModel), ollama.WithHTTPClient(httpclient.NewClient(clientCfg)), ollama.WithLogger(logger2), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
 
 	if cfg.AI.ModelKeepAlive != "" {
 		opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))

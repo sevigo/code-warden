@@ -84,18 +84,6 @@ func parseRequestTimeout(s string, logger *slog.Logger) time.Duration {
 	return d
 }
 
-func parseRequestTimeout(s string, logger *slog.Logger) time.Duration {
-	if s == "" {
-		return 0 // No timeout
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		logger.Warn("invalid http_request_timeout, using default 600s", "error", err)
-		return 600 * time.Second
-	}
-	return d
-}
-
 func provideSQLXDB(db *db.DB) *sqlx.DB {
 	return db.DB
 }
