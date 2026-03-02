@@ -66,8 +66,32 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 func parseHeaderTimeout(s string, logger *slog.Logger) time.Duration {
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		logger.Warn("invalid http_response_header_timeout, using default 120s", "error", err)
-		return 120 * time.Second
+		logger.Warn("invalid http_response_header_timeout, using default 180s", "error", err)
+		return 180 * time.Second
+	}
+	return d
+}
+
+func parseRequestTimeout(s string, logger *slog.Logger) time.Duration {
+	if s == "" {
+		return 0 // No timeout
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		logger.Warn("invalid http_request_timeout, using no timeout", "error", err)
+		return 0
+	}
+	return d
+}
+
+func parseRequestTimeout(s string, logger *slog.Logger) time.Duration {
+	if s == "" {
+		return 0 // No timeout
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		logger.Warn("invalid http_request_timeout, using default 600s", "error", err)
+		return 600 * time.Second
 	}
 	return d
 }
@@ -125,11 +149,14 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
+		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
 		clientCfg := httpclient.NewConfig(
 			httpclient.WithResponseHeaderTimeout(headerTimeout),
 		)
-		clientCfg.Timeout = 0 // Disable absolute client timeout, rely on Context and ResponseHeaderTimeout
+		if requestTimeout > 0 {
+			clientCfg.Timeout = requestTimeout
+		}
 
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
@@ -169,11 +196,14 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		)
 	case "ollama":
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
+		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
 		clientCfg := httpclient.NewConfig(
 			httpclient.WithResponseHeaderTimeout(headerTimeout),
 		)
-		clientCfg.Timeout = 0 // Disable absolute client timeout, rely on Context and ResponseHeaderTimeout
+		if requestTimeout > 0 {
+			clientCfg.Timeout = requestTimeout
+		}
 
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
@@ -259,11 +289,14 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	logger.Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
 
 	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
+	requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
 	clientCfg := httpclient.NewConfig(
 		httpclient.WithResponseHeaderTimeout(headerTimeout),
 	)
-	clientCfg.Timeout = 0 // Disable absolute client timeout, rely on Context and ResponseHeaderTimeout
+	if requestTimeout > 0 {
+		clientCfg.Timeout = requestTimeout
+	}
 
 	opts := []ollama.Option{
 		ollama.WithServerURL(cfg.AI.OllamaHost),

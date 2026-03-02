@@ -163,6 +163,7 @@ type AIConfig struct {
 
 	// HTTP Client Overrides
 	HTTPResponseHeaderTimeout string `mapstructure:"http_response_header_timeout"` // Timeout for waiting for HTTP response headers (e.g., "30s", "120s")
+	HTTPRequestTimeout        string `mapstructure:"http_request_timeout"`        // Overall HTTP request timeout including body (e.g., "5m", "10m")
 
 	// Context Assembly
 	ContextTokenBudget int `mapstructure:"context_token_budget"` // Max tokens for RAG context (default: 16000)
@@ -346,7 +347,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.enable_thinking", false)    // Disabled by default - enable per model
 	v.SetDefault("ai.thinking_effort", "medium") // "low", "medium", "high"
 	v.SetDefault("ai.model_keep_alive", "10m")   // Keep models loaded for 10 minutes
-	v.SetDefault("ai.http_response_header_timeout", "120s")
+	v.SetDefault("ai.http_response_header_timeout", "180s") // 3 minutes for slow model loading
+	v.SetDefault("ai.http_request_timeout", "600s")         // 10 minutes overall timeout for large requests
 	v.SetDefault("ai.consensus_quorum", 0.66)
 	v.SetDefault("ai.context_token_budget", 16000)   // Reasonable default for 128K context models
 	v.SetDefault("ai.enable_code_suggestions", true) // Include code suggestions by default
