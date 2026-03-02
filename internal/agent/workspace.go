@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // agentWorkspace holds the prepared workspace state for a session.
@@ -52,16 +53,35 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 	}, nil
 }
 
-// prepareWorkspace clones the project into the isolated workspace.
+// prepareWorkspace clones the project into the isolated workspace and sets the remote origin to the upstream URL.
 func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) error {
-	// Simple approach: rsync or cp -r, but git clone is better for a clean state
-	// Since we are already in a git repo, we can clone from o.projectRoot
+	// First, clone from the local project root for speed
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for workspace preparation
-	cmd := exec.CommandContext(ctx, "git", "clone", o.projectRoot, ".")
-	cmd.Dir = destDir
-	if output, err := cmd.CombinedOutput(); err != nil {
+	cloneCmd := exec.CommandContext(ctx, "git", "clone", o.projectRoot, ".")
+	cloneCmd.Dir = destDir
+	if output, err := cloneCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone failed: %w (output: %s)", err, string(output))
 	}
+
+	// Now detect the upstream origin URL from the primary project root
+	remoteCmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	remoteCmd.Dir = o.projectRoot
+	remoteOutput, err := remoteCmd.Output()
+	if err != nil {
+		o.logger.Warn("failed to detect project origin URL, push_branch may fail", "error", err)
+		return nil // Non-fatal, but push will fail later
+	}
+	upstreamURL := strings.TrimSpace(string(remoteOutput))
+
+	// Set origin to the actual upstream URL in the workspace
+	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", upstreamURL)
+	setRemoteCmd.Dir = destDir
+	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
+		o.logger.Warn("failed to set workspace origin to upstream URL", "url", upstreamURL, "error", err, "output", string(output))
+	} else {
+		o.logger.Info("workspace origin set to upstream URL", "url", upstreamURL)
+	}
+
 	return nil
 }
 

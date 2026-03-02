@@ -116,6 +116,11 @@ func (t *CreatePullRequest) Execute(ctx context.Context, args map[string]any) (a
 		opts.Draft = draft
 	}
 
+	// Validate head branch exists on remote
+	if _, err := t.GHClient.GetBranch(ctx, t.Repo.Owner, t.Repo.Name, head); err != nil {
+		return nil, fmt.Errorf("head branch %q does not exist on remote: %w. You MUST call push_branch before create_pull_request", head, err)
+	}
+
 	t.Logger.Info("create_pull_request: creating PR",
 		"owner", t.Repo.Owner,
 		"repo", t.Repo.Name,

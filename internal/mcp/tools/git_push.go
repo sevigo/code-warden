@@ -123,7 +123,7 @@ func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot strin
 
 	t.Logger.Info("push_branch: committing uncommitted changes")
 
-	addCmd := exec.CommandContext(ctx, "git", "add", "-u")
+	addCmd := exec.CommandContext(ctx, "git", "add", ".")
 	addCmd.Dir = projectRoot
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add changes: %w (output: %s)", err, string(out))

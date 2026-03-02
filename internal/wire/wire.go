@@ -115,10 +115,18 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		}
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
+		headerTimeout, err := time.ParseDuration(cfg.AI.HTTPResponseHeaderTimeout)
+		if err != nil {
+			logger.Warn("invalid http_response_header_timeout, using default 120s", "error", err)
+			headerTimeout = 120 * time.Second
+		}
+
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
-			ollama.WithHTTPClient(httpclient.DefaultClient),
+			ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
+				httpclient.WithResponseHeaderTimeout(headerTimeout),
+			))),
 			ollama.WithModel(cfg.AI.GeneratorModel),
 			ollama.WithLogger(logger),
 			ollama.WithRetryAttempts(3),
@@ -152,11 +160,19 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 			gemini.WithAPIKey(cfg.AI.GeminiAPIKey),
 		)
 	case "ollama":
+		headerTimeout, err := time.ParseDuration(cfg.AI.HTTPResponseHeaderTimeout)
+		if err != nil {
+			logger.Warn("invalid http_response_header_timeout, using default 120s", "error", err)
+			headerTimeout = 120 * time.Second
+		}
+
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
 			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
 			ollama.WithModel(cfg.AI.EmbedderModel),
-			ollama.WithHTTPClient(httpclient.DefaultClient),
+			ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
+				httpclient.WithResponseHeaderTimeout(headerTimeout),
+			))),
 			ollama.WithLogger(logger),
 			ollama.WithRetryAttempts(3),
 			ollama.WithRetryDelay(2 * time.Second),
@@ -235,10 +251,18 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 
 	logger.Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
 
+	headerTimeout, tErr := time.ParseDuration(cfg.AI.HTTPResponseHeaderTimeout)
+	if tErr != nil {
+		logger.Warn("invalid http_response_header_timeout, using default 120s", "error", tErr)
+		headerTimeout = 120 * time.Second
+	}
+
 	opts := []ollama.Option{
 		ollama.WithServerURL(cfg.AI.OllamaHost),
 		ollama.WithModel(cfg.AI.RerankerModel),
-		ollama.WithHTTPClient(httpclient.DefaultClient),
+		ollama.WithHTTPClient(httpclient.NewClient(httpclient.NewConfig(
+			httpclient.WithResponseHeaderTimeout(headerTimeout),
+		))),
 		ollama.WithLogger(logger),
 		ollama.WithRetryAttempts(3),
 		ollama.WithRetryDelay(2 * time.Second),
