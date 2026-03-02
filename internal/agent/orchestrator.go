@@ -485,18 +485,24 @@ Implement the issue described below. Follow these steps IN ORDER:
    - Only proceed when BOTH commands pass with exit code 0
 6. **Review** - Call review_code on your changes
    - CRITICAL: At the start of each review cycle, you MUST print 'AGENT_ITERATION: X' (where X is the current iteration number) on its own line.
-7. **Iterate** - If REQUEST_CHANGES, fix issues, run lint/test again, and review again
+   - CRITICAL: Check the verdict from review_code. If verdict is "APPROVE", proceed to step 8. If verdict is "REQUEST_CHANGES", proceed to step 7.
+7. **Iterate** - If REQUEST_CHANGES:
+   - Fix all issues identified in the review
+   - Run: make lint && make test (both must pass)
+   - Call review_code again
+   - Repeat until you receive APPROVE verdict (max 3 iterations)
 8. **Push** - Run: git push origin HEAD (or use push_branch tool)
    - CRITICAL: Your branch MUST exist on GitHub before creating a PR
    - If push_branch tool is not available, run: git push origin <branch-name>
-9. **Submit** - Call create_pull_request ONLY after successful push
+9. **Submit** - Call create_pull_request ONLY after receiving APPROVE verdict
 
 ## MANDATORY REQUIREMENTS (DO NOT SKIP):
 1. You MUST run 'make lint' and it MUST pass (exit code 0)
 2. You MUST run 'make test' and it MUST pass (exit code 0)
 3. You MUST call review_code tool for code review
-4. You MUST push your branch to GitHub BEFORE calling create_pull_request
-5. You MUST NOT create a PR until steps 1-4 are complete
+4. You MUST receive "APPROVE" verdict from review_code before creating a PR
+5. You MUST push your branch to GitHub BEFORE calling create_pull_request
+6. You MUST NOT create a PR until ALL above steps are complete
 
 ## CRITICAL: Branch Push Requirement
 The create_pull_request tool will FAIL with "422 Validation Failed" if the branch does not exist on GitHub.
@@ -504,6 +510,14 @@ You MUST call push_branch(branch_name) BEFORE create_pull_request.
 Example sequence:
   1. push_branch("agent/issue-123")  <- Push to GitHub
   2. create_pull_request(...)         <- Only after push succeeds
+
+## CRITICAL: Review Approval Requirement
+The review_code tool returns a JSON response with a "verdict" field.
+Possible verdict values:
+  - "APPROVE" - Code is approved, proceed to push and create PR
+  - "REQUEST_CHANGES" - Issues found, fix them and review again
+  - "COMMENT" - General feedback, treat as REQUEST_CHANGES
+You MUST wait for "APPROVE" verdict before creating a PR. Never skip this check.
 
 If you cannot complete any step, report what failed and why.
 At the end of your run, you MUST print exactly one line in this format:
