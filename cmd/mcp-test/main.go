@@ -421,6 +421,12 @@ func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRP
 	log.Printf("📨 Received: %s (id: %v)", req.Method, req.ID)
 
 	switch req.Method {
+	case "notifications/initialized",
+		"notifications/cancelled",
+		"notifications/progress",
+		"notifications/roots/list_changed",
+		"notifications/tools/list_changed":
+		return map[string]any{}, nil
 	case "initialize":
 		return map[string]any{
 			"protocolVersion": "2024-11-05",

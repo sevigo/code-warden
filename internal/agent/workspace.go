@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 )
 
 // agentWorkspace holds the prepared workspace state for a session.
@@ -33,6 +32,26 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 		return nil, fmt.Errorf("failed to prepare workspace at %s: %w", workspaceDir, err)
 	}
 
+	// Repoint origin to GitHub remote for pushing changes
+	remoteURL := fmt.Sprintf("https://github.com/%s/%s.git", session.Issue.RepoOwner, session.Issue.RepoName)
+	logURL := remoteURL // URL without token for safe logging
+
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token != "" {
+		remoteURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, session.Issue.RepoOwner, session.Issue.RepoName)
+	}
+
+	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", remoteURL)
+	setRemoteCmd.Dir = workspaceDir
+	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
+		o.logger.Warn("failed to set workspace origin to GitHub upstream", "error", err, "output", string(output))
+	} else {
+		o.logger.Info("workspace origin set to GitHub upstream", "url", logURL)
+	}
+
 	if err := o.writeOpencodeConfig(workspaceDir, session.ID); err != nil {
 		return nil, fmt.Errorf("failed to write opencode config: %w", err)
 	}
@@ -53,7 +72,7 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 	}, nil
 }
 
-// prepareWorkspace clones the project into the isolated workspace and sets the remote origin to the upstream URL.
+// prepareWorkspace clones the project into the isolated workspace.
 func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) error {
 	// First, clone from the local project root for speed
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for workspace preparation
@@ -61,25 +80,6 @@ func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) err
 	cloneCmd.Dir = destDir
 	if output, err := cloneCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone failed: %w (output: %s)", err, string(output))
-	}
-
-	// Now detect the upstream origin URL from the primary project root
-	remoteCmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
-	remoteCmd.Dir = o.projectRoot
-	remoteOutput, err := remoteCmd.Output()
-	if err != nil {
-		o.logger.Warn("failed to detect project origin URL, push_branch may fail", "error", err)
-		return nil // Non-fatal, but push will fail later
-	}
-	upstreamURL := strings.TrimSpace(string(remoteOutput))
-
-	// Set origin to the actual upstream URL in the workspace
-	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", upstreamURL)
-	setRemoteCmd.Dir = destDir
-	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
-		o.logger.Warn("failed to set workspace origin to upstream URL", "url", upstreamURL, "error", err, "output", string(output))
-	} else {
-		o.logger.Info("workspace origin set to upstream URL", "url", upstreamURL)
 	}
 
 	return nil
