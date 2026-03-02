@@ -81,12 +81,27 @@ func (e *EstimatingTokenizer) CountTokens(_ context.Context, text string) (int, 
 	return len(text) / 3, nil
 }
 
+// SafeTokenizer wraps an llms.Tokenizer and provides a fallback to estimation
+// if the primary tokenizer fails (e.g., when the provider rejects token counting calls).
+type SafeTokenizer struct {
+	base llms.Tokenizer
+}
+
+// CountTokens calls the base tokenizer but falls back to estimation on error.
+func (t *SafeTokenizer) CountTokens(ctx context.Context, text string) (int, error) {
+	if n, err := t.base.CountTokens(ctx, text); err == nil {
+		return n, nil
+	}
+	// Fallback to estimation if primary tokenizer fails
+	return len(text) / 3, nil
+}
+
 // AsTokenizer returns an llms.Tokenizer for the given model.
-// If the model implements llms.Tokenizer, it's returned directly.
-// Otherwise, an EstimatingTokenizer is returned as fallback.
+// If the model implements llms.Tokenizer, it's returned wrapped in a SafeTokenizer.
+// Otherwise, an EstimatingTokenizer is returned.
 func AsTokenizer(model llms.Model) llms.Tokenizer {
 	if t, ok := model.(llms.Tokenizer); ok {
-		return t
+		return &SafeTokenizer{base: t}
 	}
 	return NewEstimatingTokenizer()
 }
