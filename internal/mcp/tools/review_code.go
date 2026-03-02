@@ -2,15 +2,12 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/rag"
-	"github.com/sevigo/code-warden/internal/rag/review"
+	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -18,7 +15,6 @@ import (
 const (
 	maxDiffLength  = 1000000 // 1MB max diff
 	maxTitleLength = 500
-	reviewMaxAge   = 30 * time.Minute
 )
 
 // ReviewCode performs an internal code review.
@@ -28,8 +24,10 @@ type ReviewCode struct {
 	RepoConfig       *core.RepoConfig
 	ComparisonModels []string // Models for consensus review
 	ReviewsDir       string   // Directory to save review artifacts
-	ReviewTracker    ReviewTracker
-	Logger           *slog.Logger
+	// ReviewTracker records review results for PR enforcement.
+	// Always provided by the MCP server. The nil check is defensive programming.
+	ReviewTracker ReviewTracker
+	Logger        *slog.Logger
 }
 
 // ReviewCodeResponse is the response for review_code tool.
@@ -38,7 +36,8 @@ type ReviewCodeResponse struct {
 	Confidence  int               `json:"confidence"`
 	Summary     string            `json:"summary"`
 	Suggestions []core.Suggestion `json:"suggestions,omitempty"`
-	ModelsUsed  []string          `json:"models_used,omitempty"` // Models used in consensus
+	DiffHash    string            `json:"diff_hash,omitempty"` // Hash for tracking changes
+	ModelsUsed  []string          `json:"models_used,omitempty"`
 }
 
 func (t *ReviewCode) Name() string {
@@ -52,7 +51,8 @@ Verdict values:
 - "APPROVE" - Code is approved, proceed to create PR
 - "REQUEST_CHANGES" - Issues found, fix them and review again
 - "COMMENT" - General feedback, treat as REQUEST_CHANGES
-IMPORTANT: You MUST wait for APPROVE verdict before creating a PR.`
+IMPORTANT: You MUST wait for APPROVE verdict before creating a PR.
+Pass the returned diff_hash to create_pull_request to ensure code hasn't changed.`
 }
 
 func (t *ReviewCode) InputSchema() map[string]any {
@@ -77,7 +77,7 @@ func (t *ReviewCode) InputSchema() map[string]any {
 }
 
 func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, error) {
-	t.Logger.Info("review_code: executing tool", "args", args)
+	t.Logger.Info("review_code: executing tool")
 	diff, ok := args["diff"].(string)
 	if !ok || diff == "" {
 		return nil, fmt.Errorf("diff is required")
@@ -106,82 +106,36 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		InstallationID: 0,
 	}
 
-	// Generate diff hash for tracking
-	diffHash := hashDiff(diff)
+	executor := reviewpkg.NewExecutor(t.RagService, reviewpkg.Config{
+		ComparisonModels: t.ComparisonModels,
+		ReviewsDir:       t.ReviewsDir,
+		Logger:           t.Logger,
+	})
 
-	var structuredReview *core.StructuredReview
-	var rawReview string
-	var err error
-
-	// Use consensus review if comparison models are configured
-	if len(t.ComparisonModels) > 0 {
-		t.Logger.Info("using consensus review", "models", t.ComparisonModels)
-		structuredReview, rawReview, err = t.RagService.GenerateConsensusReview(
-			ctx,
-			t.RepoConfig,
-			t.Repo,
-			event,
-			t.ComparisonModels,
-			diff,
-			nil, // changedFiles extracted internally
-		)
-	} else {
-		t.Logger.Info("using single-model review")
-		structuredReview, rawReview, err = t.RagService.GenerateReview(
-			ctx,
-			t.RepoConfig,
-			t.Repo,
-			event,
-			diff,
-			nil,
-		)
-	}
-
+	result, err := executor.Execute(ctx, reviewpkg.Params{
+		RepoConfig: t.RepoConfig,
+		Repo:       t.Repo,
+		Event:      event,
+		Diff:       diff,
+	})
 	if err != nil {
 		t.Logger.Error("internal review failed", "error", err)
 		return nil, fmt.Errorf("review failed: %w", err)
 	}
 
-	// Save review artifact if reviews directory is configured
-	if t.ReviewsDir != "" && rawReview != "" {
-		ts := time.Now().Format("20060102-150405")
-		result := review.ComparisonResult{
-			Model:    "internal-review",
-			Review:   rawReview,
-			Duration: 0, // Not tracked for single review
-			Error:    nil,
-		}
-		review.SaveReviewArtifact(t.Logger, t.ReviewsDir, result, event, ts)
-	}
-
-	// Record the review result for PR enforcement
+	// Record the review result for PR enforcement (MCP-specific)
 	if t.ReviewTracker != nil {
-		t.ReviewTracker.RecordReview(structuredReview.Verdict, diffHash)
+		t.ReviewTracker.RecordReview(result.Review.Verdict, result.DiffHash)
 	}
-
-	t.Logger.Info("review completed",
-		"verdict", structuredReview.Verdict,
-		"confidence", structuredReview.Confidence,
-		"suggestions", len(structuredReview.Suggestions),
-		"diff_hash", diffHash,
-	)
 
 	response := ReviewCodeResponse{
-		Verdict:     structuredReview.Verdict,
-		Confidence:  structuredReview.Confidence,
-		Summary:     structuredReview.Summary,
-		Suggestions: structuredReview.Suggestions,
-	}
-
-	if len(t.ComparisonModels) > 0 {
-		response.ModelsUsed = t.ComparisonModels
+		Verdict:     result.Review.Verdict,
+		Confidence:  result.Review.Confidence,
+		Summary:     result.Review.Summary,
+		Suggestions: result.Review.Suggestions,
+		DiffHash:    result.DiffHash,
+		ModelsUsed:  result.ModelsUsed,
 	}
 
 	return response, nil
-}
-
-// hashDiff creates a short hash of the diff for tracking changes.
-func hashDiff(diff string) string {
-	h := sha256.Sum256([]byte(diff))
-	return hex.EncodeToString(h[:8])
 }

@@ -112,17 +112,15 @@ func NewOrchestrator(
 		repoConfig,
 		projectRoot,
 		logger,
+		mcp.Config{
+			ComparisonModels: config.ComparisonModels,
+			ReviewsDir:       config.ReviewsDir,
+		},
 	)
 
-	// Configure consensus review if comparison models are set
+	// Log configuration
 	if len(config.ComparisonModels) > 0 {
-		mcpServer.SetComparisonModels(config.ComparisonModels)
 		logger.Info("MCP server configured for consensus review", "models", config.ComparisonModels)
-	}
-
-	// Set reviews directory for saving artifacts
-	if config.ReviewsDir != "" {
-		mcpServer.SetReviewsDir(config.ReviewsDir)
 	}
 
 	absRoot, err := filepath.Abs(projectRoot)

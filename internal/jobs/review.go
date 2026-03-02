@@ -15,6 +15,7 @@ import (
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
+	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -167,7 +168,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			MCPAddr:               j.cfg.Agent.MCPAddr,
 			WorkingDir:            j.cfg.Agent.WorkingDir,
 			ComparisonModels:      j.cfg.AI.ComparisonModels,
-			ReviewsDir:            "reviews",
+			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 		},
 		j.logger,
 	)
@@ -484,40 +485,24 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		validLineMaps[f.Filename] = lines
 	}
 
-	var structuredReview *core.StructuredReview
-	var rawReview string
+	executor := reviewpkg.NewExecutor(j.ragService, reviewpkg.Config{
+		ComparisonModels: j.cfg.AI.ComparisonModels,
+		ReviewsDir:       j.cfg.AI.ReviewsDir,
+		Logger:           j.logger,
+	})
 
-	if len(j.cfg.AI.ComparisonModels) > 0 {
-		j.logger.Info("Starting consensus review", "models", j.cfg.AI.ComparisonModels)
-		structuredReview, rawReview, err = j.ragService.GenerateConsensusReview(
-			ctx,
-			env.repoConfig,
-			env.repo,
-			event,
-			j.cfg.AI.ComparisonModels,
-			diff,
-			changedFiles,
-		)
-	} else {
-		structuredReview, rawReview, err = j.ragService.GenerateReview(
-			ctx,
-			env.repoConfig,
-			env.repo,
-			event,
-			diff,
-			changedFiles,
-		)
-	}
+	result, err := executor.Execute(ctx, reviewpkg.Params{
+		RepoConfig:   env.repoConfig,
+		Repo:         env.repo,
+		Event:        event,
+		Diff:         diff,
+		ChangedFiles: changedFiles,
+	})
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to generate review: %w", err)
 	}
-	if structuredReview == nil || (structuredReview.Summary == "" && len(structuredReview.Suggestions) == 0) {
-		// Log the raw review for debugging purposes
-		j.logger.Error("generated review is empty or invalid", "raw_review", rawReview)
-		return nil, "", nil, errors.New("generated review is empty or invalid")
-	}
 
-	return structuredReview, rawReview, validLineMaps, nil
+	return result.Review, result.RawReview, validLineMaps, nil
 }
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
@@ -739,4 +724,15 @@ func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *cor
 		return core.DefaultRepoConfig()
 	}
 	return repoConfig
+}
+
+// firstNonEmpty returns the first non-empty string from the given strings.
+// If all strings are empty, returns the empty string.
+func firstNonEmpty(strings ...string) string {
+	for _, s := range strings {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
