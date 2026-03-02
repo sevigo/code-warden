@@ -43,14 +43,14 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 	if token != "" {
 		remoteURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, session.Issue.RepoOwner, session.Issue.RepoName)
 	}
+	// TODO: Replace env var fallback with installation token from o.ghClient when available
 
 	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", remoteURL)
 	setRemoteCmd.Dir = workspaceDir
 	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
-		o.logger.Warn("failed to set workspace origin to GitHub upstream", "error", err, "output", string(output))
-	} else {
-		o.logger.Info("workspace origin set to GitHub upstream", "url", logURL)
+		return nil, fmt.Errorf("failed to set workspace origin to GitHub upstream: %w (output: %s)", err, string(output))
 	}
+	o.logger.Info("workspace origin set to GitHub upstream", "url", logURL)
 
 	if err := o.writeOpencodeConfig(workspaceDir, session.ID); err != nil {
 		return nil, fmt.Errorf("failed to write opencode config: %w", err)

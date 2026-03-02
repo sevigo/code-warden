@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/textsplitter"
@@ -89,9 +90,12 @@ type SafeTokenizer struct {
 
 // CountTokens calls the base tokenizer but falls back to estimation on error.
 func (t *SafeTokenizer) CountTokens(ctx context.Context, text string) (int, error) {
-	if n, err := t.base.CountTokens(ctx, text); err == nil {
+	n, err := t.base.CountTokens(ctx, text)
+	if err == nil {
 		return n, nil
 	}
+	slog.Warn("primary tokenizer failed, falling back to estimation", "error", err)
+
 	// Fallback to estimation if primary tokenizer fails
 	return len(text) / 3, nil
 }

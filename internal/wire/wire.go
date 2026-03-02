@@ -63,6 +63,15 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	return &app.App{}, nil, nil
 }
 
+func parseHeaderTimeout(s string, logger *slog.Logger) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		logger.Warn("invalid http_response_header_timeout, using default 120s", "error", err)
+		return 120 * time.Second
+	}
+	return d
+}
+
 func provideSQLXDB(db *db.DB) *sqlx.DB {
 	return db.DB
 }
@@ -115,11 +124,7 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		}
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
 	case "ollama":
-		headerTimeout, err := time.ParseDuration(cfg.AI.HTTPResponseHeaderTimeout)
-		if err != nil {
-			logger.Warn("invalid http_response_header_timeout, using default 120s", "error", err)
-			headerTimeout = 120 * time.Second
-		}
+		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
@@ -160,11 +165,7 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 			gemini.WithAPIKey(cfg.AI.GeminiAPIKey),
 		)
 	case "ollama":
-		headerTimeout, err := time.ParseDuration(cfg.AI.HTTPResponseHeaderTimeout)
-		if err != nil {
-			logger.Warn("invalid http_response_header_timeout, using default 120s", "error", err)
-			headerTimeout = 120 * time.Second
-		}
+		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 
 		opts := []ollama.Option{
 			ollama.WithServerURL(cfg.AI.OllamaHost),
@@ -251,11 +252,7 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 
 	logger.Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
 
-	headerTimeout, tErr := time.ParseDuration(cfg.AI.HTTPResponseHeaderTimeout)
-	if tErr != nil {
-		logger.Warn("invalid http_response_header_timeout, using default 120s", "error", tErr)
-		headerTimeout = 120 * time.Second
-	}
+	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 
 	opts := []ollama.Option{
 		ollama.WithServerURL(cfg.AI.OllamaHost),

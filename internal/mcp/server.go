@@ -451,6 +451,13 @@ type jsonRPCError struct {
 // processRequest processes a JSON-RPC request and returns the result.
 func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRPCError) {
 	switch req.Method {
+	case "notifications/initialized",
+		"notifications/cancelled",
+		"notifications/progress",
+		"notifications/roots/list_changed",
+		"notifications/tools/list_changed":
+		return map[string]any{}, nil
+
 	case "tools/list":
 		tools := s.ListTools()
 		return map[string]any{
