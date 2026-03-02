@@ -16,28 +16,10 @@ import (
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/mcp/tools"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
 )
-
-// contextKey is an unexported type for context keys in this package.
-type contextKey string
-
-const projectRootKey contextKey = "projectRoot"
-
-// ProjectRootFromContext returns the per-session project root from context,
-// or empty string if not set.
-func ProjectRootFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(projectRootKey).(string); ok {
-		return v
-	}
-	return ""
-}
-
-// withProjectRoot returns a context with the given project root.
-func withProjectRoot(ctx context.Context, root string) context.Context {
-	return context.WithValue(ctx, projectRootKey, root)
-}
 
 // Server implements an MCP server for code-warden.
 type Server struct {
@@ -123,28 +105,28 @@ func NewServer(
 
 // registerTools registers all available MCP tools.
 func (s *Server) registerTools() {
-	s.tools["search_code"] = &SearchCodeTool{
-		vectorStore: s.vectorStore,
-		logger:      s.logger,
+	s.tools["search_code"] = &tools.SearchCode{
+		VectorStore: s.vectorStore,
+		Logger:      s.logger,
 	}
-	s.tools["get_arch_context"] = &GetArchContextTool{
-		vectorStore: s.vectorStore,
-		logger:      s.logger,
+	s.tools["get_arch_context"] = &tools.GetArchContext{
+		VectorStore: s.vectorStore,
+		Logger:      s.logger,
 	}
-	s.tools["get_symbol"] = &GetSymbolTool{
-		vectorStore: s.vectorStore,
-		logger:      s.logger,
+	s.tools["get_symbol"] = &tools.GetSymbol{
+		VectorStore: s.vectorStore,
+		Logger:      s.logger,
 	}
-	s.tools["get_structure"] = &GetStructureTool{
-		vectorStore: s.vectorStore,
-		projectRoot: s.projectRoot,
-		logger:      s.logger,
+	s.tools["get_structure"] = &tools.GetStructure{
+		VectorStore: s.vectorStore,
+		ProjectRoot: s.projectRoot,
+		Logger:      s.logger,
 	}
-	s.tools["review_code"] = &ReviewCodeTool{
-		ragService: s.ragService,
-		repo:       s.repo,
-		repoConfig: s.repoConfig,
-		logger:     s.logger,
+	s.tools["review_code"] = &tools.ReviewCode{
+		RagService: s.ragService,
+		Repo:       s.repo,
+		RepoConfig: s.repoConfig,
+		Logger:     s.logger,
 	}
 
 	// Register GitHub tools if ghClient is available
@@ -152,10 +134,25 @@ func (s *Server) registerTools() {
 		// Parse owner/name from FullName
 		owner, name := parseRepoFullName(s.repo.FullName)
 		if owner != "" && name != "" {
-			s.tools["create_pull_request"] = NewCreatePRTool(s.ghClient, owner, name, s.logger)
-			s.tools["list_issues"] = NewListIssuesTool(s.ghClient, owner, name, s.logger)
-			s.tools["get_issue"] = NewGetIssueTool(s.ghClient, owner, name, s.logger)
-			s.tools["push_branch"] = NewPushBranchTool(s.projectRoot, s.logger)
+			s.tools["create_pull_request"] = &tools.CreatePullRequest{
+				GHClient: s.ghClient,
+				Repo:     tools.RepoIdentifier{Owner: owner, Name: name},
+				Logger:   s.logger,
+			}
+			s.tools["list_issues"] = &tools.ListIssues{
+				GHClient: s.ghClient,
+				Repo:     tools.RepoIdentifier{Owner: owner, Name: name},
+				Logger:   s.logger,
+			}
+			s.tools["get_issue"] = &tools.GetIssue{
+				GHClient: s.ghClient,
+				Repo:     tools.RepoIdentifier{Owner: owner, Name: name},
+				Logger:   s.logger,
+			}
+			s.tools["push_branch"] = &tools.PushBranch{
+				ProjectRoot: s.projectRoot,
+				Logger:      s.logger,
+			}
 		}
 	}
 }
@@ -382,7 +379,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		}()
 		// Inject per-session project root into tool context
 		if session.projectRoot != "" {
-			toolCtx = withProjectRoot(toolCtx, session.projectRoot)
+			toolCtx = tools.WithProjectRoot(toolCtx, session.projectRoot)
 		}
 	} else {
 		toolCtx = r.Context()
