@@ -74,6 +74,11 @@ type RepoConfig struct {
 	// Exclusion of specific files by their relative path.
 	// Example: ["config/secrets.json", "scripts/temp.py"]
 	ExcludeFiles []string `yaml:"exclude_files"`
+
+	// VerifyCommands are commands to run before code review (e.g., lint, test).
+	// Example: ["make lint", "make test"] or ["go vet ./...", "go test ./..."]
+	// If empty, defaults to ["make lint", "make test"].
+	VerifyCommands []string `yaml:"verify_commands"`
 }
 
 // DefaultRepoConfig returns a config with default values.
@@ -83,5 +88,6 @@ func DefaultRepoConfig() *RepoConfig {
 		ExcludeDirs:        []string{},
 		ExcludeExts:        []string{},
 		ExcludeFiles:       []string{},
+		VerifyCommands:     []string{}, // Empty means use agent defaults
 	}
 }

@@ -1,0 +1,18 @@
+You are an expert software architect analyzing a codebase.
+
+Below are architectural summaries for various directories in the repository:
+
+{{.Summaries}}
+
+Based ONLY on the provided summaries, synthesize a single, concise "Project Context Document".
+Your goal is to identify the global, repository-wide rules, technologies, and patterns so an autonomous coding agent knows how to work within this codebase.
+
+Focus on:
+1. Core Architecture: What are the main packages/modules and their responsibilities?
+2. Coding Standards:
+   - What logging framework is used? (e.g., standard log, slog, zap) How is it passed around?
+   - What testing framework or approach is used? (e.g., standard testing, table-driven tests, testify)
+   - How are errors handled?
+3. Key Dependencies/Frameworks: Any dominant libraries or frameworks that dictate how code should be written.
+
+Format your response in Markdown. Do NOT include greetings or extraneous text. Be concise and authoritative.

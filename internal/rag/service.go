@@ -40,6 +40,7 @@ type Service interface {
 	ProcessFile(ctx context.Context, repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
+	GenerateProjectContext(ctx context.Context, collectionName, embedderModelName string) (string, error)
 	GetTextSplitter() textsplitter.TextSplitter
 }
 
@@ -388,4 +389,9 @@ func (r *ragService) GenerateComparisonSummaries(ctx context.Context, models []s
 // GenerateArchSummaries generates architectural summaries for the repository.
 func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error {
 	return r.contextBuilder.GenerateArchSummaries(ctx, collectionName, embedderModelName, repoPath, targetPaths)
+}
+
+// GenerateProjectContext synthesizes all architectural summaries into a global project context.
+func (r *ragService) GenerateProjectContext(ctx context.Context, collectionName, embedderModelName string) (string, error) {
+	return r.contextBuilder.GenerateProjectContext(ctx, collectionName, embedderModelName)
 }

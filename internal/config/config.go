@@ -56,11 +56,28 @@ type AgentConfig struct {
 
 	// WorkingDir is the directory for agent workspaces.
 	WorkingDir string `mapstructure:"working_dir"`
+
+	// MCPTimeout is the timeout for individual MCP tool calls (e.g., "5m").
+	// This is used to configure OpenCode to wait longer for slow tool responses.
+	MCPTimeout string `mapstructure:"mcp_timeout"`
 }
 
 // GetTimeout parses and returns the timeout duration.
 func (c *AgentConfig) GetTimeout() (time.Duration, error) {
 	return time.ParseDuration(c.Timeout)
+}
+
+// GetMCPTimeout parses and returns the MCP tool timeout duration.
+// Returns the default of 5 minutes if not configured or invalid.
+func (c *AgentConfig) GetMCPTimeout() time.Duration {
+	if c.MCPTimeout == "" {
+		return 5 * time.Minute
+	}
+	d, err := time.ParseDuration(c.MCPTimeout)
+	if err != nil {
+		return 5 * time.Minute
+	}
+	return d
 }
 
 // Validate validates the agent configuration.
@@ -322,6 +339,7 @@ func LoadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
+//nolint:funlen // Defaults configuration tends to be long
 func setDefaults(v *viper.Viper) {
 	// Server
 	v.SetDefault("server.port", "8080")
@@ -388,6 +406,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.max_concurrent_sessions", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
+	v.SetDefault("agent.mcp_timeout", "5m")
 	v.SetDefault("agent.working_dir", "") // Empty means disabled/no default; must be explicitly set
 }
 

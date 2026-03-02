@@ -26,6 +26,7 @@ const (
 	ValidateSnippetsBatchPrompt PromptKey = "validate_snippets_batch"
 	IntentExtractionPrompt      PromptKey = "intent_extraction"
 	ReuseVerificationPrompt     PromptKey = "reuse_verification"
+	ProjectContextPrompt        PromptKey = "project_context"
 )
 
 type PromptManager struct {

@@ -21,6 +21,7 @@ type Builder interface {
 	BuildContextForPrompt(docs []schema.Document) string
 	GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
+	GenerateProjectContext(ctx context.Context, collectionName, embedderModelName string) (string, error)
 }
 
 // builderImpl implements context building logic.

@@ -56,7 +56,8 @@ func (s *Scanner) generateAndSaveDocumentation(localPath string) (map[string]any
 	}, nil
 }
 
-func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bool) error {
+//nolint:gocognit,funlen // Main scanning loop with state management
+func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, onlyContext bool) error {
 	s.Verbose = verbose
 	s.startTime = time.Now()
 
@@ -77,7 +78,28 @@ func (s *Scanner) Scan(ctx context.Context, input string, force bool, verbose bo
 	}
 	s.printCollection(repoRecord.QdrantCollectionName)
 
-	// 3. Load State & Initialize Progress
+	// 3. Early check for context generation ONLY
+	if onlyContext {
+		s.Manager.logger.Info("Running Context Generation ONLY mode")
+		contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
+		if err != nil {
+			return fmt.Errorf("failed to generate project context: %w", err)
+		}
+
+		repoRecord.GeneratedContext = contextDoc
+		now := time.Now()
+		repoRecord.ContextUpdatedAt.Time = now
+		repoRecord.ContextUpdatedAt.Valid = true
+
+		if err := s.Manager.store.UpdateRepository(ctx, repoRecord); err != nil {
+			return fmt.Errorf("failed to save generated context to DB: %w", err)
+		}
+
+		s.Manager.logger.Info("✅ Project Context successfully generated and saved to database.")
+		return nil
+	}
+
+	// 4. Load State & Initialize Progress
 	stateMgr := NewStateManager(s.Manager.store, repoRecord.ID)
 	scanState, progress, err := stateMgr.LoadState(ctx)
 	if err != nil {
