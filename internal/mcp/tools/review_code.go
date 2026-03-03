@@ -136,6 +136,12 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 	// Record the review result for PR enforcement (MCP-specific)
 	if t.ReviewTracker != nil {
 		t.ReviewTracker.RecordReview(result.Review.Verdict, result.DiffHash)
+		// Record the changed files for controlled commits
+		fileNames := make([]string, len(changedFiles))
+		for i, f := range changedFiles {
+			fileNames[i] = f.Filename
+		}
+		t.ReviewTracker.RecordReviewFiles(fileNames)
 	}
 
 	response := ReviewCodeResponse{

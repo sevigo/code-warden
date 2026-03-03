@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/gitutil"
@@ -16,6 +17,10 @@ type PushBranch struct {
 	ProjectRoot string
 	GHToken     string // GitHub installation token for authentication
 	Logger      *slog.Logger
+	// ReviewTracker provides access to reviewed files list.
+	// If set and a review was performed, only reviewed files will be committed.
+	// If set but no review was performed (nil result), all changes are staged with a warning.
+	ReviewTracker ReviewTracker
 }
 
 func (t *PushBranch) Name() string {
@@ -24,6 +29,11 @@ func (t *PushBranch) Name() string {
 
 func (t *PushBranch) Description() string {
 	return `Push current local changes to a remote branch.
+
+IMPORTANT: You MUST call review_code before push_branch to ensure only reviewed
+files are committed. If no review has been performed, all pending changes will
+be committed (not recommended).
+
 You MUST call this before create_pull_request to ensure the remote branch exists.`
 }
 
@@ -112,31 +122,100 @@ func (t *PushBranch) ensureBranch(ctx context.Context, projectRoot, branch strin
 }
 
 // commitPendingChanges stages and commits any uncommitted changes.
+// If a review was performed (ReviewTracker returns non-nil slice), only those
+// files are staged. If no review was performed (nil result), all changes are staged.
 func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot string) error {
+	hasChanges, err := t.hasUncommittedChanges(ctx, projectRoot)
+	if err != nil || !hasChanges {
+		return err
+	}
+
+	// Determine which files to stage
+	reviewedFiles := t.getReviewedFiles()
+	if reviewedFiles == nil {
+		// No review performed - stage all changes
+		return t.stageAllAndCommit(ctx, projectRoot)
+	}
+
+	// Review was performed - stage only reviewed files
+	return t.stageReviewedAndCommit(ctx, projectRoot, reviewedFiles)
+}
+
+// hasUncommittedChanges checks if there are any uncommitted changes.
+func (t *PushBranch) hasUncommittedChanges(ctx context.Context, projectRoot string) (bool, error) {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = projectRoot
 	out, err := statusCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to check git status: %w", err)
+		return false, fmt.Errorf("failed to check git status: %w", err)
 	}
-	if len(strings.TrimSpace(string(out))) == 0 {
-		return nil // nothing to commit
+	return len(strings.TrimSpace(string(out))) > 0, nil
+}
+
+// getReviewedFiles returns reviewed files from the tracker, or nil if no review was performed.
+func (t *PushBranch) getReviewedFiles() []string {
+	if t.ReviewTracker == nil {
+		return nil
 	}
+	files := t.ReviewTracker.GetLastReviewFiles()
+	// nil means no review, empty slice means review found no files
+	return files
+}
 
-	t.Logger.Info("push_branch: committing uncommitted changes")
-
+// stageAllAndCommit stages all changes and creates a commit.
+func (t *PushBranch) stageAllAndCommit(ctx context.Context, projectRoot string) error {
+	t.Logger.Warn("push_branch: no review found, staging all changes (review_code should be called first)")
 	addCmd := exec.CommandContext(ctx, "git", "add", ".")
 	addCmd.Dir = projectRoot
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add changes: %w (output: %s)", err, string(out))
 	}
+	return t.createCommit(ctx, projectRoot)
+}
 
+// stageReviewedAndCommit stages only reviewed files and creates a commit.
+func (t *PushBranch) stageReviewedAndCommit(ctx context.Context, projectRoot string, files []string) error {
+	if len(files) == 0 {
+		t.Logger.Info("push_branch: review completed but no files to commit")
+		return nil
+	}
+
+	validFiles := t.validateFilePaths(files)
+	if len(validFiles) == 0 {
+		t.Logger.Info("push_branch: review completed but all files rejected as suspicious")
+		return nil
+	}
+
+	t.Logger.Info("push_branch: staging reviewed files", "count", len(validFiles))
+	args := append([]string{"add"}, validFiles...)
+	addCmd := exec.CommandContext(ctx, "git", args...)
+	addCmd.Dir = projectRoot
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add reviewed files: %w (output: %s)", err, string(out))
+	}
+	return t.createCommit(ctx, projectRoot)
+}
+
+// validateFilePaths filters out suspicious file paths (absolute paths, path traversal).
+func (t *PushBranch) validateFilePaths(files []string) []string {
+	valid := make([]string, 0, len(files))
+	for _, file := range files {
+		if filepath.IsAbs(file) || strings.Contains(file, "..") {
+			t.Logger.Warn("push_branch: rejecting suspicious file path", "file", file)
+			continue
+		}
+		valid = append(valid, file)
+	}
+	return valid
+}
+
+// createCommit creates a commit with the staged changes.
+func (t *PushBranch) createCommit(ctx context.Context, projectRoot string) error {
 	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", "Automated commit from code-warden agent")
 	commitCmd.Dir = projectRoot
-	if out, err := commitCmd.CombinedOutput(); err != nil {
-		if !strings.Contains(string(out), "nothing to commit") {
-			return fmt.Errorf("failed to commit changes: %w (output: %s)", err, string(out))
-		}
+	out, err := commitCmd.CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "nothing to commit") {
+		return fmt.Errorf("failed to commit changes: %w (output: %s)", err, string(out))
 	}
 	return nil
 }

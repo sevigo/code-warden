@@ -34,4 +34,13 @@ type ReviewTracker interface {
 	// Returns error if no review found, review is not approved, or review is stale.
 	// The diffHash parameter should match the hash of the current diff to detect changes.
 	CheckApproval(diffHash string) error
+
+	// RecordReviewFiles stores the list of files that were changed in the reviewed diff.
+	// This is used to ensure only reviewed files are committed, preventing accidental
+	// commits of build artifacts or other unreviewed changes.
+	RecordReviewFiles(files []string)
+
+	// GetLastReviewFiles returns the files from the last review.
+	// Returns nil if no review has been recorded.
+	GetLastReviewFiles() []string
 }
