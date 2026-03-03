@@ -299,24 +299,28 @@ func (s *Server) CheckApproval(diffHash string) error {
 }
 
 // RecordReviewFiles stores the list of files that were changed in the reviewed diff.
+// A copy of the slice is stored to prevent aliasing issues.
 func (s *Server) RecordReviewFiles(files []string) {
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
 	if s.lastReviewResult == nil {
 		s.lastReviewResult = &reviewResult{}
 	}
-	s.lastReviewResult.Files = files
+	// Copy the slice to prevent aliasing issues
+	s.lastReviewResult.Files = append([]string(nil), files...)
 	s.logger.Info("review files recorded", "file_count", len(files))
 }
 
-// GetLastReviewFiles returns the files from the last review.
+// GetLastReviewFiles returns a copy of the files from the last review.
+// Returns nil if no review has been recorded.
 func (s *Server) GetLastReviewFiles() []string {
 	s.reviewMu.RLock()
 	defer s.reviewMu.RUnlock()
 	if s.lastReviewResult == nil {
 		return nil
 	}
-	return s.lastReviewResult.Files
+	// Return a copy to prevent aliasing issues
+	return append([]string(nil), s.lastReviewResult.Files...)
 }
 
 // CallTool executes a tool by name.

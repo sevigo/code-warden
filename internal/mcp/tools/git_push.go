@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/gitutil"
@@ -17,7 +18,8 @@ type PushBranch struct {
 	GHToken     string // GitHub installation token for authentication
 	Logger      *slog.Logger
 	// ReviewTracker provides access to reviewed files list.
-	// If set, only reviewed files will be committed.
+	// If set and a review was performed, only reviewed files will be committed.
+	// If set but no review was performed (nil result), all changes are staged with a warning.
 	ReviewTracker ReviewTracker
 }
 
@@ -120,8 +122,8 @@ func (t *PushBranch) ensureBranch(ctx context.Context, projectRoot, branch strin
 }
 
 // commitPendingChanges stages and commits any uncommitted changes.
-// If ReviewTracker has reviewed files, only those files are staged.
-// Otherwise, all pending changes are staged (fallback behavior).
+// If a review was performed (ReviewTracker returns non-nil slice), only those
+// files are staged. If no review was performed (nil result), all changes are staged.
 func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot string) error {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = projectRoot
@@ -134,27 +136,48 @@ func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot strin
 	}
 
 	// Get reviewed files if available
-	var filesToCommit []string
+	// nil means no review was performed, empty slice means review found no files
+	var reviewedFiles []string
+	var reviewPerformed bool
 	if t.ReviewTracker != nil {
-		filesToCommit = t.ReviewTracker.GetLastReviewFiles()
+		reviewedFiles = t.ReviewTracker.GetLastReviewFiles()
+		reviewPerformed = reviewedFiles != nil
 	}
 
-	t.Logger.Info("push_branch: committing changes", "reviewed_files", len(filesToCommit))
-
-	// Stage files
-	if len(filesToCommit) > 0 {
-		// Only stage the reviewed files
-		for _, file := range filesToCommit {
-			addCmd := exec.CommandContext(ctx, "git", "add", file)
-			addCmd.Dir = projectRoot
-			if out, err := addCmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("failed to add file %q: %w (output: %s)", file, err, string(out))
+	if reviewPerformed {
+		if len(reviewedFiles) > 0 {
+			// Validate and sanitize file paths to prevent path traversal
+			validFiles := make([]string, 0, len(reviewedFiles))
+			for _, file := range reviewedFiles {
+				// Reject absolute paths and path traversal attempts
+				if filepath.IsAbs(file) || strings.Contains(file, "..") {
+					t.Logger.Warn("push_branch: rejecting suspicious file path", "file", file)
+					continue
+				}
+				validFiles = append(validFiles, file)
 			}
+
+			if len(validFiles) > 0 {
+				t.Logger.Info("push_branch: staging reviewed files", "count", len(validFiles))
+				// Batch git add arguments for efficiency (single git process)
+				args := append([]string{"add"}, validFiles...)
+				addCmd := exec.CommandContext(ctx, "git", args...)
+				addCmd.Dir = projectRoot
+				if out, err := addCmd.CombinedOutput(); err != nil {
+					return fmt.Errorf("failed to add reviewed files: %w (output: %s)", err, string(out))
+				}
+			} else {
+				t.Logger.Info("push_branch: review completed but all files rejected as suspicious")
+				return nil // nothing valid to commit
+			}
+		} else {
+			// Review was performed but found no files to commit
+			t.Logger.Info("push_branch: review completed but no files to commit")
+			return nil
 		}
-		t.Logger.Info("push_branch: staged reviewed files", "count", len(filesToCommit))
 	} else {
-		// Fallback: stage all changes (old behavior)
-		t.Logger.Warn("push_branch: no reviewed files found, staging all changes (review_code should be called first)")
+		// No review was performed - fallback to staging all changes
+		t.Logger.Warn("push_branch: no review found, staging all changes (review_code should be called first)")
 		addCmd := exec.CommandContext(ctx, "git", "add", ".")
 		addCmd.Dir = projectRoot
 		if out, err := addCmd.CombinedOutput(); err != nil {
