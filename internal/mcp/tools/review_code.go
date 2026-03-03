@@ -147,5 +147,6 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		ModelsUsed:  result.ModelsUsed,
 	}
 
+	t.Logger.Info("🏁 Code review process concluded", "verdict", response.Verdict)
 	return response, nil
 }

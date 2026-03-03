@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -41,6 +42,7 @@ type Service interface {
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateProjectContext(ctx context.Context, collectionName, embedderModelName string) (string, error)
+	GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error
 	GetTextSplitter() textsplitter.TextSplitter
 }
 
@@ -349,6 +351,21 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	// Generate architectural summaries for directories (post-processing)
 	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, nil); err != nil {
 		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
+	}
+
+	// Phase 8: Synthesize the global Project Context document (REDUCE)
+	r.logger.Info("📉 Synthesizing global Project Context document", "repo", repo.FullName)
+	projectContext, err := r.GenerateProjectContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName)
+	if err != nil {
+		r.logger.Warn("failed to synthesize project context, continuing without it", "error", err)
+	} else if projectContext != "" {
+		repo.GeneratedContext = projectContext
+		repo.ContextUpdatedAt = sql.NullTime{Time: time.Now(), Valid: true}
+		if err := r.store.UpdateRepository(ctx, repo); err != nil {
+			r.logger.Error("failed to save generated context to database", "error", err)
+		} else {
+			r.logger.Info("✅ Global Project Context document saved to database", "length", len(projectContext))
+		}
 	}
 	return nil
 }

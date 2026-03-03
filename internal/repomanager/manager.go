@@ -31,7 +31,9 @@ type RepoManager interface {
 	GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error)
 	UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error
 	ScanLocalRepo(ctx context.Context, repoPath, repoFullName string, force bool) (*core.UpdateResult, error)
-	// ClearLocks removes all cached repository locks to free memory.
+	GetRepoRecordByPath(ctx context.Context, repoPath string) (*storage.Repository, error)
+	LoadRepoConfig(repoPath string) (*core.RepoConfig, error)
+	// Clear Locks removes all cached repository locks to free memory.
 	ClearLocks()
 }
 
@@ -70,6 +72,18 @@ func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName stri
 
 func (m *manager) GetRepoRecord(ctx context.Context, repoFullName string) (*storage.Repository, error) {
 	return m.store.GetRepositoryByFullName(ctx, repoFullName)
+}
+
+func (m *manager) GetRepoRecordByPath(ctx context.Context, repoPath string) (*storage.Repository, error) {
+	absPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return m.store.GetRepositoryByClonePath(ctx, absPath)
+}
+
+func (m *manager) LoadRepoConfig(repoPath string) (*core.RepoConfig, error) {
+	return config.LoadRepoConfig(repoPath)
 }
 
 func (m *manager) UpdateRepoSHA(ctx context.Context, repoFullName, newSHA string) error {

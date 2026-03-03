@@ -650,6 +650,12 @@ func getToolIcon(name string) string {
 		return "🧩"
 	case "get_structure":
 		return "📂"
+	case "view_file":
+		return "📖"
+	case "list_dir":
+		return "📁"
+	case "grep_search":
+		return "🔎"
 	case "review_code":
 		return "⚖️"
 	case "push_branch":
@@ -658,6 +664,12 @@ func getToolIcon(name string) string {
 		return "📦"
 	case "list_issues", "get_issue":
 		return "🎫"
+	case "run_command":
+		return "💻"
+	case "write_file":
+		return "💾"
+	case "replace_file_content", "multi_replace_file_content":
+		return "📝"
 	default:
 		return "🛠️"
 	}
