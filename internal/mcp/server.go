@@ -55,7 +55,8 @@ type Server struct {
 type reviewResult struct {
 	Verdict   string
 	Timestamp time.Time
-	DiffHash  string // Hash of the reviewed diff to detect changes
+	DiffHash  string   // Hash of the reviewed diff to detect changes
+	Files     []string // Files that were changed in the reviewed diff
 }
 
 // sseSession represents an active SSE connection.
@@ -179,9 +180,10 @@ func (s *Server) registerTools() {
 				Logger:   s.logger,
 			}
 			s.tools["push_branch"] = &tools.PushBranch{
-				ProjectRoot: s.projectRoot,
-				GHToken:     s.ghToken,
-				Logger:      s.logger,
+				ProjectRoot:   s.projectRoot,
+				GHToken:       s.ghToken,
+				Logger:        s.logger,
+				ReviewTracker: s, // Provides access to reviewed files
 			}
 		}
 	}
@@ -294,6 +296,27 @@ func (s *Server) CheckApproval(diffHash string) error {
 		"review_verdict", s.lastReviewResult.Verdict,
 		"review_age", time.Since(s.lastReviewResult.Timestamp))
 	return nil
+}
+
+// RecordReviewFiles stores the list of files that were changed in the reviewed diff.
+func (s *Server) RecordReviewFiles(files []string) {
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+	if s.lastReviewResult == nil {
+		s.lastReviewResult = &reviewResult{}
+	}
+	s.lastReviewResult.Files = files
+	s.logger.Info("review files recorded", "file_count", len(files))
+}
+
+// GetLastReviewFiles returns the files from the last review.
+func (s *Server) GetLastReviewFiles() []string {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
+	if s.lastReviewResult == nil {
+		return nil
+	}
+	return s.lastReviewResult.Files
 }
 
 // CallTool executes a tool by name.
