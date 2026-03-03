@@ -1,0 +1,157 @@
+diff --git a/go.mod b/go.mod
+index e425eb1..26c08a3 100644
+--- a/go.mod
++++ b/go.mod
+@@ -18,7 +18,7 @@ require (
+ 	github.com/google/wire v0.6.0
+ 	github.com/jmoiron/sqlx v1.4.0
+ 	github.com/lib/pq v1.11.1
+-	github.com/sevigo/goframe v0.29.1
++	github.com/sevigo/goframe v0.30.0
+ 	github.com/spf13/cobra v1.9.1
+ 	github.com/spf13/viper v1.20.1
+ 	github.com/stretchr/testify v1.11.1
+diff --git a/go.sum b/go.sum
+index 3f04bb1..7a9b48f 100644
+--- a/go.sum
++++ b/go.sum
+@@ -267,8 +267,8 @@ github.com/schollz/progressbar/v2 v2.15.0 h1:dVzHQ8fHRmtPjD3K10jT3Qgn/+H+92jhPrh
+ github.com/schollz/progressbar/v2 v2.15.0/go.mod h1:UdPq3prGkfQ7MOzZKlDRpYKcFqEMczbD7YmbPgpzKMI=
+ github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 h1:n661drycOFuPLCN3Uc8sB6B/s6Z4t2xvBgU1htSHuq8=
+ github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3/go.mod h1:A0bzQcvG0E7Rwjx0REVgAGH58e96+X0MeOfepqsbeW4=
+-github.com/sevigo/goframe v0.29.1 h1:wkrjnKb8v6Wr1/atq2797WrwCr9kQj/mILjAn08djGc=
+-github.com/sevigo/goframe v0.29.1/go.mod h1:KyFDiWUZOfKlxBMc1yVLXBra1elkrXacoig6sRxa6K4=
++github.com/sevigo/goframe v0.30.0 h1:PNtKeSGVap8HDvoHJN5DhRSaedRyb/PU3ArSLpGfegE=
++github.com/sevigo/goframe v0.30.0/go.mod h1:KyFDiWUZOfKlxBMc1yVLXBra1elkrXacoig6sRxa6K4=
+ github.com/sirupsen/logrus v1.7.0/go.mod h1:yWOB1SBYBC5VeMP7gHvWumXLIWorT60ONWic61uBYv0=
+ github.com/skeema/knownhosts v1.3.1 h1:X2osQ+RAjK76shCbvhHHHVl3ZlgDm8apHEHFqRjnBY8=
+ github.com/skeema/knownhosts v1.3.1/go.mod h1:r7KTdC8l4uxWRyK2TpQZ/1o5HaSzh06ePQNxPwTcfiY=
+diff --git a/internal/rag/contextpkg/reduce.go b/internal/rag/contextpkg/reduce.go
+index 036deaf..a1c9ab0 100644
+--- a/internal/rag/contextpkg/reduce.go
++++ b/internal/rag/contextpkg/reduce.go
+@@ -5,7 +5,9 @@ import (
+ 	"fmt"
+ 	"strings"
+ 
++	"github.com/sevigo/goframe/chains"
+ 	"github.com/sevigo/goframe/llms"
++	"github.com/sevigo/goframe/schema"
+ 	"github.com/sevigo/goframe/vectorstores"
+ 
+ 	"github.com/sevigo/code-warden/internal/llm"
+@@ -20,57 +22,73 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
+ 
+ 	scopedStore := b.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
+ 
+-	limit := b.cfg.AIConfig.MaxContextSummaries
+-	if limit <= 0 {
+-		limit = 1000
+-	}
++	// Define MAP function: fetches architectural summaries from vector store
++	mapFunc := func(ctx context.Context, input any) ([]schema.Document, error) {
++		limit := b.cfg.AIConfig.MaxContextSummaries
++		if limit <= 0 {
++			limit = 1000
++		}
+ 
+-	// 1. Fetch all architectural summaries for the repository
+-	// Using a generic search "summary" with a high limit to get all of them
+-	docs, err := scopedStore.SimilaritySearch(ctx, "summary", limit,
+-		vectorstores.WithFilters(map[string]any{
+-			"chunk_type": "arch",
+-		}),
+-	)
+-	if err != nil {
+-		return "", fmt.Errorf("failed to fetch architectural summaries: %w", err)
+-	}
++		docs, err := scopedStore.SimilaritySearch(ctx, "summary", limit,
++			vectorstores.WithFilters(map[string]any{
++				"chunk_type": "arch",
++			}),
++		)
++		if err != nil {
++			return nil, fmt.Errorf("failed to fetch architectural summaries: %w", err)
++		}
+ 
+-	if len(docs) == 0 {
+-		b.cfg.Logger.Warn("no architectural summaries found to generate context from")
+-		return "", nil // Return empty, nothing to summarize
++		if len(docs) == 0 {
++			b.cfg.Logger.Warn("no architectural summaries found to generate context from")
++			return nil, nil // Return empty to signal no docs
++		}
++
++		return docs, nil
+ 	}
+ 
+-	// 2. Combine them into a single string for the prompt
+-	var combinedSummaries strings.Builder
+-	for _, doc := range docs {
+-		source, _ := doc.Metadata["source"].(string)
+-		if source == "" {
+-			source = "unknown directory"
++	// Define REDUCE function: synthesizes documents into project context
++	reduceFunc := func(ctx context.Context, docs []schema.Document) (string, error) {
++		if len(docs) == 0 {
++			return "", nil
+ 		}
+-		combinedSummaries.WriteString(fmt.Sprintf("## Directory: %s\n%s\n\n", source, doc.PageContent))
+-	}
+ 
+-	// 3. Render the prompt
+-	promptData := map[string]string{
+-		"Summaries": combinedSummaries.String(),
+-	}
++		// Combine documents into a single string for the prompt
++		var combinedSummaries strings.Builder
++		for _, doc := range docs {
++			source, _ := doc.Metadata["source"].(string)
++			if source == "" {
++				source = "unknown directory"
++			}
++			combinedSummaries.WriteString(fmt.Sprintf("## Directory: %s\n%s\n\n", source, doc.PageContent))
++		}
+ 
+-	prompt, err := b.cfg.PromptMgr.Render(llm.ProjectContextPrompt, promptData)
+-	if err != nil {
+-		return "", fmt.Errorf("failed to render project context prompt: %w", err)
++		promptData := map[string]string{
++			"Summaries": combinedSummaries.String(),
++		}
++
++		prompt, err := b.cfg.PromptMgr.Render(llm.ProjectContextPrompt, promptData)
++		if err != nil {
++			return "", fmt.Errorf("failed to render project context prompt: %w", err)
++		}
++
++		response, err := llms.GenerateFromSinglePrompt(ctx, b.cfg.GeneratorLLM, prompt)
++		if err != nil {
++			return "", fmt.Errorf("failed to generate project context: %w", err)
++		}
++
++		b.cfg.Logger.Info("project context document generated successfully",
++			"incoming_summaries", len(docs),
++			"output_length", len(response),
++		)
++
++		return response, nil
+ 	}
+ 
+-	// 4. Call Generator LLM (the REDUCE step)
+-	response, err := llms.GenerateFromSinglePrompt(ctx, b.cfg.GeneratorLLM, prompt)
++	chain, err := chains.NewDocumentMapReduceChain(mapFunc, reduceFunc)
+ 	if err != nil {
+-		return "", fmt.Errorf("failed to generate project context: %w", err)
++		return "", fmt.Errorf("failed to create document map reduce chain: %w", err)
+ 	}
+ 
+-	b.cfg.Logger.Info("project context document generated successfully",
+-		"incoming_summaries", len(docs),
+-		"output_length", len(response),
+-	)
+-
+-	return response, nil
++	// Execute the chain - input is ignored in this case since mapFunc handles fetching
++	return chain.Execute(ctx, nil)
+ }
