@@ -164,11 +164,17 @@ Provides JSON-RPC 2.0 interface over HTTP/SSE:
 | `get_arch_context` | `{directory}` | `{found, summaries[]}` | Get architectural summary for directory |
 | `get_symbol` | `{name}` | `{found, definitions[]}` | Get type/function definition |
 | `get_structure` | `{}` | `{projectRoot, directories[]}` | Get project structure |
-| `review_code` | `{diff, title?, description?}` | `{verdict, confidence, summary, suggestions}` | **5-stage RAG review** |
+| `review_code` | `{diff, title?, description?}` | `{verdict, confidence, summary, suggestions}` | **Single-model RAG review** (not consensus) |
 | `push_branch` | `{branch, force?}` | `{status, message}` | Push local branch to remote |
 | `create_pull_request` | `{title, body, head, base?, draft?}` | `{number, url, state}` | Create GitHub PR |
 | `list_issues` | `{state?, labels?, limit?}` | `{count, issues[]}` | List repository issues |
 | `get_issue` | `{number}` | `{number, title, body, ...}` | Get issue details |
+
+**Note on `review_code` Model Selection:**
+- The agent's `review_code` tool uses a **single model** for review, not full consensus review
+- If `comparison_models` is configured, one model is randomly selected for faster review
+- If `comparison_models` is empty, the `generator_model` is used
+- This keeps review time within the 60-second MCP tool timeout (full consensus takes 90-180+ seconds)
 
 ### 4. RAG Service (`internal/rag/`)
 
@@ -382,8 +388,19 @@ ai:
   generator_model: gemma3:latest   # Model for reviews
   embedder_model: nomic-embed-text # Model for embeddings
   enable_hyde: true                # Enable HyDE context stage
-  comparison_models: []            # Optional: multi-model consensus
+  comparison_models: []            # For /review: multi-model consensus
+                                   # For /implement: randomly selects ONE model
+                                   # (faster than full consensus, fits in 60s timeout)
 ```
+
+### Model Selection for Agent Reviews
+
+The agent's internal `review_code` tool uses a **single model** (not consensus) for faster reviews:
+
+- **No `comparison_models` configured**: Uses `generator_model` for review
+- **`comparison_models` configured**: Randomly selects ONE model from the list
+
+This design keeps review time within the 60-second MCP tool timeout, since full consensus review (3+ models) takes 90-180+ seconds.
 
 ## Future Improvements
 
