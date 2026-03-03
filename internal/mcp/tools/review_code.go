@@ -113,6 +113,7 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		InstallationID: 0,
 	}
 
+	t.Logger.Info("⚖️  Starting code review consensus phase", "repo", t.Repo.FullName)
 	executor := reviewpkg.NewExecutor(t.RagService, reviewpkg.Config{
 		ComparisonModels: t.ComparisonModels,
 		ReviewsDir:       t.ReviewsDir,
@@ -127,9 +128,10 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		ChangedFiles: changedFiles,
 	})
 	if err != nil {
-		t.Logger.Error("internal review failed", "error", err)
+		t.Logger.Error("❌ Internal review failed", "error", err)
 		return nil, fmt.Errorf("review failed: %w", err)
 	}
+	t.Logger.Info("✅ Code review completed", "verdict", result.Review.Verdict, "confidence", result.Review.Confidence)
 
 	// Record the review result for PR enforcement (MCP-specific)
 	if t.ReviewTracker != nil {

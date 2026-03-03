@@ -399,7 +399,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"branch", branch)
 
 	// Build the system prompt
-	o.logger.Debug("runAgent: building system prompt", "session_id", session.ID)
+	o.logger.Info("🧭 EXPLORATION: Building agent context", "session_id", session.ID)
 	systemPrompt := o.buildSystemPrompt(session.Issue, branch)
 	o.logger.Debug("runAgent: system prompt built",
 		"session_id", session.ID,
@@ -428,9 +428,8 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	cmd.Stdout = ws.logFile
 	cmd.Stderr = ws.logFile
 
-	o.logger.Info("runAgentCLI: starting OpenCode process",
+	o.logger.Info("🛠️ IMPLEMENTATION: Starting OpenCode process",
 		"session_id", session.ID,
-		"command", cmd.String(),
 		"working_dir", cmd.Dir,
 		"log_file", ws.logPath,
 		"timeout", o.config.Timeout)

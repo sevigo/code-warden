@@ -569,13 +569,14 @@ func (s *Server) processRequest(ctx context.Context, req *Request) (any, *jsonRP
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return nil, &jsonRPCError{Code: -32602, Message: "invalid params"}
 		}
-		s.logger.Info("MCP tool call started", "tool", params.Name)
+		icon := getToolIcon(params.Name)
+		s.logger.Info(fmt.Sprintf("%s MCP tool call started", icon), "tool", params.Name)
 		result, err := s.CallTool(ctx, params.Name, params.Arguments)
 		if err != nil {
-			s.logger.Error("MCP tool call failed", "tool", params.Name, "error", err)
+			s.logger.Error(fmt.Sprintf("%s MCP tool call failed", icon), "tool", params.Name, "error", err)
 			return nil, &jsonRPCError{Code: -32603, Message: err.Error()}
 		}
-		s.logger.Info("MCP tool call completed", "tool", params.Name, "result_type", fmt.Sprintf("%T", result))
+		s.logger.Info(fmt.Sprintf("%s MCP tool call completed", icon), "tool", params.Name, "result_type", fmt.Sprintf("%T", result))
 		return map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": mustMarshal(result)},
@@ -637,6 +638,29 @@ func (s *Server) writeError(w http.ResponseWriter, id any, code int, message str
 func mustMarshal(v any) string {
 	b, _ := json.MarshalIndent(v, "", "  ")
 	return string(b)
+}
+
+func getToolIcon(name string) string {
+	switch name {
+	case "search_code":
+		return "🔍"
+	case "get_arch_context":
+		return "🏛️"
+	case "get_symbol":
+		return "🧩"
+	case "get_structure":
+		return "📂"
+	case "review_code":
+		return "⚖️"
+	case "push_branch":
+		return "🚀"
+	case "create_pull_request":
+		return "📦"
+	case "list_issues", "get_issue":
+		return "🎫"
+	default:
+		return "🛠️"
+	}
 }
 
 // generateSessionID creates a unique session ID for SSE connections.
