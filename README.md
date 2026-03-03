@@ -4,9 +4,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/sevigo/code-warden)](https://goreportcard.com/report/github.com/sevigo/code-warden)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An AI-powered code review assistant that runs locally with hallucination-resistant RAG.
+An AI-powered code review assistant with autonomous implementation capabilities.
 
-Code-Warden is a GitHub App that uses Large Language Models (LLMs) to perform intelligent code reviews. It leverages Retrieval-Augmented Generation (RAG) to understand your entire codebase, providing context-aware feedback that goes beyond simple diff analysis.
+Code-Warden is a GitHub App that uses Large Language Models (LLMs) to perform intelligent code reviews and can autonomously implement GitHub issues. It leverages Retrieval-Augmented Generation (RAG) to understand your entire codebase, providing context-aware feedback that goes beyond simple diff analysis.
 
 ## Overview
 
@@ -21,6 +21,15 @@ Code-Warden is designed for development teams who want AI-assisted code reviews 
 -   **Incremental Indexing**: Smart updates based on `git diff`—only re-indexes changed files
 -   **Consensus Reviews**: Multi-model reviews with automatic synthesis for higher confidence
 -   **Repository Configuration**: Customize behavior via `.code-warden.yml` in your repository
+-   **Autonomous Implementation**: `/implement` command for AI-driven issue implementation
+
+### Agent Features (`/implement` command)
+
+-   **GitHub Issue Implementation**: Agent reads, plans, and implements code changes
+-   **Self-Review Loop**: Internal code review with iteration until approval
+-   **Safe Commits**: Only reviewed files are committed to PRs
+-   **MCP Tool Integration**: Rich context via semantic search, symbol lookup, and code structure
+-   **Concurrent Sessions**: Configurable limit on parallel agent sessions
 
 ### RAG Pipeline
 
@@ -58,6 +67,32 @@ Code-Warden follows an event-driven architecture with a multi-stage RAG pipeline
                [Context]           [HyDE Context]       [Context]
 ```
 
+### `/implement` Command Flow
+
+```
+[GitHub Issue /implement] → [Orchestrator] → [OpenCode Agent]
+                                                │
+                     ┌──────────────────────────┼──────────────────┐
+                     │                          │                  │
+               [MCP Server]              [Git Operations]   [GitHub API]
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+   [search_code] [review_code] [push_branch]
+        │            │            │
+   Semantic     5-Stage      Git commit
+   Search       RAG          (only reviewed files)
+```
+
+### Model Selection for Agent Reviews
+
+The agent's internal `review_code` uses a **single model** (not consensus) for faster reviews:
+
+- **No `comparison_models` configured**: Uses `generator_model` for review
+- **`comparison_models` configured**: Randomly selects ONE model from the list
+
+This keeps review time within the 60-second MCP tool timeout.
+
 ### RAG Pipeline Stages
 
 | Stage | Purpose | Source |
@@ -70,6 +105,7 @@ Code-Warden follows an event-driven architecture with a multi-stage RAG pipeline
 
 ### Data Flow
 
+**Review Flow (`/review`):**
 ```
 1. User comments /review on PR
 2. Webhook → Job Dispatcher → Worker Pool
@@ -79,6 +115,18 @@ Code-Warden follows an event-driven architecture with a multi-stage RAG pipeline
 6. Context assembly with deduplication & validation
 7. LLM generates structured review
 8. Post review as GitHub comments
+```
+
+**Implementation Flow (`/implement`):**
+```
+1. User comments /implement on Issue
+2. Webhook → Job Dispatcher → Spawn Agent Session
+3. Agent uses MCP tools to explore codebase
+4. Agent implements changes in isolated workspace
+5. Agent calls review_code (single-model review)
+6. If REQUEST_CHANGES: iterate fixes
+7. Agent calls push_branch (only reviewed files)
+8. Agent creates pull request
 ```
 
 ### Package Layout
@@ -162,6 +210,8 @@ When `comparison_models` are configured, Code-Warden:
 3. Synthesizes findings into unified review
 4. Adds consensus disclaimer
 
+**Note:** For `/implement` command's internal review, a single model is used (randomly selected from `comparison_models` if configured, otherwise `generator_model`) to keep review time within the 60-second timeout. Full consensus review takes 90-180+ seconds.
+
 ### Re-Review
 
 The `/rereview` command validates previous suggestions:
@@ -169,6 +219,24 @@ The `/rereview` command validates previous suggestions:
 1. Fetches original review from database
 2. Compares new diff against original suggestions
 3. Reports which issues were fixed, missed, or new
+
+### Autonomous Implementation (`/implement`)
+
+The `/implement` command enables AI-driven issue implementation:
+
+1. **Trigger**: Comment `/implement` on a GitHub issue
+2. **Understand**: Agent reads issue and explores codebase via MCP tools
+3. **Plan**: Identifies files to modify
+4. **Implement**: Writes code changes
+5. **Verify**: Runs `make lint && make test`
+6. **Review**: Internal code review with iteration loop
+7. **Submit**: Creates PR with only reviewed files
+
+**Key Safety Features:**
+- Only reviewed files are committed (build artifacts excluded)
+- Review uses single model (faster than consensus, fits in 60s timeout)
+- Workspace isolation per session
+- Concurrent session limits
 
 ## CLI Commands
 
@@ -205,6 +273,17 @@ export CW_GITHUB_TOKEN="ghp_xxx"
 | `MAX_WORKERS` | Concurrent review jobs | `5` |
 | `ENABLE_HYDE` | Enable HyDE context | `true` |
 | `ENABLE_RERANKING` | Enable LLM reranking | `true` |
+
+### Agent Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AGENT_ENABLED` | Enable `/implement` functionality | `false` |
+| `AGENT_PROVIDER` | Agent provider | `opencode` |
+| `AGENT_MODEL` | Model for implementation | `qwen2.5-coder:70b` |
+| `AGENT_TIMEOUT` | Maximum session duration | `30m` |
+| `AGENT_MAX_ITERATIONS` | Max review iterations | `3` |
+| `AGENT_MAX_CONCURRENT` | Max parallel sessions | `3` |
 
 ### Repository Level (`.code-warden.yml`)
 
