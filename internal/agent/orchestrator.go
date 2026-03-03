@@ -422,7 +422,7 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	defer ws.logFile.Close()
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
-	cmd, cleanup := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch)
+	cmd, cleanup := o.buildOpenCodeCommand(ctx, session.Issue, systemPrompt, branch, session.ID)
 	defer cleanup()
 	cmd.Dir = ws.dir
 	cmd.Stdout = ws.logFile
@@ -608,7 +608,7 @@ func (o *Orchestrator) getVerifyCommands() []string {
 }
 
 // buildOpenCodeCommand creates the command to run OpenCode and returns a cleanup function.
-func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch string) (*exec.Cmd, func()) {
+func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, systemPrompt, branch, sessionID string) (*exec.Cmd, func()) {
 	// OpenCode CLI usage: opencode run [message..]
 	// The prompt is passed as positional arguments after "run"
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for agent execution
@@ -619,8 +619,8 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 		systemPrompt,
 	)
 
-	// Create OpenCode config with MCP timeout
-	configPath, err := o.createOpenCodeConfig()
+	// Create OpenCode config with MCP server and timeout
+	configPath, err := o.createOpenCodeConfig(sessionID)
 	cleanup := func() {
 		if configPath != "" {
 			_ = os.Remove(configPath)
@@ -648,12 +648,22 @@ func (o *Orchestrator) buildOpenCodeCommand(ctx context.Context, issue Issue, sy
 	return cmd, cleanup
 }
 
-// createOpenCodeConfig creates a temporary OpenCode config file with MCP timeout settings.
-func (o *Orchestrator) createOpenCodeConfig() (string, error) {
+// createOpenCodeConfig creates a temporary OpenCode config file with MCP server and timeout settings.
+func (o *Orchestrator) createOpenCodeConfig(sessionID string) (string, error) {
 	// OpenCode expects timeout in milliseconds
 	timeoutMs := o.config.MCPTimeout.Milliseconds()
 
+	// Build MCP server URL with workspace query parameter for per-session routing
+	mcpURL := fmt.Sprintf("http://%s/sse?workspace=%s", o.config.MCPAddr, sessionID)
+
 	config := map[string]any{
+		"mcp": map[string]any{
+			"code-warden": map[string]any{
+				"type":    "remote",
+				"url":     mcpURL,
+				"enabled": true,
+			},
+		},
 		"experimental": map[string]any{
 			"mcp_timeout": timeoutMs,
 		},

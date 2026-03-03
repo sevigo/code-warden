@@ -18,8 +18,8 @@ type agentWorkspace struct {
 }
 
 // prepareAgentWorkspace creates the workspace directory, clones the project,
-// writes the opencode config, registers it with the MCP server, and opens the
-// log file. The caller is responsible for closing logFile and calling
+// registers it with the MCP server, and opens the log file.
+// The caller is responsible for closing logFile and calling
 // mcpServer.UnregisterWorkspace.
 func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Session) (*agentWorkspace, error) {
 	workspaceDir := filepath.Join(o.config.WorkingDir, session.ID)
@@ -52,10 +52,6 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 	}
 	o.logger.Info("workspace origin set to GitHub upstream", "url", logURL)
 
-	if err := o.writeOpencodeConfig(workspaceDir, session.ID); err != nil {
-		return nil, fmt.Errorf("failed to write opencode config: %w", err)
-	}
-
 	o.mcpServer.RegisterWorkspace(session.ID, workspaceDir)
 
 	logPath := filepath.Join(workspaceDir, "agent.log")
@@ -83,33 +79,6 @@ func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) err
 	}
 
 	return nil
-}
-
-// writeOpencodeConfig writes opencode.json into the workspace directory so
-// OpenCode discovers the per-session MCP server via working directory config.
-func (o *Orchestrator) writeOpencodeConfig(workspaceDir, sessionID string) error {
-	config := fmt.Sprintf(`{
-  "mcp": {
-    "code-warden": {
-      "type": "remote",
-      "url": "http://%s/sse?workspace=%s",
-      "enabled": true
-    }
-  }
-}`, o.config.MCPAddr, sessionID)
-
-	path := filepath.Join(workspaceDir, "opencode.json")
-	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
-		return err
-	}
-
-	// Write .gitignore to exclude workspace-specific files from commits
-	gitignore := `# Agent workspace files - do not commit
-agent.log
-opencode.json
-`
-	gitignorePath := filepath.Join(workspaceDir, ".gitignore")
-	return os.WriteFile(gitignorePath, []byte(gitignore), 0600)
 }
 
 // cleanupWorkspace removes the session's isolated workspace directory.
