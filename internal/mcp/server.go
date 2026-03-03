@@ -280,9 +280,9 @@ func (s *Server) CheckApproval(diffHash string) error {
 		return fmt.Errorf("code has changed since last review: please run review_code again")
 	}
 
-	// Check if review is approved
-	if s.lastReviewResult.Verdict != core.VerdictApprove {
-		return fmt.Errorf("last review verdict was %s (not APPROVE): fix issues and run review_code again", s.lastReviewResult.Verdict)
+	// Check if review is approved or a comment
+	if s.lastReviewResult.Verdict != core.VerdictApprove && s.lastReviewResult.Verdict != core.VerdictComment {
+		return fmt.Errorf("last review verdict was %s (needs APPROVE or COMMENT): fix issues and run review_code again", s.lastReviewResult.Verdict)
 	}
 
 	// Check if review is recent
