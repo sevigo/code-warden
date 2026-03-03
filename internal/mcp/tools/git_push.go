@@ -16,6 +16,9 @@ type PushBranch struct {
 	ProjectRoot string
 	GHToken     string // GitHub installation token for authentication
 	Logger      *slog.Logger
+	// ReviewTracker provides access to reviewed files list.
+	// If set, only reviewed files will be committed.
+	ReviewTracker ReviewTracker
 }
 
 func (t *PushBranch) Name() string {
@@ -24,6 +27,11 @@ func (t *PushBranch) Name() string {
 
 func (t *PushBranch) Description() string {
 	return `Push current local changes to a remote branch.
+
+IMPORTANT: You MUST call review_code before push_branch to ensure only reviewed
+files are committed. If no review has been performed, all pending changes will
+be committed (not recommended).
+
 You MUST call this before create_pull_request to ensure the remote branch exists.`
 }
 
@@ -112,6 +120,8 @@ func (t *PushBranch) ensureBranch(ctx context.Context, projectRoot, branch strin
 }
 
 // commitPendingChanges stages and commits any uncommitted changes.
+// If ReviewTracker has reviewed files, only those files are staged.
+// Otherwise, all pending changes are staged (fallback behavior).
 func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot string) error {
 	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	statusCmd.Dir = projectRoot
@@ -123,12 +133,33 @@ func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot strin
 		return nil // nothing to commit
 	}
 
-	t.Logger.Info("push_branch: committing uncommitted changes")
+	// Get reviewed files if available
+	var filesToCommit []string
+	if t.ReviewTracker != nil {
+		filesToCommit = t.ReviewTracker.GetLastReviewFiles()
+	}
 
-	addCmd := exec.CommandContext(ctx, "git", "add", ".")
-	addCmd.Dir = projectRoot
-	if out, err := addCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to add changes: %w (output: %s)", err, string(out))
+	t.Logger.Info("push_branch: committing changes", "reviewed_files", len(filesToCommit))
+
+	// Stage files
+	if len(filesToCommit) > 0 {
+		// Only stage the reviewed files
+		for _, file := range filesToCommit {
+			addCmd := exec.CommandContext(ctx, "git", "add", file)
+			addCmd.Dir = projectRoot
+			if out, err := addCmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("failed to add file %q: %w (output: %s)", file, err, string(out))
+			}
+		}
+		t.Logger.Info("push_branch: staged reviewed files", "count", len(filesToCommit))
+	} else {
+		// Fallback: stage all changes (old behavior)
+		t.Logger.Warn("push_branch: no reviewed files found, staging all changes (review_code should be called first)")
+		addCmd := exec.CommandContext(ctx, "git", "add", ".")
+		addCmd.Dir = projectRoot
+		if out, err := addCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to add changes: %w (output: %s)", err, string(out))
+		}
 	}
 
 	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", "Automated commit from code-warden agent")
