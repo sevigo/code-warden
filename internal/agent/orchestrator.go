@@ -528,21 +528,21 @@ Implement the issue described below. Follow these steps IN ORDER:
    - Only proceed when ALL commands pass with exit code 0
 6. **Review** - Call review_code on your changes
    - CRITICAL: At the start of each review cycle, you MUST print 'AGENT_ITERATION: X' (where X is the current iteration number) on its own line.
-   - CRITICAL: Check the verdict from review_code. If verdict is "APPROVE" or "COMMENT", proceed to step 8. If verdict is "REQUEST_CHANGES", proceed to step 7.
-7. **Iterate** - If REQUEST_CHANGES:
-   - Fix all issues identified in the review
+   - CRITICAL: Check the verdict from review_code. If verdict is "APPROVE", proceed to step 8. If verdict is "REQUEST_CHANGES" or "COMMENT", proceed to step 7.
+7. **Iterate** - If REQUEST_CHANGES or COMMENT:
+   - Fix all issues and suggestions identified in the review
    - Run: %s (all must pass)
    - Call review_code again
-   - Repeat until you receive APPROVE or COMMENT verdict (max 3 iterations)
+   - Repeat until you receive APPROVE verdict (max 3 iterations)
 8. **Push** - Run: git push origin HEAD (or use push_branch tool)
    - CRITICAL: Your branch MUST exist on GitHub before creating a PR
    - If push_branch tool is not available, run: git push origin <branch-name>
-9. **Submit** - Call create_pull_request ONLY after receiving APPROVE or COMMENT verdict
+9. **Submit** - Call create_pull_request ONLY after receiving APPROVE verdict
 
 ## MANDATORY REQUIREMENTS (DO NOT SKIP):
 1. You MUST run all verification commands and they MUST pass (exit code 0)
 2. You MUST call review_code tool for code review
-3. You MUST receive "APPROVE" or "COMMENT" verdict from review_code before creating a PR
+3. You MUST receive "APPROVE" verdict from review_code before creating a PR
 4. You MUST push your branch to GitHub BEFORE calling create_pull_request
 5. You MUST NOT create a PR until ALL above steps are complete
 
@@ -557,9 +557,9 @@ Example sequence:
 The review_code tool returns a JSON response with a "verdict" field.
 Possible verdict values:
   - "APPROVE" - Code is approved, proceed to push and create PR
-  - "COMMENT" - General feedback without blockers, proceed to push and create PR
   - "REQUEST_CHANGES" - Issues found, fix them and review again
-You MUST wait for "APPROVE" or "COMMENT" verdict before creating a PR. Never skip this check.
+  - "COMMENT" - General feedback. You MUST treat this as REQUEST_CHANGES, implement the suggestions, and call review_code again.
+You MUST wait for "APPROVE" verdict before creating a PR. Never skip this check.
 
 If you cannot complete any step, report what failed and why.
 At the end of your run, you MUST print exactly one line in this format:
