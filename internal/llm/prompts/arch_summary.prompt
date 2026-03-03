@@ -16,7 +16,7 @@ Generate a structured summary:
 
 **PRIMARY PURPOSE:** [1 sentence - what business problem does this module solve?]
 
-**ARCHITECTURAL LAYER:** [Choose one: Data Access | Business Logic | API/HTTP Handler | Infrastructure | Utility | CLI]
+**ARCHITECTURAL LAYER:** [Choose one: Data Access | Business Logic | API/HTTP Handler | Infrastructure | Utility | CLI | Testing | Configuration]
 
 **KEY RESPONSIBILITIES:** [2-3 bullet points of what this module does]
 
@@ -24,9 +24,12 @@ Generate a structured summary:
 
 **EXPORTS:** [List 3-5 most important symbols that other modules likely use]
 
+**BUILD/TEST COMMANDS:** [If this is a root directory or contains Makefile, go.mod, package.json, or similar build files, extract relevant commands. Examples: "go build ./...", "make test", "npm run build". If not applicable, write: N/A]
+
 **COUPLING CONCERNS:** [Any tight coupling, god objects, or architectural violations visible from the symbols]
 
 Focus on information that helps reviewers understand:
 1. What breaks if this module changes
 2. What other modules depend on this
 3. What patterns/abstractions this module implements
+4. How to build and test this code (if applicable)

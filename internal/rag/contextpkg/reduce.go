@@ -11,6 +11,7 @@ import (
 	"github.com/sevigo/goframe/vectorstores"
 
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // GenerateProjectContext fetches all directory-level architectural summaries
@@ -21,9 +22,24 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
 	)
 
 	scopedStore := b.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
+	chain, err := chains.NewDocumentMapReduceChain(
+		b.createArchSummaryMapFunc(scopedStore),
+		b.createProjectContextReduceFunc(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize context generation pipeline: %w", err)
+	}
 
-	// Define MAP function: fetches architectural summaries from vector store
-	mapFunc := func(ctx context.Context, input any) ([]schema.Document, error) {
+	result, err := chain.Execute(ctx, nil)
+	if err != nil {
+		return b.handleEmptyDocumentsError(err)
+	}
+	return result, nil
+}
+
+// createArchSummaryMapFunc returns a function that fetches architectural summaries from the vector store.
+func (b *builderImpl) createArchSummaryMapFunc(scopedStore storage.ScopedVectorStore) func(ctx context.Context, _ any) ([]schema.Document, error) {
+	return func(ctx context.Context, _ any) ([]schema.Document, error) {
 		limit := b.cfg.AIConfig.MaxContextSummaries
 		if limit <= 0 {
 			limit = 1000
@@ -40,33 +56,25 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
 
 		if len(docs) == 0 {
 			b.cfg.Logger.Warn("no architectural summaries found to generate context from")
-			return nil, nil // Return nil to signal no docs - chain will handle error
+			return nil, nil
 		}
 
 		return docs, nil
 	}
+}
 
-	// Define REDUCE function: synthesizes documents into project context
-	reduceFunc := func(ctx context.Context, docs []schema.Document) (string, error) {
+// createProjectContextReduceFunc returns a function that synthesizes documents into project context.
+func (b *builderImpl) createProjectContextReduceFunc() func(ctx context.Context, docs []schema.Document) (string, error) {
+	return func(ctx context.Context, docs []schema.Document) (string, error) {
 		if len(docs) == 0 {
 			return "", nil
 		}
 
-		// Combine documents into a single string for the prompt
-		var combinedSummaries strings.Builder
-		for _, doc := range docs {
-			source, _ := doc.Metadata["source"].(string)
-			if source == "" {
-				source = "unknown directory"
-			}
-			combinedSummaries.WriteString(fmt.Sprintf("## Directory: %s\n%s\n\n", source, doc.PageContent))
-		}
+		combinedSummaries := b.combineArchSummaries(docs)
 
-		promptData := map[string]string{
-			"Summaries": combinedSummaries.String(),
-		}
-
-		prompt, err := b.cfg.PromptMgr.Render(llm.ProjectContextPrompt, promptData)
+		prompt, err := b.cfg.PromptMgr.Render(llm.ProjectContextPrompt, map[string]string{
+			"Summaries": combinedSummaries,
+		})
 		if err != nil {
 			return "", fmt.Errorf("failed to render project context prompt: %w", err)
 		}
@@ -83,23 +91,26 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
 
 		return response, nil
 	}
+}
 
-	chain, err := chains.NewDocumentMapReduceChain(mapFunc, reduceFunc)
-	if err != nil {
-		return "", fmt.Errorf("failed to initialize context generation pipeline: %w", err)
-	}
-
-	// Execute the chain - input is ignored in this case since mapFunc handles fetching
-	result, err := chain.Execute(ctx, nil)
-	if err != nil {
-		// Handle empty documents gracefully - return empty string, not error
-		// This maintains backward compatibility with the original behavior
-		if strings.Contains(err.Error(), "mapper returned no documents") {
-			b.cfg.Logger.Warn("no architectural summaries found to generate context from")
-			return "", nil
+// combineArchSummaries combines architectural summary documents into a single string.
+func (b *builderImpl) combineArchSummaries(docs []schema.Document) string {
+	var combined strings.Builder
+	for _, doc := range docs {
+		source, _ := doc.Metadata["source"].(string)
+		if source == "" {
+			source = "unknown directory"
 		}
-		return "", fmt.Errorf("context generation failed: %w", err)
+		combined.WriteString(fmt.Sprintf("## Directory: %s\n%s\n\n", source, doc.PageContent))
 	}
+	return combined.String()
+}
 
-	return result, nil
+// handleEmptyDocumentsError handles the empty documents error gracefully.
+func (b *builderImpl) handleEmptyDocumentsError(err error) (string, error) {
+	if strings.Contains(err.Error(), "mapper returned no documents") {
+		b.cfg.Logger.Warn("no architectural summaries found to generate context from")
+		return "", nil
+	}
+	return "", fmt.Errorf("context generation failed: %w", err)
 }
