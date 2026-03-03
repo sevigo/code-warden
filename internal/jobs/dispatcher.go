@@ -33,10 +33,15 @@ func NewDispatcher(ctx context.Context, reviewJob core.Job, cfg *config.Config, 
 	if maxWorkers <= 0 {
 		maxWorkers = 1
 	}
+	queueSize := cfg.Server.QueueSize
+	if queueSize <= 0 {
+		// Safety fallback for non-CLI paths (e.g., server startup) where validation may not have run
+		queueSize = 100
+	}
 	d := &dispatcher{
 		reviewJob:  reviewJob,
 		maxWorkers: maxWorkers,
-		jobQueue:   make(chan *jobPayload, 100),
+		jobQueue:   make(chan *jobPayload, queueSize),
 		logger:     logger,
 		mainCtx:    ctx,
 	}

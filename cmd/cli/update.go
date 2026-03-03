@@ -47,6 +47,10 @@ If the repository has never been indexed, it will perform an initial full scan.`
 		}
 		defer cleanup()
 
+		if err := app.Cfg.ValidateForCLI(); err != nil {
+			return fmt.Errorf("configuration validation failed: %w", err)
+		}
+
 		updateResult, err := app.RepoMgr.ScanLocalRepo(ctx, repoPath, updateRepoFullName, updateForce)
 		if err != nil {
 			return fmt.Errorf("failed to scan local repository for update: %w", err)

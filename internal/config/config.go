@@ -136,6 +136,7 @@ func (c *AgentConfig) Validate() error {
 type ServerConfig struct {
 	Port             string `mapstructure:"port"`
 	MaxWorkers       int    `mapstructure:"max_workers"`
+	QueueSize        int    `mapstructure:"queue_size"`
 	FastAPIServerURL string `mapstructure:"fastapi_server_url"`
 	SharedSecret     string `mapstructure:"shared_secret"`
 	Theme            string `mapstructure:"theme"`
@@ -345,6 +346,7 @@ func setDefaults(v *viper.Viper) {
 	// Server
 	v.SetDefault("server.port", "8080")
 	v.SetDefault("server.max_workers", 5)
+	v.SetDefault("server.queue_size", 100)
 	v.SetDefault("server.fastapi_server_url", "http://127.0.0.1:8000")
 
 	// GitHub
@@ -466,8 +468,15 @@ func (c *Config) validateAI() error {
 }
 
 func (c *Config) validateServer() error {
+	var errs []string
 	if c.Server.MaxWorkers <= 0 {
-		return errors.New("server.max_workers must be positive")
+		errs = append(errs, "server.max_workers must be greater than 0")
+	}
+	if c.Server.QueueSize <= 0 {
+		errs = append(errs, "server.queue_size must be greater than 0")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("server configuration invalid: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
