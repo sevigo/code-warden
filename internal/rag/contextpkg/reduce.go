@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sevigo/goframe/chains"
 	"github.com/sevigo/goframe/llms"
+	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // GenerateProjectContext fetches all directory-level architectural summaries
@@ -19,58 +22,95 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
 	)
 
 	scopedStore := b.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
-
-	limit := b.cfg.AIConfig.MaxContextSummaries
-	if limit <= 0 {
-		limit = 1000
-	}
-
-	// 1. Fetch all architectural summaries for the repository
-	// Using a generic search "summary" with a high limit to get all of them
-	docs, err := scopedStore.SimilaritySearch(ctx, "summary", limit,
-		vectorstores.WithFilters(map[string]any{
-			"chunk_type": "arch",
-		}),
+	chain, err := chains.NewDocumentMapReduceChain(
+		b.createArchSummaryMapFunc(scopedStore),
+		b.createProjectContextReduceFunc(),
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch architectural summaries: %w", err)
+		return "", fmt.Errorf("failed to initialize context generation pipeline: %w", err)
 	}
 
-	if len(docs) == 0 {
-		b.cfg.Logger.Warn("no architectural summaries found to generate context from")
-		return "", nil // Return empty, nothing to summarize
+	result, err := chain.Execute(ctx, nil)
+	if err != nil {
+		return b.handleEmptyDocumentsError(err)
 	}
+	return result, nil
+}
 
-	// 2. Combine them into a single string for the prompt
-	var combinedSummaries strings.Builder
+// createArchSummaryMapFunc returns a function that fetches architectural summaries from the vector store.
+func (b *builderImpl) createArchSummaryMapFunc(scopedStore storage.ScopedVectorStore) func(ctx context.Context, _ any) ([]schema.Document, error) {
+	return func(ctx context.Context, _ any) ([]schema.Document, error) {
+		limit := b.cfg.AIConfig.MaxContextSummaries
+		if limit <= 0 {
+			limit = 1000
+		}
+
+		docs, err := scopedStore.SimilaritySearch(ctx, "summary", limit,
+			vectorstores.WithFilters(map[string]any{
+				"chunk_type": "arch",
+			}),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch architectural summaries: %w", err)
+		}
+
+		if len(docs) == 0 {
+			b.cfg.Logger.Warn("no architectural summaries found to generate context from")
+			return nil, nil
+		}
+
+		return docs, nil
+	}
+}
+
+// createProjectContextReduceFunc returns a function that synthesizes documents into project context.
+func (b *builderImpl) createProjectContextReduceFunc() func(ctx context.Context, docs []schema.Document) (string, error) {
+	return func(ctx context.Context, docs []schema.Document) (string, error) {
+		if len(docs) == 0 {
+			return "", nil
+		}
+
+		combinedSummaries := b.combineArchSummaries(docs)
+
+		prompt, err := b.cfg.PromptMgr.Render(llm.ProjectContextPrompt, map[string]string{
+			"Summaries": combinedSummaries,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to render project context prompt: %w", err)
+		}
+
+		response, err := llms.GenerateFromSinglePrompt(ctx, b.cfg.GeneratorLLM, prompt)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate project context: %w", err)
+		}
+
+		b.cfg.Logger.Info("project context document generated successfully",
+			"incoming_summaries", len(docs),
+			"output_length", len(response),
+		)
+
+		return response, nil
+	}
+}
+
+// combineArchSummaries combines architectural summary documents into a single string.
+func (b *builderImpl) combineArchSummaries(docs []schema.Document) string {
+	var combined strings.Builder
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
 		if source == "" {
 			source = "unknown directory"
 		}
-		combinedSummaries.WriteString(fmt.Sprintf("## Directory: %s\n%s\n\n", source, doc.PageContent))
+		combined.WriteString(fmt.Sprintf("## Directory: %s\n%s\n\n", source, doc.PageContent))
 	}
+	return combined.String()
+}
 
-	// 3. Render the prompt
-	promptData := map[string]string{
-		"Summaries": combinedSummaries.String(),
+// handleEmptyDocumentsError handles the empty documents error gracefully.
+func (b *builderImpl) handleEmptyDocumentsError(err error) (string, error) {
+	if strings.Contains(err.Error(), "mapper returned no documents") {
+		b.cfg.Logger.Warn("no architectural summaries found to generate context from")
+		return "", nil
 	}
-
-	prompt, err := b.cfg.PromptMgr.Render(llm.ProjectContextPrompt, promptData)
-	if err != nil {
-		return "", fmt.Errorf("failed to render project context prompt: %w", err)
-	}
-
-	// 4. Call Generator LLM (the REDUCE step)
-	response, err := llms.GenerateFromSinglePrompt(ctx, b.cfg.GeneratorLLM, prompt)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate project context: %w", err)
-	}
-
-	b.cfg.Logger.Info("project context document generated successfully",
-		"incoming_summaries", len(docs),
-		"output_length", len(response),
-	)
-
-	return response, nil
+	return "", fmt.Errorf("context generation failed: %w", err)
 }

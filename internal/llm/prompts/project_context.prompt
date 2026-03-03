@@ -1,21 +1,71 @@
-You are an expert software architect analyzing a codebase.
+You are an expert software architect creating a comprehensive project context document for an autonomous coding agent.
 
 Below are architectural summaries for various directories in the repository:
 
 {{.Summaries}}
 
-Based ONLY on the provided summaries, synthesize a single, concise "Project Context Document".
-Your goal is to identify the global, repository-wide rules, technologies, and patterns so an autonomous coding agent knows how to work within this codebase.
+Your goal is to create a CLAUDE.md-style document that helps an AI agent understand how to work effectively within this codebase.
 
-IMPORTANT: Only report facts that are explicitly stated in the summaries above. If information is not available in the summaries, write "Not specified" rather than guessing.
+IMPORTANT: Only report facts that are explicitly stated in the summaries above. If information is not available, write "Not specified" rather than guessing.
 
-Focus on:
-1. Core Architecture: What are the main packages/modules and their responsibilities? (based on directory structure and exported symbols)
-2. Coding Standards:
-   - What logging framework is used? (look for imports like log/slog, zap, zerolog, logrus)
-   - What testing framework is used? (look for imports like testing, testify, gomock)
-   - How are errors handled? (look for error handling patterns in descriptions)
-3. Key Dependencies: List ONLY the dependencies explicitly mentioned in the imports sections. Do NOT invent dependencies.
+## Required Structure
 
-Format your response in Markdown. Do NOT include greetings or extraneous text. Be concise and factual.
-If you cannot determine something from the provided summaries, omit that section entirely rather than speculating.
+Your output MUST follow this exact markdown structure:
+
+```markdown
+# Project Overview
+
+[1-2 sentences describing what this project does based on the architecture]
+
+## Build and Test Commands
+
+**IMPORTANT**: Extract these from the architectural summaries where available. Look for:
+- Build commands (e.g., "make build", "go build ./...")
+- Test commands (e.g., "make test", "go test ./...")
+- Lint commands (e.g., "make lint", "golangci-lint run")
+- Run commands (e.g., "make run", "go run ./cmd/server")
+
+If not found in summaries, write: "Not specified in architectural summaries."
+
+## Development Environment
+
+[Key dependencies and setup requirements extracted from imports sections]
+
+## Architecture
+
+### Core Components
+
+[List main packages/modules and their responsibilities]
+
+### Key Patterns
+
+[Design patterns, conventions, and architectural decisions observed]
+
+## Coding Conventions
+
+### Logging
+[Logging framework used - look for imports like log/slog, zap, zerolog]
+
+### Testing
+[Testing framework used - look for imports like testing, testify, gomock]
+
+### Error Handling
+[Error handling patterns observed in descriptions]
+
+## Important Files
+
+[If mentioned in summaries, list key entry points, configuration files, or important modules]
+
+## Dependencies
+
+[List ONLY dependencies explicitly mentioned in the imports sections of the summaries]
+```
+
+## Output Guidelines
+
+1. Be concise - this document will be used as context for every agent interaction
+2. Be factual - only include information explicitly stated in the summaries
+3. Be practical - focus on information that helps an agent work effectively
+4. Use proper markdown formatting
+5. Do NOT include greetings, explanations of your process, or meta-commentary
+6. Start directly with "# Project Overview"
