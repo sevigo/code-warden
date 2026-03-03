@@ -40,7 +40,7 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
 
 		if len(docs) == 0 {
 			b.cfg.Logger.Warn("no architectural summaries found to generate context from")
-			return nil, nil // Return empty to signal no docs
+			return nil, nil // Return nil to signal no docs - chain will handle error
 		}
 
 		return docs, nil
@@ -86,9 +86,20 @@ func (b *builderImpl) GenerateProjectContext(ctx context.Context, collectionName
 
 	chain, err := chains.NewDocumentMapReduceChain(mapFunc, reduceFunc)
 	if err != nil {
-		return "", fmt.Errorf("failed to create document map reduce chain: %w", err)
+		return "", fmt.Errorf("failed to initialize context generation pipeline: %w", err)
 	}
 
 	// Execute the chain - input is ignored in this case since mapFunc handles fetching
-	return chain.Execute(ctx, nil)
+	result, err := chain.Execute(ctx, nil)
+	if err != nil {
+		// Handle empty documents gracefully - return empty string, not error
+		// This maintains backward compatibility with the original behavior
+		if strings.Contains(err.Error(), "mapper returned no documents") {
+			b.cfg.Logger.Warn("no architectural summaries found to generate context from")
+			return "", nil
+		}
+		return "", fmt.Errorf("context generation failed: %w", err)
+	}
+
+	return result, nil
 }
