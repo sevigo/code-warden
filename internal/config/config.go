@@ -35,8 +35,12 @@ type AgentConfig struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Provider is the agent provider: "goose" or "opencode".
+	// Provider is the agent provider: "opencode" or "opencode-sdk".
 	Provider string `mapstructure:"provider"`
+
+	// OpenCodeURL is the URL of the OpenCode server (e.g., "http://localhost:3000").
+	// Required when using SDK mode.
+	OpenCodeURL string `mapstructure:"opencode_url"`
 
 	// Model is the LLM model to use for the agent.
 	Model string `mapstructure:"model"`
@@ -60,6 +64,10 @@ type AgentConfig struct {
 	// MCPTimeout is the timeout for individual MCP tool calls (e.g., "5m").
 	// This is used to configure OpenCode to wait longer for slow tool responses.
 	MCPTimeout string `mapstructure:"mcp_timeout"`
+
+	// UseSDK determines whether to use goframe/agent SDK instead of CLI.
+	// When true, OpenCodeURL must be set.
+	UseSDK bool `mapstructure:"use_sdk"`
 }
 
 // GetTimeout parses and returns the timeout duration.
@@ -87,8 +95,8 @@ func (c *AgentConfig) Validate() error {
 	}
 
 	// Validate provider
-	if c.Provider != "opencode" {
-		return fmt.Errorf("agent.provider must be 'opencode', got: %s", c.Provider)
+	if c.Provider != "opencode" && c.Provider != "opencode-sdk" {
+		return fmt.Errorf("agent.provider must be 'opencode' or 'opencode-sdk', got: %s", c.Provider)
 	}
 
 	// Validate model is set
@@ -128,6 +136,11 @@ func (c *AgentConfig) Validate() error {
 	// Must be an absolute path
 	if !filepath.IsAbs(cleanPath) {
 		return fmt.Errorf("agent.working_dir must be an absolute path: %s", c.WorkingDir)
+	}
+
+	// Validate OpenCodeURL when using SDK mode
+	if c.UseSDK && c.OpenCodeURL == "" {
+		return errors.New("agent.opencode_url is required when agent.use_sdk is true")
 	}
 
 	return nil
@@ -402,14 +415,16 @@ func setDefaults(v *viper.Viper) {
 
 	// Agent
 	v.SetDefault("agent.enabled", false)
-	v.SetDefault("agent.provider", "opencode")
+	v.SetDefault("agent.provider", "opencode-sdk")
+	v.SetDefault("agent.opencode_url", "http://localhost:3000")
 	v.SetDefault("agent.model", "qwen2.5-coder")
 	v.SetDefault("agent.timeout", "30m")
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.max_concurrent_sessions", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
 	v.SetDefault("agent.mcp_timeout", "5m")
-	v.SetDefault("agent.working_dir", "") // Empty means disabled/no default; must be explicitly set
+	v.SetDefault("agent.working_dir", "")
+	v.SetDefault("agent.use_sdk", true)
 }
 
 func (c *Config) Validate() error {

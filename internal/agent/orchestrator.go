@@ -13,9 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	goframeagent "github.com/sevigo/goframe/agent"
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
@@ -78,20 +82,28 @@ type Config struct {
 	// MCPTimeout is the timeout for individual MCP tool calls.
 	// Used to configure OpenCode to wait longer for slow tool responses like code review.
 	MCPTimeout time.Duration `yaml:"mcp_timeout"`
+
+	// OpenCodeURL is the URL of the OpenCode server for SDK mode.
+	OpenCodeURL string `yaml:"opencode_url"`
+
+	// UseSDK determines whether to use goframe/agent SDK instead of CLI.
+	UseSDK bool `yaml:"use_sdk"`
 }
 
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
 		Enabled:               false,
-		Provider:              "opencode",
+		Provider:              "opencode-sdk",
 		Model:                 "llama3.1:70b",
 		Timeout:               30 * time.Minute,
 		MaxIterations:         3,
 		MaxConcurrentSessions: 3,
 		MCPAddr:               "127.0.0.1:8081",
-		MCPTimeout:            5 * time.Minute, // Default 5 minutes for MCP tool calls
+		MCPTimeout:            5 * time.Minute,
 		WorkingDir:            "/tmp/code-warden-agents",
+		OpenCodeURL:           "http://localhost:3000",
+		UseSDK:                true,
 	}
 }
 
@@ -388,7 +400,8 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 	o.logger.Info("runAgent: starting agent workflow",
 		"session_id", session.ID,
 		"issue_number", session.Issue.Number,
-		"issue_title", session.Issue.Title)
+		"issue_title", session.Issue.Title,
+		"use_sdk", o.config.UseSDK)
 
 	session.SetStatus(StatusRunning)
 
@@ -398,14 +411,17 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"session_id", session.ID,
 		"branch", branch)
 
-	// Build the system prompt
-	o.logger.Info("🧭 EXPLORATION: Building agent context", "session_id", session.ID)
-	systemPrompt := o.buildSystemPrompt(session.Issue, branch)
-	o.logger.Debug("runAgent: system prompt built",
-		"session_id", session.ID,
-		"prompt_length", len(systemPrompt))
-
-	o.runAgentCLI(ctx, session, systemPrompt, branch)
+	if o.config.UseSDK {
+		o.runAgentSDK(ctx, session, branch)
+	} else {
+		// Build the system prompt (only for CLI mode)
+		o.logger.Info("🧭 EXPLORATION: Building agent context", "session_id", session.ID)
+		systemPrompt := o.buildSystemPrompt(session.Issue, branch)
+		o.logger.Debug("runAgent: system prompt built",
+			"session_id", session.ID,
+			"prompt_length", len(systemPrompt))
+		o.runAgentCLI(ctx, session, systemPrompt, branch)
+	}
 }
 
 // runAgentCLI executes the agent workflow using the local OpenCode binary.
@@ -744,4 +760,366 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 	}
 
 	return res
+}
+
+// runAgentSDK executes the agent workflow using the goframe/agent SDK.
+func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch string) {
+	defer o.cleanupWorkspace(session.ID)
+
+	ws, err := o.prepareAgentWorkspace(ctx, session)
+	if err != nil {
+		o.logger.Error("runAgentSDK: workspace setup failed", "session_id", session.ID, "error", err)
+		session.SetStatus(StatusFailed)
+		session.SetError(err.Error())
+		return
+	}
+	defer ws.logFile.Close()
+	defer o.mcpServer.UnregisterWorkspace(session.ID)
+
+	o.logger.Info("🛠️ IMPLEMENTATION: Starting OpenCode SDK agent",
+		"session_id", session.ID,
+		"working_dir", ws.dir,
+		"opencode_url", o.config.OpenCodeURL,
+		"timeout", o.config.Timeout)
+
+	// Create MCP registry pointing to code-warden's MCP server
+	mcpURL := fmt.Sprintf("http://%s/sse?workspace=%s", o.config.MCPAddr, session.ID)
+	mcpRegistry := goframeagent.NewMCPRegistry(
+		goframeagent.RemoteMCPServer("code-warden",
+			mcpURL,
+			goframeagent.WithEnabled(true),
+		),
+	)
+
+	// Create the agent
+	ag, err := goframeagent.New(
+		goframeagent.WithBaseURL(o.config.OpenCodeURL),
+		goframeagent.WithModel(o.config.Model),
+		goframeagent.WithMCPRegistry(mcpRegistry),
+		goframeagent.WithWorkingDir(ws.dir),
+	)
+	if err != nil {
+		o.logger.Error("runAgentSDK: failed to create agent", "session_id", session.ID, "error", err)
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Failed to create agent: %v", err))
+		return
+	}
+
+	// Create session
+	agSession, err := ag.NewSession(ctx,
+		goframeagent.WithTitle(fmt.Sprintf("Issue #%d: %s", session.Issue.Number, truncateString(session.Issue.Title, 50))),
+	)
+	if err != nil {
+		o.logger.Error("runAgentSDK: failed to create agent session", "session_id", session.ID, "error", err)
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Failed to create agent session: %v", err))
+		return
+	}
+	defer agSession.Close()
+
+	o.logger.Info("runAgentSDK: agent session created",
+		"session_id", session.ID,
+		"agent_session_id", agSession.ID)
+
+	// Create feedback loop with tracking
+	reviewTracker := &reviewTracker{}
+	fl := goframeagent.NewFeedbackLoop(ag, agSession,
+		goframeagent.WithMaxRetries(o.config.MaxIterations),
+		goframeagent.WithReviewHandler(o.createReviewHandler(session.ID, reviewTracker)),
+		goframeagent.WithPRHandler(o.createPRHandler(session.Issue, branch)),
+	)
+
+	// Build implementation request
+	req := goframeagent.ImplementRequest{
+		Task:        fmt.Sprintf("Implement GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
+		Context:     o.buildSDKContext(session.Issue),
+		Constraints: o.getSDKConstraints(),
+	}
+
+	// Run the feedback loop
+	result, err := fl.ImplementWithReview(ctx, req)
+
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+
+	if err != nil {
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Agent implementation failed: %v", err))
+		o.logger.Error("runAgentSDK: implementation failed",
+			"session_id", session.ID,
+			"error", err)
+		return
+	}
+
+	// Parse result
+	implResult := &Result{
+		Branch:       branch,
+		FilesChanged: extractFilesFromImplementation(result.Implementation),
+		Verdict:      reviewTracker.GetVerdict(),
+		Iterations:   reviewTracker.GetIterations(),
+	}
+
+	// Try to extract PR info from response
+	if prInfo := extractPRInfo(result.Implementation); prInfo != nil {
+		implResult.PRNumber = prInfo.PRNumber
+		implResult.PRURL = prInfo.PRURL
+	}
+
+	session.SetResult(implResult)
+	session.SetStatus(StatusCompleted)
+
+	o.logger.Info("runAgentSDK: agent session completed successfully",
+		"session_id", session.ID,
+		"pr_number", implResult.PRNumber,
+		"pr_url", implResult.PRURL,
+		"branch", branch,
+		"files_changed", len(implResult.FilesChanged),
+		"duration", session.CompletedAt.Sub(session.StartedAt))
+}
+
+// createReviewHandler creates a review handler that prompts the agent to use MCP tools.
+func (o *Orchestrator) createReviewHandler(sessionID string, tracker *reviewTracker) goframeagent.ReviewHandler {
+	return func(ctx context.Context, session *goframeagent.Session, implementation string) (*goframeagent.ReviewResult, error) {
+		tracker.IncrementIterations()
+
+		o.logger.Info("createReviewHandler: requesting code review",
+			"session_id", sessionID,
+			"implementation_length", len(implementation),
+			"iteration", tracker.GetIterations())
+
+		reviewPrompt := `Please use the review_code tool to review your implementation.
+
+After reviewing, respond with your verdict:
+- APPROVE: if the code is ready for PR (all tests pass, no issues)
+- REQUEST_CHANGES: if there are issues that need to be fixed (list them clearly)
+
+Remember:
+1. Run verification commands first (e.g., make lint, make test)
+2. Check that all tests pass
+3. Review for code quality and best practices`
+
+		response, err := session.Prompt(ctx, reviewPrompt)
+		if err != nil {
+			o.logger.Error("createReviewHandler: review request failed", "session_id", sessionID, "error", err)
+			return nil, fmt.Errorf("review request failed: %w", err)
+		}
+
+		// Parse verdict from response
+		approved := strings.Contains(strings.ToUpper(response.Content), "APPROVE") ||
+			strings.Contains(strings.ToUpper(response.Content), "COMMENT") ||
+			strings.Contains(strings.ToUpper(response.Content), "LGTM")
+
+		tracker.SetApproved(approved)
+
+		o.logger.Info("createReviewHandler: review completed",
+			"session_id", sessionID,
+			"approved", approved,
+			"response_length", len(response.Content))
+
+		return &goframeagent.ReviewResult{
+			Approved: approved,
+			Feedback: response.Content,
+			Score:    80.0,
+		}, nil
+	}
+}
+
+// createPRHandler creates a PR handler that prompts the agent to use MCP tools.
+func (o *Orchestrator) createPRHandler(issue Issue, branch string) goframeagent.PRHandler {
+	return func(ctx context.Context, session *goframeagent.Session, _ string, review *goframeagent.ReviewResult) error {
+		if !review.Approved {
+			o.logger.Info("createPRHandler: skipping PR creation, review not approved")
+			return nil
+		}
+
+		o.logger.Info("createPRHandler: requesting PR creation",
+			"issue_number", issue.Number,
+			"branch", branch)
+
+		prPrompt := fmt.Sprintf(`Use the push_branch tool to push your branch to GitHub, then use the create_pull_request tool to create a pull request with:
+
+Title: "Fix #%d: %s"
+Head: %s
+Base: main
+
+Include a description of the changes you made.`, issue.Number, issue.Title, branch)
+
+		response, err := session.Prompt(ctx, prPrompt)
+		if err != nil {
+			o.logger.Error("createPRHandler: PR creation request failed", "error", err)
+			return fmt.Errorf("PR creation request failed: %w", err)
+		}
+
+		o.logger.Info("createPRHandler: PR creation request completed",
+			"response_length", len(response.Content))
+		return nil
+	}
+}
+
+// buildSDKContext creates the context for SDK implementation.
+func (o *Orchestrator) buildSDKContext(issue Issue) string {
+	var builder strings.Builder
+
+	// Add project context from RAG
+	if o.repo != nil && o.repo.GeneratedContext != "" {
+		builder.WriteString("## Project Context & Architecture\n")
+		builder.WriteString(o.repo.GeneratedContext)
+		builder.WriteString("\n\n")
+	}
+
+	// Add issue details
+	builder.WriteString("## GitHub Issue\n")
+	builder.WriteString(fmt.Sprintf("Number: %d\n", issue.Number))
+	builder.WriteString(fmt.Sprintf("Title: %s\n", issue.Title))
+
+	if issue.Body != "" {
+		builder.WriteString(fmt.Sprintf("\nDescription:\n%s\n", issue.Body))
+	}
+
+	if issue.Instructions != "" {
+		builder.WriteString(fmt.Sprintf("\nAdditional Instructions:\n%s\n", issue.Instructions))
+	}
+
+	// Add custom instructions from repo config
+	if o.repoConfig != nil && len(o.repoConfig.CustomInstructions) > 0 {
+		builder.WriteString("\n## Custom Instructions\n")
+		for _, instruction := range o.repoConfig.CustomInstructions {
+			builder.WriteString(fmt.Sprintf("- %s\n", instruction))
+		}
+	}
+
+	// Add MCP server info
+	builder.WriteString("\n## Available Tools\n")
+	builder.WriteString(fmt.Sprintf("Connect to MCP server at http://%s to use these tools:\n", o.config.MCPAddr))
+	builder.WriteString("- search_code(query, limit, chunk_type): Search the codebase using RAG\n")
+	builder.WriteString("- get_arch_context(directory): Get architectural context for a directory\n")
+	builder.WriteString("- get_symbol(name): Get definition of a type or function\n")
+	builder.WriteString("- get_structure(): Get project structure\n")
+	builder.WriteString("- review_code(diff): Request code review\n")
+	builder.WriteString("- push_branch(branch): Push branch to GitHub\n")
+	builder.WriteString("- create_pull_request(title, body, head, base): Create a GitHub PR\n")
+
+	return builder.String()
+}
+
+// getSDKConstraints returns implementation constraints for SDK mode.
+func (o *Orchestrator) getSDKConstraints() []string {
+	constraints := []string{
+		"Start by exploring the codebase using MCP tools (search_code, get_arch_context)",
+		"Understand the existing code structure before making changes",
+		"Run verification commands before requesting review",
+		"All tests must pass before creating PR",
+		"Push your branch to GitHub before creating PR",
+	}
+
+	if o.repoConfig != nil && len(o.repoConfig.VerifyCommands) > 0 {
+		for _, cmd := range o.repoConfig.VerifyCommands {
+			constraints = append(constraints, fmt.Sprintf("Run: %s", cmd))
+		}
+	} else {
+		constraints = append(constraints, "Run: make lint", "Run: make test")
+	}
+
+	return constraints
+}
+
+// extractFilesFromImplementation extracts changed files from the implementation response.
+func extractFilesFromImplementation(implementation string) []string {
+	// Try to extract files from common patterns
+	var files []string
+	lines := strings.Split(implementation, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Look for file patterns
+		if strings.Contains(line, "modified:") ||
+			strings.Contains(line, "created:") ||
+			strings.Contains(line, "deleted:") ||
+			strings.Contains(line, "File:") {
+			parts := strings.Fields(line)
+			for _, part := range parts {
+				// Check if it looks like a file path
+				if strings.Contains(part, "/") || strings.Contains(part, ".") {
+					cleanPath := strings.Trim(part, ":")
+					if !contains(files, cleanPath) {
+						files = append(files, cleanPath)
+					}
+				}
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		files = []string{}
+	}
+	return files
+}
+
+// extractPRInfo extracts PR number and URL from implementation response.
+func extractPRInfo(implementation string) *struct {
+	PRNumber int
+	PRURL    string
+} {
+	// Look for PR URL patterns
+	prPattern := `https://github\.com/[^/]+/[^/]+/pull/(\d+)`
+	re := regexp.MustCompile(prPattern)
+
+	if match := re.FindStringSubmatch(implementation); match != nil {
+		prNumber, err := strconv.Atoi(match[1])
+		if err == nil {
+			return &struct {
+				PRNumber int
+				PRURL    string
+			}{
+				PRNumber: prNumber,
+				PRURL:    match[0],
+			}
+		}
+	}
+	return nil
+}
+
+// contains checks if a string is in a slice.
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewTracker tracks the review status and iteration count.
+type reviewTracker struct {
+	mu         sync.Mutex
+	approved   bool
+	iterations int
+}
+
+func (t *reviewTracker) SetApproved(approved bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.approved = approved
+}
+
+func (t *reviewTracker) GetVerdict() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.approved {
+		return "APPROVED"
+	}
+	return "REQUEST_CHANGES"
+}
+
+func (t *reviewTracker) IncrementIterations() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.iterations++
+}
+
+func (t *reviewTracker) GetIterations() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.iterations
 }
