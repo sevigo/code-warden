@@ -52,10 +52,15 @@ type Config struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `yaml:"enabled"`
 
-	// Provider is the agent provider (currently only "opencode").
+	// Provider is the agent provider (e.g., "opencode", "goose", "claude").
 	Provider string `yaml:"provider"`
 
-	// Model is the Ollama model to use.
+	// Mode is how to connect to the agent: "server" (HTTP API) or "cli" (subprocess).
+	// "server" uses goframe/agent SDK to connect to the provider's server.
+	// "cli" spawns the provider's binary as a subprocess.
+	Mode string `yaml:"mode"`
+
+	// Model is the LLM model to use.
 	Model string `yaml:"model"`
 
 	// Timeout is the maximum time for an agent session.
@@ -80,21 +85,19 @@ type Config struct {
 	ReviewsDir string `yaml:"reviews_dir"`
 
 	// MCPTimeout is the timeout for individual MCP tool calls.
-	// Used to configure OpenCode to wait longer for slow tool responses like code review.
+	// Used to configure the provider to wait longer for slow tool responses.
 	MCPTimeout time.Duration `yaml:"mcp_timeout"`
 
-	// OpenCodeURL is the URL of the OpenCode server for SDK mode.
+	// OpenCodeURL is the URL of the OpenCode server (required when mode is "server").
 	OpenCodeURL string `yaml:"opencode_url"`
-
-	// UseSDK determines whether to use goframe/agent SDK instead of CLI.
-	UseSDK bool `yaml:"use_sdk"`
 }
 
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
 		Enabled:               false,
-		Provider:              "opencode-sdk",
+		Provider:              "opencode",
+		Mode:                  "server",
 		Model:                 "llama3.1:70b",
 		Timeout:               30 * time.Minute,
 		MaxIterations:         3,
@@ -103,7 +106,6 @@ func DefaultConfig() Config {
 		MCPTimeout:            5 * time.Minute,
 		WorkingDir:            "/tmp/code-warden-agents",
 		OpenCodeURL:           "http://localhost:3000",
-		UseSDK:                true,
 	}
 }
 
@@ -401,7 +403,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"session_id", session.ID,
 		"issue_number", session.Issue.Number,
 		"issue_title", session.Issue.Title,
-		"use_sdk", o.config.UseSDK)
+		"mode", o.config.Mode)
 
 	session.SetStatus(StatusRunning)
 
@@ -411,7 +413,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"session_id", session.ID,
 		"branch", branch)
 
-	if o.config.UseSDK {
+	if o.config.Mode == "server" {
 		o.runAgentSDK(ctx, session, branch)
 	} else {
 		// Build the system prompt (only for CLI mode)
@@ -782,6 +784,36 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 		"opencode_url", o.config.OpenCodeURL,
 		"timeout", o.config.Timeout)
 
+	// Create agent and run implementation
+	result, err := o.runSDKFeedbackLoop(ctx, session, ws, branch)
+
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+
+	if err != nil {
+		session.SetStatus(StatusFailed)
+		session.SetError(fmt.Sprintf("Agent implementation failed: %v", err))
+		o.logger.Error("runAgentSDK: implementation failed",
+			"session_id", session.ID,
+			"error", err)
+		return
+	}
+
+	session.SetResult(result)
+	session.SetStatus(StatusCompleted)
+
+	o.logger.Info("runAgentSDK: agent session completed successfully",
+		"session_id", session.ID,
+		"pr_number", result.PRNumber,
+		"pr_url", result.PRURL,
+		"branch", branch,
+		"files_changed", len(result.FilesChanged),
+		"duration", session.CompletedAt.Sub(session.StartedAt))
+}
+
+// runSDKFeedbackLoop creates and runs the feedback loop for SDK mode.
+func (o *Orchestrator) runSDKFeedbackLoop(ctx context.Context, session *Session, ws *agentWorkspace, branch string) (*Result, error) {
 	// Create MCP registry pointing to code-warden's MCP server
 	mcpURL := fmt.Sprintf("http://%s/sse?workspace=%s", o.config.MCPAddr, session.ID)
 	mcpRegistry := goframeagent.NewMCPRegistry(
@@ -799,10 +831,7 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 		goframeagent.WithWorkingDir(ws.dir),
 	)
 	if err != nil {
-		o.logger.Error("runAgentSDK: failed to create agent", "session_id", session.ID, "error", err)
-		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("Failed to create agent: %v", err))
-		return
+		return nil, fmt.Errorf("failed to create agent: %w", err)
 	}
 
 	// Create session
@@ -810,10 +839,7 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 		goframeagent.WithTitle(fmt.Sprintf("Issue #%d: %s", session.Issue.Number, truncateString(session.Issue.Title, 50))),
 	)
 	if err != nil {
-		o.logger.Error("runAgentSDK: failed to create agent session", "session_id", session.ID, "error", err)
-		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("Failed to create agent session: %v", err))
-		return
+		return nil, fmt.Errorf("failed to create agent session: %w", err)
 	}
 	defer agSession.Close()
 
@@ -838,18 +864,8 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 
 	// Run the feedback loop
 	result, err := fl.ImplementWithReview(ctx, req)
-
-	session.mu.Lock()
-	session.CompletedAt = time.Now()
-	session.mu.Unlock()
-
 	if err != nil {
-		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("Agent implementation failed: %v", err))
-		o.logger.Error("runAgentSDK: implementation failed",
-			"session_id", session.ID,
-			"error", err)
-		return
+		return nil, err
 	}
 
 	// Parse result
@@ -866,16 +882,7 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 		implResult.PRURL = prInfo.PRURL
 	}
 
-	session.SetResult(implResult)
-	session.SetStatus(StatusCompleted)
-
-	o.logger.Info("runAgentSDK: agent session completed successfully",
-		"session_id", session.ID,
-		"pr_number", implResult.PRNumber,
-		"pr_url", implResult.PRURL,
-		"branch", branch,
-		"files_changed", len(implResult.FilesChanged),
-		"duration", session.CompletedAt.Sub(session.StartedAt))
+	return implResult, nil
 }
 
 // createReviewHandler creates a review handler that prompts the agent to use MCP tools.

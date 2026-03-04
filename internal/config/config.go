@@ -35,11 +35,16 @@ type AgentConfig struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Provider is the agent provider: "opencode" or "opencode-sdk".
+	// Provider is the agent provider (e.g., "opencode", "goose", "claude").
 	Provider string `mapstructure:"provider"`
 
+	// Mode is how to connect to the agent: "server" (HTTP API) or "cli" (subprocess).
+	// "server" uses goframe/agent SDK to connect to OpenCode server.
+	// "cli" spawns the opencode binary as a subprocess.
+	Mode string `mapstructure:"mode"`
+
 	// OpenCodeURL is the URL of the OpenCode server (e.g., "http://localhost:3000").
-	// Required when using SDK mode.
+	// Required when mode is "server".
 	OpenCodeURL string `mapstructure:"opencode_url"`
 
 	// Model is the LLM model to use for the agent.
@@ -64,10 +69,6 @@ type AgentConfig struct {
 	// MCPTimeout is the timeout for individual MCP tool calls (e.g., "5m").
 	// This is used to configure OpenCode to wait longer for slow tool responses.
 	MCPTimeout string `mapstructure:"mcp_timeout"`
-
-	// UseSDK determines whether to use goframe/agent SDK instead of CLI.
-	// When true, OpenCodeURL must be set.
-	UseSDK bool `mapstructure:"use_sdk"`
 }
 
 // GetTimeout parses and returns the timeout duration.
@@ -94,9 +95,14 @@ func (c *AgentConfig) Validate() error {
 		return nil // No validation needed if disabled
 	}
 
-	// Validate provider
-	if c.Provider != "opencode" && c.Provider != "opencode-sdk" {
-		return fmt.Errorf("agent.provider must be 'opencode' or 'opencode-sdk', got: %s", c.Provider)
+	// Validate provider - any provider is allowed, users can add their own
+	if c.Provider == "" {
+		c.Provider = "opencode" // Default to opencode
+	}
+
+	// Validate mode
+	if c.Mode != "server" && c.Mode != "cli" {
+		return fmt.Errorf("agent.mode must be 'server' or 'cli', got: %s", c.Mode)
 	}
 
 	// Validate model is set
@@ -138,9 +144,9 @@ func (c *AgentConfig) Validate() error {
 		return fmt.Errorf("agent.working_dir must be an absolute path: %s", c.WorkingDir)
 	}
 
-	// Validate OpenCodeURL when using SDK mode
-	if c.UseSDK && c.OpenCodeURL == "" {
-		return errors.New("agent.opencode_url is required when agent.use_sdk is true")
+	// Validate OpenCodeURL when mode is "server"
+	if c.Mode == "server" && c.OpenCodeURL == "" {
+		return errors.New("agent.opencode_url is required when agent.mode is 'server'")
 	}
 
 	return nil
@@ -415,7 +421,8 @@ func setDefaults(v *viper.Viper) {
 
 	// Agent
 	v.SetDefault("agent.enabled", false)
-	v.SetDefault("agent.provider", "opencode-sdk")
+	v.SetDefault("agent.provider", "opencode")
+	v.SetDefault("agent.mode", "server") // "server" (HTTP API) or "cli" (subprocess)
 	v.SetDefault("agent.opencode_url", "http://localhost:3000")
 	v.SetDefault("agent.model", "qwen2.5-coder")
 	v.SetDefault("agent.timeout", "30m")
@@ -424,7 +431,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
 	v.SetDefault("agent.mcp_timeout", "5m")
 	v.SetDefault("agent.working_dir", "")
-	v.SetDefault("agent.use_sdk", true)
 }
 
 func (c *Config) Validate() error {
