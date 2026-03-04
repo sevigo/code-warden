@@ -230,10 +230,6 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 		t.Fatalf("Expected success due to fallback, but got error: %v", err)
 	}
 
-	// Verify that it fell back to cloneAndIndex.
-	if res == nil {
-		t.Fatal("Expected result to be non-nil")
-	}
 	if !res.IsInitialClone {
 		t.Error("Expected IsInitialClone to be true (indicating fallback to full clone)")
 	}

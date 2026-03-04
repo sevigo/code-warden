@@ -42,6 +42,33 @@ services:
       - warden-net
     restart: unless-stopped
 
+  # OpenCode Server (for agent SDK)
+  # Used by goframe/agent SDK to communicate with the AI agent
+  opencode:
+    image: ghcr.io/anomalyco/opencode:latest
+    container_name: opencode
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app/workspace
+      - opencode_config:/root/.opencode
+    environment:
+      - OPENCODE_WORKING_DIR=/app/workspace
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY:-}
+      - OPENCODE_MODEL=${OPENCODE_MODEL:-ollama/qwen2.5-coder}
+    command: ["serve", "--port", "3000", "--hostname", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - warden-net
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+
 networks:
   warden-net:
     driver: bridge
@@ -49,3 +76,4 @@ networks:
 volumes:
   postgres_data:
   qdrant_data:
+  opencode_config:

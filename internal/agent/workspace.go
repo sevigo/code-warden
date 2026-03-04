@@ -22,7 +22,13 @@ type agentWorkspace struct {
 // The caller is responsible for closing logFile and calling
 // mcpServer.UnregisterWorkspace.
 func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Session) (*agentWorkspace, error) {
-	workspaceDir := filepath.Join(o.config.WorkingDir, session.ID)
+	// Sanitize session ID to prevent path traversal
+	safeID, err := sanitizeSessionID(session.ID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid session ID: %w", err)
+	}
+
+	workspaceDir := filepath.Join(o.config.WorkingDir, safeID)
 	if err := os.MkdirAll(workspaceDir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create workspace directory %s: %w", workspaceDir, err)
 	}
@@ -83,31 +89,38 @@ func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) err
 
 // cleanupWorkspace removes the session's isolated workspace directory.
 // This should be called after the session completes (success or failure).
-func (o *Orchestrator) cleanupWorkspace(sessionID string) {
-	workspaceDir := filepath.Join(o.config.WorkingDir, sessionID)
+// Returns an error if cleanup fails.
+func (o *Orchestrator) cleanupWorkspace(sessionID string) error {
+	// Sanitize session ID for safety
+	safeID, err := sanitizeSessionID(sessionID)
+	if err != nil {
+		return fmt.Errorf("invalid session ID: %w", err)
+	}
+
+	workspaceDir := filepath.Join(o.config.WorkingDir, safeID)
 	if workspaceDir == "" || workspaceDir == "/" {
 		// Safety check: don't delete root or empty paths
-		o.logger.Warn("cleanupWorkspace: invalid workspace path, skipping cleanup", "session_id", sessionID)
-		return
+		return fmt.Errorf("invalid workspace path: %s", workspaceDir)
 	}
 
 	// Check if directory exists before attempting removal
 	if _, err := os.Stat(workspaceDir); os.IsNotExist(err) {
-		o.logger.Debug("cleanupWorkspace: workspace already removed", "session_id", sessionID)
-		return
+		o.logger.Debug("cleanupWorkspace: workspace already removed", "session_id", safeID)
+		return nil
 	}
 
 	if err := os.RemoveAll(workspaceDir); err != nil {
 		o.logger.Warn("cleanupWorkspace: failed to remove workspace",
-			"session_id", sessionID,
+			"session_id", safeID,
 			"path", workspaceDir,
 			"error", err)
-		return
+		return err
 	}
 
 	o.logger.Info("cleanupWorkspace: workspace removed",
-		"session_id", sessionID,
+		"session_id", safeID,
 		"path", workspaceDir)
+	return nil
 }
 
 // readLogFile reads the content of a file up to maxBytes.

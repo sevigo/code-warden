@@ -276,14 +276,51 @@ export CW_GITHUB_TOKEN="ghp_xxx"
 
 ### Agent Configuration
 
+The agent system can operate in two modes:
+
+| Mode | Description | Requirements |
+|------|-------------|--------------|
+| `server` | Connects to OpenCode server via HTTP API (recommended) | OpenCode server running |
+| `cli` | Spawns OpenCode binary as subprocess (legacy) | OpenCode binary in PATH |
+
+#### Configuration (config.yaml)
+
+```yaml
+agent:
+  enabled: true
+  provider: "opencode"           # Agent provider
+  mode: "server"                  # "server" or "cli"
+  opencode_url: "http://localhost:3000"  # Required for server mode
+  model: "ollama/qwen2.5-coder"  # Model for implementation
+  max_iterations: 3               # Review → fix cycles
+  mcp_addr: "127.0.0.1:8081"     # MCP server address
+  timeout: "30m"                  # Session timeout
+  working_dir: "/tmp/code-warden-agents"  # Isolated workspaces
+```
+
+#### Mode Comparison
+
+| Feature | Server Mode | CLI Mode |
+|---------|-------------|----------|
+| Communication | HTTP API | Subprocess |
+| Dependencies | OpenCode server | OpenCode binary |
+| Output | Structured Result | CLI parsing |
+| Error handling | Go errors | Output parsing |
+| Session management | io.Closer | Manual |
+
+#### Environment Variables
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AGENT_ENABLED` | Enable `/implement` functionality | `false` |
-| `AGENT_PROVIDER` | Agent provider | `opencode` |
-| `AGENT_MODEL` | Model for implementation | `qwen2.5-coder:70b` |
+| `AGENT_PROVIDER` | Agent provider (`opencode`, `goose`, `claude`) | `opencode` |
+| `AGENT_MODE` | Connection mode (`server` or `cli`) | `server` |
+| `AGENT_MODEL` | Model for implementation | `qwen2.5-coder` |
 | `AGENT_TIMEOUT` | Maximum session duration | `30m` |
 | `AGENT_MAX_ITERATIONS` | Max review iterations | `3` |
 | `AGENT_MAX_CONCURRENT` | Max parallel sessions | `3` |
+| `AGENT_MCP_ADDR` | MCP server address | `127.0.0.1:8081` |
+| `AGENT_OPENCODE_URL` | OpenCode server URL | `http://localhost:3000` |
 
 ### Repository Level (`.code-warden.yml`)
 

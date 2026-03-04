@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,8 +36,17 @@ type AgentConfig struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Provider is the agent provider: "goose" or "opencode".
+	// Provider is the agent provider (e.g., "opencode", "goose", "claude").
 	Provider string `mapstructure:"provider"`
+
+	// Mode is how to connect to the agent: "server" (HTTP API) or "cli" (subprocess).
+	// "server" uses goframe/agent SDK to connect to OpenCode server.
+	// "cli" spawns the opencode binary as a subprocess.
+	Mode string `mapstructure:"mode"`
+
+	// OpenCodeURL is the URL of the OpenCode server (e.g., "http://localhost:3000").
+	// Required when mode is "server".
+	OpenCodeURL string `mapstructure:"opencode_url"`
 
 	// Model is the LLM model to use for the agent.
 	Model string `mapstructure:"model"`
@@ -86,37 +96,79 @@ func (c *AgentConfig) Validate() error {
 		return nil // No validation needed if disabled
 	}
 
-	// Validate provider
-	if c.Provider != "opencode" {
-		return fmt.Errorf("agent.provider must be 'opencode', got: %s", c.Provider)
+	// Provider validation - default to opencode if empty
+	if c.Provider == "" {
+		c.Provider = "opencode"
 	}
 
-	// Validate model is set
+	// Mode validation
+	if err := c.validateMode(); err != nil {
+		return err
+	}
+
+	// Model validation
 	if c.Model == "" {
 		return errors.New("agent.model is required when agent is enabled")
 	}
 
-	// Validate timeout
+	// Timeout validation
 	if _, err := c.GetTimeout(); err != nil {
 		return fmt.Errorf("agent.timeout is invalid: %w", err)
 	}
 
-	// Validate max iterations
+	// Iterations validation
 	if c.MaxIterations < 1 {
 		return errors.New("agent.max_iterations must be >= 1")
 	}
 
-	// Validate max concurrent sessions (default to 3 if not set)
+	// Concurrent sessions validation
 	if c.MaxConcurrentSessions < 1 {
 		c.MaxConcurrentSessions = 3
 	}
 
-	// Validate MCP address
+	// MCP address validation
 	if c.MCPAddr == "" {
 		return errors.New("agent.mcp_addr is required when agent is enabled")
 	}
 
-	// Validate working directory
+	// Working directory validation
+	return c.validateWorkingDir()
+}
+
+// validateMode validates the agent mode and OpenCode URL if needed.
+func (c *AgentConfig) validateMode() error {
+	if c.Mode != "server" && c.Mode != "cli" {
+		return fmt.Errorf("agent.mode must be 'server' or 'cli', got: %s", c.Mode)
+	}
+
+	// Validate OpenCodeURL when mode is "server"
+	if c.Mode == "server" {
+		if c.OpenCodeURL == "" {
+			return errors.New("agent.opencode_url is required when agent.mode is 'server'")
+		}
+		// Validate URL format
+		u, err := url.Parse(c.OpenCodeURL)
+		if err != nil {
+			return fmt.Errorf("agent.opencode_url is invalid: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("agent.opencode_url must use http or https scheme, got: %s", u.Scheme)
+		}
+		if u.Host == "" {
+			return errors.New("agent.opencode_url must include a host")
+		}
+	}
+
+	// Validate MCP address doesn't contain path separator
+	if strings.Contains(c.MCPAddr, "/") || strings.Contains(c.MCPAddr, "\\") {
+		return fmt.Errorf("agent.mcp_addr should not contain path separators: %s", c.MCPAddr)
+	}
+
+	return nil
+}
+
+// validateWorkingDir validates the working directory.
+func (c *AgentConfig) validateWorkingDir() error {
 	if c.WorkingDir == "" {
 		return errors.New("agent.working_dir is required when agent is enabled")
 	}
@@ -129,7 +181,6 @@ func (c *AgentConfig) Validate() error {
 	if !filepath.IsAbs(cleanPath) {
 		return fmt.Errorf("agent.working_dir must be an absolute path: %s", c.WorkingDir)
 	}
-
 	return nil
 }
 
@@ -403,13 +454,15 @@ func setDefaults(v *viper.Viper) {
 	// Agent
 	v.SetDefault("agent.enabled", false)
 	v.SetDefault("agent.provider", "opencode")
+	v.SetDefault("agent.mode", "server") // "server" (HTTP API) or "cli" (subprocess)
+	v.SetDefault("agent.opencode_url", "http://localhost:3000")
 	v.SetDefault("agent.model", "qwen2.5-coder")
 	v.SetDefault("agent.timeout", "30m")
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.max_concurrent_sessions", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
 	v.SetDefault("agent.mcp_timeout", "5m")
-	v.SetDefault("agent.working_dir", "") // Empty means disabled/no default; must be explicitly set
+	v.SetDefault("agent.working_dir", "")
 }
 
 func (c *Config) Validate() error {
