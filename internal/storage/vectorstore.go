@@ -356,7 +356,7 @@ func (q *qdrantVectorStore) DeleteDocumentsFromCollection(ctx context.Context, c
 		return err
 	}
 
-	filters := map[string]any{"source": documentIDs}
+	filters := map[string]any{"source": map[string]any{"$in": documentIDs}}
 	return store.DeleteDocumentsByFilter(ctx, filters)
 }
 

@@ -290,7 +290,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		// Actually `processFilesParallel` handles UPSERT.
 		// Deleting from Qdrant requires `DeleteDocumentsByFilter` ("source" in pathsToDelete).
 		if len(pathsToDelete) > 0 && repo.QdrantCollectionName != "" {
-			if err := i.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, map[string]any{"source": pathsToDelete}); err != nil {
+			if err := i.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, map[string]any{"source": map[string]any{"$in": pathsToDelete}}); err != nil {
 				i.cfg.Logger.Warn("failed to delete vectors for removed files", "error", err)
 			}
 		}
