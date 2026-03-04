@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -768,6 +769,10 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch string) {
 	defer o.cleanupWorkspace(session.ID)
 
+	// Apply configured timeout to context
+	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
+	defer cancel()
+
 	ws, err := o.prepareAgentWorkspace(ctx, session)
 	if err != nil {
 		o.logger.Error("runAgentSDK: workspace setup failed", "session_id", session.ID, "error", err)
@@ -787,6 +792,7 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 	// Create agent and run implementation
 	result, err := o.runSDKFeedbackLoop(ctx, session, ws, branch)
 
+	// Update session state
 	session.mu.Lock()
 	session.CompletedAt = time.Now()
 	session.mu.Unlock()
@@ -814,11 +820,18 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 
 // runSDKFeedbackLoop creates and runs the feedback loop for SDK mode.
 func (o *Orchestrator) runSDKFeedbackLoop(ctx context.Context, session *Session, ws *agentWorkspace, branch string) (*Result, error) {
-	// Create MCP registry pointing to code-warden's MCP server
-	mcpURL := fmt.Sprintf("http://%s/sse?workspace=%s", o.config.MCPAddr, session.ID)
+	// Safely construct MCP URL
+	mcpURL, err := url.Parse(fmt.Sprintf("http://%s/sse", o.config.MCPAddr))
+	if err != nil {
+		return nil, fmt.Errorf("invalid MCP address %q: %w", o.config.MCPAddr, err)
+	}
+	query := mcpURL.Query()
+	query.Set("workspace", session.ID)
+	mcpURL.RawQuery = query.Encode()
+
 	mcpRegistry := goframeagent.NewMCPRegistry(
 		goframeagent.RemoteMCPServer("code-warden",
-			mcpURL,
+			mcpURL.String(),
 			goframeagent.WithEnabled(true),
 		),
 	)
@@ -935,7 +948,7 @@ Remember:
 // createPRHandler creates a PR handler that prompts the agent to use MCP tools.
 func (o *Orchestrator) createPRHandler(issue Issue, branch string) goframeagent.PRHandler {
 	return func(ctx context.Context, session *goframeagent.Session, _ string, review *goframeagent.ReviewResult) error {
-		if !review.Approved {
+		if review == nil || !review.Approved {
 			o.logger.Info("createPRHandler: skipping PR creation, review not approved")
 			return nil
 		}
