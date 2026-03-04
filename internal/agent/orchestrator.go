@@ -93,13 +93,21 @@ type Config struct {
 	OpenCodeURL string `yaml:"opencode_url"`
 }
 
+// Constants for agent orchestration
+const (
+	// MaxTitleLength is the maximum length for session titles
+	MaxTitleLength = 50
+	// DefaultReviewScore is the default score for review results
+	DefaultReviewScore = 80.0
+)
+
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
 		Enabled:               false,
 		Provider:              "opencode",
 		Mode:                  "server",
-		Model:                 "llama3.1:70b",
+		Model:                 "qwen2.5-coder",
 		Timeout:               30 * time.Minute,
 		MaxIterations:         3,
 		MaxConcurrentSessions: 3,
@@ -275,7 +283,9 @@ func (o *Orchestrator) cleanupOldSessions() {
 			snapshot := session.Snapshot()
 			if snapshot.CompletedAt.Before(cutoff) {
 				// Clean up workspace directory
-				o.cleanupWorkspace(id)
+				if err := o.cleanupWorkspace(id); err != nil {
+					o.logger.Warn("cleanup old session failed", "session_id", id, "error", err)
+				}
 				delete(o.sessions, id)
 				removed++
 			}
@@ -429,7 +439,11 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 
 // runAgentCLI executes the agent workflow using the local OpenCode binary.
 func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, systemPrompt, branch string) {
-	defer o.cleanupWorkspace(session.ID)
+	defer func() {
+		if err := o.cleanupWorkspace(session.ID); err != nil {
+			o.logger.Error("cleanup failed", "session_id", session.ID, "error", err)
+		}
+	}()
 
 	ws, err := o.prepareAgentWorkspace(ctx, session)
 	if err != nil {
@@ -767,7 +781,11 @@ func (o *Orchestrator) parseAgentOutput(output string, sessionBranch string) *Re
 
 // runAgentSDK executes the agent workflow using the goframe/agent SDK.
 func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch string) {
-	defer o.cleanupWorkspace(session.ID)
+	defer func() {
+		if err := o.cleanupWorkspace(session.ID); err != nil {
+			o.logger.Error("cleanup failed", "session_id", session.ID, "error", err)
+		}
+	}()
 
 	// Apply configured timeout to context
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
@@ -849,7 +867,7 @@ func (o *Orchestrator) runSDKFeedbackLoop(ctx context.Context, session *Session,
 
 	// Create session
 	agSession, err := ag.NewSession(ctx,
-		goframeagent.WithTitle(fmt.Sprintf("Issue #%d: %s", session.Issue.Number, truncateString(session.Issue.Title, 50))),
+		goframeagent.WithTitle(fmt.Sprintf("Issue #%d: %s", session.Issue.Number, truncateString(session.Issue.Title, MaxTitleLength))),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent session: %w", err)
@@ -940,7 +958,7 @@ Remember:
 		return &goframeagent.ReviewResult{
 			Approved: approved,
 			Feedback: response.Content,
-			Score:    80.0,
+			Score:    DefaultReviewScore,
 		}, nil
 	}
 }

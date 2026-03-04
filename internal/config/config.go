@@ -135,7 +135,7 @@ func (c *AgentConfig) Validate() error {
 	return c.validateWorkingDir()
 }
 
-// validateMode validates the agent mode.
+// validateMode validates the agent mode and OpenCode URL if needed.
 func (c *AgentConfig) validateMode() error {
 	if c.Mode != "server" && c.Mode != "cli" {
 		return fmt.Errorf("agent.mode must be 'server' or 'cli', got: %s", c.Mode)
@@ -157,6 +157,11 @@ func (c *AgentConfig) validateMode() error {
 		if u.Host == "" {
 			return errors.New("agent.opencode_url must include a host")
 		}
+	}
+
+	// Validate MCP address doesn't contain path separator
+	if strings.Contains(c.MCPAddr, "/") || strings.Contains(c.MCPAddr, "\\") {
+		return fmt.Errorf("agent.mcp_addr should not contain path separators: %s", c.MCPAddr)
 	}
 
 	return nil

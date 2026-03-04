@@ -3,6 +3,8 @@ package agent
 import (
 	"crypto/rand"
 	"fmt"
+	"path/filepath"
+	"strings"
 )
 
 // matrixAgentNames is a pool of Matrix-universe character and concept names
@@ -37,6 +39,38 @@ func generateSessionID() string {
 	_, _ = rand.Read(b)
 	name := matrixAgentNames[int(b[0])%len(matrixAgentNames)]
 	return fmt.Sprintf("%s-%x", name, b[1:])
+}
+
+// sanitizeSessionID validates and sanitizes a session ID to prevent path traversal.
+// Returns the session ID if valid, or an error if it contains dangerous characters.
+func sanitizeSessionID(id string) (string, error) {
+	// Session IDs should only contain alphanumeric characters, hyphens, and underscores
+	for _, c := range id {
+		if !isSafeChar(c) {
+			return "", fmt.Errorf("invalid session ID: contains unsafe character %q", c)
+		}
+	}
+
+	// Prevent path traversal
+	clean := filepath.Base(id)
+	if clean != id {
+		return "", fmt.Errorf("invalid session ID: potential path traversal")
+	}
+
+	// Prevent hidden files (starting with .)
+	if strings.HasPrefix(id, ".") {
+		return "", fmt.Errorf("invalid session ID: cannot start with dot")
+	}
+
+	return id, nil
+}
+
+// isSafeChar returns true if the character is safe for session IDs.
+func isSafeChar(c rune) bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '-' || c == '_'
 }
 
 // truncateString truncates a string to maxLen characters.
