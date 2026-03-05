@@ -77,6 +77,8 @@ func NewExecutor(ragService rag.Service, config Config) *Executor {
 // It selects single-model or consensus mode based on ComparisonModels config,
 // validates the output, and optionally saves review artifacts.
 func (e *Executor) Execute(ctx context.Context, params Params) (*Result, error) {
+	startTime := time.Now()
+
 	if params.Diff == "" {
 		return &Result{
 			Review: &core.StructuredReview{
@@ -131,8 +133,9 @@ func (e *Executor) Execute(ctx context.Context, params Params) (*Result, error) 
 	if e.config.ReviewsDir != "" && rawReview != "" {
 		ts := time.Now().Format("20060102-150405")
 		result := ragReview.ComparisonResult{
-			Model:  "review",
-			Review: rawReview,
+			Model:    structuredReview.Verdict,
+			Review:   rawReview,
+			Duration: time.Since(startTime),
 		}
 		ragReview.SaveReviewArtifact(e.config.Logger, e.config.ReviewsDir, result, params.Event, ts)
 	}
