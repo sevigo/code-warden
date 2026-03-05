@@ -188,6 +188,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 		},
 		j.logger,
+		nil, // globalMCPRegistry - will be wired through dependency injection
 	)
 
 	// 8. Start the MCP server
