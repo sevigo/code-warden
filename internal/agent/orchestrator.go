@@ -25,6 +25,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/mcp"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -32,19 +33,19 @@ import (
 
 // Orchestrator manages agent sessions and their lifecycle.
 type Orchestrator struct {
-	ghClient    github.Client
-	mcpServer   *mcp.Server
-	httpServer  *http.Server
-	logger      *slog.Logger
-	config      Config
-	projectRoot string // Path to the repository being worked on
-	repoConfig  *core.RepoConfig
-	repo        *storage.Repository
+	ghClient          github.Client
+	mcpServer         *mcp.Server
+	globalMCPRegistry *globalmcp.WorkspaceRegistry
+	httpServer        *http.Server
+	logger            *slog.Logger
+	config            Config
+	projectRoot       string
+	repoConfig        *core.RepoConfig
+	repo              *storage.Repository
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
 
-	// done is closed when the orchestrator is shutting down.
 	done chan struct{}
 }
 
@@ -130,6 +131,7 @@ func NewOrchestrator(
 	projectRoot string,
 	config Config,
 	logger *slog.Logger,
+	globalMCPRegistry *globalmcp.WorkspaceRegistry,
 ) *Orchestrator {
 	// Create MCP server
 	mcpServer := mcp.NewServer(
@@ -162,16 +164,17 @@ func NewOrchestrator(
 	}
 
 	return &Orchestrator{
-		ghClient:    ghClient,
-		mcpServer:   mcpServer,
-		logger:      logger,
-		config:      config,
-		projectRoot: absRoot,
-		repoConfig:  repoConfig,
-		repo:        repo,
-		sessions:    make(map[string]*Session),
-		sessionsMu:  sync.RWMutex{},
-		done:        make(chan struct{}),
+		ghClient:          ghClient,
+		mcpServer:         mcpServer,
+		globalMCPRegistry: globalMCPRegistry,
+		logger:            logger,
+		config:            config,
+		projectRoot:       absRoot,
+		repoConfig:        repoConfig,
+		repo:              repo,
+		sessions:          make(map[string]*Session),
+		sessionsMu:        sync.RWMutex{},
+		done:              make(chan struct{}),
 	}
 }
 
@@ -361,6 +364,29 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 	// Start agent in background
 	go o.runAgent(ctx, session)
 
+	// Register workspace with global MCP registry
+	if o.globalMCPRegistry != nil {
+		mcpEndpoint := fmt.Sprintf("http://%s", o.config.MCPAddr)
+		branch := gitutil.SanitizeBranch(fmt.Sprintf("agent/%s", sessionID))
+		token, err := o.globalMCPRegistry.RegisterWorkspace(
+			mcpEndpoint,
+			o.repo.FullName,
+			sessionID,
+			o.projectRoot,
+			globalmcp.WorkspaceMeta{
+				Branch:      branch,
+				IssueNumber: issue.Number,
+			},
+		)
+		if err != nil {
+			o.logger.Error("failed to register workspace with global MCP registry",
+				"session_id", sessionID, "error", err)
+		} else {
+			o.logger.Info("registered workspace with global MCP registry",
+				"session_id", sessionID, "token", token[:8]+"...", "mcp_endpoint", mcpEndpoint)
+		}
+	}
+
 	o.logger.Info("agent session started",
 		"session_id", sessionID,
 		"issue", issue.Number,
@@ -442,6 +468,12 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	defer func() {
 		if err := o.cleanupWorkspace(session.ID); err != nil {
 			o.logger.Error("cleanup failed", "session_id", session.ID, "error", err)
+		}
+		if o.globalMCPRegistry != nil {
+			if err := o.globalMCPRegistry.UnregisterWorkspace(session.ID); err != nil {
+				o.logger.Warn("failed to unregister workspace from global registry",
+					"session_id", session.ID, "error", err)
+			}
 		}
 	}()
 
@@ -809,6 +841,14 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 
 	// Create agent and run implementation
 	result, err := o.runSDKFeedbackLoop(ctx, session, ws, branch)
+
+	// Unregister workspace from global registry
+	if o.globalMCPRegistry != nil {
+		if err := o.globalMCPRegistry.UnregisterWorkspace(session.ID); err != nil {
+			o.logger.Warn("failed to unregister workspace from global registry",
+				"session_id", session.ID, "error", err)
+		}
+	}
 
 	// Update session state
 	session.mu.Lock()
