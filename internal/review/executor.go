@@ -133,7 +133,7 @@ func (e *Executor) Execute(ctx context.Context, params Params) (*Result, error) 
 	if e.config.ReviewsDir != "" && rawReview != "" {
 		ts := time.Now().Format("20060102-150405")
 		result := ragReview.ComparisonResult{
-			Model:    structuredReview.Verdict,
+			Model:    "review",
 			Review:   rawReview,
 			Duration: time.Since(startTime),
 		}

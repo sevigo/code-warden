@@ -44,6 +44,9 @@ services:
 
   # OpenCode Server (for agent SDK)
   # Used by goframe/agent SDK to communicate with the AI agent
+  # IMPORTANT: The agent-workspaces volume must match agent.working_dir in config.yaml
+  # and the path mapping configured in code-warden. This ensures files modified by
+  # the agent inside Docker are persisted to the host filesystem.
   opencode:
     image: ghcr.io/anomalyco/opencode:latest
     container_name: opencode
@@ -51,6 +54,7 @@ services:
       - "3000:3000"
     volumes:
       - .:/app/workspace
+      - ${AGENT_WORKSPACE_DIR:-./agent-workspaces}:/agent-workspaces
       - opencode_config:/root/.opencode
     environment:
       - OPENCODE_WORKING_DIR=/app/workspace

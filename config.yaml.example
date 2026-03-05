@@ -207,11 +207,13 @@ agent:
 
   # Maximum time for an agent session
   # Includes all iterations, reviews, and PR creation
-  timeout: "30m"
+  timeout: "1h"
 
   # Working directory for agent workspaces
   # Each session gets an isolated workspace: <working_dir>/<session_id>/
   # Must be an absolute path
+  # IMPORTANT: This directory must be mounted into the OpenCode Docker container
+  # at /agent-workspaces (see docker-compose.yml)
   working_dir: "/tmp/code-warden-agents"
 
 # ============================================================================
