@@ -293,7 +293,8 @@ func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logge
 }
 
 func provideGlobalMCPServer(cfg *config.Config, logger2 *slog.Logger) *globalmcp.Server {
-	return globalmcp.NewServer(cfg, logger2)
+	registry := globalmcp.NewWorkspaceRegistry(logger2)
+	return globalmcp.NewServer(cfg, logger2, registry)
 }
 
 func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logger, promptMgr *llm.PromptManager) (schema.Reranker, error) {
