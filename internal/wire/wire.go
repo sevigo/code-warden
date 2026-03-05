@@ -17,6 +17,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
@@ -59,6 +60,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		provideDBConfig,
 		provideSlogLogger,
 		provideSQLXDB,
+		provideGlobalMCPServer,
 	)
 	return &app.App{}, nil, nil
 }
@@ -284,6 +286,10 @@ func provideLogWriter(cfg *config.Config) io.Writer {
 
 func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logger {
 	return logger.NewLogger(loggerConfig, writer)
+}
+
+func provideGlobalMCPServer(cfg *config.Config, logger *slog.Logger) *globalmcp.Server {
+	return globalmcp.NewServer(cfg, logger)
 }
 
 func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logger, promptMgr *llm.PromptManager) (schema.Reranker, error) {

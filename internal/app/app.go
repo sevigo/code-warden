@@ -1,12 +1,15 @@
 package app
 
 import (
+	"context"
 	"log/slog"
+	"time"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
@@ -25,6 +28,7 @@ type App struct {
 	RAGService  rag.Service
 	Server      *server.Server
 	GitClient   *gitutil.Client
+	MCPServer   *globalmcp.Server
 }
 
 // NewApp creates a new App instance.
@@ -38,6 +42,7 @@ func NewApp(
 	rag rag.Service,
 	srv *server.Server,
 	gitClient *gitutil.Client,
+	mcpServer *globalmcp.Server,
 	logger *slog.Logger,
 ) *App {
 	logger.Info("initializing Code Warden application",
@@ -59,16 +64,26 @@ func NewApp(
 		RAGService:  rag,
 		Server:      srv,
 		GitClient:   gitClient,
+		MCPServer:   mcpServer,
 		Logger:      logger,
 	}
 }
 
-// Start runs the HTTP server.
+// Start runs the HTTP server and MCP server.
 func (a *App) Start() error {
 	a.Logger.Info("application config",
 		"port", a.Cfg.Server.Port,
 		"max_workers", a.Cfg.Server.MaxWorkers,
 	)
+
+	// Start MCP server if configured
+	if a.MCPServer != nil {
+		if err := a.MCPServer.Start(context.Background()); err != nil {
+			a.Logger.Error("failed to start MCP server", "error", err)
+			return err
+		}
+	}
+
 	if err := a.Server.Start(); err != nil {
 		a.Logger.Error("failed to start HTTP server", "error", err)
 		return err
@@ -82,6 +97,17 @@ func (a *App) Stop() error {
 	var shutdownErr error
 	a.Logger.Info("shutting down Code Warden services")
 
+	// Stop MCP server with timeout
+	if a.MCPServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := a.MCPServer.Stop(ctx)
+		cancel()
+		if err != nil {
+			a.Logger.Error("error during MCP server shutdown", "error", err)
+			shutdownErr = err
+		}
+	}
+
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
 	a.Dispatcher.Stop()
 
@@ -89,7 +115,7 @@ func (a *App) Stop() error {
 	if a.Server != nil {
 		if err := a.Server.Stop(); err != nil {
 			a.Logger.Error("error during HTTP server shutdown", "error", err)
-			shutdownErr = err
+			shutdownErr = a.firstError(shutdownErr, err)
 		}
 	}
 
@@ -97,9 +123,7 @@ func (a *App) Stop() error {
 	if a.VectorStore != nil {
 		if err := a.VectorStore.Close(); err != nil {
 			a.Logger.Error("error during vector store shutdown", "error", err)
-			if shutdownErr == nil {
-				shutdownErr = err
-			}
+			shutdownErr = a.firstError(shutdownErr, err)
 		}
 	}
 
@@ -114,4 +138,12 @@ func (a *App) Stop() error {
 		a.Logger.Info("Code Warden stopped successfully")
 	}
 	return shutdownErr
+}
+
+// firstError returns the first error if err1 is not nil, otherwise returns err2.
+func (a *App) firstError(err1, err2 error) error {
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
@@ -94,7 +95,8 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	job := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
 	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)
-	appApp := app.NewApp(configConfig, dbDB, store, vectorStore, repoManager, jobDispatcher, service, serverServer, client, logger)
+	globalmcpServer := provideGlobalMCPServer(configConfig, logger)
+	appApp := app.NewApp(configConfig, dbDB, store, vectorStore, repoManager, jobDispatcher, service, serverServer, client, globalmcpServer, logger)
 	return appApp, func() {
 		cleanup()
 	}, nil
@@ -288,6 +290,10 @@ func provideLogWriter(cfg *config.Config) io.Writer {
 
 func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logger {
 	return logger.NewLogger(loggerConfig, writer)
+}
+
+func provideGlobalMCPServer(cfg *config.Config, logger2 *slog.Logger) *globalmcp.Server {
+	return globalmcp.NewServer(cfg, logger2)
 }
 
 func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logger, promptMgr *llm.PromptManager) (schema.Reranker, error) {
