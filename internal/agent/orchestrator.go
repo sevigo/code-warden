@@ -854,12 +854,18 @@ func (o *Orchestrator) runSDKFeedbackLoop(ctx context.Context, session *Session,
 		),
 	)
 
-	// Create the agent
+	// Create the agent with path mapping for Docker-based OpenCode
+	// Maps host workspace directory to container path
+	pathMapping := map[string]string{
+		o.config.WorkingDir: "/agent-workspaces",
+	}
+
 	ag, err := goframeagent.New(
 		goframeagent.WithBaseURL(o.config.OpenCodeURL),
 		goframeagent.WithModel(o.config.Model),
 		goframeagent.WithMCPRegistry(mcpRegistry),
 		goframeagent.WithWorkingDir(ws.dir),
+		goframeagent.WithPathMapping(pathMapping),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent: %w", err)
@@ -943,15 +949,16 @@ Remember:
 			return nil, fmt.Errorf("review request failed: %w", err)
 		}
 
-		// Parse verdict from response
-		approved := strings.Contains(strings.ToUpper(response.Content), "APPROVE") ||
-			strings.Contains(strings.ToUpper(response.Content), "COMMENT") ||
-			strings.Contains(strings.ToUpper(response.Content), "LGTM")
+		// Get the actual verdict from the MCP Server after the agent calls review_code
+		verdict, _, _ := o.mcpServer.GetLastReview()
+		tracker.SetVerdict(verdict)
 
-		tracker.SetApproved(approved)
+		// Determine if approved based on the actual verdict
+		approved := verdict == core.VerdictApprove || verdict == core.VerdictComment
 
 		o.logger.Info("createReviewHandler: review completed",
 			"session_id", sessionID,
+			"verdict", verdict,
 			"approved", approved,
 			"response_length", len(response.Content))
 
@@ -1131,23 +1138,26 @@ func contains(slice []string, item string) bool {
 // reviewTracker tracks the review status and iteration count.
 type reviewTracker struct {
 	mu         sync.Mutex
-	approved   bool
+	verdict    string // The actual verdict from the review tool (e.g., "APPROVE", "REQUEST_CHANGES")
 	iterations int
 }
 
-func (t *reviewTracker) SetApproved(approved bool) {
+func (t *reviewTracker) SetVerdict(verdict string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.approved = approved
+	t.verdict = verdict
 }
 
 func (t *reviewTracker) GetVerdict() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.approved {
+	if t.verdict == core.VerdictApprove || t.verdict == core.VerdictComment {
 		return "APPROVED"
 	}
-	return "REQUEST_CHANGES"
+	if t.verdict == "" {
+		return "UNKNOWN"
+	}
+	return t.verdict
 }
 
 func (t *reviewTracker) IncrementIterations() {
