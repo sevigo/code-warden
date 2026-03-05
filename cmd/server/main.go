@@ -31,6 +31,8 @@ func run() error {
 		return fmt.Errorf("server configuration validation failed: %w", err)
 	}
 
+	app.PrintConfigSummary()
+
 	app.Logger.Info("starting Code-Warden application")
 
 	go func() {
