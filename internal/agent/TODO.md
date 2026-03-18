@@ -2,6 +2,16 @@
 
 ## High Priority
 
+### Add `run_command` MCP Tool (Build & Test Validation)
+Without this, an agent implementing a GitHub issue has no way to verify its code compiles
+or tests pass before creating a PR. It must rely on `review_code` as its only feedback loop,
+which catches style issues but not compilation errors or test failures.
+- [ ] Add `run_command` tool to `internal/mcp/tools/` — executes a whitelisted command in the project root
+- [ ] Whitelist: `go build ./...`, `go test ./...`, `go vet ./...`, `make lint`
+- [ ] Return structured output: exit code, stdout, stderr (truncated to 10KB)
+- [ ] Integrate with governance layer to restrict which commands can be called
+- [ ] Move the agent loop to: implement → `run_command(go build)` → fix → `run_command(go test)` → `review_code` → push → PR
+
 ### Pre-flight Validation in `SpawnAgent`
 - [ ] Check `opencode` binary is on PATH and executable
 - [ ] Validate config (model exists, working dir is writable)
@@ -50,7 +60,7 @@
 - [ ] Track which MCP tools were called per session
 - [ ] Gate `create_pull_request` behind prior `review_code` call
 - [ ] Gate `create_pull_request` behind prior `push_branch` call
-- [ ] Add `run_command` MCP tool for verified lint/test execution
+- [ ] Gate `create_pull_request` behind prior `push_branch` call
 - [ ] Enforce minimum review confidence before allowing PR creation
 
 ### Agent Metrics & Observability

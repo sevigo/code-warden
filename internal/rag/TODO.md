@@ -2,6 +2,16 @@
 
 ## High Priority
 
+### Complete Definition Chunk Indexing (Unblocks `get_symbol` MCP Tool)
+The `get_symbol` MCP tool currently returns empty results because definition chunks are not
+yet being stored during indexing. This makes the tool useless and forces agents to fall back
+to less accurate vector search for symbol lookups.
+- [ ] Complete `definitions.go` extractor: emit `chunk_type: "definition"` chunks for Go types, funcs, interfaces, consts
+- [ ] Wire extractor into the indexing pipeline alongside code chunks (see `SetupRepoContext`)
+- [ ] Add metadata fields: `identifier`, `kind` (type/func/interface/var/const), `package_name`, `line`
+- [ ] Add integration test: index a known Go file, assert definition chunks exist in Qdrant
+- [ ] Verify `get_symbol` returns correct results end-to-end after indexing
+
 ### Fix `SetupRepoContext` Worker Pool Shutdown
 - [ ] Refactor `Indexer` to expose or better control the worker pool.
 - [ ] Add unit test to verify graceful shutdown on context cancellation.
