@@ -426,6 +426,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 }
 
 // ProcessFile reads, parses, and chunks a single file for indexing.
+// Returns code chunks and definition chunks.
 func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 
@@ -448,17 +449,50 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		return nil
 	}
 
-	for i := range splitDocs {
+	// Get file extension for language detection
+	ext := strings.ToLower(filepath.Ext(file))
+
+	for idx := range splitDocs {
 		// Ensure sparse vectors are generated for hybrid search if possible
-		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[i].PageContent)
+		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
 		if err == nil {
-			splitDocs[i].Sparse = sparseVec
+			splitDocs[idx].Sparse = sparseVec
 		}
+
+		// Set chunk_type explicitly for code chunks
+		splitDocs[idx].Metadata["chunk_type"] = "code"
+		splitDocs[idx].Metadata["language"] = ext
 
 		// Polyfill: Ensure is_test is set based on filename
 		if IsTestFile(file) {
-			splitDocs[i].Metadata["is_test"] = true
+			splitDocs[idx].Metadata["is_test"] = true
 		}
 	}
-	return splitDocs
+
+	// Extract definitions from the file
+	var allDocs []schema.Document
+	allDocs = append(allDocs, splitDocs...)
+
+	if i.cfg.ParserRegistry != nil {
+		defExtractor := NewDefinitionExtractor(i.cfg.ParserRegistry, i.cfg.Logger)
+		defDocs := defExtractor.ExtractDefinitions(ctx, fullPath, file, contentBytes)
+
+		// Generate sparse vectors for definition chunks
+		for idx := range defDocs {
+			sparseVec, err := sparse.GenerateSparseVector(ctx, defDocs[idx].PageContent)
+			if err == nil {
+				defDocs[idx].Sparse = sparseVec
+			}
+		}
+
+		allDocs = append(allDocs, defDocs...)
+
+		if len(defDocs) > 0 {
+			i.cfg.Logger.Debug("extracted definitions from file",
+				"file", file,
+				"definitions", len(defDocs))
+		}
+	}
+
+	return allDocs
 }
