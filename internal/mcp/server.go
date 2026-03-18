@@ -152,6 +152,14 @@ func (s *Server) registerTools() {
 		VectorStore: s.vectorStore,
 		Logger:      s.logger,
 	}
+	s.tools["get_callers"] = &tools.GetCallers{
+		VectorStore: s.vectorStore,
+		Logger:      s.logger,
+	}
+	s.tools["get_callees"] = &tools.GetCallees{
+		VectorStore: s.vectorStore,
+		Logger:      s.logger,
+	}
 	s.tools["review_code"] = &tools.ReviewCode{
 		RagService:       s.ragService,
 		Repo:             s.repo,

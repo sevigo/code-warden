@@ -239,6 +239,16 @@ func (s *Server) handleListTools(w http.ResponseWriter, _ *http.Request) {
 			"requires_workspace": true,
 		},
 		{
+			"name":               "get_callers",
+			"description":        "Find all functions that call the specified function",
+			"requires_workspace": true,
+		},
+		{
+			"name":               "get_callees",
+			"description":        "Find all functions called by the specified function",
+			"requires_workspace": true,
+		},
+		{
 			"name":               "get_structure",
 			"description":        "Get file structure analysis",
 			"requires_workspace": true,
