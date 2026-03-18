@@ -470,7 +470,7 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 			o.logger.Error("cleanup failed", "session_id", session.ID, "error", err)
 		}
 		if o.globalMCPRegistry != nil {
-			if err := o.globalMCPRegistry.UnregisterWorkspace(session.ID); err != nil {
+			if err := o.globalMCPRegistry.UnregisterWorkspaceBySessionID(session.ID); err != nil {
 				o.logger.Warn("failed to unregister workspace from global registry",
 					"session_id", session.ID, "error", err)
 			}
@@ -844,7 +844,7 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 
 	// Unregister workspace from global registry
 	if o.globalMCPRegistry != nil {
-		if err := o.globalMCPRegistry.UnregisterWorkspace(session.ID); err != nil {
+		if err := o.globalMCPRegistry.UnregisterWorkspaceBySessionID(session.ID); err != nil {
 			o.logger.Warn("failed to unregister workspace from global registry",
 				"session_id", session.ID, "error", err)
 		}

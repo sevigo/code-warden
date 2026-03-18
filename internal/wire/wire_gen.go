@@ -92,10 +92,11 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	job := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger)
+	workspaceRegistry := provideWorkspaceRegistry(logger)
+	job := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger, workspaceRegistry)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
 	serverServer := server.NewServer(ctx, configConfig, jobDispatcher, logger)
-	globalmcpServer := provideGlobalMCPServer(configConfig, logger)
+	globalmcpServer := provideGlobalMCPServer(configConfig, logger, workspaceRegistry)
 	appApp := app.NewApp(configConfig, dbDB, store, vectorStore, repoManager, jobDispatcher, service, serverServer, client, globalmcpServer, logger)
 	return appApp, func() {
 		cleanup()
@@ -292,9 +293,12 @@ func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logge
 	return logger.NewLogger(loggerConfig, writer)
 }
 
-func provideGlobalMCPServer(cfg *config.Config, logger2 *slog.Logger) *globalmcp.Server {
-	registry := globalmcp.NewWorkspaceRegistry(logger2)
+func provideGlobalMCPServer(cfg *config.Config, logger2 *slog.Logger, registry *globalmcp.WorkspaceRegistry) *globalmcp.Server {
 	return globalmcp.NewServer(cfg, logger2, registry)
+}
+
+func provideWorkspaceRegistry(logger2 *slog.Logger) *globalmcp.WorkspaceRegistry {
+	return globalmcp.NewWorkspaceRegistry(logger2)
 }
 
 func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logger, promptMgr *llm.PromptManager) (schema.Reranker, error) {

@@ -14,6 +14,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	reviewpkg "github.com/sevigo/code-warden/internal/review"
@@ -26,13 +27,14 @@ var (
 )
 
 type ReviewJob struct {
-	cfg         *config.Config
-	ragService  rag.Service
-	store       storage.Store
-	vectorStore storage.VectorStore
-	repoMgr     repomanager.RepoManager
-	logger      *slog.Logger
-	repoMutexes sync.Map
+	cfg               *config.Config
+	ragService        rag.Service
+	store             storage.Store
+	vectorStore       storage.VectorStore
+	repoMgr           repomanager.RepoManager
+	logger            *slog.Logger
+	globalMCPRegistry *globalmcp.WorkspaceRegistry
+	repoMutexes       sync.Map
 }
 
 // NewReviewJob creates a new ReviewJob.
@@ -43,15 +45,16 @@ func NewReviewJob(
 	vectorStore storage.VectorStore,
 	repoMgr repomanager.RepoManager,
 	logger *slog.Logger,
+	globalMCPRegistry *globalmcp.WorkspaceRegistry,
 ) core.Job {
 	return &ReviewJob{
-		cfg:         cfg,
-		ragService:  rag,
-		store:       store,
-		vectorStore: vectorStore,
-		repoMgr:     repoMgr,
-		logger:      logger,
-		repoMutexes: sync.Map{},
+		cfg:               cfg,
+		ragService:        rag,
+		store:             store,
+		vectorStore:       vectorStore,
+		repoMgr:           repoMgr,
+		logger:            logger,
+		globalMCPRegistry: globalMCPRegistry,
 	}
 }
 
@@ -188,7 +191,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 		},
 		j.logger,
-		nil, // globalMCPRegistry - will be wired via dependency injection
+		j.globalMCPRegistry,
 	)
 
 	// 8. Start the MCP server

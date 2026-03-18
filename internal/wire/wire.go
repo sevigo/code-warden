@@ -61,6 +61,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		provideSlogLogger,
 		provideSQLXDB,
 		provideGlobalMCPServer,
+		provideWorkspaceRegistry,
 	)
 	return &app.App{}, nil, nil
 }
@@ -288,9 +289,12 @@ func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logge
 	return logger.NewLogger(loggerConfig, writer)
 }
 
-func provideGlobalMCPServer(cfg *config.Config, logger *slog.Logger) *globalmcp.Server {
-	registry := globalmcp.NewWorkspaceRegistry(logger)
+func provideGlobalMCPServer(cfg *config.Config, logger *slog.Logger, registry *globalmcp.WorkspaceRegistry) *globalmcp.Server {
 	return globalmcp.NewServer(cfg, logger, registry)
+}
+
+func provideWorkspaceRegistry(logger *slog.Logger) *globalmcp.WorkspaceRegistry {
+	return globalmcp.NewWorkspaceRegistry(logger)
 }
 
 func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logger, promptMgr *llm.PromptManager) (schema.Reranker, error) {
