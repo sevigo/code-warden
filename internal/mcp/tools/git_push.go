@@ -37,7 +37,7 @@ be committed (not recommended).
 You MUST call this before create_pull_request to ensure the remote branch exists.`
 }
 
-func (t *PushBranch) InputSchema() map[string]any {
+func (t *PushBranch) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

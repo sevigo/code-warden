@@ -44,7 +44,7 @@ Returns locations where the function is invoked.
 Use this to understand the impact of changes to a function.`
 }
 
-func (t *GetCallers) InputSchema() map[string]any {
+func (t *GetCallers) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

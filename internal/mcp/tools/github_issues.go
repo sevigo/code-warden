@@ -31,7 +31,7 @@ Returns a list of issues with their numbers, titles, and status.
 Use this to find issues to work on or check issue status.`
 }
 
-func (t *ListIssues) InputSchema() map[string]any {
+func (t *ListIssues) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -114,7 +114,7 @@ Returns the issue title, body, labels, and assignees.
 Use this to understand what needs to be implemented for an issue.`
 }
 
-func (t *GetIssue) InputSchema() map[string]any {
+func (t *GetIssue) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

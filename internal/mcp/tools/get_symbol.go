@@ -41,7 +41,7 @@ Returns the full definition including signature and documentation.
 Use this to understand how a type or function is defined before using it.`
 }
 
-func (t *GetSymbol) InputSchema() map[string]any {
+func (t *GetSymbol) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

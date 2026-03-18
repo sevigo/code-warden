@@ -34,7 +34,7 @@ Returns a summary of the directory's purpose, key files, and patterns.
 Use this to understand the structure and role of a module before making changes.`
 }
 
-func (t *GetArchContext) InputSchema() map[string]any {
+func (t *GetArchContext) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

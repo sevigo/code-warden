@@ -56,7 +56,7 @@ IMPORTANT: You MUST wait for APPROVE verdict before creating a PR.
 Pass the returned diff_hash to create_pull_request to ensure code hasn't changed.`
 }
 
-func (t *ReviewCode) InputSchema() map[string]any {
+func (t *ReviewCode) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

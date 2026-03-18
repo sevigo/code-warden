@@ -40,7 +40,7 @@ Returns relevant code snippets that match the query.
 Use this to find implementations, understand patterns, or locate related code.`
 }
 
-func (t *SearchCode) InputSchema() map[string]any {
+func (t *SearchCode) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

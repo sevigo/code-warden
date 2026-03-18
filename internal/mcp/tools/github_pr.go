@@ -44,7 +44,7 @@ IMPORTANT: You MUST call review_code and receive APPROVE verdict before creating
 If you haven't run review_code yet, or if the verdict was REQUEST_CHANGES, this will fail.`
 }
 
-func (t *CreatePullRequest) InputSchema() map[string]any {
+func (t *CreatePullRequest) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
