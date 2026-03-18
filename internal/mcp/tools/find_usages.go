@@ -44,7 +44,7 @@ Returns locations where the symbol is called, referenced, or implemented.
 Use this to understand the impact of changes or find all callers of a function.`
 }
 
-func (t *FindUsages) InputSchema() map[string]any {
+func (t *FindUsages) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

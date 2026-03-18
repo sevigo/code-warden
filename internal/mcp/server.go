@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	goframeagent "github.com/sevigo/goframe/agent"
+
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/mcp/tools"
@@ -32,7 +34,10 @@ type Server struct {
 	repoConfig  *core.RepoConfig
 	projectRoot string
 	logger      *slog.Logger
-	tools       map[string]Tool
+
+	// Tool registry using goframe/agent
+	registry   *goframeagent.Registry
+	governance *goframeagent.Governance
 
 	// Comparison models for consensus review (optional)
 	comparisonModels []string
@@ -70,13 +75,14 @@ type sseSession struct {
 }
 
 // Tool represents an MCP tool that can be called by an agent.
+// This interface matches goframe/agent.Tool for compatibility.
 type Tool interface {
 	// Name returns the tool name.
 	Name() string
 	// Description returns a human-readable description.
 	Description() string
-	// InputSchema returns the JSON schema for the tool's input parameters.
-	InputSchema() map[string]any
+	// ParametersSchema returns the JSON schema for the tool's input parameters.
+	ParametersSchema() map[string]any
 	// Execute runs the tool with the given arguments.
 	Execute(ctx context.Context, args map[string]any) (any, error)
 }
@@ -116,7 +122,7 @@ func NewServer(
 		repoConfig:       repoConfig,
 		projectRoot:      projectRoot,
 		logger:           logger,
-		tools:            make(map[string]Tool),
+		registry:         goframeagent.NewRegistry(),
 		sessions:         make(map[string]*sseSession),
 		workspaces:       make(map[string]string),
 		comparisonModels: config.ComparisonModels,
@@ -131,36 +137,37 @@ func NewServer(
 
 // registerTools registers all available MCP tools.
 func (s *Server) registerTools() {
-	s.tools["search_code"] = &tools.SearchCode{
+	// Core code search tools
+	s.registry.MustRegisterTool(&tools.SearchCode{
 		VectorStore: s.vectorStore,
 		Logger:      s.logger,
-	}
-	s.tools["get_arch_context"] = &tools.GetArchContext{
+	})
+	s.registry.MustRegisterTool(&tools.GetArchContext{
 		VectorStore: s.vectorStore,
 		Logger:      s.logger,
-	}
-	s.tools["get_symbol"] = &tools.GetSymbol{
+	})
+	s.registry.MustRegisterTool(&tools.GetSymbol{
 		VectorStore: s.vectorStore,
 		Logger:      s.logger,
-	}
-	s.tools["get_structure"] = &tools.GetStructure{
+	})
+	s.registry.MustRegisterTool(&tools.GetStructure{
 		VectorStore: s.vectorStore,
 		ProjectRoot: s.projectRoot,
 		Logger:      s.logger,
-	}
-	s.tools["find_usages"] = &tools.FindUsages{
+	})
+	s.registry.MustRegisterTool(&tools.FindUsages{
 		VectorStore: s.vectorStore,
 		Logger:      s.logger,
-	}
-	s.tools["get_callers"] = &tools.GetCallers{
+	})
+	s.registry.MustRegisterTool(&tools.GetCallers{
 		VectorStore: s.vectorStore,
 		Logger:      s.logger,
-	}
-	s.tools["get_callees"] = &tools.GetCallees{
+	})
+	s.registry.MustRegisterTool(&tools.GetCallees{
 		VectorStore: s.vectorStore,
 		Logger:      s.logger,
-	}
-	s.tools["review_code"] = &tools.ReviewCode{
+	})
+	s.registry.MustRegisterTool(&tools.ReviewCode{
 		RagService:       s.ragService,
 		Repo:             s.repo,
 		RepoConfig:       s.repoConfig,
@@ -168,35 +175,34 @@ func (s *Server) registerTools() {
 		ReviewsDir:       s.reviewsDir,
 		ReviewTracker:    s,
 		Logger:           s.logger,
-	}
+	})
 
 	// Register GitHub tools if ghClient is available
 	if s.ghClient != nil && s.repo != nil {
-		// Parse owner/name from FullName
 		owner, name := parseRepoFullName(s.repo.FullName)
 		if owner != "" && name != "" {
-			s.tools["create_pull_request"] = &tools.CreatePullRequest{
+			s.registry.MustRegisterTool(&tools.CreatePullRequest{
 				GHClient:      s.ghClient,
 				Repo:          tools.RepoIdentifier{Owner: owner, Name: name},
-				ReviewTracker: s, // Enforces approved review before PR
+				ReviewTracker: s,
 				Logger:        s.logger,
-			}
-			s.tools["list_issues"] = &tools.ListIssues{
+			})
+			s.registry.MustRegisterTool(&tools.ListIssues{
 				GHClient: s.ghClient,
 				Repo:     tools.RepoIdentifier{Owner: owner, Name: name},
 				Logger:   s.logger,
-			}
-			s.tools["get_issue"] = &tools.GetIssue{
+			})
+			s.registry.MustRegisterTool(&tools.GetIssue{
 				GHClient: s.ghClient,
 				Repo:     tools.RepoIdentifier{Owner: owner, Name: name},
 				Logger:   s.logger,
-			}
-			s.tools["push_branch"] = &tools.PushBranch{
+			})
+			s.registry.MustRegisterTool(&tools.PushBranch{
 				ProjectRoot:   s.projectRoot,
 				GHToken:       s.ghToken,
 				Logger:        s.logger,
-				ReviewTracker: s, // Provides access to reviewed files
-			}
+				ReviewTracker: s,
+			})
 		}
 	}
 }
@@ -227,14 +233,61 @@ func (s *Server) UnregisterWorkspace(token string) {
 	s.logger.Debug("workspace unregistered", "token", token)
 }
 
+// SetupGovernance configures the governance layer with security checks.
+// If config.EnableGovernance is false, no governance is applied.
+func (s *Server) SetupGovernance(config GovernanceConfig) {
+	if !config.EnableGovernance {
+		s.logger.Debug("governance disabled, all tools are permitted")
+		return
+	}
+
+	checks := []goframeagent.IntegrityCheck{}
+
+	// Permission check (allow/deny lists)
+	if len(config.AllowedTools) > 0 || len(config.DeniedTools) > 0 {
+		permCheck := goframeagent.NewPermissionCheck()
+		for _, tool := range config.AllowedTools {
+			permCheck.Allow(tool)
+		}
+		for _, tool := range config.DeniedTools {
+			permCheck.Deny(tool)
+		}
+		checks = append(checks, permCheck)
+		s.logger.Info("governance permission checks configured",
+			"allowed", len(config.AllowedTools),
+			"denied", len(config.DeniedTools))
+	}
+
+	// Rate limiting
+	if len(config.RateLimits) > 0 {
+		rateCheck := goframeagent.NewRateLimitCheck()
+		for tool, limit := range config.RateLimits {
+			rateCheck.SetLimit(tool, limit)
+		}
+		checks = append(checks, rateCheck)
+		s.logger.Info("governance rate limits configured", "tools", len(config.RateLimits))
+	}
+
+	s.governance = goframeagent.NewGovernance(checks...)
+	s.logger.Info("governance layer enabled", "checks", len(checks))
+}
+
 // ListTools returns all available tools in deterministic order.
 func (s *Server) ListTools() []ToolInfo {
-	tools := make([]ToolInfo, 0, len(s.tools))
-	for name, tool := range s.tools {
+	defs := s.registry.Definitions()
+	tools := make([]ToolInfo, 0, len(defs))
+	for _, def := range defs {
+		fn, ok := def["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := fn["name"].(string)
+		desc, _ := fn["description"].(string)
+		params, _ := fn["parameters"].(map[string]any)
 		tools = append(tools, ToolInfo{
 			Name:        name,
-			Description: tool.Description(),
-			InputSchema: tool.InputSchema(),
+			Description: desc,
+			InputSchema: params,
 		})
 	}
 	sort.Slice(tools, func(i, j int) bool {
@@ -336,12 +389,19 @@ func (s *Server) GetLastReviewFiles() []string {
 }
 
 // CallTool executes a tool by name.
+// If governance is enabled, it validates the tool call before execution.
 func (s *Server) CallTool(ctx context.Context, name string, args map[string]any) (any, error) {
-	tool, ok := s.tools[name]
-	if !ok {
-		return nil, fmt.Errorf("unknown tool: %s", name)
+	// Validate with governance if enabled
+	if s.governance != nil {
+		if err := s.governance.Validate(ctx, name, args); err != nil {
+			s.logger.Warn("tool execution blocked by governance",
+				"tool", name,
+				"error", err)
+			return nil, fmt.Errorf("governance denied: %w", err)
+		}
 	}
-	return tool.Execute(ctx, args)
+
+	return s.registry.Execute(ctx, name, args)
 }
 
 // ToolInfo represents tool metadata for the MCP protocol.

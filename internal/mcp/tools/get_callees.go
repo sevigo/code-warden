@@ -45,7 +45,7 @@ Returns a list of functions invoked within the function body.
 Use this to understand dependencies and potential impact of changes.`
 }
 
-func (t *GetCallees) InputSchema() map[string]any {
+func (t *GetCallees) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{

@@ -41,7 +41,7 @@ Returns a high-level overview of directories and their purposes.
 Use this to understand how the project is organized before making changes.`
 }
 
-func (t *GetStructure) InputSchema() map[string]any {
+func (t *GetStructure) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type":       "object",
 		"properties": map[string]any{},
