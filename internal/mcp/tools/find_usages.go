@@ -167,22 +167,8 @@ func (t *FindUsages) extractContext(content, symbol string) string {
 		context = "..." + context
 	}
 	if end < len(content) {
-		context = context + "..."
+		context += "..."
 	}
 
 	return context
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

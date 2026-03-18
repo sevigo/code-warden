@@ -161,39 +161,44 @@ func isCallSite(content, function string) bool {
 }
 
 // extractCallerFunction attempts to find the containing function name.
-func extractCallerFunction(content, calledFunction string) string {
+func extractCallerFunction(content, _ string) string {
 	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		// Look for function definition pattern
 		if strings.Contains(line, "func ") && strings.Contains(line, "(") {
-			// Extract function name
-			parts := strings.Split(line, "func ")
-			if len(parts) > 1 {
-				funcPart := strings.TrimSpace(parts[1])
-				// Handle "func (receiver) Name(" pattern
-				if strings.HasPrefix(funcPart, "(") {
-					// Method on a type
-					if idx := strings.Index(funcPart, ") "); idx != -1 {
-						methodPart := funcPart[idx+2:]
-						return extractFunctionName(methodPart)
-					}
-				}
-				return extractFunctionName(funcPart)
-			}
+			return extractFunctionNameFromLine(line)
 		}
 	}
 	return "<unknown>"
 }
 
-// extractFunctionName extracts the function name from a declaration.
-func extractFunctionName(s string) string {
+// extractFunctionNameFromLine extracts the function name from a declaration line.
+func extractFunctionNameFromLine(line string) string {
+	parts := strings.Split(line, "func ")
+	if len(parts) > 1 {
+		funcPart := strings.TrimSpace(parts[1])
+		// Handle "func (receiver) Name(" pattern
+		if strings.HasPrefix(funcPart, "(") {
+			// Method on a type
+			if idx := strings.Index(funcPart, ") "); idx != -1 {
+				methodPart := funcPart[idx+2:]
+				return extractFunctionNameFromSignature(methodPart)
+			}
+		}
+		return extractFunctionNameFromSignature(funcPart)
+	}
+	return "<unknown>"
+}
+
+// extractFunctionNameFromSignature extracts the function name from a signature.
+func extractFunctionNameFromSignature(s string) string {
 	// Find the first ( for parameters
 	idx := strings.Index(s, "(")
 	if idx > 0 {
 		return strings.TrimSpace(s[:idx])
 	}
 	// Find space before return type
-	if idx := strings.Index(s, " "); idx > 0 {
+	if idx = strings.Index(s, " "); idx > 0 {
 		return strings.TrimSpace(s[:idx])
 	}
 	return s

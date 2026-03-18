@@ -80,7 +80,7 @@ var builtinFunctions = map[string]bool{
 	"string": true, "int": true, "int64": true, "float64": true, "bool": true,
 }
 
-func (t *GetCallees) Execute(ctx context.Context, args map[string]any) (any, error) {
+func (t *GetCallees) Execute(ctx context.Context, args map[string]any) (any, error) { //nolint:gocognit // Complex by nature: multiple filtering stages
 	function, ok := args["function"].(string)
 	if !ok || function == "" {
 		return nil, fmt.Errorf("function is required")
@@ -186,6 +186,8 @@ func (t *GetCallees) Execute(ctx context.Context, args map[string]any) (any, err
 }
 
 // extractFunctionCalls extracts function calls from code content.
+//
+//nolint:gocognit
 func extractFunctionCalls(content, parentFunction string) []string {
 	var calls []string
 	seen := make(map[string]bool)

@@ -428,6 +428,8 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 
 // ProcessFile reads, parses, and chunks a single file for indexing.
 // Returns code chunks and definition chunks.
+//
+//nolint:gocognit
 func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 

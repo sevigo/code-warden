@@ -11,13 +11,27 @@ import (
 	"github.com/sevigo/goframe/schema"
 )
 
-type definitionExtractor struct {
+// File extensions for supported languages.
+const (
+	extGo         = ".go"
+	extTypeScript = ".ts"
+	extTSX        = ".tsx"
+	extPython     = ".py"
+	extJavaScript = ".js"
+	extJSX        = ".jsx"
+	extJava       = ".java"
+	extRust       = ".rs"
+)
+
+// DefinitionExtractor extracts type/func/interface definitions from source files.
+type DefinitionExtractor struct {
 	parserRegistry parsers.ParserRegistry
 	logger         *slog.Logger
 }
 
-func NewDefinitionExtractor(parserRegistry parsers.ParserRegistry, logger *slog.Logger) *definitionExtractor {
-	return &definitionExtractor{
+// NewDefinitionExtractor creates a new DefinitionExtractor.
+func NewDefinitionExtractor(parserRegistry parsers.ParserRegistry, logger *slog.Logger) *DefinitionExtractor {
+	return &DefinitionExtractor{
 		parserRegistry: parserRegistry,
 		logger:         logger,
 	}
@@ -25,14 +39,14 @@ func NewDefinitionExtractor(parserRegistry parsers.ParserRegistry, logger *slog.
 
 // ExtractDefinitions extracts type, function, and interface definitions from a file.
 // Returns documents with chunk_type="definition" for semantic search.
-func (d *definitionExtractor) ExtractDefinitions(ctx context.Context, fullPath, relPath string, content []byte) []schema.Document {
+func (d *DefinitionExtractor) ExtractDefinitions(_ context.Context, fullPath, relPath string, content []byte) []schema.Document {
 	ext := strings.ToLower(filepath.Ext(fullPath))
 
 	// Try parser-based extraction first
 	if d.parserRegistry != nil {
 		parser, err := d.parserRegistry.GetParserForExtension(ext)
 		if err == nil {
-			defs := d.extractWithParser(ctx, parser, fullPath, relPath, content)
+			defs := d.extractWithParser(parser, fullPath, relPath, content)
 			if len(defs) > 0 {
 				return defs
 			}
@@ -44,7 +58,7 @@ func (d *definitionExtractor) ExtractDefinitions(ctx context.Context, fullPath, 
 }
 
 // extractWithParser uses goframe parsers to extract definitions.
-func (d *definitionExtractor) extractWithParser(ctx context.Context, parser schema.ParserPlugin, fullPath, relPath string, content []byte) []schema.Document {
+func (d *DefinitionExtractor) extractWithParser(parser schema.ParserPlugin, fullPath, relPath string, content []byte) []schema.Document {
 	// Extract metadata including definitions
 	metadata, err := parser.ExtractMetadata(string(content), fullPath)
 	if err != nil {
@@ -94,23 +108,23 @@ func (d *definitionExtractor) extractWithParser(ctx context.Context, parser sche
 }
 
 // extractWithRegex uses regex patterns to extract definitions.
-func (d *definitionExtractor) extractWithRegex(fullPath, relPath string, content []byte) []schema.Document {
+func (d *DefinitionExtractor) extractWithRegex(fullPath, relPath string, content []byte) []schema.Document {
 	ext := strings.ToLower(filepath.Ext(fullPath))
 	strContent := string(content)
 
 	var patterns []*definitionPattern
 	switch ext {
-	case ".go":
+	case extGo:
 		patterns = goDefinitionPatterns
-	case ".ts", ".tsx":
+	case extTypeScript, extTSX:
 		patterns = typeScriptDefinitionPatterns
-	case ".py":
+	case extPython:
 		patterns = pythonDefinitionPatterns
-	case ".js", ".jsx":
+	case extJavaScript, extJSX:
 		patterns = javaScriptDefinitionPatterns
-	case ".java":
+	case extJava:
 		patterns = javaDefinitionPatterns
-	case ".rs":
+	case extRust:
 		patterns = rustDefinitionPatterns
 	default:
 		return nil
@@ -138,7 +152,7 @@ func (d *definitionExtractor) extractWithRegex(fullPath, relPath string, content
 			seen[name] = true
 
 			// Check if exported (Go convention)
-			if ext == ".go" && !isExported(name, ext) {
+			if ext == extGo && !isExported(name, ext) {
 				continue
 			}
 
@@ -249,6 +263,8 @@ func countLines(s string) int {
 }
 
 // extractCompleteDefinition extends the match to include the full definition body.
+//
+//nolint:gocognit
 func extractCompleteDefinition(content string, start, end int, kind string) string {
 	// For type definitions, try to include the full body
 	if kind == "struct" || kind == "interface" || kind == "class" || kind == "type" {
@@ -263,9 +279,10 @@ func extractCompleteDefinition(content string, start, end int, kind string) stri
 		depth := 1
 		i := braceStart + 1
 		for i < len(content) && depth > 0 {
-			if content[i] == '{' {
+			switch content[i] {
+			case '{':
 				depth++
-			} else if content[i] == '}' {
+			case '}':
 				depth--
 			}
 			i++
@@ -325,19 +342,19 @@ func isExported(name, ext string) bool {
 	}
 
 	switch ext {
-	case ".go":
+	case extGo:
 		// Go: uppercase first letter means exported
 		return name[0] >= 'A' && name[0] <= 'Z'
-	case ".java":
+	case extJava:
 		// Java: typically PascalCase for public
 		return name[0] >= 'A' && name[0] <= 'Z'
-	case ".py":
+	case extPython:
 		// Python: no real private, but __ prefix is convention
 		return !strings.HasPrefix(name, "__")
-	case ".ts", ".tsx", ".js", ".jsx":
+	case extTypeScript, extTSX, extJavaScript, extJSX:
 		// JS/TS: typically PascalCase for exported
 		return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
-	case ".rs":
+	case extRust:
 		// Rust: PascalCase for types, snake_case for functions
 		return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
 	default:

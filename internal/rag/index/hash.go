@@ -32,17 +32,19 @@ func IsTestFile(path string) bool {
 	base := filepath.Base(path)
 
 	switch ext {
-	case ".go":
+	case extGo:
 		return strings.HasSuffix(base, "_test.go")
-	case ".ts", ".js", ".tsx", ".jsx":
-		return strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".test.js") ||
-			strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".spec.js") ||
+	case extTypeScript, extTSX:
+		return strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".spec.ts") ||
 			strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx")
-	case ".py":
+	case extJavaScript, extJSX:
+		return strings.HasSuffix(base, ".test.js") || strings.HasSuffix(base, ".spec.js") ||
+			strings.HasSuffix(base, ".test.jsx") || strings.HasSuffix(base, ".spec.jsx")
+	case extPython:
 		return strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")
-	case ".rs":
+	case extRust:
 		return strings.HasSuffix(base, "_test.rs") // Rust conventions vary but often in-file or test_*.rs
-	case ".java":
+	case extJava:
 		return strings.HasSuffix(base, "Test.java") || strings.HasSuffix(base, "Tests.java")
 	}
 	return false
