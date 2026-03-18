@@ -234,6 +234,11 @@ func (s *Server) handleListTools(w http.ResponseWriter, _ *http.Request) {
 			"requires_workspace": true,
 		},
 		{
+			"name":               "find_usages",
+			"description":        "Find all usages of a symbol in the codebase",
+			"requires_workspace": true,
+		},
+		{
 			"name":               "get_structure",
 			"description":        "Get file structure analysis",
 			"requires_workspace": true,

@@ -148,6 +148,10 @@ func (s *Server) registerTools() {
 		ProjectRoot: s.projectRoot,
 		Logger:      s.logger,
 	}
+	s.tools["find_usages"] = &tools.FindUsages{
+		VectorStore: s.vectorStore,
+		Logger:      s.logger,
+	}
 	s.tools["review_code"] = &tools.ReviewCode{
 		RagService:       s.ragService,
 		Repo:             s.repo,
