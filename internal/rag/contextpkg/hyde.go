@@ -123,44 +123,11 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 		lang := languageFromFilename(f.Filename)
 
 		g.Go(func() error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			var docs []schema.Document
-			var err error
-
-			if indexpkg.IsLogicFile(f.Filename) {
-				// Per-file retriever: the generator closure captures file path and
-				// language so the HyDE prompt can produce idiomatic, file-specific code.
-				fileRetriever := vectorstores.NewHyDERetriever(
-					rerankingRetriever,
-					func(ctx context.Context, q string) (string, error) {
-						return b.generateHyDESnippetForFile(ctx, q, f.Filename, lang)
-					},
-					vectorstores.WithNumGenerations(2),
-				)
-				docs, err = fileRetriever.GetRelevantDocuments(ctx, f.Patch)
-			} else {
-				baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, f.Filename, f.Patch)
-				docs, err = rerankingRetriever.GetRelevantDocuments(ctx, baseQuery)
-			}
-
-			if err != nil {
-				b.cfg.Logger.Warn("HyDE generation/retrieval failed for file", "file", f.Filename, "error", err)
-				return nil
-			}
-
-			docs = filterTestDocs(docs)
+			docs := b.retrieveHyDEDocsForFile(ctx, rerankingRetriever, f, lang)
 			if len(docs) > 0 {
-				b.cfg.Logger.Debug("HyDE docs found", "file", f.Filename, "count", len(docs))
 				resultsMu.Lock()
 				results = append(results, hydeResult{index: idx, docs: docs})
 				resultsMu.Unlock()
-			} else {
-				b.cfg.Logger.Debug("no HyDE docs found", "file", f.Filename)
 			}
 			return nil
 		})
@@ -184,6 +151,52 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 
 	b.cfg.Logger.Info("stage completed", "name", "HyDE", "files_processed", len(results))
 	return finalResults, finalIndices, nil
+}
+
+// retrieveHyDEDocsForFile fetches HyDE context documents for a single changed file.
+// For logic files it uses a per-file HyDE retriever whose generator captures the
+// file's language and path; for non-code files it falls back to a plain query.
+// Errors are logged and treated as empty results — per-file HyDE failures are non-fatal.
+func (b *builderImpl) retrieveHyDEDocsForFile(ctx context.Context, reranker vectorstores.RerankingRetriever, f internalgithub.ChangedFile, lang string) []schema.Document {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
+	var (
+		docs []schema.Document
+		err  error
+	)
+
+	if indexpkg.IsLogicFile(f.Filename) {
+		// Per-file retriever: the generator closure captures file path and
+		// language so the HyDE prompt produces idiomatic, file-specific code.
+		fileRetriever := vectorstores.NewHyDERetriever(
+			reranker,
+			func(ctx context.Context, q string) (string, error) {
+				return b.generateHyDESnippetForFile(ctx, q, f.Filename, lang)
+			},
+			vectorstores.WithNumGenerations(2),
+		)
+		docs, err = fileRetriever.GetRelevantDocuments(ctx, f.Patch)
+	} else {
+		baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, f.Filename, f.Patch)
+		docs, err = reranker.GetRelevantDocuments(ctx, baseQuery)
+	}
+
+	if err != nil {
+		b.cfg.Logger.Warn("HyDE generation/retrieval failed for file", "file", f.Filename, "error", err)
+		return nil
+	}
+
+	docs = filterTestDocs(docs)
+	if len(docs) > 0 {
+		b.cfg.Logger.Debug("HyDE docs found", "file", f.Filename, "count", len(docs))
+	} else {
+		b.cfg.Logger.Debug("no HyDE docs found", "file", f.Filename)
+	}
+	return docs
 }
 
 // generateHyDESnippetForFile generates a hypothetical post-patch code snippet for
