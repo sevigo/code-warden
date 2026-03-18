@@ -358,6 +358,7 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 	o.sessionsMu.Unlock()
 
 	// Create context with timeout
+	//nolint:gosec // G118: cancel stored in session for cleanup in runAgentCLI/runAgentSDK
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
 	session.cancel = cancel
 
@@ -1055,28 +1056,28 @@ func (o *Orchestrator) buildSDKContext(issue Issue) string {
 
 	// Add issue details
 	builder.WriteString("## GitHub Issue\n")
-	builder.WriteString(fmt.Sprintf("Number: %d\n", issue.Number))
-	builder.WriteString(fmt.Sprintf("Title: %s\n", issue.Title))
+	fmt.Fprintf(&builder, "Number: %d\n", issue.Number)
+	fmt.Fprintf(&builder, "Title: %s\n", issue.Title)
 
 	if issue.Body != "" {
-		builder.WriteString(fmt.Sprintf("\nDescription:\n%s\n", issue.Body))
+		fmt.Fprintf(&builder, "\nDescription:\n%s\n", issue.Body)
 	}
 
 	if issue.Instructions != "" {
-		builder.WriteString(fmt.Sprintf("\nAdditional Instructions:\n%s\n", issue.Instructions))
+		fmt.Fprintf(&builder, "\nAdditional Instructions:\n%s\n", issue.Instructions)
 	}
 
 	// Add custom instructions from repo config
 	if o.repoConfig != nil && len(o.repoConfig.CustomInstructions) > 0 {
 		builder.WriteString("\n## Custom Instructions\n")
 		for _, instruction := range o.repoConfig.CustomInstructions {
-			builder.WriteString(fmt.Sprintf("- %s\n", instruction))
+			fmt.Fprintf(&builder, "- %s\n", instruction)
 		}
 	}
 
 	// Add MCP server info
 	builder.WriteString("\n## Available Tools\n")
-	builder.WriteString(fmt.Sprintf("Connect to MCP server at http://%s to use these tools:\n", o.config.MCPAddr))
+	fmt.Fprintf(&builder, "Connect to MCP server at http://%s to use these tools:\n", o.config.MCPAddr)
 	builder.WriteString("- search_code(query, limit, chunk_type): Search the codebase using RAG\n")
 	builder.WriteString("- get_arch_context(directory): Get architectural context for a directory\n")
 	builder.WriteString("- get_symbol(name): Get definition of a type or function\n")

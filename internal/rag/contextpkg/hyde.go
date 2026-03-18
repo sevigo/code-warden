@@ -267,7 +267,7 @@ func (b *builderImpl) buildHyDEContent(hyde [][]schema.Document, indices []int, 
 				continue
 			}
 			seenKeys[key] = struct{}{}
-			builder.WriteString(fmt.Sprintf("## Related to: %s\n```\n%s\n```\n\n", filePath, b.getDocContent(doc)))
+			fmt.Fprintf(&builder, "## Related to: %s\n```\n%s\n```\n\n", filePath, b.getDocContent(doc))
 		}
 	}
 

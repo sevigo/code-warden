@@ -273,7 +273,7 @@ func (s *Service) synthesizeConsensus(ctx context.Context, repoConfig *core.Repo
 		if res.Error != nil || strings.TrimSpace(res.Review) == "" {
 			continue
 		}
-		reviewsBuilder.WriteString(fmt.Sprintf("\n--- Review from %s ---\n", res.Model))
+		fmt.Fprintf(&reviewsBuilder, "\n--- Review from %s ---\n", res.Model)
 		reviewsBuilder.WriteString(res.Review)
 		reviewsBuilder.WriteString("\n")
 		validReviews = append(validReviews, res.Model)

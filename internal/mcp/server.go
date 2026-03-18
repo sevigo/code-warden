@@ -415,6 +415,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a per-session context that is cancelled when the client disconnects
+	//nolint:gosec // G118: sessionCancel stored in session.cancel and called in defer below
 	sessionCtx, sessionCancel := context.WithCancel(r.Context())
 	session := &sseSession{
 		id:          sessionID,

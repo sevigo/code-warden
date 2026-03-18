@@ -51,15 +51,15 @@ func (b *builderImpl) BuildContextForPrompt(docs []schema.Document) string {
 	for _, src := range order {
 		entry := groups[src]
 		contextBuilder.WriteString("---\n")
-		contextBuilder.WriteString(fmt.Sprintf("File: %s\n", src))
+		fmt.Fprintf(&contextBuilder, "File: %s\n", src)
 
 		first := entry.docs[0]
 		if pkg, ok := first.Metadata["package_name"].(string); ok && pkg != "" {
-			contextBuilder.WriteString(fmt.Sprintf("Package: %s\n", pkg))
+			fmt.Fprintf(&contextBuilder, "Package: %s\n", pkg)
 		}
 		if identifier, _ := first.Metadata["identifier"].(string); identifier != "" {
 			if parentID, _ := first.Metadata["parent_id"].(string); parentID == "" {
-				contextBuilder.WriteString(fmt.Sprintf("Identifier: %s\n", identifier))
+				fmt.Fprintf(&contextBuilder, "Identifier: %s\n", identifier)
 			}
 		}
 
@@ -243,7 +243,7 @@ func (b *builderImpl) formatSplitDocs(allDocs []schema.Document, descKeys map[st
 
 		content := b.getDocContent(doc)
 		if _, isDesc := descKeys[source]; isDesc && prDescription != "" {
-			descBuilder.WriteString(fmt.Sprintf("File: %s\n```\n%s\n```\n\n", source, content))
+			fmt.Fprintf(&descBuilder, "File: %s\n```\n%s\n```\n\n", source, content)
 		} else {
 			fmt.Fprintf(&impactBuilder, "**%s**:\n```\n%s\n```\n\n", source, content)
 		}

@@ -47,7 +47,7 @@ func NewService(cfg Config) *Service {
 func formatChangedFiles(files []internalgithub.ChangedFile) string {
 	var builder strings.Builder
 	for _, file := range files {
-		builder.WriteString(fmt.Sprintf("- `%s`\n", file.Filename))
+		fmt.Fprintf(&builder, "- `%s`\n", file.Filename)
 	}
 	return builder.String()
 }

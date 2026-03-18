@@ -101,7 +101,7 @@ func (b *builderImpl) combineArchSummaries(docs []schema.Document) string {
 		if source == "" {
 			source = "unknown directory"
 		}
-		combined.WriteString(fmt.Sprintf("## Directory: %s\n%s\n\n", source, doc.PageContent))
+		fmt.Fprintf(&combined, "## Directory: %s\n%s\n\n", source, doc.PageContent)
 	}
 	return combined.String()
 }

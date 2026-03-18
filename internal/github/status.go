@@ -177,7 +177,7 @@ func formatInlineComment(ctx context.Context, sug core.Suggestion) string {
 	// 3. Wrap in GitHub Alert for Critical/High
 	if shouldUseAlert(sug.Severity) {
 		alertType := SeverityAlert(sug.Severity)
-		sb.WriteString(fmt.Sprintf("> [!%s]\n", alertType))
+		fmt.Fprintf(&sb, "> [!%s]\n", alertType)
 
 		// Extract text before first code block
 		textPart, codePart := splitTextAndCode(comment)
@@ -319,7 +319,7 @@ func formatReviewSummary(review *core.StructuredReview) string {
 	if title == "" {
 		title = "🔍 Code Review Summary"
 	}
-	sb.WriteString(fmt.Sprintf("## %s\n\n", title))
+	fmt.Fprintf(&sb, "## %s\n\n", title)
 
 	// Verdict
 	icon := verdictIcon(review.Verdict)

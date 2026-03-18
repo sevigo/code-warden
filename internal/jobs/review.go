@@ -110,6 +110,8 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) er
 }
 
 // runImplementIssue handles the `/implement` command on issues.
+//
+//nolint:funlen // Complex workflow requiring multiple sequential steps
 func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🤖 Starting Issue Implementation",
 		"repo", event.RepoFullName,
@@ -288,14 +290,14 @@ func (j *ReviewJob) formatImplementResult(result *agent.Result) string {
 
 	if result.PRNumber > 0 {
 		sb.WriteString("## ✅ Implementation Complete\n\n")
-		sb.WriteString(fmt.Sprintf("I've created pull request [#%d](%s) with the implementation.\n\n", result.PRNumber, result.PRURL))
-		sb.WriteString(fmt.Sprintf("**Branch:** `%s`\n", result.Branch))
-		sb.WriteString(fmt.Sprintf("**Files Changed:** %d\n", len(result.FilesChanged)))
-		sb.WriteString(fmt.Sprintf("**Iterations:** %d\n", result.Iterations))
-		sb.WriteString(fmt.Sprintf("**Verdict:** %s\n", result.Verdict))
+		fmt.Fprintf(&sb, "I've created pull request [#%d](%s) with the implementation.\n\n", result.PRNumber, result.PRURL)
+		fmt.Fprintf(&sb, "**Branch:** `%s`\n", result.Branch)
+		fmt.Fprintf(&sb, "**Files Changed:** %d\n", len(result.FilesChanged))
+		fmt.Fprintf(&sb, "**Iterations:** %d\n", result.Iterations)
+		fmt.Fprintf(&sb, "**Verdict:** %s\n", result.Verdict)
 
 		if result.ReviewSummary != "" {
-			sb.WriteString(fmt.Sprintf("\n**Review Summary:**\n%s\n", result.ReviewSummary))
+			fmt.Fprintf(&sb, "\n**Review Summary:**\n%s\n", result.ReviewSummary)
 		}
 	} else {
 		sb.WriteString("## ❌ Implementation Failed\n\n")
@@ -583,14 +585,14 @@ func appendOffDiffSuggestions(summary string, suggestions []core.Suggestion) str
 	var sb strings.Builder
 	sb.WriteString(summary)
 	sb.WriteString("\n\n<details>\n")
-	sb.WriteString(fmt.Sprintf("<summary>📝 %d off-diff observation(s)</summary>\n\n", len(suggestions)))
+	fmt.Fprintf(&sb, "<summary>📝 %d off-diff observation(s)</summary>\n\n", len(suggestions))
 
 	for _, s := range suggestions {
 		// Extract a brief title from the first line of the comment
 		briefTitle := extractBriefTitle(s.Comment)
 		emoji := github.SeverityEmoji(s.Severity)
 		alert := github.SeverityAlert(s.Severity)
-		sb.WriteString(fmt.Sprintf("- **%s:%d** %s %s [%s]: %s\n", s.FilePath, s.LineNumber, emoji, s.Severity, alert, briefTitle))
+		fmt.Fprintf(&sb, "- **%s:%d** %s %s [%s]: %s\n", s.FilePath, s.LineNumber, emoji, s.Severity, alert, briefTitle)
 	}
 
 	sb.WriteString("\n</details>")
