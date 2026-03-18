@@ -50,7 +50,6 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 		remoteURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", token, session.Issue.RepoOwner, session.Issue.RepoName)
 	}
 	// TODO: Replace env var fallback with installation token from o.ghClient when available
-
 	//nolint:gosec // G702: remoteURL constructed from GitHub API (RepoOwner/RepoName are trusted)
 	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", remoteURL)
 	setRemoteCmd.Dir = workspaceDir

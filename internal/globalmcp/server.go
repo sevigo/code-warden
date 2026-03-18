@@ -234,6 +234,21 @@ func (s *Server) handleListTools(w http.ResponseWriter, _ *http.Request) {
 			"requires_workspace": true,
 		},
 		{
+			"name":               "find_usages",
+			"description":        "Find all usages of a symbol in the codebase",
+			"requires_workspace": true,
+		},
+		{
+			"name":               "get_callers",
+			"description":        "Find all functions that call the specified function",
+			"requires_workspace": true,
+		},
+		{
+			"name":               "get_callees",
+			"description":        "Find all functions called by the specified function",
+			"requires_workspace": true,
+		},
+		{
 			"name":               "get_structure",
 			"description":        "Get file structure analysis",
 			"requires_workspace": true,
@@ -569,7 +584,6 @@ func (s *Server) proxyMCPMessage(w http.ResponseWriter, r *http.Request, mcpEndp
 			ResponseHeaderTimeout: proxyHandshakeTimeout,
 		},
 	}
-
 	//nolint:gosec // G704: targetReq targets internal MCP server URL from trusted config
 	resp, err := client.Do(targetReq)
 	if err != nil {

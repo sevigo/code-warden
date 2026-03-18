@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -426,6 +427,9 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 }
 
 // ProcessFile reads, parses, and chunks a single file for indexing.
+// Returns code chunks and definition chunks.
+//
+//nolint:gocognit
 func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 
@@ -448,17 +452,210 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		return nil
 	}
 
-	for i := range splitDocs {
+	// Get file extension for language detection
+	ext := strings.ToLower(filepath.Ext(file))
+
+	// Build line offset map for computing line numbers
+	lineOffsets := buildLineOffsets(validContent)
+
+	for idx := range splitDocs {
 		// Ensure sparse vectors are generated for hybrid search if possible
-		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[i].PageContent)
+		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
 		if err == nil {
-			splitDocs[i].Sparse = sparseVec
+			splitDocs[idx].Sparse = sparseVec
+		}
+
+		// Set chunk_type explicitly for code chunks
+		splitDocs[idx].Metadata["chunk_type"] = "code"
+		splitDocs[idx].Metadata["language"] = ext
+
+		// Compute line numbers
+		if line, endLine, ok := findLineNumbers(validContent, splitDocs[idx].PageContent, lineOffsets); ok {
+			splitDocs[idx].Metadata["line"] = line
+			splitDocs[idx].Metadata["end_line"] = endLine
+		}
+
+		// Extract symbols from chunk
+		symbols := extractSymbolsFromChunk(splitDocs[idx].PageContent, ext)
+		if len(symbols) > 0 {
+			splitDocs[idx].Metadata["symbols"] = symbols
+			// Primary symbol is the first exported one
+			for _, sym := range symbols {
+				if len(sym) > 0 && sym[0] >= 'A' && sym[0] <= 'Z' {
+					splitDocs[idx].Metadata["identifier"] = sym
+					break
+				}
+			}
 		}
 
 		// Polyfill: Ensure is_test is set based on filename
 		if IsTestFile(file) {
-			splitDocs[i].Metadata["is_test"] = true
+			splitDocs[idx].Metadata["is_test"] = true
 		}
 	}
-	return splitDocs
+
+	// Extract definitions from the file
+	var allDocs []schema.Document
+	allDocs = append(allDocs, splitDocs...)
+
+	if i.cfg.ParserRegistry != nil {
+		defExtractor := NewDefinitionExtractor(i.cfg.ParserRegistry, i.cfg.Logger)
+		defDocs := defExtractor.ExtractDefinitions(ctx, fullPath, file, contentBytes)
+
+		// Generate sparse vectors for definition chunks
+		for idx := range defDocs {
+			sparseVec, err := sparse.GenerateSparseVector(ctx, defDocs[idx].PageContent)
+			if err == nil {
+				defDocs[idx].Sparse = sparseVec
+			}
+		}
+
+		allDocs = append(allDocs, defDocs...)
+
+		if len(defDocs) > 0 {
+			i.cfg.Logger.Debug("extracted definitions from file",
+				"file", file,
+				"definitions", len(defDocs))
+		}
+	}
+
+	return allDocs
+}
+
+// buildLineOffsets creates a map of line number to byte offset.
+func buildLineOffsets(content string) []int {
+	var offsets []int
+	offsets = append(offsets, 0) // Line 1 starts at offset 0
+
+	for i, c := range content {
+		if c == '\n' {
+			offsets = append(offsets, i+1)
+		}
+	}
+
+	return offsets
+}
+
+// findLineNumbers finds the start and end line numbers for a chunk.
+func findLineNumbers(fullContent, chunkContent string, lineOffsets []int) (startLine, endLine int, ok bool) {
+	// Find where chunk starts in full content
+	startIdx := strings.Index(fullContent, chunkContent)
+	if startIdx == -1 {
+		return 0, 0, false
+	}
+	endIdx := startIdx + len(chunkContent)
+
+	// Binary search for start line
+	startLine = 1
+	for i, offset := range lineOffsets {
+		if offset > startIdx {
+			startLine = i
+			break
+		}
+	}
+
+	// Binary search for end line
+	endLine = startLine
+	for i, offset := range lineOffsets {
+		if offset >= endIdx {
+			endLine = i
+			break
+		}
+	}
+
+	// Make sure endLine is at least startLine
+	if endLine < startLine {
+		endLine = startLine
+	}
+
+	return startLine, endLine, true
+}
+
+// extractSymbolsFromChunk extracts identifier names from a code chunk.
+func extractSymbolsFromChunk(chunk, ext string) []string {
+	var symbols []string
+	seen := make(map[string]bool)
+
+	// Pattern for identifiers (exported and unexported)
+	// Go-style: PascalCase or camelCase
+	// TypeScript/JavaScript: PascalCase, camelCase, snake_case
+	// Python: snake_case, PascalCase for classes
+
+	var patterns []*regexp.Regexp
+
+	switch ext {
+	case ".go":
+		// Type references: Type{ or &Type{
+		patterns = append(patterns, regexp.MustCompile(`&?([A-Z][a-zA-Z0-9]*)\s*\{`))
+		// Method calls: .Method( or Method(
+		patterns = append(patterns, regexp.MustCompile(`\.([A-Z][a-zA-Z0-9]*)\s*\(`))
+		patterns = append(patterns, regexp.MustCompile(`\b([A-Z][a-zA-Z0-9]*)\s*\(`))
+		// Variable references
+		patterns = append(patterns, regexp.MustCompile(`\b([a-zA-Z][a-zA-Z0-9]*)\s*[,)\s]`))
+
+	case ".ts", ".tsx", ".js", ".jsx":
+		// Class/interface references
+		patterns = append(patterns, regexp.MustCompile(`\b([A-Z][a-zA-Z0-9]*)\s*[<{.]`))
+		// Function calls
+		patterns = append(patterns, regexp.MustCompile(`\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(`))
+
+	case ".py":
+		// Class references
+		patterns = append(patterns, regexp.MustCompile(`\b([A-Z][a-zA-Z0-9]*)\s*[(:,]`))
+		// Function calls
+		patterns = append(patterns, regexp.MustCompile(`\b([a-z_][a-zA-Z0-9_]*)\s*\(`))
+
+	default:
+		// Generic: identifiers
+		patterns = append(patterns, regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\b`))
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindAllStringSubmatch(chunk, -1)
+		for _, match := range matches {
+			if len(match) > 1 && match[1] != "" {
+				sym := match[1]
+				// Skip keywords
+				if isCodeKeyword(sym) {
+					continue
+				}
+				if !seen[sym] {
+					seen[sym] = true
+					symbols = append(symbols, sym)
+				}
+			}
+		}
+	}
+
+	// Limit to top 10 symbols to avoid bloat
+	if len(symbols) > 10 {
+		symbols = symbols[:10]
+	}
+
+	return symbols
+}
+
+// isCodeKeyword checks if a symbol is a language keyword.
+func isCodeKeyword(sym string) bool {
+	keywords := map[string]bool{
+		// Go
+		"package": true, "import": true, "func": true, "var": true, "const": true,
+		"type": true, "struct": true, "interface": true, "map": true, "chan": true,
+		"return": true, "if": true, "else": true, "for": true, "range": true,
+		"switch": true, "case": true, "default": true, "select": true, "go": true,
+		"defer": true, "break": true, "continue": true, "goto": true,
+		"true": true, "false": true, "nil": true, "iota": true,
+		"string": true, "int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+		"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+		"float32": true, "float64": true, "bool": true, "byte": true, "rune": true,
+		"error": true, "any": true, "context": true,
+		// Common
+		"self": true, "this": true, "super": true, "class": true, "def": true,
+		"public": true, "private": true, "protected": true, "static": true,
+		"void": true, "null": true, "undefined": true, "new": true,
+		"len": true, "cap": true, "make": true, "append": true, "copy": true,
+		"delete": true, "close": true, "panic": true, "recover": true,
+		"fmt": true, "strings": true, "errors": true, "json": true, "http": true,
+	}
+	return keywords[sym]
 }
