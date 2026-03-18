@@ -10,8 +10,9 @@ type GovernanceConfig struct {
 	// DeniedTools explicitly blocks certain tools.
 	DeniedTools []string `yaml:"denied_tools"`
 
-	// RateLimits maps tool names to max calls per session.
-	// Example: {"review_code": 5} limits review_code to 5 calls per session.
+	// RateLimits maps tool names to max calls globally across all sessions.
+	// Note: Rate limits are global across all sessions, not per-session.
+	// Example: {"review_code": 5} limits review_code to 5 calls total across all sessions.
 	RateLimits map[string]int `yaml:"rate_limits"`
 
 	// EnableGovernance enables the governance layer.

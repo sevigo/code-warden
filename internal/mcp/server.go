@@ -235,6 +235,7 @@ func (s *Server) UnregisterWorkspace(token string) {
 
 // SetupGovernance configures the governance layer with security checks.
 // If config.EnableGovernance is false, no governance is applied.
+// Note: This method is not idempotent - calling it twice replaces the previous governance.
 func (s *Server) SetupGovernance(config GovernanceConfig) {
 	if !config.EnableGovernance {
 		s.logger.Debug("governance disabled, all tools are permitted")
@@ -266,6 +267,10 @@ func (s *Server) SetupGovernance(config GovernanceConfig) {
 		}
 		checks = append(checks, rateCheck)
 		s.logger.Info("governance rate limits configured", "tools", len(config.RateLimits))
+	}
+
+	if len(checks) == 0 {
+		s.logger.Warn("governance enabled but no rules configured - all tools will pass")
 	}
 
 	s.governance = goframeagent.NewGovernance(checks...)
