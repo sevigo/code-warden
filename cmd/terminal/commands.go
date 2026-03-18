@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -19,7 +19,7 @@ func initializeAppCmd() tea.Cmd {
 	return func() tea.Msg {
 		app, cleanup, err := wire.InitializeApp(context.Background())
 		if err != nil {
-			return appInitializedMsg{err: err}
+			return appInitializedMsg{err: fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)}
 		}
 
 		if err := app.Cfg.ValidateForCLI(); err != nil {
@@ -27,7 +27,12 @@ func initializeAppCmd() tea.Cmd {
 			return appInitializedMsg{err: fmt.Errorf("cli configuration validation failed: %w", err)}
 		}
 
-		return appInitializedMsg{app: app}
+		if err := app.DB.RunMigrations(); err != nil {
+			cleanup()
+			return appInitializedMsg{err: fmt.Errorf("failed to run database migrations: %w", err)}
+		}
+
+		return appInitializedMsg{app: app, cleanup: cleanup}
 	}
 }
 
@@ -41,7 +46,7 @@ func scanRepoCmd(app *app.App, path, repoFullName string, force bool) tea.Cmd {
 
 		repoConfig, err := config.LoadRepoConfig(updateResult.RepoPath)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, config.ErrConfigNotFound) {
 				app.Logger.Info("no .code-warden.yml found, using defaults", "repo", updateResult.RepoFullName)
 			} else {
 				app.Logger.Warn("failed to parse .code-warden.yml, using defaults", "error", err, "repo", updateResult.RepoFullName)

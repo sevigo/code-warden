@@ -34,6 +34,7 @@ const asciiLogo = `
 type model struct {
 	styles    styles
 	app       *app.App
+	cleanup   func()
 	isLoading bool
 
 	// UI Components
@@ -163,6 +164,9 @@ func (m *model) View() string {
 func (m *model) handleKeyMsg(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
 	case tea.KeyCtrlC, tea.KeyEsc:
+		if m.cleanup != nil {
+			m.cleanup()
+		}
 		return tea.Quit
 	case tea.KeyEnter:
 		input := strings.TrimSpace(m.textarea.Value())
@@ -181,6 +185,7 @@ func (m *model) handleAppInitializedMsg(msg appInitializedMsg) tea.Cmd {
 		return nil
 	}
 	m.app = msg.app
+	m.cleanup = msg.cleanup
 	return loadReposCmd(m.app)
 }
 

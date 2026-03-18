@@ -19,6 +19,10 @@ import (
 	"time"
 
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/mcp"
+	"github.com/sevigo/code-warden/internal/rag"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 const (
@@ -39,6 +43,24 @@ type Server struct {
 	readyOnce   sync.Once
 	startupOnce sync.Once
 	mu          sync.RWMutex
+
+	// Standalone MCP mode (when default workspace is configured)
+	standaloneMode bool
+	defaultRepo    *storage.Repository
+	defaultRepoCfg *core.RepoConfig
+	ragService     rag.Service
+	store          storage.Store
+	vectorStore    storage.ScopedVectorStore
+	mcpServer      *mcp.Server // Embedded MCP server for standalone mode
+}
+
+// StandaloneConfig holds dependencies for standalone MCP mode.
+type StandaloneConfig struct {
+	Store       storage.Store
+	VectorStore storage.ScopedVectorStore
+	RAGService  rag.Service
+	Repo        *storage.Repository
+	RepoConfig  *core.RepoConfig
 }
 
 func NewServer(cfg *config.Config, logger *slog.Logger, registry *WorkspaceRegistry) *Server {
@@ -49,6 +71,43 @@ func NewServer(cfg *config.Config, logger *slog.Logger, registry *WorkspaceRegis
 		version:  "1.0.0",
 		ready:    make(chan struct{}),
 	}
+}
+
+// NewStandaloneServer creates a global MCP server that can serve tools directly
+// without requiring a workspace token.
+func NewStandaloneServer(cfg *config.Config, logger *slog.Logger, registry *WorkspaceRegistry, standaloneCfg *StandaloneConfig) *Server {
+	s := &Server{
+		addr:           cfg.Agent.MCPAddr,
+		logger:         logger,
+		registry:       registry,
+		version:        "1.0.0",
+		ready:          make(chan struct{}),
+		standaloneMode: true,
+		store:          standaloneCfg.Store,
+		vectorStore:    standaloneCfg.VectorStore,
+		ragService:     standaloneCfg.RAGService,
+		defaultRepo:    standaloneCfg.Repo,
+		defaultRepoCfg: standaloneCfg.RepoConfig,
+	}
+
+	// Create embedded MCP server for standalone mode
+	s.mcpServer = mcp.NewServer(
+		s.store,
+		s.vectorStore,
+		s.ragService,
+		nil, // ghClient - not available in standalone mode
+		"",  // ghToken
+		s.defaultRepo,
+		s.defaultRepoCfg,
+		cfg.Agent.DefaultWorkspace,
+		logger,
+		mcp.Config{
+			ComparisonModels: cfg.AI.ComparisonModels,
+			ReviewsDir:       cfg.AI.ReviewsDir,
+		},
+	)
+
+	return s
 }
 
 // SetAPIKey sets an optional API key for authenticating sensitive endpoints.
@@ -427,7 +486,12 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Get workspace from query
 	token := r.URL.Query().Get("workspace")
 
+	// If no workspace token and we're in standalone mode, serve MCP directly
 	if token == "" {
+		if s.standaloneMode {
+			s.handleStandaloneSSE(w, r)
+			return
+		}
 		s.handleSSEDiscovery(w, r)
 		return
 	}
@@ -441,6 +505,16 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Proxy SSE connection to job-specific MCP server
 	s.proxySSE(w, r, info.MCPEndpoint, token)
+}
+
+// handleStandaloneSSE serves MCP directly when in standalone mode.
+func (s *Server) handleStandaloneSSE(w http.ResponseWriter, r *http.Request) {
+	if s.mcpServer == nil {
+		http.Error(w, "Standalone MCP server not initialized", http.StatusInternalServerError)
+		return
+	}
+	// Use the embedded MCP server's ServeHTTP to handle SSE
+	s.mcpServer.ServeHTTP(w, r)
 }
 
 // handleSSEDiscovery provides workspace discovery when no workspace is specified.
@@ -514,7 +588,12 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 
 	token := r.URL.Query().Get("workspace")
 
+	// If no workspace token and we're in standalone mode, serve MCP directly
 	if token == "" {
+		if s.standaloneMode {
+			s.handleStandaloneMessage(w, r)
+			return
+		}
 		s.handleMessageNoWorkspace(w, r)
 		return
 	}
@@ -528,6 +607,16 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 
 	// Proxy MCP message to job-specific server
 	s.proxyMCPMessage(w, r, info.MCPEndpoint, token)
+}
+
+// handleStandaloneMessage handles MCP messages in standalone mode.
+func (s *Server) handleStandaloneMessage(w http.ResponseWriter, r *http.Request) {
+	if s.mcpServer == nil {
+		http.Error(w, "Standalone MCP server not initialized", http.StatusInternalServerError)
+		return
+	}
+	// Use the embedded MCP server's ServeHTTP to handle messages
+	s.mcpServer.ServeHTTP(w, r)
 }
 
 // handleMessageNoWorkspace returns helpful message when no workspace is specified.

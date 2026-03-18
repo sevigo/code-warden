@@ -70,6 +70,16 @@ type AgentConfig struct {
 	// MCPTimeout is the timeout for individual MCP tool calls (e.g., "5m").
 	// This is used to configure OpenCode to wait longer for slow tool responses.
 	MCPTimeout string `mapstructure:"mcp_timeout"`
+
+	// DefaultWorkspace is an optional path to a repository that should be used
+	// as the default workspace for standalone MCP mode. When set, the MCP server
+	// will serve tools directly without requiring a workspace token.
+	// This enables direct connection from tools like OpenCode.
+	DefaultWorkspace string `mapstructure:"default_workspace"`
+
+	// DefaultWorkspaceRepo is the full name of the default workspace repository (e.g., "owner/repo").
+	// Required when DefaultWorkspace is set.
+	DefaultWorkspaceRepo string `mapstructure:"default_workspace_repo"`
 }
 
 // GetTimeout parses and returns the timeout duration.
@@ -131,6 +141,11 @@ func (c *AgentConfig) Validate() error {
 		return errors.New("agent.mcp_addr is required when agent is enabled")
 	}
 
+	// Default workspace validation
+	if err := c.validateDefaultWorkspace(); err != nil {
+		return err
+	}
+
 	// Working directory validation
 	return c.validateWorkingDir()
 }
@@ -181,6 +196,34 @@ func (c *AgentConfig) validateWorkingDir() error {
 	if !filepath.IsAbs(cleanPath) {
 		return fmt.Errorf("agent.working_dir must be an absolute path: %s", c.WorkingDir)
 	}
+	return nil
+}
+
+// validateDefaultWorkspace validates the default workspace configuration.
+func (c *AgentConfig) validateDefaultWorkspace() error {
+	if c.DefaultWorkspace == "" {
+		return nil // Optional, no validation needed
+	}
+
+	// Check path exists
+	info, err := os.Stat(c.DefaultWorkspace)
+	if err != nil {
+		return fmt.Errorf("agent.default_workspace path does not exist: %s", c.DefaultWorkspace)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("agent.default_workspace must be a directory: %s", c.DefaultWorkspace)
+	}
+
+	// Require repository name if workspace is set
+	if c.DefaultWorkspaceRepo == "" {
+		return errors.New("agent.default_workspace_repo is required when agent.default_workspace is set")
+	}
+
+	// Validate repo name format: "owner/repo"
+	if !strings.Contains(c.DefaultWorkspaceRepo, "/") || strings.Count(c.DefaultWorkspaceRepo, "/") != 1 {
+		return fmt.Errorf("agent.default_workspace_repo must be in format 'owner/repo', got: %s", c.DefaultWorkspaceRepo)
+	}
+
 	return nil
 }
 
