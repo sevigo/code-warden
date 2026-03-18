@@ -7,8 +7,9 @@ import (
 
 // Indicates that the core application services have been initialized.
 type appInitializedMsg struct {
-	app *app.App
-	err error
+	app     *app.App
+	cleanup func()
+	err     error
 }
 
 // Indicates that a repository scan has completed.

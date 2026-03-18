@@ -9,12 +9,14 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/wire"
 	"github.com/jmoiron/sqlx"
 	"github.com/sevigo/code-warden/internal/app"
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/globalmcp"
@@ -289,8 +291,66 @@ func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logge
 	return logger.NewLogger(loggerConfig, writer)
 }
 
-func provideGlobalMCPServer(cfg *config.Config, logger *slog.Logger, registry *globalmcp.WorkspaceRegistry) *globalmcp.Server {
-	return globalmcp.NewServer(cfg, logger, registry)
+func provideGlobalMCPServer(ctx context.Context, cfg *config.Config, logger *slog.Logger, registry *globalmcp.WorkspaceRegistry, store storage.Store, vectorStore storage.VectorStore, ragService rag.Service) (*globalmcp.Server, error) {
+	if cfg.Agent.DefaultWorkspace == "" {
+		logger.Info("No default workspace configured, using proxy-only MCP server")
+		return globalmcp.NewServer(cfg, logger, registry), nil
+	}
+
+	logger.Info("Default workspace configured, initializing standalone MCP server",
+		"workspace", cfg.Agent.DefaultWorkspace,
+		"repo", cfg.Agent.DefaultWorkspaceRepo)
+
+	repo, err := getOrCreateDefaultRepo(ctx, store, cfg.Agent.DefaultWorkspaceRepo, cfg.Agent.DefaultWorkspace, cfg.AI.EmbedderModel, logger)
+	if err != nil {
+		logger.Error("Failed to setup default workspace", "error", err)
+		return nil, fmt.Errorf("failed to setup default workspace: %w", err)
+	}
+
+	scopedStore := vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+
+	standaloneCfg := &globalmcp.StandaloneConfig{
+		Store:       store,
+		VectorStore: scopedStore,
+		RAGService:  ragService,
+		Repo:        repo,
+		RepoConfig:  core.DefaultRepoConfig(),
+	}
+
+	return globalmcp.NewStandaloneServer(cfg, logger, registry, standaloneCfg), nil
+}
+
+func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullName, repoPath, embedderModel string, logger *slog.Logger) (*storage.Repository, error) {
+	repo, err := store.GetRepositoryByFullName(ctx, repoFullName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for existing repository: %w", err)
+	}
+
+	if repo != nil {
+		logger.Info("Found existing repository record for default workspace", "repo", repoFullName)
+		return repo, nil
+	}
+
+	logger.Info("Creating new repository record for default workspace", "repo", repoFullName)
+
+	collectionName := generateCollectionName(repoFullName, embedderModel)
+	repo = &storage.Repository{
+		FullName:             repoFullName,
+		ClonePath:            repoPath,
+		QdrantCollectionName: collectionName,
+		EmbedderModelName:    embedderModel,
+	}
+
+	if err := store.CreateRepository(ctx, repo); err != nil {
+		return nil, fmt.Errorf("failed to create repository record: %w", err)
+	}
+
+	return repo, nil
+}
+
+func generateCollectionName(repoFullName, embedderModel string) string {
+	sanitized := strings.ReplaceAll(repoFullName, "/", "_")
+	return fmt.Sprintf("%s_%s", sanitized, embedderModel)
 }
 
 func provideWorkspaceRegistry(logger *slog.Logger) *globalmcp.WorkspaceRegistry {

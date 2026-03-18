@@ -429,7 +429,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 // ProcessFile reads, parses, and chunks a single file for indexing.
 // Returns code chunks and definition chunks.
 //
-//nolint:gocognit
+//nolint:funlen,gocognit
 func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 
@@ -452,7 +452,6 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		return nil
 	}
 
-	// Get file extension for language detection
 	ext := strings.ToLower(filepath.Ext(file))
 
 	// Build line offset map for computing line numbers
@@ -491,6 +490,17 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		// Polyfill: Ensure is_test is set based on filename
 		if IsTestFile(file) {
 			splitDocs[idx].Metadata["is_test"] = true
+
+			// Extract tested symbols for test-to-code linkage
+			testedSymbols := ExtractTestedSymbols(file, splitDocs[idx].PageContent)
+			if len(testedSymbols) > 0 {
+				symbolNames := make([]string, 0, len(testedSymbols))
+				for _, ts := range testedSymbols {
+					symbolNames = append(symbolNames, ts.Symbol)
+				}
+				splitDocs[idx].Metadata["tested_symbols"] = symbolNames
+				splitDocs[idx].Metadata["source_file"] = InferSourceFile(file)
+			}
 		}
 	}
 

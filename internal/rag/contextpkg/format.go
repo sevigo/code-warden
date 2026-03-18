@@ -148,10 +148,13 @@ func (b *builderImpl) fallbackConcat(docs []schema.Document) string {
 	return fallback.String()
 }
 
-func (b *builderImpl) buildContextDocuments(arch, impact, description, definitions string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) []schema.Document {
+func (b *builderImpl) buildContextDocuments(arch, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) []schema.Document {
 	var docs []schema.Document
 	if definitions != "" {
 		docs = append(docs, schema.Document{PageContent: definitions})
+	}
+	if testCoverage != "" {
+		docs = append(docs, schema.Document{PageContent: testCoverage})
 	}
 	if description != "" {
 		docs = append(docs, schema.Document{PageContent: description})

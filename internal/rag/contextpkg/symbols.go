@@ -33,6 +33,7 @@ type resolvedDefinition struct {
 const maxDepth0Symbols = 25
 const maxDepth2Symbols = 15
 const maxSymbolWorkers = 10
+const maxDefinitionChars = 15000 // Cap definitions to ~15k chars (~4k tokens)
 
 //nolint:unparam // error always nil but signature required for errgroup
 func (b *builderImpl) gatherDefinitionsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, changedFiles []internalgithub.ChangedFile) (string, error) {
@@ -170,18 +171,48 @@ func (b *builderImpl) formatResolvedDefinitions(depth1Defs, depth2Defs []resolve
 		return ""
 	}
 
+	// Prioritize interface and type definitions over concrete implementations
+	sort.Slice(allDefs, func(i, j int) bool {
+		iIsInterface := strings.Contains(allDefs[i].Content, "interface{") ||
+			strings.Contains(allDefs[i].Content, " interface ")
+		jIsInterface := strings.Contains(allDefs[j].Content, "interface{") ||
+			strings.Contains(allDefs[j].Content, " interface ")
+		if iIsInterface != jIsInterface {
+			return iIsInterface
+		}
+
+		// Prioritize types in function signatures
+		iIsType := strings.Contains(allDefs[i].Content, "type "+allDefs[i].Symbol)
+		jIsType := strings.Contains(allDefs[j].Content, "type "+allDefs[j].Symbol)
+		if iIsType != jIsType {
+			return iIsType
+		}
+
+		// Prefer shorter definitions (signatures vs full implementations)
+		return len(allDefs[i].Content) < len(allDefs[j].Content)
+	})
+
 	var builder strings.Builder
 	builder.WriteString("# Resolved Type Definitions\n\n")
 	builder.WriteString("The following types are referenced in the diff. Use these definitions to verify field names, types, and method signatures:\n\n")
 
+	totalChars := 0
+	capped := false
 	for _, def := range allDefs {
-		_, _ = fmt.Fprintf(&builder, "## Definition of %s (from %s)\n```\n%s\n```\n\n", def.Symbol, def.Source, def.Content)
+		defText := fmt.Sprintf("## Definition of %s (from %s)\n```\n%s\n```\n\n", def.Symbol, def.Source, def.Content)
+		if totalChars+len(defText) > maxDefinitionChars {
+			capped = true
+			break
+		}
+		builder.WriteString(defText)
+		totalChars += len(defText)
 	}
 
 	b.cfg.Logger.Info("stage completed", "name", "SymbolResolution",
 		"depth1_resolved", len(depth1Defs),
 		"depth2_resolved", len(depth2Defs),
-	)
+		"chars_written", totalChars,
+		"capped", capped)
 
 	return builder.String()
 }
