@@ -584,7 +584,6 @@ func (s *Server) proxyMCPMessage(w http.ResponseWriter, r *http.Request, mcpEndp
 			ResponseHeaderTimeout: proxyHandshakeTimeout,
 		},
 	}
-
 	//nolint:gosec // G704: targetReq targets internal MCP server URL from trusted config
 	resp, err := client.Do(targetReq)
 	if err != nil {
