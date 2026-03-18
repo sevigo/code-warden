@@ -551,6 +551,7 @@ func (s *Server) proxyMCPMessage(w http.ResponseWriter, r *http.Request, mcpEndp
 	defer r.Body.Close()
 
 	// Create proxy request - job-specific server expects sessionId parameter
+	//nolint:gosec // G704: targetURL is constructed from trusted config (MCPAddr), token is validated from registry
 	targetReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL.String()+"/message?sessionId="+token, strings.NewReader(string(body)))
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to create proxy request: %v", err), http.StatusInternalServerError)
@@ -569,6 +570,7 @@ func (s *Server) proxyMCPMessage(w http.ResponseWriter, r *http.Request, mcpEndp
 		},
 	}
 
+	//nolint:gosec // G704: targetReq targets internal MCP server URL from trusted config
 	resp, err := client.Do(targetReq)
 	if err != nil {
 		s.logger.Error("MCP message proxy error", "error", err, "token", token[:8])

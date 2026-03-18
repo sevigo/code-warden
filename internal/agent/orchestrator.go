@@ -25,6 +25,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/mcp"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -32,19 +33,19 @@ import (
 
 // Orchestrator manages agent sessions and their lifecycle.
 type Orchestrator struct {
-	ghClient    github.Client
-	mcpServer   *mcp.Server
-	httpServer  *http.Server
-	logger      *slog.Logger
-	config      Config
-	projectRoot string // Path to the repository being worked on
-	repoConfig  *core.RepoConfig
-	repo        *storage.Repository
+	ghClient          github.Client
+	mcpServer         *mcp.Server
+	globalMCPRegistry *globalmcp.WorkspaceRegistry
+	httpServer        *http.Server
+	logger            *slog.Logger
+	config            Config
+	projectRoot       string
+	repoConfig        *core.RepoConfig
+	repo              *storage.Repository
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
 
-	// done is closed when the orchestrator is shutting down.
 	done chan struct{}
 }
 
@@ -130,6 +131,7 @@ func NewOrchestrator(
 	projectRoot string,
 	config Config,
 	logger *slog.Logger,
+	globalMCPRegistry *globalmcp.WorkspaceRegistry,
 ) *Orchestrator {
 	// Create MCP server
 	mcpServer := mcp.NewServer(
@@ -162,16 +164,17 @@ func NewOrchestrator(
 	}
 
 	return &Orchestrator{
-		ghClient:    ghClient,
-		mcpServer:   mcpServer,
-		logger:      logger,
-		config:      config,
-		projectRoot: absRoot,
-		repoConfig:  repoConfig,
-		repo:        repo,
-		sessions:    make(map[string]*Session),
-		sessionsMu:  sync.RWMutex{},
-		done:        make(chan struct{}),
+		ghClient:          ghClient,
+		mcpServer:         mcpServer,
+		globalMCPRegistry: globalMCPRegistry,
+		logger:            logger,
+		config:            config,
+		projectRoot:       absRoot,
+		repoConfig:        repoConfig,
+		repo:              repo,
+		sessions:          make(map[string]*Session),
+		sessionsMu:        sync.RWMutex{},
+		done:              make(chan struct{}),
 	}
 }
 
@@ -355,11 +358,35 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 	o.sessionsMu.Unlock()
 
 	// Create context with timeout
+	//nolint:gosec // G118: cancel stored in session for cleanup in runAgentCLI/runAgentSDK
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
 	session.cancel = cancel
 
 	// Start agent in background
 	go o.runAgent(ctx, session)
+
+	// Register workspace with global MCP registry
+	if o.globalMCPRegistry != nil {
+		mcpEndpoint := fmt.Sprintf("http://%s", o.config.MCPAddr)
+		branch := gitutil.SanitizeBranch(fmt.Sprintf("agent/%s", sessionID))
+		token, err := o.globalMCPRegistry.RegisterWorkspace(
+			mcpEndpoint,
+			o.repo.FullName,
+			sessionID,
+			o.projectRoot,
+			globalmcp.WorkspaceMeta{
+				Branch:      branch,
+				IssueNumber: issue.Number,
+			},
+		)
+		if err != nil {
+			o.logger.Error("failed to register workspace with global MCP registry",
+				"session_id", sessionID, "error", err)
+		} else {
+			o.logger.Info("registered workspace with global MCP registry",
+				"session_id", sessionID, "token", token[:8]+"...", "mcp_endpoint", mcpEndpoint)
+		}
+	}
 
 	o.logger.Info("agent session started",
 		"session_id", sessionID,
@@ -442,6 +469,12 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	defer func() {
 		if err := o.cleanupWorkspace(session.ID); err != nil {
 			o.logger.Error("cleanup failed", "session_id", session.ID, "error", err)
+		}
+		if o.globalMCPRegistry != nil {
+			if err := o.globalMCPRegistry.UnregisterWorkspaceBySessionID(session.ID); err != nil {
+				o.logger.Warn("failed to unregister workspace from global registry",
+					"session_id", session.ID, "error", err)
+			}
 		}
 	}()
 
@@ -810,6 +843,14 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 	// Create agent and run implementation
 	result, err := o.runSDKFeedbackLoop(ctx, session, ws, branch)
 
+	// Unregister workspace from global registry
+	if o.globalMCPRegistry != nil {
+		if err := o.globalMCPRegistry.UnregisterWorkspaceBySessionID(session.ID); err != nil {
+			o.logger.Warn("failed to unregister workspace from global registry",
+				"session_id", session.ID, "error", err)
+		}
+	}
+
 	// Update session state
 	session.mu.Lock()
 	session.CompletedAt = time.Now()
@@ -1015,28 +1056,28 @@ func (o *Orchestrator) buildSDKContext(issue Issue) string {
 
 	// Add issue details
 	builder.WriteString("## GitHub Issue\n")
-	builder.WriteString(fmt.Sprintf("Number: %d\n", issue.Number))
-	builder.WriteString(fmt.Sprintf("Title: %s\n", issue.Title))
+	fmt.Fprintf(&builder, "Number: %d\n", issue.Number)
+	fmt.Fprintf(&builder, "Title: %s\n", issue.Title)
 
 	if issue.Body != "" {
-		builder.WriteString(fmt.Sprintf("\nDescription:\n%s\n", issue.Body))
+		fmt.Fprintf(&builder, "\nDescription:\n%s\n", issue.Body)
 	}
 
 	if issue.Instructions != "" {
-		builder.WriteString(fmt.Sprintf("\nAdditional Instructions:\n%s\n", issue.Instructions))
+		fmt.Fprintf(&builder, "\nAdditional Instructions:\n%s\n", issue.Instructions)
 	}
 
 	// Add custom instructions from repo config
 	if o.repoConfig != nil && len(o.repoConfig.CustomInstructions) > 0 {
 		builder.WriteString("\n## Custom Instructions\n")
 		for _, instruction := range o.repoConfig.CustomInstructions {
-			builder.WriteString(fmt.Sprintf("- %s\n", instruction))
+			fmt.Fprintf(&builder, "- %s\n", instruction)
 		}
 	}
 
 	// Add MCP server info
 	builder.WriteString("\n## Available Tools\n")
-	builder.WriteString(fmt.Sprintf("Connect to MCP server at http://%s to use these tools:\n", o.config.MCPAddr))
+	fmt.Fprintf(&builder, "Connect to MCP server at http://%s to use these tools:\n", o.config.MCPAddr)
 	builder.WriteString("- search_code(query, limit, chunk_type): Search the codebase using RAG\n")
 	builder.WriteString("- get_arch_context(directory): Get architectural context for a directory\n")
 	builder.WriteString("- get_symbol(name): Get definition of a type or function\n")

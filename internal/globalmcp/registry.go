@@ -33,18 +33,20 @@ type WorkspaceMeta struct {
 }
 
 type WorkspaceRegistry struct {
-	mu         sync.RWMutex
-	workspaces map[string]*WorkspaceInfo
-	logger     *slog.Logger
-	stopChan   chan struct{}
-	stopped    bool
+	mu          sync.RWMutex
+	workspaces  map[string]*WorkspaceInfo // indexed by token
+	bySessionID map[string]string         // sessionID -> token mapping
+	logger      *slog.Logger
+	stopChan    chan struct{}
+	stopped     bool
 }
 
 func NewWorkspaceRegistry(logger *slog.Logger) *WorkspaceRegistry {
 	reg := &WorkspaceRegistry{
-		workspaces: make(map[string]*WorkspaceInfo),
-		logger:     logger,
-		stopChan:   make(chan struct{}),
+		workspaces:  make(map[string]*WorkspaceInfo),
+		bySessionID: make(map[string]string),
+		logger:      logger,
+		stopChan:    make(chan struct{}),
 	}
 
 	go reg.cleanupLoop()
@@ -85,6 +87,7 @@ func (r *WorkspaceRegistry) RegisterWorkspace(mcpEndpoint, repository, sessionID
 
 	r.mu.Lock()
 	r.workspaces[token] = info
+	r.bySessionID[sessionID] = token
 	r.mu.Unlock()
 
 	r.logger.Info("workspace registered",
@@ -107,10 +110,38 @@ func (r *WorkspaceRegistry) UnregisterWorkspace(token string) error {
 	}
 
 	delete(r.workspaces, token)
+	delete(r.bySessionID, info.SessionID)
 	r.logger.Info("workspace unregistered",
 		"token", token[:8],
 		"repository", info.Repository,
 		"session_id", info.SessionID)
+
+	return nil
+}
+
+func (r *WorkspaceRegistry) UnregisterWorkspaceBySessionID(sessionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	token, exists := r.bySessionID[sessionID]
+	if !exists {
+		r.logger.Warn("attempted to unregister non-existent workspace by session_id", "session_id", sessionID)
+		return fmt.Errorf("workspace not found for session: %s", sessionID)
+	}
+
+	info, exists := r.workspaces[token]
+	if !exists {
+		delete(r.bySessionID, sessionID)
+		r.logger.Warn("workspace token exists but workspace info missing", "session_id", sessionID, "token", token[:8])
+		return fmt.Errorf("workspace info not found: %s", token[:8])
+	}
+
+	delete(r.workspaces, token)
+	delete(r.bySessionID, sessionID)
+	r.logger.Info("workspace unregistered by session_id",
+		"token", token[:8],
+		"repository", info.Repository,
+		"session_id", sessionID)
 
 	return nil
 }
@@ -152,6 +183,7 @@ func (r *WorkspaceRegistry) CleanupExpired() int {
 	for token, info := range r.workspaces {
 		if now.After(info.ExpiresAt) {
 			delete(r.workspaces, token)
+			delete(r.bySessionID, info.SessionID)
 			cleaned++
 			r.logger.Info("workspace expired and cleaned up",
 				"token", token[:8],

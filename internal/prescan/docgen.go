@@ -42,9 +42,9 @@ func (d *DocGenerator) GenerateProjectStructure(root string) (string, error) {
 		indent := strings.Repeat("  ", depth)
 
 		if info.IsDir() {
-			builder.WriteString(fmt.Sprintf("%s- **%s/**\n", indent, info.Name()))
+			fmt.Fprintf(&builder, "%s- **%s/**\n", indent, info.Name())
 		} else {
-			builder.WriteString(fmt.Sprintf("%s- %s\n", indent, info.Name()))
+			fmt.Fprintf(&builder, "%s- %s\n", indent, info.Name())
 		}
 		return nil
 	})

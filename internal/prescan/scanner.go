@@ -222,9 +222,9 @@ func (s *Scanner) generateArchitecturalComparisons(ctx context.Context, localPat
 		filePath := filepath.Join(localPath, fileName)
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("# Architectural Comparison: %s\n\n", modelName))
+		fmt.Fprintf(&sb, "# Architectural comparison: %s\n\n", modelName)
 		for path, summary := range summaries {
-			sb.WriteString(fmt.Sprintf("## Directory: %s\n\n%s\n\n", path, summary))
+			fmt.Fprintf(&sb, "## Directory: %s\n\n%s\n\n", path, summary)
 		}
 
 		if err := os.WriteFile(filePath, []byte(sb.String()), 0600); err != nil {

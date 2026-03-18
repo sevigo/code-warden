@@ -350,7 +350,7 @@ func (b *builderImpl) GetArchContextForPaths(ctx context.Context, scopedStore st
 		for _, doc := range docs {
 			source, _ := doc.Metadata["source"].(string)
 			if source == dir {
-				archContext.WriteString(fmt.Sprintf("## %s\n%s\n\n", source, doc.PageContent))
+				fmt.Fprintf(&archContext, "## %s\n%s\n\n", source, doc.PageContent)
 				seenDirs[dir] = struct{}{}
 				break
 			}
@@ -410,7 +410,7 @@ func (b *builderImpl) scanDirectoryOnDisk(_ string, fullPath, relPath string) (*
 		// Hash by name+size only. Don't use mtime—git resets it on clone/checkout.
 		info, err := entry.Info()
 		if err == nil {
-			hashBuilder.WriteString(fmt.Sprintf("%s:%d|", entry.Name(), info.Size()))
+			fmt.Fprintf(&hashBuilder, "%s:%d|", entry.Name(), info.Size())
 		}
 
 		// Extract symbols and imports using parser registry

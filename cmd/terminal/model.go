@@ -279,7 +279,7 @@ func (m *model) processListCommand() tea.Cmd {
 		if m.selectedRepo != nil && repo.FullName == m.selectedRepo.FullName {
 			status = m.styles.success.Render(" ●")
 		}
-		b.WriteString(fmt.Sprintf("\n  - %s (%s)%s", m.styles.prompt.Render(repo.FullName), repo.ClonePath, status))
+		fmt.Fprintf(&b, "\n  - %s (%s)%s", m.styles.prompt.Render(repo.FullName), repo.ClonePath, status)
 	}
 	m.history = append(m.history, b.String())
 	return nil

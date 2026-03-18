@@ -51,6 +51,7 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 	}
 	// TODO: Replace env var fallback with installation token from o.ghClient when available
 
+	//nolint:gosec // G702: remoteURL constructed from GitHub API (RepoOwner/RepoName are trusted)
 	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", remoteURL)
 	setRemoteCmd.Dir = workspaceDir
 	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
