@@ -3,6 +3,7 @@ package contextpkg
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -19,7 +20,43 @@ import (
 )
 
 type HyDEData struct {
-	Patch string
+	Patch    string
+	Language string
+	FilePath string
+}
+
+// languageFromFilename maps a file path to a human-readable language name
+// for use in the HyDE prompt so the LLM outputs idiomatic code.
+func languageFromFilename(filename string) string {
+	langs := map[string]string{
+		".go":    "Go",
+		".ts":    "TypeScript",
+		".tsx":   "TypeScript (React)",
+		".js":    "JavaScript",
+		".jsx":   "JavaScript (React)",
+		".py":    "Python",
+		".java":  "Java",
+		".rs":    "Rust",
+		".rb":    "Ruby",
+		".c":     "C",
+		".h":     "C",
+		".cpp":   "C++",
+		".cc":    "C++",
+		".cxx":   "C++",
+		".cs":    "C#",
+		".kt":    "Kotlin",
+		".swift": "Swift",
+		".php":   "PHP",
+		".scala": "Scala",
+	}
+	ext := strings.ToLower(path.Ext(filename))
+	if lang, ok := langs[ext]; ok {
+		return lang
+	}
+	if ext != "" {
+		return strings.TrimPrefix(ext, ".")
+	}
+	return "unknown"
 }
 
 const hydeBaseQueryPrompt = "To understand the impact of changes in the file '%s', find relevant code that interacts with or is related to the following diff:\n%s"
@@ -62,12 +99,6 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 		},
 	}
 
-	retriever := vectorstores.NewHyDERetriever(
-		rerankingRetriever,
-		b.generateHyDESnippet,
-		vectorstores.WithNumGenerations(2),
-	)
-
 	const maxHyDEConcurrency = 5
 	type hydeResult struct {
 		index int
@@ -89,36 +120,14 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 
 		idx := i
 		f := file
+		lang := languageFromFilename(f.Filename)
 
 		g.Go(func() error {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-
-			var docs []schema.Document
-			var err error
-
-			if indexpkg.IsLogicFile(f.Filename) {
-				docs, err = retriever.GetRelevantDocuments(ctx, f.Patch)
-			} else {
-				baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, f.Filename, f.Patch)
-				docs, err = rerankingRetriever.GetRelevantDocuments(ctx, baseQuery)
-			}
-
-			if err != nil {
-				b.cfg.Logger.Warn("HyDE generation/retrieval failed for file", "file", f.Filename, "error", err)
-				return nil
-			}
-
+			docs := b.retrieveHyDEDocsForFile(ctx, rerankingRetriever, f, lang)
 			if len(docs) > 0 {
-				b.cfg.Logger.Debug("HyDE docs found", "file", f.Filename, "count", len(docs))
 				resultsMu.Lock()
 				results = append(results, hydeResult{index: idx, docs: docs})
 				resultsMu.Unlock()
-			} else {
-				b.cfg.Logger.Debug("no HyDE docs found", "file", f.Filename)
 			}
 			return nil
 		})
@@ -144,25 +153,79 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 	return finalResults, finalIndices, nil
 }
 
-func (b *builderImpl) generateHyDESnippet(ctx context.Context, q string) (string, error) {
-	patchHash := b.hashPatch(q)
+// retrieveHyDEDocsForFile fetches HyDE context documents for a single changed file.
+// For logic files it uses a per-file HyDE retriever whose generator captures the
+// file's language and path; for non-code files it falls back to a plain query.
+// Errors are logged and treated as empty results — per-file HyDE failures are non-fatal.
+func (b *builderImpl) retrieveHyDEDocsForFile(ctx context.Context, reranker vectorstores.RerankingRetriever, f internalgithub.ChangedFile, lang string) []schema.Document {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
+	var (
+		docs []schema.Document
+		err  error
+	)
+
+	if indexpkg.IsLogicFile(f.Filename) {
+		// Per-file retriever: the generator closure captures file path and
+		// language so the HyDE prompt produces idiomatic, file-specific code.
+		fileRetriever := vectorstores.NewHyDERetriever(
+			reranker,
+			func(ctx context.Context, q string) (string, error) {
+				return b.generateHyDESnippetForFile(ctx, q, f.Filename, lang)
+			},
+			vectorstores.WithNumGenerations(2),
+		)
+		docs, err = fileRetriever.GetRelevantDocuments(ctx, f.Patch)
+	} else {
+		baseQuery := fmt.Sprintf(hydeBaseQueryPrompt, f.Filename, f.Patch)
+		docs, err = reranker.GetRelevantDocuments(ctx, baseQuery)
+	}
+
+	if err != nil {
+		b.cfg.Logger.Warn("HyDE generation/retrieval failed for file", "file", f.Filename, "error", err)
+		return nil
+	}
+
+	docs = filterTestDocs(docs)
+	if len(docs) > 0 {
+		b.cfg.Logger.Debug("HyDE docs found", "file", f.Filename, "count", len(docs))
+	} else {
+		b.cfg.Logger.Debug("no HyDE docs found", "file", f.Filename)
+	}
+	return docs
+}
+
+// generateHyDESnippetForFile generates a hypothetical post-patch code snippet for
+// a specific file. The language and file path are injected into the prompt so the
+// LLM produces idiomatic, context-aware code rather than generic output.
+// Cache key includes the file path to prevent cross-file cache collisions.
+func (b *builderImpl) generateHyDESnippetForFile(ctx context.Context, patch, filePath, language string) (string, error) {
+	cacheKey := b.hashPatch(filePath + ":" + patch)
 
 	if b.cfg.HyDECache != nil {
-		if cached, ok := b.cfg.HyDECache.Load(patchHash); ok {
+		if cached, ok := b.cfg.HyDECache.Load(cacheKey); ok {
 			if snippet, valid := cached.(string); valid {
 				return snippet, nil
 			}
 		}
 	}
 
-	prompt, err := b.cfg.PromptMgr.Render(llm.HyDEPrompt, HyDEData{Patch: q})
+	prompt, err := b.cfg.PromptMgr.Render(llm.HyDEPrompt, HyDEData{
+		Patch:    patch,
+		Language: language,
+		FilePath: filePath,
+	})
 	if err != nil {
 		return "", err
 	}
 
 	snippet, err := b.cfg.GeneratorLLM.Call(ctx, prompt)
 	if err == nil && snippet != "" && b.cfg.HyDECache != nil {
-		b.cfg.HyDECache.Store(patchHash, snippet)
+		b.cfg.HyDECache.Store(cacheKey, snippet)
 	}
 	return snippet, err
 }

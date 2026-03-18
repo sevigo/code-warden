@@ -104,14 +104,14 @@ func (b *builderImpl) buildContextConcurrently(
 
 	g.Go(func() error {
 		docs, err := b.gatherImpactDocs(ctx, scopedStore, repoPath, changedFiles)
-		results.impactDocs = docs
+		results.impactDocs = filterTestDocs(docs)
 		return err
 	})
 
 	if prDescription != "" {
 		g.Go(func() error {
 			docs, err := b.gatherDescriptionDocs(ctx, collectionName, embedderModelName, prDescription)
-			results.descriptionDocs = docs
+			results.descriptionDocs = filterTestDocs(docs)
 			return err
 		})
 	}

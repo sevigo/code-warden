@@ -462,3 +462,63 @@ func TestExtractSymbolsFromPatch_Comprehensive(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterTestDocs(t *testing.T) {
+	prodDoc := schema.NewDocument("func Foo() {}", map[string]any{
+		"source":  "internal/rag/service.go",
+		"is_test": false,
+	})
+	testDoc := schema.NewDocument("func TestFoo(t *testing.T) {}", map[string]any{
+		"source":  "internal/rag/service_test.go",
+		"is_test": true,
+	})
+	noFlagDoc := schema.NewDocument("some content", map[string]any{
+		"source": "README.md",
+	})
+
+	tests := []struct {
+		name      string
+		input     []schema.Document
+		wantCount int
+		wantSrcs  []string
+	}{
+		{
+			name:      "removes test docs",
+			input:     []schema.Document{prodDoc, testDoc, noFlagDoc},
+			wantCount: 2,
+			wantSrcs:  []string{"internal/rag/service.go", "README.md"},
+		},
+		{
+			name:      "all production docs unchanged",
+			input:     []schema.Document{prodDoc, noFlagDoc},
+			wantCount: 2,
+		},
+		{
+			name:      "all test docs returns empty",
+			input:     []schema.Document{testDoc},
+			wantCount: 0,
+		},
+		{
+			name:      "empty input",
+			input:     []schema.Document{},
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterTestDocs(tt.input)
+			assert.Len(t, got, tt.wantCount)
+			for _, src := range tt.wantSrcs {
+				found := false
+				for _, doc := range got {
+					if doc.Metadata["source"] == src {
+						found = true
+						break
+					}
+				}
+				assert.True(t, found, "expected source %q in filtered results", src)
+			}
+		})
+	}
+}

@@ -195,6 +195,19 @@ func (b *builderImpl) getDocContent(doc schema.Document) string {
 	return doc.PageContent
 }
 
+// filterTestDocs removes documents originating from test files (is_test: true).
+// Test code pollutes the review context with patterns like mock setup and assertion
+// helpers that are irrelevant to production code review.
+func filterTestDocs(docs []schema.Document) []schema.Document {
+	filtered := make([]schema.Document, 0, len(docs))
+	for _, doc := range docs {
+		if isTest, _ := doc.Metadata["is_test"].(bool); !isTest {
+			filtered = append(filtered, doc)
+		}
+	}
+	return filtered
+}
+
 func mergeAndDedup(docs []schema.Document, keyFn func(schema.Document) string) []schema.Document {
 	seen := make(map[string]schema.Document, len(docs))
 	for _, d := range docs {
