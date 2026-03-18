@@ -65,7 +65,8 @@ func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, 
 		impactContext, descriptionContext = b.splitAndFormatDocs(ctx, allDocs, results.descriptionDocs, prDescription, &seenDocs)
 	}
 
-	fullContext := b.assembleContext(ctx, results.archContext, impactContext, descriptionContext, results.definitionsContext, results.hydeResults, results.hydeIndices, changedFiles)
+	testCoverageContext := b.formatTestCoverageContext(results.testCoverageDocs)
+	fullContext := b.assembleContext(ctx, results.archContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.hydeResults, results.hydeIndices, changedFiles)
 	return fullContext, results.definitionsContext
 }
 
@@ -76,6 +77,7 @@ type contextResults struct {
 	descriptionDocs    []schema.Document
 	hydeResults        [][]schema.Document
 	hydeIndices        []int
+	testCoverageDocs   []schema.Document
 }
 
 func (b *builderImpl) buildContextConcurrently(
@@ -124,6 +126,16 @@ func (b *builderImpl) buildContextConcurrently(
 
 	if err := g.Wait(); err != nil {
 		b.cfg.Logger.Error("buildContextConcurrently: one or more tasks failed", "error", err)
+	}
+
+	// Gather test coverage context after definitions (depends on extracted symbols)
+	if len(results.definitionsContext) > 0 {
+		docs, err := b.gatherTestCoverageContext(ctx, scopedStore, changedFiles, results.definitionsContext)
+		if err != nil {
+			b.cfg.Logger.Warn("test coverage context failed", "error", err)
+		} else {
+			results.testCoverageDocs = docs
+		}
 	}
 
 	return results
@@ -191,8 +203,8 @@ func (b *builderImpl) gatherDescriptionDocs(ctx context.Context, collection, emb
 	return allDocs, nil
 }
 
-func (b *builderImpl) assembleContext(ctx context.Context, arch, impact, description, definitions string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
-	docs := b.buildContextDocuments(arch, impact, description, definitions, hyde, indices, files)
+func (b *builderImpl) assembleContext(ctx context.Context, arch, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
+	docs := b.buildContextDocuments(arch, impact, description, definitions, testCoverage, hyde, indices, files)
 
 	if b.cfg.ContextPacker == nil {
 		b.cfg.Logger.Error("context packer not initialized, using limited fallback")

@@ -167,7 +167,7 @@ func (d *DefinitionExtractor) extractWithRegex(fullPath, relPath string, content
 				"identifier":   name,
 				"kind":         pattern.kind,
 				"package_name": extractPackageName(strContent),
-				"is_exported":  ext != ".go" || isExported(name, ext),
+				"is_exported":  ext != extGo || isExported(name, ext),
 			})
 
 			docs = append(docs, doc)
