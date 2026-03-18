@@ -7,6 +7,35 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestLanguageFromFilename(t *testing.T) {
+	tests := []struct {
+		filename string
+		want     string
+	}{
+		{"internal/rag/service.go", "Go"},
+		{"src/App.tsx", "TypeScript (React)"},
+		{"src/utils.ts", "TypeScript"},
+		{"scripts/deploy.py", "Python"},
+		{"app/Main.java", "Java"},
+		{"src/lib.rs", "Rust"},
+		{"main.c", "C"},
+		{"include/header.h", "C"},
+		{"src/main.cpp", "C++"},
+		{"src/main.cc", "C++"},
+		{"App.cs", "C#"},
+		{"Main.kt", "Kotlin"},
+		{"App.swift", "Swift"},
+		{"unknown_file", "unknown"},
+		{"config.yaml", "yaml"}, // fallback: strips dot
+	}
+	for _, tt := range tests {
+		t.Run(tt.filename, func(t *testing.T) {
+			got := languageFromFilename(tt.filename)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestStripPatchNoise(t *testing.T) {
 	tests := []struct {
 		name     string
