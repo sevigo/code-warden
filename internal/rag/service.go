@@ -353,15 +353,17 @@ func (r *ragService) ExplainPath(ctx context.Context, collectionName, embedderMo
 	r.logger.Info("explaining path", "collection", collectionName, "path", path)
 	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
 
-	query := fmt.Sprintf("architecture structure purpose of %s", path)
-	docs, err := scopedStore.SimilaritySearch(ctx, query, 3,
-		vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}))
+	docs, err := scopedStore.SimilaritySearch(ctx, path, 1,
+		vectorstores.WithFilters(map[string]any{
+			"chunk_type": "arch",
+			"source":     path,
+		}))
 	if err != nil {
 		return "", fmt.Errorf("failed to retrieve arch context: %w", err)
 	}
 
 	if len(docs) == 0 {
-		return fmt.Sprintf("No architectural context found for path: %s\n\nTry a broader path or use /ask for general questions.", path), nil
+		return fmt.Sprintf("No architectural context found for path: %s\n\nTry a broader path or type your question directly.", path), nil
 	}
 
 	var b strings.Builder

@@ -41,6 +41,9 @@ func TestAnswerQuestion(t *testing.T) {
 	model := "model"
 
 	mockVS.EXPECT().ForRepo(collection, model).Return(mockSVS)
+	// First call: arch summaries retrieval (for general case when no paths detected)
+	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), "architecture structure overview module", gomock.Any(), gomock.Any()).Return([]schema.Document{}, nil)
+	// Second call: actual similarity search for the question
 	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), question, gomock.Any(), gomock.Any()).Return([]schema.Document{{PageContent: "doc1"}}, nil)
 
 	mockLLM.EXPECT().Call(gomock.Any(), gomock.Any(), gomock.Any()).Return("The answer", nil)
@@ -79,15 +82,10 @@ func TestAnswerWithValidation(t *testing.T) {
 	model := "model"
 
 	mockVS.EXPECT().ForRepo(collection, model).Return(mockSVS)
-	// SimilaritySearch for validation call
+	// First call: arch summaries retrieval (for general case when no paths detected)
+	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), "architecture structure overview module", gomock.Any(), gomock.Any()).Return([]schema.Document{}, nil)
+	// Second call: actual similarity search for the question
 	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), question, gomock.Any(), gomock.Any()).Return([]schema.Document{{PageContent: "relevant doc"}}, nil)
-
-	// Validation call (GeneratorLLM is used for the prompt generation, then ValidatorLLM for filtering)
-	// Actually, AnswerWithValidation calls answerWithoutValidation which uses RetrievalQA chain.
-
-	// The implementation of AnswerWithValidation:
-	// 1. validatorLLM.Call for validation (filter irrelevant)
-	// 2. AnswerWithoutValidation for the final answer
 
 	mockValLLM.EXPECT().Call(gomock.Any(), gomock.Any(), gomock.Any()).Return("yes", nil)
 	mockGenLLM.EXPECT().Call(gomock.Any(), gomock.Any(), gomock.Any()).Return("Final Answer", nil)

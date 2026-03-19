@@ -18,19 +18,20 @@ import (
 )
 
 const (
-	archResultLimit     = 2
-	similarityLimit     = 5
-	totalRetrievalLimit = 7
+	archResultLimit = 2
+	similarityLimit = 5
 )
 
 var pathPattern = regexp.MustCompile(`(?:^|\s|["'` + "`" + `])([\w/.-]+/[\w/.-]+)(?:$|\s|["'` + "`" + `])`)
 
+// PromptData holds data for the Q&A prompt template.
 type PromptData struct {
 	History  string
 	Context  string
 	Question string
 }
 
+// Config holds dependencies for the QAService.
 type Config struct {
 	VectorStore   storage.VectorStore
 	GeneratorLLM  llms.Model
@@ -40,10 +41,12 @@ type Config struct {
 	ContextFormat func([]schema.Document) string
 }
 
+// QAService orchestrates question answering over repositories.
 type QAService struct {
 	cfg Config
 }
 
+// NewService creates a new QAService instance.
 func NewService(cfg Config) *QAService {
 	return &QAService{cfg: cfg}
 }
@@ -79,7 +82,15 @@ func deduplicateDocs(docs []schema.Document) []schema.Document {
 	var result []schema.Document
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
-		startLine, _ := doc.Metadata["start_line"].(int)
+		var startLine int
+		switch v := doc.Metadata["start_line"].(type) {
+		case int:
+			startLine = v
+		case float64:
+			startLine = int(v)
+		case int64:
+			startLine = int(v)
+		}
 		key := fmt.Sprintf("%s:%d", source, startLine)
 		if !seen[key] {
 			seen[key] = true
@@ -116,7 +127,7 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 	}
 
 	if s.cfg.ValidatorLLM != nil {
-		return s.answerWithValidation(ctx, retriever, question, history)
+		return s.answerWithValidation(ctx, retriever, question)
 	}
 
 	return s.answerWithoutValidation(ctx, retriever, question, history)
@@ -136,9 +147,14 @@ func (s *QAService) retrieveArchSummaries(ctx context.Context, store storage.Sco
 
 	var allArchDocs []schema.Document
 	for _, path := range paths {
-		query := fmt.Sprintf("%s architecture structure", path)
-		docs, err := store.SimilaritySearch(ctx, query, 1,
-			vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}))
+		if len(allArchDocs) >= archResultLimit {
+			break
+		}
+		docs, err := store.SimilaritySearch(ctx, path, 1,
+			vectorstores.WithFilters(map[string]any{
+				"chunk_type": "arch",
+				"source":     path,
+			}))
 		if err != nil {
 			s.cfg.Logger.Warn("failed to retrieve arch summary for path", "path", path, "error", err)
 			continue
@@ -162,8 +178,11 @@ func (s *QAService) extractPaths(question string) []string {
 	return paths
 }
 
-func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
-	s.cfg.Logger.Debug("answering with validation", "history_len", len(history))
+// answerWithValidation uses ValidatingRetrievalQA which validates retrieved chunks
+// before passing to the generator. Note: Multi-turn conversation history is not currently
+// supported in this path due to limitations in ValidatingRetrievalQA's prompt customization.
+func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string) (string, error) {
+	s.cfg.Logger.Debug("answering with validation")
 	chain, err := chains.NewValidatingRetrievalQA(
 		retriever,
 		s.cfg.GeneratorLLM,
