@@ -454,7 +454,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.reranker_model", "gemma2:2b") // Default to a small, fast model
 	v.SetDefault("ai.fast_model", "gemma3:1b")     // Very fast model for variation/validation
 	v.SetDefault("ai.enable_hybrid_search", true)
-	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
+	v.SetDefault("ai.sparse_vector_name", "code_sparse")
 	v.SetDefault("ai.enable_hyde", true)              // Enabled by default for high recall
 	v.SetDefault("ai.rerank_min_score", float32(0.0)) // 0.0 = disabled; set e.g. 0.1 to drop weak reranked docs
 	v.SetDefault("ai.max_context_summaries", 1000)
