@@ -334,6 +334,12 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 		return err
 	}
 
+	if commits, cErr := reviewEnv.ghClient.GetPullRequestCommits(ctx, event.RepoOwner, event.RepoName, event.PRNumber); cErr == nil {
+		event.CommitMessages = commits
+	} else {
+		j.logger.Warn("failed to fetch commit messages for re-review, proceeding without them", "error", cErr)
+	}
+
 	// 3. Generate Re-Review using RAG service
 	structuredReview, rawReReview, err := j.ragService.GenerateReReview(ctx, reviewEnv.repo, event, lastReview, reviewEnv.ghClient, changedFiles)
 	if err != nil {
@@ -499,6 +505,12 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 	changedFiles, err := env.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to get changed files for validation: %w", err)
+	}
+
+	if commits, cErr := env.ghClient.GetPullRequestCommits(ctx, event.RepoOwner, event.RepoName, event.PRNumber); cErr == nil {
+		event.CommitMessages = commits
+	} else {
+		j.logger.Warn("failed to fetch commit messages, review will proceed without them", "error", cErr)
 	}
 
 	validLineMaps := make(map[string]map[int]struct{})

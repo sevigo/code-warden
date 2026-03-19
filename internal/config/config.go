@@ -228,11 +228,9 @@ func (c *AgentConfig) validateDefaultWorkspace() error {
 }
 
 type ServerConfig struct {
-	Port             string `mapstructure:"port"`
-	MaxWorkers       int    `mapstructure:"max_workers"`
-	FastAPIServerURL string `mapstructure:"fastapi_server_url"`
-	SharedSecret     string `mapstructure:"shared_secret"`
-	Theme            string `mapstructure:"theme"`
+	Port       string `mapstructure:"port"`
+	MaxWorkers int    `mapstructure:"max_workers"`
+	Theme      string `mapstructure:"theme"`
 }
 
 type GitHubConfig struct {
@@ -441,7 +439,6 @@ func setDefaults(v *viper.Viper) {
 	// Server
 	v.SetDefault("server.port", "8080")
 	v.SetDefault("server.max_workers", 5)
-	v.SetDefault("server.fastapi_server_url", "http://127.0.0.1:8000")
 
 	// GitHub
 	v.SetDefault("github.private_key_path", "keys/code-warden-app.private-key.pem")

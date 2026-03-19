@@ -12,6 +12,7 @@ import (
 
 	"github.com/sevigo/goframe/contextpacker"
 	"github.com/sevigo/goframe/embeddings/sparse"
+	sparsecode "github.com/sevigo/goframe/embeddings/sparse/code"
 	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
@@ -140,8 +141,10 @@ func NewService(
 	splitter textsplitter.TextSplitter,
 	logger *slog.Logger,
 ) (Service, error) {
-	// Register sparse provider for hybrid search.
-	sparse.RegisterProvider(sparse.NewBoWProvider())
+	// Register code-aware sparse provider for hybrid search.
+	// Uses camelCase/snake_case splitting + FNV hashing instead of the BGE text tokenizer,
+	// which treats identifiers like processPayment and XMLParser as better search signals.
+	sparse.RegisterProvider(sparsecode.NewCodeSparseProvider())
 
 	// Get token budget from config, with fallback.
 	tokenBudget := cfg.AI.ContextTokenBudget

@@ -249,7 +249,6 @@ code-warden/
 │   ├── server/          # HTTP server and handlers
 │   ├── storage/         # PostgreSQL and Qdrant abstractions
 │   └── wire/            # Dependency injection setup
-├── embeddings/          # FastAPI embedding service
 └── docs/                # Documentation
 ```
 

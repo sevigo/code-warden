@@ -36,7 +36,7 @@ func getDocKey(doc schema.Document) string {
 
 func getDocContent(doc schema.Document) string {
 	content := doc.PageContent
-	if doc.Metadata["type"] == "signature" && len(content) > 500 {
+	if doc.Metadata["chunk_type"] == "definition" && len(content) > 500 {
 		return content[:500] + "..."
 	}
 	return content
@@ -59,7 +59,7 @@ func (s *Service) GenerateReReview(ctx context.Context, repo *storage.Repository
 	}
 
 	// Build standard context
-	standardContext, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	standardContext, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, buildPRDescription(event))
 
 	// Extract search queries from original review
 	feedbackQueries := s.extractCommentsFromReview(ctx, originalReview.ReviewContent)

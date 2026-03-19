@@ -160,6 +160,21 @@ func (mr *MockClientMockRecorder) GetPullRequest(ctx, owner, repo, number any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPullRequest", reflect.TypeOf((*MockClient)(nil).GetPullRequest), ctx, owner, repo, number)
 }
 
+// GetPullRequestCommits mocks base method.
+func (m *MockClient) GetPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPullRequestCommits", ctx, owner, repo, number)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetPullRequestCommits indicates an expected call of GetPullRequestCommits.
+func (mr *MockClientMockRecorder) GetPullRequestCommits(ctx, owner, repo, number any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPullRequestCommits", reflect.TypeOf((*MockClient)(nil).GetPullRequestCommits), ctx, owner, repo, number)
+}
+
 // GetPullRequestDiff mocks base method.
 func (m *MockClient) GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error) {
 	m.ctrl.T.Helper()

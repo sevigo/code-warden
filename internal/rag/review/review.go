@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/sevigo/goframe/chains"
 	"github.com/sevigo/goframe/prompts"
@@ -12,6 +13,26 @@ import (
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
+
+// buildPRDescription builds the PR description string passed to BuildContext,
+// including the PR title, body, and commit messages (first line each).
+func buildPRDescription(event *core.GitHubEvent) string {
+	desc := event.PRTitle + "\n" + event.PRBody
+	if len(event.CommitMessages) == 0 {
+		return desc
+	}
+	var sb strings.Builder
+	sb.WriteString(desc)
+	sb.WriteString("\n\n## Commit Messages\n")
+	for _, msg := range event.CommitMessages {
+		firstLine := msg
+		if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
+			firstLine = msg[:idx]
+		}
+		fmt.Fprintf(&sb, "- %s\n", strings.TrimSpace(firstLine))
+	}
+	return sb.String()
+}
 
 // GenerateReview generates a structured code review using the RAG pipeline.
 func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
@@ -36,7 +57,7 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 	}
 
 	// Get context
-	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, buildPRDescription(event))
 
 	// Check for empty context to warn about hallucination risk
 	contextEmpty := contextIsEmpty(contextString, definitionsContext)

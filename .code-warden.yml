@@ -34,7 +34,6 @@ exclude_dirs:
   - "scripts"     # Utility scripts, often not core logic
   - "mocks"       # Generated mock code
   - ".github"     # CI configuration
-  - "embeddings"  # Script service for local embeddings
 
 # File extensions to exclude from indexing.
 exclude_exts:

@@ -401,7 +401,6 @@ code-warden/
 │   ├── server/       # HTTP server
 │   ├── storage/      # Data persistence
 │   └── wire/         # Dependency injection
-├── embeddings/       # FastAPI embedding service
 └── examples/         # Example configurations
 ```
 

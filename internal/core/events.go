@@ -46,6 +46,10 @@ type GitHubEvent struct {
 	// custom guidance to the code review process.
 	UserInstructions string
 
+	// CommitMessages holds the commit messages for the PR, fetched from GitHub.
+	// Populated before review generation and included in the RAG context query.
+	CommitMessages []string
+
 	Commenter      string // The GitHub username that triggered the review
 	InstallationID int64  // The GitHub App installation ID
 

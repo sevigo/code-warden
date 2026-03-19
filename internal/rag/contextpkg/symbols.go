@@ -64,10 +64,10 @@ func (b *builderImpl) gatherDefinitionsContext(ctx context.Context, scopedStore 
 		seenSymbols[s] = struct{}{}
 	}
 
-	depth1Defs := b.resolveSymbolsConcurrently(ctx, symbolList, defRetriever, seenDocs, mu)
+	depth1Defs := b.resolveSymbolsConcurrently(ctx, symbolList, scopedStore, defRetriever, seenDocs, mu)
 	b.cfg.Logger.Info("depth-1 resolution complete", "resolved", len(depth1Defs))
 
-	depth2Defs := b.resolveDepth2Symbols(ctx, depth1Defs, seenSymbols, defRetriever, seenDocs, mu)
+	depth2Defs := b.resolveDepth2Symbols(ctx, depth1Defs, seenSymbols, scopedStore, defRetriever, seenDocs, mu)
 
 	return b.formatResolvedDefinitions(depth1Defs, depth2Defs), nil
 }
@@ -89,6 +89,7 @@ func (b *builderImpl) resolveDepth2Symbols(
 	ctx context.Context,
 	depth1Defs []resolvedDefinition,
 	seenSymbols map[string]struct{},
+	store storage.ScopedVectorStore,
 	defRetriever *vectorstores.DefinitionRetriever,
 	seenDocs map[string]struct{}, mu *sync.RWMutex,
 ) []resolvedDefinition {
@@ -113,7 +114,7 @@ func (b *builderImpl) resolveDepth2Symbols(
 	}
 
 	b.cfg.Logger.Info("depth-2 resolution started", "transitive_symbols", len(candidates))
-	results := b.resolveSymbolsConcurrently(ctx, candidates, defRetriever, seenDocs, mu)
+	results := b.resolveSymbolsConcurrently(ctx, candidates, store, defRetriever, seenDocs, mu)
 	b.cfg.Logger.Info("depth-2 resolution complete", "resolved", len(results))
 	return results
 }
@@ -235,6 +236,7 @@ func (b *builderImpl) formatResolvedDefinitions(depth1Defs, depth2Defs []resolve
 
 func (b *builderImpl) resolveSymbolsConcurrently(
 	ctx context.Context, symbols []string,
+	store storage.ScopedVectorStore,
 	defRetriever *vectorstores.DefinitionRetriever,
 	seenDocs map[string]struct{}, mu *sync.RWMutex,
 ) []resolvedDefinition {
@@ -248,7 +250,7 @@ func (b *builderImpl) resolveSymbolsConcurrently(
 
 	for _, sym := range symbols {
 		g.Go(func() error {
-			source, content, ok := b.resolveSymbolDefinition(gCtx, sym, defRetriever, seenDocs, mu)
+			source, content, ok := b.resolveSymbolDefinition(gCtx, sym, store, defRetriever, seenDocs, mu)
 			if ok {
 				resultMu.Lock()
 				results = append(results, resolvedDefinition{
@@ -301,7 +303,31 @@ func mapKeysToSlice(m map[string]struct{}, maxLen int) []string {
 	return result
 }
 
-func (b *builderImpl) resolveSymbolDefinition(ctx context.Context, symbol string, defRetriever *vectorstores.DefinitionRetriever, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
+func (b *builderImpl) resolveSymbolDefinition(ctx context.Context, symbol string, store storage.ScopedVectorStore, defRetriever *vectorstores.DefinitionRetriever, seenDocs map[string]struct{}, mu *sync.RWMutex) (string, string, bool) {
+	// Fast path: exact payload filter on identifier — precise, cheap, avoids semantic scoring noise.
+	exactDocs, exactErr := store.SimilaritySearch(ctx, symbol, 1,
+		vectorstores.WithFilters(map[string]any{
+			"chunk_type": "definition",
+			"identifier": symbol,
+		}),
+	)
+	if exactErr == nil && len(exactDocs) > 0 {
+		def := exactDocs[0]
+		docKey := b.getDocKey(def)
+		mu.RLock()
+		_, exists := seenDocs[docKey]
+		mu.RUnlock()
+		if exists {
+			return "", "", false
+		}
+		mu.Lock()
+		seenDocs[docKey] = struct{}{}
+		mu.Unlock()
+		source, _ := def.Metadata["source"].(string)
+		return source, b.getDocContent(def), true
+	}
+
+	// Fallback: semantic search for symbols whose identifier wasn't indexed exactly.
 	docs, err := defRetriever.GetDefinition(ctx, symbol)
 	if err != nil {
 		b.cfg.Logger.Debug("failed to search for definition", "symbol", symbol, "error", err)

@@ -60,6 +60,7 @@ type Issue struct {
 type Client interface {
 	GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
 	GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error)
+	GetPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 	GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]ChangedFile, error)
 	CreateComment(ctx context.Context, owner, repo string, number int, body string) error
 	CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error
@@ -156,6 +157,22 @@ func (g *gitHubClient) GetPullRequestDiff(ctx context.Context, owner, repo strin
 		return "", err
 	}
 	return diff, nil
+}
+
+// GetPullRequestCommits retrieves commit messages for a pull request (up to 50 commits).
+func (g *gitHubClient) GetPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	commits, _, err := g.client.PullRequests.ListCommits(ctx, owner, repo, number, &github.ListOptions{PerPage: 50})
+	if err != nil {
+		g.logger.Warn("failed to list commits for pull request", "owner", owner, "repo", repo, "pr", number, "error", err)
+		return nil, err
+	}
+	messages := make([]string, 0, len(commits))
+	for _, c := range commits {
+		if msg := c.GetCommit().GetMessage(); msg != "" {
+			messages = append(messages, msg)
+		}
+	}
+	return messages, nil
 }
 
 // GetChangedFiles retrieves the list of files modified in a pull request.
