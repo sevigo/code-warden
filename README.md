@@ -189,6 +189,54 @@ export CW_GITHUB_TOKEN="ghp_xxx"
 
 ---
 
+## Terminal UI (Onboarding Assistant)
+
+Code-Warden includes an interactive terminal UI for exploring and querying indexed repositories — useful for developer onboarding, code exploration, and debugging.
+
+```sh
+# Build and run the terminal UI
+make build-terminal
+./bin/warden-term
+
+# Or run directly
+go run ./cmd/terminal/main.go
+```
+
+### Themes
+
+The terminal UI supports multiple color themes. Set via flag or environment variable:
+
+```sh
+# Available themes: cyan, matrix, amber, cyberpunk, ice, dracula, fire
+./bin/warden-term --theme matrix
+CODE_WARDEN_THEME=dracula ./bin/warden-term
+
+# List all themes
+./bin/warden-term --list-themes
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/add [name] [path]` | Register and index a local repository |
+| `/list`, `/ls` | List all registered repositories |
+| `/select [name]` | Set the active repository for questions |
+| `/rescan [name?]` | Re-scan a repo for updates (defaults to selected) |
+| `/new`, `/reset` | Start a new conversation |
+| `/help`, `/h` | Show available commands |
+| `/exit`, `/quit` | Exit the application |
+
+### Usage
+
+1. **Register a repository**: `/add my-project /path/to/repo`
+2. **Select it**: `/select my-project`
+3. **Ask questions freely**: `How does authentication work?`, `What's the pattern for adding a new API endpoint?`
+
+The terminal uses the RAG pipeline to retrieve relevant code context before answering. Answers are informed by architectural summaries, function definitions, and dependency relationships — not just keyword matches.
+
+---
+
 ## Where This Is Going
 
 Code-Warden is actively developed. See [TODO.md](TODO.md) for the full roadmap. Highlights:

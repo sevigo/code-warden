@@ -114,6 +114,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.handleRepoAddedMsg(msg)
 	case scanCompleteMsg:
 		return m, m.handleScanCompleteMsg(msg)
+	case explainCompleteMsg:
+		m.handleExplainCompleteMsg(msg)
 	case answerCompleteMsg:
 		m.handleAnswerCompleteMsg(msg)
 	case errorMsg:
@@ -238,6 +240,19 @@ func (m *model) handleAnswerCompleteMsg(msg answerCompleteMsg) {
 	m.conversationHistory = append(m.conversationHistory, fmt.Sprintf("AI: %s", msg.content))
 }
 
+func (m *model) handleExplainCompleteMsg(msg explainCompleteMsg) {
+	m.isLoading = false
+	if msg.err != nil {
+		m.history = append(m.history, m.styles.error.Render("EXPLAIN FAILED: "+msg.err.Error()))
+		return
+	}
+	formatted, err := m.renderer.Render(msg.content)
+	if err != nil {
+		formatted = msg.content
+	}
+	m.history = append(m.history, formatted)
+}
+
 func (m *model) processCommand(input string) tea.Cmd {
 	m.history = append(m.history, m.styles.prompt.Render("► ")+input)
 	parts := strings.Fields(input)
@@ -253,6 +268,8 @@ func (m *model) processCommand(input string) tea.Cmd {
 		return m.processSelectCommand(args)
 	case "/rescan":
 		return m.processRescanCommand(args)
+	case "/explain":
+		return m.processExplainCommand(args)
 	case "/new", "/reset":
 		m.conversationHistory = nil
 		m.history = append(m.history, m.styles.inactive.Render("🧹 Conversation history cleared."))
@@ -336,11 +353,35 @@ func (m *model) processHelpCommand() tea.Cmd {
   /list, /ls           List all available repositories.
   /select [name]       Set the active repository for questions.
   /rescan [name?]      Re-scan a repo for updates (defaults to selected).
+  /explain [path]      Explain a directory or file using arch summaries.
   /new                 Start a new conversation.
   /help                Show this help message.
   /exit, /quit         Exit the application.`
 	m.history = append(m.history, helpText)
 	return nil
+}
+
+func (m *model) processExplainCommand(args []string) tea.Cmd {
+	if len(args) != 1 {
+		m.history = append(m.history, m.styles.error.Render("USAGE: /explain [path]"))
+		return nil
+	}
+	if m.selectedRepo == nil {
+		m.history = append(m.history, m.styles.error.Render("No repository selected. Use /select [name] first."))
+		return nil
+	}
+	path := args[0]
+	m.isLoading = true
+	m.history = append(m.history, m.styles.command.Render(fmt.Sprintf("→ EXPLAINING: %s...", path)))
+	return tea.Batch(
+		m.spinner.Tick,
+		explainPathCmd(
+			m.app,
+			m.selectedRepo.QdrantCollectionName,
+			m.selectedRepo.EmbedderModelName,
+			path,
+		),
+	)
 }
 
 func (m *model) processQuestion(input string) tea.Cmd {

@@ -132,3 +132,14 @@ func loadReposCmd(app *app.App) tea.Cmd {
 		return reposLoadedMsg{repos: repos, err: err}
 	}
 }
+
+func explainPathCmd(app *app.App, collectionName, embedderModelName, path string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		content, err := app.RAGService.ExplainPath(ctx, collectionName, embedderModelName, path)
+		if err != nil {
+			return explainCompleteMsg{path: path, err: err}
+		}
+		return explainCompleteMsg{path: path, content: content}
+	}
+}

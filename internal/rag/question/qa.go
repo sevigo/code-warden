@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/sevigo/goframe/chains"
@@ -16,61 +17,153 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// PromptData holds data for the Q&A prompt template.
+const (
+	archResultLimit     = 2
+	similarityLimit     = 5
+	totalRetrievalLimit = 7
+)
+
+var pathPattern = regexp.MustCompile(`(?:^|\s|["'` + "`" + `])([\w/.-]+/[\w/.-]+)(?:$|\s|["'` + "`" + `])`)
+
 type PromptData struct {
 	History  string
 	Context  string
 	Question string
 }
 
-// Config holds dependencies for the QAService.
 type Config struct {
 	VectorStore   storage.VectorStore
 	GeneratorLLM  llms.Model
-	ValidatorLLM  llms.Model // Optional fast model for filtering irrelevant context
+	ValidatorLLM  llms.Model
 	PromptMgr     *llm.PromptManager
 	Logger        *slog.Logger
 	ContextFormat func([]schema.Document) string
 }
 
-// QAService orchestrates question answering over repositories.
 type QAService struct {
 	cfg Config
 }
 
-// NewService creates a new [QAService] instance.
 func NewService(cfg Config) *QAService {
 	return &QAService{cfg: cfg}
 }
 
-// AnswerQuestion retrieves relevant documents and generates an answer via LLM.
+type hybridRetriever struct {
+	store     storage.ScopedVectorStore
+	archDocs  []schema.Document
+	sparse    *schema.SparseVector
+	baseLimit int
+}
+
+func (r *hybridRetriever) GetRelevantDocuments(ctx context.Context, query string) ([]schema.Document, error) {
+	var docs []schema.Document
+	var err error
+
+	if r.sparse != nil {
+		docs, err = r.store.SimilaritySearch(ctx, query, r.baseLimit, vectorstores.WithSparseQuery(r.sparse))
+	} else {
+		docs, err = r.store.SimilaritySearch(ctx, query, r.baseLimit)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]schema.Document, 0, len(r.archDocs)+len(docs))
+	result = append(result, r.archDocs...)
+	result = append(result, docs...)
+	return deduplicateDocs(result), nil
+}
+
+func deduplicateDocs(docs []schema.Document) []schema.Document {
+	seen := make(map[string]bool)
+	var result []schema.Document
+	for _, doc := range docs {
+		source, _ := doc.Metadata["source"].(string)
+		startLine, _ := doc.Metadata["start_line"].(int)
+		key := fmt.Sprintf("%s:%d", source, startLine)
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, doc)
+		}
+	}
+	return result
+}
+
 func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error) {
 	s.cfg.Logger.Info("answering question", "collection", collectionName)
 
-	var retriever schema.Retriever
 	scopedStore := s.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
 
+	archDocs := s.retrieveArchSummaries(ctx, scopedStore, question)
+	s.cfg.Logger.Debug("retrieved arch summaries", "count", len(archDocs))
+
 	sparseQuery, err := sparse.GenerateSparseVector(ctx, question)
+	var retriever schema.Retriever
 	if err != nil {
 		s.cfg.Logger.Warn("failed to generate sparse query", "error", err)
-		// Fallback to dense-only
-		retriever = vectorstores.ToRetriever(scopedStore, 5)
+		retriever = &hybridRetriever{
+			store:     scopedStore,
+			archDocs:  archDocs,
+			baseLimit: similarityLimit,
+		}
 	} else {
-		// Use hybrid search with sparse query
-		retriever = vectorstores.ToRetriever(scopedStore, 5, vectorstores.WithSparseQuery(sparseQuery))
+		retriever = &hybridRetriever{
+			store:     scopedStore,
+			archDocs:  archDocs,
+			sparse:    sparseQuery,
+			baseLimit: similarityLimit,
+		}
 	}
 
-	// Use ValidatingRetrievalQA if a validator LLM is configured.
 	if s.cfg.ValidatorLLM != nil {
 		return s.answerWithValidation(ctx, retriever, question, history)
 	}
 
-	// Fallback to standard RetrievalQA without validation
 	return s.answerWithoutValidation(ctx, retriever, question, history)
 }
 
-// answerWithValidation uses a fast validator LLM to filter irrelevant context before answering.
-func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string, _ []string) (string, error) {
+func (s *QAService) retrieveArchSummaries(ctx context.Context, store storage.ScopedVectorStore, question string) []schema.Document {
+	paths := s.extractPaths(question)
+	if len(paths) == 0 {
+		docs, err := store.SimilaritySearch(ctx, "architecture structure overview module", archResultLimit,
+			vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}))
+		if err != nil {
+			s.cfg.Logger.Warn("failed to retrieve general arch summaries", "error", err)
+			return nil
+		}
+		return docs
+	}
+
+	var allArchDocs []schema.Document
+	for _, path := range paths {
+		query := fmt.Sprintf("%s architecture structure", path)
+		docs, err := store.SimilaritySearch(ctx, query, 1,
+			vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}))
+		if err != nil {
+			s.cfg.Logger.Warn("failed to retrieve arch summary for path", "path", path, "error", err)
+			continue
+		}
+		allArchDocs = append(allArchDocs, docs...)
+	}
+	return allArchDocs
+}
+
+func (s *QAService) extractPaths(question string) []string {
+	matches := pathPattern.FindAllStringSubmatch(question, -1)
+	seen := make(map[string]bool)
+	var paths []string
+	for _, match := range matches {
+		path := strings.Trim(match[1], ` "'`)
+		if !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
+	s.cfg.Logger.Debug("answering with validation", "history_len", len(history))
 	chain, err := chains.NewValidatingRetrievalQA(
 		retriever,
 		s.cfg.GeneratorLLM,
@@ -90,7 +183,6 @@ func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.R
 	return answer, nil
 }
 
-// answerWithoutValidation uses standard RetrievalQA without context filtering.
 func (s *QAService) answerWithoutValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
 	chain, err := chains.NewRetrievalQA(
 		retriever,
