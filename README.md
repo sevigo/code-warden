@@ -221,9 +221,13 @@ Code-Warden is actively developed. See [TODO.md](TODO.md) for the full roadmap. 
 
 | Document | Description |
 |---|---|
+| [docs/SETUP.md](docs/SETUP.md) | Step-by-step deployment and first-run guide |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component relationships and system design |
-| [docs/RAG_ARCHITECTURE.md](docs/RAG_ARCHITECTURE.md) | Five-stage RAG pipeline in detail |
+| [docs/RAG_ARCHITECTURE.md](docs/RAG_ARCHITECTURE.md) | 6-stage RAG pipeline in detail |
+| [docs/INDEXING.md](docs/INDEXING.md) | Chunk types, metadata schema, debugging retrieval |
 | [docs/IMPLEMENT_ARCHITECTURE.md](docs/IMPLEMENT_ARCHITECTURE.md) | Agent orchestration and `/implement` flow |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and fixes |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 | [TODO.md](TODO.md) | Full product roadmap |
 
 ---

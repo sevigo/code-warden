@@ -275,7 +275,11 @@ This would NOT belong in GoFrame because:
 
 ## Related Documentation
 
-- [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md) - Detailed RAG pipeline documentation
-- [IMPLEMENT_ARCHITECTURE.md](./IMPLEMENT_ARCHITECTURE.md) - `/implement` command flow
+- [SETUP.md](./SETUP.md) - Deployment and first-run guide
+- [RAG_ARCHITECTURE.md](./RAG_ARCHITECTURE.md) - 6-stage RAG pipeline in detail
+- [INDEXING.md](./INDEXING.md) - Chunk types, metadata schema, debugging retrieval
+- [IMPLEMENT_ARCHITECTURE.md](./IMPLEMENT_ARCHITECTURE.md) - `/implement` command and agent flow
+- [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) - Common issues and fixes
 - [opencode-config.md](./opencode-config.md) - OpenCode agent configuration
-- [../CLAUDE.md](../CLAUDE.md) - Development guidelines
+- [../CONTRIBUTING.md](../CONTRIBUTING.md) - How to contribute
+- [../CLAUDE.md](../CLAUDE.md) - Development guidelines for Claude Code
