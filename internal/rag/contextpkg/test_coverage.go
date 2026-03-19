@@ -113,6 +113,9 @@ func (b *builderImpl) searchTestChunksForSymbol(
 	opts := []vectorstores.Option{
 		vectorstores.WithFilter("is_test", true),
 	}
+	if b.cfg.AIConfig.RetrievalScoreThreshold > 0 {
+		opts = append(opts, vectorstores.WithScoreThreshold(b.cfg.AIConfig.RetrievalScoreThreshold))
+	}
 	docs, err := scopedStore.SimilaritySearch(ctx, symbol, 5, opts...)
 	if err != nil {
 		return nil, err

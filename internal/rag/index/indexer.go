@@ -43,6 +43,11 @@ func New(cfg Config) *Indexer {
 // SetupRepoContext indexes a repository for the first time or re-indexes
 // using smart scan (file-hash based skipping).
 //
+// Both SetupRepoContext and UpdateRepoContext deliberately share the same
+// per-file logic by routing through ProcessFile.  This guarantees identical
+// chunk quality, metadata, sparse vectors, and definition extraction on both
+// the full-index and incremental-update paths.
+//
 //nolint:cyclop,gocyclo,gocognit,funlen // orchestrates complex smart-scan workflow
 func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
 	i.cfg.Logger.Info("performing smart indexing with GoFrame GitLoader",
@@ -69,7 +74,10 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		existingFilesCopy[k] = v
 	}
 
-	// Initialize GoFrame's GitLoader for streaming ingestion
+	// Initialize GoFrame's GitLoader for file discovery and filtering only.
+	// The loader handles exclude dirs, exclude exts, binary detection, and
+	// generated-code detection.  Actual chunking is delegated to ProcessFile
+	// so both indexing paths produce identical documents.
 	loader, err := documentloaders.NewGit(repoPath, i.cfg.ParserRegistry,
 		documentloaders.WithExcludeDirs(finalExcludeDirs),
 		documentloaders.WithExcludeExts(repoConfig.ExcludeExts),
@@ -89,14 +97,14 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	filesProcessedByLoader := make(map[string]struct{})
 	var filesProcessedByLoaderMu sync.Mutex
 
-	// Worker pool for parallel file hashing and splitting
+	// Worker pool: hash-check then call ProcessFile (same as UpdateRepoContext path).
 	const numHashWorkers = 4
 	const batchSize = 500 // Limit memory usage
 
+	// fileWork carries only the paths; ProcessFile reads the file from disk.
 	type fileWork struct {
-		file     string
-		docs     []schema.Document
-		filePath string
+		file     string // relative path
+		filePath string // absolute path
 	}
 
 	type fileResult struct {
@@ -138,7 +146,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 						i.cfg.Logger.Warn("hash failed, will re-process", "file", work.file, "error", hashErr)
 					}
 
-					// Check if we can skip this file (using copied map)
+					// Skip unchanged files
 					if hash != "" {
 						if rec, exists := existingFilesCopy[work.file]; exists && rec.FileHash == hash {
 							resultChan <- fileResult{processed: true, skipped: true}
@@ -146,12 +154,10 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 						}
 					}
 
-					// Apply Code-Aware chunking
-					split, err := i.cfg.Splitter.SplitDocuments(ctx, work.docs)
-					if err != nil {
-						i.cfg.Logger.Warn("splitting failed, using original chunks", "file", work.file, "error", err)
-						split = work.docs
-					}
+					// ProcessFile produces code chunks + definition chunks with the
+					// exact same logic used by UpdateRepoContext, ensuring both paths
+					// yield identical document quality.
+					docs := i.ProcessFile(ctx, repoPath, work.file)
 
 					fileRec := storage.FileRecord{}
 					if hash != "" {
@@ -162,7 +168,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 						}
 					}
 
-					resultChan <- fileResult{docsToInsert: split, fileToUpdate: fileRec, processed: true}
+					resultChan <- fileResult{docsToInsert: docs, fileToUpdate: fileRec, processed: true}
 				}
 			}
 		}()
@@ -207,35 +213,32 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		}
 	}()
 
-	// Phase 1: Stream ingestion with OOM protection
+	// Phase 1: Stream file discovery via GitLoader (filtering, binary detection, generated-code skip).
+	// We only use source paths from the batch; ProcessFile handles all content processing.
 	err = loader.LoadAndProcessStream(ctx, func(_ context.Context, docs []schema.Document) error {
-		// Group documents by source to apply SHA-skip logic effectively
-		docsByFile := make(map[string][]schema.Document)
+		// Collect unique source paths from this batch.
+		seen := make(map[string]struct{})
 		for _, doc := range docs {
 			source, _ := doc.Metadata["source"].(string)
-			if source != "" {
-				docsByFile[source] = append(docsByFile[source], doc)
+			if source == "" {
+				continue
 			}
-		}
+			if _, already := seen[source]; already {
+				continue
+			}
+			seen[source] = struct{}{}
 
-		// Send all files to worker pool
-		for file, fileDocs := range docsByFile {
 			filesProcessedByLoaderMu.Lock()
-			filesProcessedByLoader[file] = struct{}{}
+			filesProcessedByLoader[source] = struct{}{}
 			filesProcessedByLoaderMu.Unlock()
 
-			fullPath := filepath.Join(repoPath, file)
+			fullPath := filepath.Join(repoPath, source)
 			select {
-			case fileChan <- fileWork{
-				file:     file,
-				docs:     fileDocs,
-				filePath: fullPath,
-			}:
+			case fileChan <- fileWork{file: source, filePath: fullPath}:
 			case <-ctx.Done():
 				return ctx.Err()
 			}
 		}
-
 		return nil
 	})
 
