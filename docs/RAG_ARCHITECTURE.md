@@ -68,10 +68,14 @@ GetArchContextForPaths(ctx, scopedStore, filePaths)
 1. Generate hypothetical code snippet from patch using LLM
 2. Search using generated snippet as query
 3. Apply reranking with BM25 pre-filtering
+4. Filter out test documents (is_test: true)
 
-**Location:** `internal/rag/rag_hyde.go`
+**Location:** `internal/rag/contextpkg/hyde.go`
 
-**Key Feature:** Cached by patch hash to avoid redundant LLM calls
+**Key Features:**
+- Cached by patch hash to avoid redundant LLM calls
+- Language-aware prompt generation (Go, TypeScript, Python, etc.)
+- Per-file cache keys prevent cross-file collisions
 
 ### 3. Impact Context
 **Purpose:** Identify downstream code that may be affected by changes
@@ -90,7 +94,7 @@ network, _ := retriever.GetContextNetwork(ctx, packageName, imports)
 
 **Mechanism:** MultiQuery retrieval - generates multiple query variations from PR description
 
-**Location:** `internal/rag/rag_context.go:260-310`
+**Location:** `internal/rag/contextpkg/builder.go:168-203`
 
 ### 5. Definitions Context
 **Purpose:** Resolve type/function definitions for symbols in the diff
@@ -99,8 +103,29 @@ network, _ := retriever.GetContextNetwork(ctx, packageName, imports)
 1. Extract symbols from patch using regex patterns
 2. Query `DefinitionRetriever` for each symbol
 3. Include full definition text in context
+4. Cap at ~15k characters to prevent token budget exhaustion
+5. Prioritize interfaces/types over implementations
 
-**Location:** `internal/rag/rag_context.go:84-148`
+**Location:** `internal/rag/contextpkg/symbols.go`
+
+### 6. Test Coverage Context
+**Purpose:** Show relevant tests for changed code to help identify edge cases
+
+**Mechanism:**
+1. Extract symbols from definitions context
+2. Search for test chunks with `tested_symbols` metadata matching
+3. Include test chunks that reference changed symbols
+
+**Metadata on test chunks:**
+```json
+{
+  "is_test": true,
+  "tested_symbols": ["UserService", "CreateUser"],
+  "source_file": "internal/rag/service.go"
+}
+```
+
+**Location:** `internal/rag/contextpkg/test_coverage.go`
 
 ## Hallucination Reduction Mechanisms
 
@@ -154,25 +179,52 @@ docs, _ := store.SimilaritySearch(ctx, query, 5,
 ```
 
 ### Layer 5: Symbol Resolution
-**File:** `internal/rag/rag_context.go:150-182`
+**File:** `internal/rag/contextpkg/symbols.go`
 
 Uses exact-match filters for definition lookup:
 ```go
 docs, _ := defRetriever.GetDefinition(ctx, symbol)
 // Filter: identifier=symbol AND is_definition=true
 // Now includes sparse vector for better exact matching
+// Capped at ~15k characters to prevent token exhaustion
+```
+
+### Layer 6: Test Filtering
+**File:** `internal/rag/contextpkg/format.go`
+
+Test files are filtered from production code retrieval:
+```go
+func filterTestDocs(docs []schema.Document) []schema.Document {
+    // Removes documents with is_test: true from impact/description context
+    // Tests are only retrieved via test coverage stage
+}
+```
+
+### Layer 7: Test Coverage Linkage
+**File:** `internal/rag/index/test_linkage.go`
+
+During indexing, test files are analyzed to extract tested symbols:
+```go
+// Test file metadata includes:
+// - tested_symbols: ["UserService", "CreateUser"]
+// - source_file: "internal/rag/service.go"
+// These are used to find relevant tests during review
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `internal/rag/rag.go` | Service interface and initialization |
-| `internal/rag/rag_context.go` | Multi-stage context building |
-| `internal/rag/rag_review.go` | Review generation with validation |
-| `internal/rag/rag_hyde.go` | HyDE query expansion |
-| `internal/rag/rag_impact.go` | Dependency graph traversal |
-| `internal/rag/rag_rereview.go` | Feedback-driven re-review |
+| `internal/rag/contextpkg/builder.go` | Multi-stage context building orchestration |
+| `internal/rag/contextpkg/arch.go` | Architecture context from pre-computed summaries |
+| `internal/rag/contextpkg/hyde.go` | HyDE query expansion with language-aware prompts |
+| `internal/rag/contextpkg/symbols.go` | Definition resolution with prioritization |
+| `internal/rag/contextpkg/test_coverage.go` | Test coverage retrieval for changed symbols |
+| `internal/rag/contextpkg/format.go` | Context assembly and formatting |
+| `internal/rag/index/indexer.go` | Document chunking and metadata extraction |
+| `internal/rag/index/definitions.go` | Type/function definition extraction |
+| `internal/rag/index/test_linkage.go` | Test-to-code symbol linkage extraction |
+| `internal/rag/review/reviewer.go` | Review generation with validation |
 | `internal/llm/prompts/*.prompt` | Prompt templates |
 
 ## GoFrame Patterns Used
@@ -220,6 +272,6 @@ Key log messages to monitor:
 
 ## Future Improvements
 
-1. Integrate `chains.ValidatingRetrievalQA` for consistent validation
-2. Add metrics for sparse vector failure rate
-3. Increase HyDE cache hash from 8 to 16 bytes
+1. Add metrics for sparse vector failure rate
+2. Cache architecture and impact retrieval per diff hash
+3. Implement pre-computed call graph edges for accurate impact analysis
