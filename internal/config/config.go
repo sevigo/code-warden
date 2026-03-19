@@ -280,6 +280,7 @@ type AIConfig struct {
 	ContextTokenBudget      int     `mapstructure:"context_token_budget"`      // Max tokens for RAG context (default: 16000)
 	MaxContextSummaries     int     `mapstructure:"max_context_summaries"`     // Max number of architectural summaries (default: 1000)
 	RetrievalScoreThreshold float32 `mapstructure:"retrieval_score_threshold"` // Min cosine similarity to include a retrieved doc (0.0 = disabled)
+	RerankMinScore          float32 `mapstructure:"rerank_min_score"`          // Min reranker score to keep a doc after reranking (0.0 = disabled)
 
 	// Review Output Options
 	EnableCodeSuggestions bool   `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
@@ -457,7 +458,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.fast_model", "gemma3:1b")     // Very fast model for variation/validation
 	v.SetDefault("ai.enable_hybrid_search", true)
 	v.SetDefault("ai.sparse_vector_name", "bow_sparse")
-	v.SetDefault("ai.enable_hyde", false) // Default to false for performance
+	v.SetDefault("ai.enable_hyde", true)              // Enabled by default for high recall
+	v.SetDefault("ai.rerank_min_score", float32(0.0)) // 0.0 = disabled; set e.g. 0.1 to drop weak reranked docs
 	v.SetDefault("ai.max_context_summaries", 1000)
 	v.SetDefault("ai.hyde_concurrency", 5)
 	v.SetDefault("ai.enable_thinking", false)               // Disabled by default - enable per model

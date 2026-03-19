@@ -84,16 +84,30 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 
 	scopedStore := b.cfg.VectorStore.ForRepo(collection, embedder)
 
-	baseRetriever := dynamicSparseRetriever{
-		store:   scopedStore,
-		numDocs: 20,
-		builder: b,
+	var baseRetriever schema.Retriever
+	queryLLM, err := b.cfg.GetLLM(ctx, b.cfg.AIConfig.FastModel)
+	if err == nil {
+		baseRetriever = vectorstores.MultiQueryRetriever{
+			Store:         scopedStore,
+			LLM:           queryLLM,
+			NumDocuments:  20,
+			Count:         2,
+			SparseGenFunc: b.generateSparseVectorFunc("HyDE"),
+		}
+	} else {
+		b.cfg.Logger.Warn("failed to get LLM for HyDE multi-query, falling back to single-query retriever", "error", err)
+		baseRetriever = dynamicSparseRetriever{
+			store:   scopedStore,
+			numDocs: 20,
+			builder: b,
+		}
 	}
 
 	rerankingRetriever := vectorstores.RerankingRetriever{
 		Retriever: baseRetriever,
 		Reranker:  b.cfg.Reranker,
 		TopK:      5,
+		MinScore:  b.cfg.AIConfig.RerankMinScore,
 		CandidateFilter: func(query string, docs []schema.Document) []schema.Document {
 			return preFilterBM25(stripPatchNoise(query), docs, 10)
 		},
