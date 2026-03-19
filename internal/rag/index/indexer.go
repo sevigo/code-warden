@@ -477,8 +477,19 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 			splitDocs[idx].Metadata["end_line"] = endLine
 		}
 
-		// Extract symbols from chunk
-		symbols := extractSymbolsFromChunk(splitDocs[idx].PageContent, ext)
+		// Extract symbols from chunk.
+		// Prefer the parser's AST-aware ExtractUsedSymbols which understands
+		// language syntax and avoids noise like keywords and common variable names.
+		// Fall back to regex only when no parser is available for this extension.
+		var symbols []string
+		if i.cfg.ParserRegistry != nil {
+			if parser, parserErr := i.cfg.ParserRegistry.GetParserForExtension(ext); parserErr == nil {
+				symbols = parser.ExtractUsedSymbols(splitDocs[idx].PageContent)
+			}
+		}
+		if len(symbols) == 0 {
+			symbols = extractSymbolsFromChunk(splitDocs[idx].PageContent, ext)
+		}
 		if len(symbols) > 0 {
 			splitDocs[idx].Metadata["symbols"] = symbols
 			// Primary symbol is the first exported one

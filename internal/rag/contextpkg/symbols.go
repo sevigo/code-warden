@@ -129,13 +129,24 @@ func filterAddedLines(patch string) string {
 	return strings.Join(added, "\n")
 }
 
+func filterRemovedLines(patch string) string {
+	lines := strings.Split(patch, "\n")
+	var removed []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			removed = append(removed, line[1:]) // Strip the leading '-'
+		}
+	}
+	return strings.Join(removed, "\n")
+}
+
 func extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
 
-	addedOnly := filterAddedLines(patch)
-	if addedOnly == "" {
-		return nil
-	}
+	// Extract from both added and removed lines.
+	// Deleted or renamed symbols are equally important: the reviewer needs
+	// to know what depended on a symbol that was removed or changed.
+	sources := []string{filterAddedLines(patch), filterRemovedLines(patch)}
 
 	patterns := []*regexp.Regexp{
 		symbolTypeDefRegex,
@@ -145,11 +156,16 @@ func extractSymbolsFromPatch(patch string) []string {
 		symbolExportedTypeRegex,
 	}
 
-	for _, re := range patterns {
-		matches := re.FindAllStringSubmatch(addedOnly, -1)
-		for _, match := range matches {
-			if len(match) > 1 && len(match[1]) > 1 {
-				symbols[match[1]] = struct{}{}
+	for _, src := range sources {
+		if src == "" {
+			continue
+		}
+		for _, re := range patterns {
+			matches := re.FindAllStringSubmatch(src, -1)
+			for _, match := range matches {
+				if len(match) > 1 && len(match[1]) > 1 {
+					symbols[match[1]] = struct{}{}
+				}
 			}
 		}
 	}

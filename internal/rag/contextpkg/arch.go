@@ -336,28 +336,24 @@ func (b *builderImpl) GetArchContextForPaths(ctx context.Context, scopedStore st
 			continue
 		}
 
-		// Search for this directory's summary using filter
-		query := fmt.Sprintf("Summary of directory %s", dir)
+		// Fetch this directory's summary by exact source match.
+		// Filtering by both chunk_type and source means we always get the right
+		// document without relying on top-K similarity ranking.
 		archSearchOpts := []vectorstores.Option{
-			vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}),
+			vectorstores.WithFilters(map[string]any{
+				"chunk_type": "arch",
+				"source":     dir,
+			}),
 		}
-		if b.cfg.AIConfig.RetrievalScoreThreshold > 0 {
-			archSearchOpts = append(archSearchOpts, vectorstores.WithScoreThreshold(b.cfg.AIConfig.RetrievalScoreThreshold))
-		}
-		docs, err := scopedStore.SimilaritySearch(ctx, query, 3, archSearchOpts...)
+		docs, err := scopedStore.SimilaritySearch(ctx, dir, 1, archSearchOpts...)
 		if err != nil {
 			b.cfg.Logger.Debug("failed to search arch summaries", "dir", dir, "error", err)
 			continue
 		}
 
-		// Find the best match for this directory
-		for _, doc := range docs {
-			source, _ := doc.Metadata["source"].(string)
-			if source == dir {
-				fmt.Fprintf(&archContext, "## %s\n%s\n\n", source, doc.PageContent)
-				seenDirs[dir] = struct{}{}
-				break
-			}
+		if len(docs) > 0 {
+			fmt.Fprintf(&archContext, "## %s\n%s\n\n", dir, docs[0].PageContent)
+			seenDirs[dir] = struct{}{}
 		}
 	}
 
