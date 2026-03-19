@@ -126,16 +126,18 @@ You have been provided with pre-computed context in the "ARCHITECTURAL OVERVIEW"
 Every suggestion MUST include a `<source>` tag that grounds the finding in evidence:
 
 **Required Source Types:**
-1. `diff:L{line}` - Issue visible directly in the diff at line {line}
+1. `diff:L{line}` - Issue visible directly in the diff; `{line}` is the **actual file line number** of the new file (read from the `+{line}` counter in the `@@` hunk header, NOT the position counting from the top of the diff)
 2. `context:{filename}:{line}` - Issue based on retrieved context (must match actual context section)
 3. `inference` - Logical deduction from visible code patterns (use sparingly, only for obvious issues)
 4. `external:{description}` - When you cannot verify (acknowledge blind spot)
 
 **Examples:**
-- `<source>diff:L45</source>` - Bug found at line 45 in the diff
+- `<source>diff:L45</source>` - Bug at file line 45 in the new version (from hunk `@@ -40,7 +43,8 @@`: line 45 of the new file)
 - `<source>context:auth.go:102</source>` - Found via architectural context in auth.go line 102
 - `<source>context:definitions:UserService</source>` - Based on resolved type definition
 - `<source>inference:nil-check-missing</source>` - Logical inference from pattern
+
+**Line Number Rule (CRITICAL):** The `<line>` tag in every `<suggestion>` block MUST contain the **real file line number** in the new version of the file — the number you would see in a text editor after the PR is merged. Derive it from the `+{start}` value in the nearest preceding `@@` hunk header and count forward through context and added lines. Never use the diff position (the 1-based count of all lines in the diff block).
 
 **Anti-Hallucination Rules:**
 - **NEVER** cite files/lines that don't exist in the diff or provided context

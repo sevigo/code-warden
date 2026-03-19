@@ -8,7 +8,6 @@ import (
 
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
-	"golang.org/x/sync/errgroup"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/rag/detect"
@@ -40,7 +39,7 @@ func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, 
 		return "", ""
 	}
 
-	const defaultMaxContextFiles = 20
+	const defaultMaxContextFiles = 50
 	if len(changedFiles) > defaultMaxContextFiles {
 		b.cfg.Logger.Warn("truncating context files", "total", len(changedFiles), "limit", defaultMaxContextFiles)
 		changedFiles = changedFiles[:defaultMaxContextFiles]
@@ -85,48 +84,59 @@ func (b *builderImpl) buildContextConcurrently(
 	changedFiles []internalgithub.ChangedFile, scopedStore storage.ScopedVectorStore,
 ) *contextResults {
 	results := &contextResults{}
-	g, ctx := errgroup.WithContext(ctx)
 
-	g.SetLimit(3)
+	// Each stage runs independently. A failure in one stage must not cancel the
+	// others — losing arch context because HyDE hit a transient Qdrant error, or
+	// vice versa, degrades review quality silently. We log each failure and let
+	// remaining stages complete with whatever context they can assemble.
+	var wg sync.WaitGroup
 
-	g.Go(func() error {
+	wg.Go(func() {
 		arch, err := b.gatherArchContextSafe(ctx, scopedStore, changedFiles)
+		if err != nil {
+			b.cfg.Logger.Warn("arch context stage failed", "error", err)
+		}
 		results.archContext = arch
-		return err
 	})
 
 	if b.cfg.AIConfig.EnableHyDE {
-		g.Go(func() error {
+		wg.Go(func() {
 			res, indices, err := b.gatherHyDEContext(ctx, collectionName, embedderModelName, changedFiles)
+			if err != nil {
+				b.cfg.Logger.Warn("HyDE context stage failed", "error", err)
+			}
 			results.hydeResults = res
 			results.hydeIndices = indices
-			return err
 		})
 	}
 
-	g.Go(func() error {
+	wg.Go(func() {
 		docs, err := b.gatherImpactDocs(ctx, scopedStore, repoPath, changedFiles)
+		if err != nil {
+			b.cfg.Logger.Warn("impact context stage failed", "error", err)
+		}
 		results.impactDocs = filterTestDocs(docs)
-		return err
 	})
 
 	if prDescription != "" {
-		g.Go(func() error {
+		wg.Go(func() {
 			docs, err := b.gatherDescriptionDocs(ctx, collectionName, embedderModelName, prDescription)
+			if err != nil {
+				b.cfg.Logger.Warn("description context stage failed", "error", err)
+			}
 			results.descriptionDocs = filterTestDocs(docs)
-			return err
 		})
 	}
 
-	g.Go(func() error {
+	wg.Go(func() {
 		defs, err := b.gatherDefinitionsContext(ctx, scopedStore, changedFiles)
+		if err != nil {
+			b.cfg.Logger.Warn("definitions context stage failed", "error", err)
+		}
 		results.definitionsContext = defs
-		return err
 	})
 
-	if err := g.Wait(); err != nil {
-		b.cfg.Logger.Error("buildContextConcurrently: one or more tasks failed", "error", err)
-	}
+	wg.Wait()
 
 	// Gather test coverage context after definitions (depends on extracted symbols)
 	if len(results.definitionsContext) > 0 {
