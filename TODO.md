@@ -137,6 +137,65 @@ The feedback signals above need a storage and application layer:
 
 ---
 
+## 🤖 Agent Integration (`/implement`)
+
+The `/implement` command works end-to-end but has several gaps that significantly affect usability and reliability. These are ordered by impact.
+
+### 1. Post GitHub Comments During Session (Highest Impact)
+
+Currently the user triggers `/implement` on an issue, the server acknowledges with nothing, and the agent works silently for up to 30 minutes. The user has no way to know whether the session started, what it's doing, or whether it failed — without reading server logs.
+
+What should happen:
+- **On trigger**: Post a comment on the issue: "Started implementation session `<session-id>`. I'll update you here."
+- **Each iteration**: Post an update: "Iteration 2/3 — review returned `REQUEST_CHANGES`, addressing feedback..."
+- **On completion**: Post: "PR created: <url> — <one-line summary>"
+- **On failure/timeout**: Post: "Session failed after N iterations. Last error: <message>"
+
+This is the single highest-leverage UX improvement. Without it, the feature feels broken even when it works correctly.
+
+### 2. Add `run_command` MCP Tool
+
+The agent system prompt instructs the agent to run `make lint && make test` to verify its changes before calling `review_code`. But Code-Warden has no MCP tool to actually execute commands in the workspace — so the agent can either skip this step or hallucinate a success.
+
+Required: a `run_command` tool that:
+- Executes a whitelisted command (e.g. `make lint`, `make test`, `go build ./...`) inside the session workspace
+- Returns stdout/stderr and exit code
+- Whitelist is configurable via `verify_commands` in `.code-warden.yml` or global config
+- Has a timeout (e.g. 5 minutes) to avoid blocking the session
+
+Without this, "Verify" step 5 in the system prompt is fiction.
+
+### 3. Fix `GetLastReview()` Race Condition
+
+In `internal/agent/orchestrator.go`, the `createReviewHandler` reads the review verdict via `o.mcpServer.GetLastReview()` — a method that returns the **last review stored on the global MCP server**, not the current session's review. With two or more concurrent agent sessions, each session can accidentally pick up the verdict from the other session's `review_code` call.
+
+Fix: scope review results to session ID. `review_code` should store its result keyed by session ID, and the orchestrator should retrieve it by that same key.
+
+### 4. Persist Session State to PostgreSQL
+
+Sessions are stored in memory (`sessions map[string]*Session`). A server restart orphans all active sessions — they show no status, GitHub gets no notification, and the workspaces are left on disk.
+
+Add an `agent_sessions` table:
+```
+id, issue_number, repo_id, status, branch, pr_url, iterations, started_at, completed_at, error
+```
+
+On startup, load active sessions and mark any that were interrupted as FAILED (and post a GitHub comment explaining the restart).
+
+### 5. Auto-Trigger Full `/review` After PR Creation
+
+When the agent creates a PR, it runs its own lightweight `review_code` (single model, no consensus) and submits. But the actual PR has no Code-Warden review posted to GitHub — reviewers see no AI feedback.
+
+After `create_pull_request` succeeds, enqueue a standard review job on the new PR. This gives the team the same full 6-stage consensus review on agent-created PRs that they get on human PRs.
+
+### 6. Replace Fragile Output Parsing
+
+`extractFilesFromImplementation` and `extractPRInfo` use string matching and regex on free-text output from the agent to determine which files changed and what the PR title/body should be. This breaks if the agent formats its output slightly differently.
+
+Better approach: after `push_branch` succeeds, query the GitHub API for the branch's diff relative to base to get the actual changed file list. After `create_pull_request` succeeds, use the returned PR number/URL rather than parsing agent output.
+
+---
+
 ## 🏗 RAG Pipeline Improvements
 
 ### Query Decomposition / Multi-Query Retrieval

@@ -334,9 +334,17 @@ func (o *Orchestrator) cleanupOldSessions() {
 
 ### Current Limitations
 
-1. **No Lint/Test Verification**: The system prompt instructs the agent to run `make lint && make test`, but there is no MCP tool to verify execution or capture the output.
-2. **No Post-PR Review**: After PR creation, no automatic `/review` is triggered on the actual PR for GitHub visibility.
-3. **In-Memory Sessions**: Session state is stored in memory and lost on server restart.
+1. **No GitHub feedback during session** — The user triggers `/implement` and hears nothing for up to 30 minutes. No acknowledgment comment is posted when the session starts, no progress updates during iterations, and no notification on completion or failure. The user must watch server logs to know what is happening. This makes the feature feel broken even when it works.
+
+2. **No `run_command` MCP tool** — The agent system prompt instructs the agent to run `make lint && make test` at step 5 (Verify). There is no MCP tool to actually execute these commands in the session workspace. The agent either skips the step or claims success without verifying. Until this tool is added, the Verify step in the agent loop is unreliable.
+
+3. **`GetLastReview()` race condition** — `createReviewHandler` reads the review verdict via `o.mcpServer.GetLastReview()`, which returns the last review stored on the global MCP server state. With two concurrent sessions, each session can read the verdict produced by the other session's `review_code` call, causing the wrong iteration decision. Fix: key review results by session ID.
+
+4. **In-memory sessions** — Session state (`sessions map[string]*Session`) is lost on server restart. Any active session becomes orphaned: no status, no GitHub notification, workspace left on disk. Needs a `agent_sessions` PostgreSQL table with restart recovery.
+
+5. **No post-PR review** — After the agent creates a PR, no standard `/review` is enqueued on it. Human reviewers see no Code-Warden analysis on agent-created PRs unless they manually comment `/review`. Auto-triggering a full review job after `create_pull_request` succeeds would close this gap.
+
+6. **Fragile output parsing** — `extractFilesFromImplementation` and `extractPRInfo` use string matching and regex on free-text agent output to determine changed files and PR metadata. Any variation in how the agent phrases its output can break this. The fix is to query the GitHub API after push/PR creation rather than parsing agent output.
 
 ### Security Considerations
 
@@ -394,8 +402,9 @@ This design keeps review time within the 60-second MCP tool timeout, since full 
 
 ## Future Improvements
 
-1. **Auto-PR Review**: Trigger standard `/review` workflow after PR creation for GitHub visibility.
-2. **Command Verification Tool**: Add `run_command` MCP tool to verify lint/test execution results.
-3. **Session Persistence**: Store session state in PostgreSQL for recovery after server restart.
-4. **Iteration Logging**: Track each review iteration with detailed per-iteration feedback.
-5. **Progress Updates**: Post progress comments on the issue during long-running implementations.
+The limitations above are tracked with detailed explanations in [TODO.md](../TODO.md) under "Agent Integration". In addition:
+
+- **Iteration detail logging** — Store each iteration's diff, review verdict, and suggestions in the DB so sessions can be replayed and debugged after the fact.
+- **Workspace reuse** — For re-runs of the same issue, reuse the existing workspace and branch rather than cloning fresh each time.
+- **Sub-issue support** — Allow `/implement` on a checklist item within an issue body, not just the whole issue.
+- **Session UI** — A web page listing active and recent sessions with status badges, elapsed time, cancel button, and a link to the created PR. See [TODO.md](../TODO.md) under "UI / Dashboard".
