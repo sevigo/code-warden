@@ -34,7 +34,7 @@ func (b *builderImpl) getImpactDocs(ctx context.Context, store storage.ScopedVec
 	reqs := b.buildImpactRequests(repoPath, files)
 	depResults := b.fetchImpactResults(ctx, retriever, reqs)
 
-	const maxImpactSnippets = 10
+	const maxImpactSnippets = 40
 	var docs []schema.Document
 	for _, dependents := range depResults {
 		for _, doc := range dependents {

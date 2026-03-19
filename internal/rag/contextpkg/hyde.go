@@ -132,6 +132,13 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 		if file.Patch == "" {
 			continue
 		}
+		// Skip non-code files: YAML, JSON, Markdown etc. have no meaningful
+		// indexed code to retrieve, so querying with their raw patch content
+		// only returns semantically irrelevant results.
+		if !indexpkg.IsLogicFile(file.Filename) {
+			b.cfg.Logger.Debug("HyDE: skipping non-code file", "file", file.Filename)
+			continue
+		}
 
 		idx := i
 		f := file

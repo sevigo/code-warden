@@ -148,10 +148,16 @@ func (b *builderImpl) fallbackConcat(docs []schema.Document) string {
 	return fallback.String()
 }
 
-func (b *builderImpl) buildContextDocuments(arch, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) []schema.Document {
+func (b *builderImpl) buildContextDocuments(arch, toc, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) []schema.Document {
 	var docs []schema.Document
 	if definitions != "" {
 		docs = append(docs, schema.Document{PageContent: definitions})
+	}
+	// TOC chunks give the LLM a guaranteed symbol inventory for each changed
+	// file — what it exports, kinds, and doc summaries — regardless of what
+	// semantic search returns for those files.
+	if toc != "" {
+		docs = append(docs, schema.Document{PageContent: fmt.Sprintf("# Changed File Inventories\n\nThe following table-of-contents entries list every exported symbol in each changed file:\n\n%s", toc)})
 	}
 	if testCoverage != "" {
 		docs = append(docs, schema.Document{PageContent: testCoverage})

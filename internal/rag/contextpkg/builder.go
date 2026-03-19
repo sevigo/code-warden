@@ -65,12 +65,13 @@ func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, 
 	}
 
 	testCoverageContext := b.formatTestCoverageContext(results.testCoverageDocs)
-	fullContext := b.assembleContext(ctx, results.archContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.hydeResults, results.hydeIndices, changedFiles)
+	fullContext := b.assembleContext(ctx, results.archContext, results.tocContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.hydeResults, results.hydeIndices, changedFiles)
 	return fullContext, results.definitionsContext
 }
 
 type contextResults struct {
 	archContext        string
+	tocContext         string
 	definitionsContext string
 	impactDocs         []schema.Document
 	descriptionDocs    []schema.Document
@@ -97,6 +98,14 @@ func (b *builderImpl) buildContextConcurrently(
 			b.cfg.Logger.Warn("arch context stage failed", "error", err)
 		}
 		results.archContext = arch
+	})
+
+	wg.Go(func() {
+		toc, err := b.gatherTOCContext(ctx, scopedStore, changedFiles)
+		if err != nil {
+			b.cfg.Logger.Warn("TOC context stage failed", "error", err)
+		}
+		results.tocContext = toc
 	})
 
 	if b.cfg.AIConfig.EnableHyDE {
@@ -213,8 +222,8 @@ func (b *builderImpl) gatherDescriptionDocs(ctx context.Context, collection, emb
 	return allDocs, nil
 }
 
-func (b *builderImpl) assembleContext(ctx context.Context, arch, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
-	docs := b.buildContextDocuments(arch, impact, description, definitions, testCoverage, hyde, indices, files)
+func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
+	docs := b.buildContextDocuments(arch, toc, impact, description, definitions, testCoverage, hyde, indices, files)
 
 	if b.cfg.ContextPacker == nil {
 		b.cfg.Logger.Error("context packer not initialized, using limited fallback")
