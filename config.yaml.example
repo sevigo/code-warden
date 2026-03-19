@@ -11,10 +11,6 @@
 server:
   port: "8080"
   max_workers: 5
-  # FastAPI server URL for external embedding service (optional)
-  fastapi_server_url: "http://127.0.0.1:8000"
-  # Shared secret for service-to-service auth
-  shared_secret: ""
   # UI theme: "dark" or "light"
   theme: "dark"
 
@@ -114,18 +110,6 @@ ai:
   # default: "0" (disabled - recommended for most cases)
   # http_request_timeout: "0"
 
-  # Overall HTTP request timeout (including body transfer).
-  # This is a safety net for very long-running requests.
-  # Set to "0" or omit to disable (rely only on response_header_timeout).
-  # default: "0" (disabled - recommended for most cases)
-  # http_request_timeout: "0"
-
-  # Overall HTTP request timeout (including body transfer).
-  # Set to 0 or omit to disable (rely only on response_header_timeout).
-  # This is a safety net for very long-running requests.
-  # default: "600s" (10 minutes)
-  # http_request_timeout: "30m"
-
   # Context Assembly
   # Maximum tokens for RAG context (retrieved code snippets, definitions, etc.)
   # This is NOT the full prompt - it's just the retrieved context portion.
@@ -142,6 +126,14 @@ ai:
   # Increase this for massive monorepos where you need complete coverage.
   # default: 1000
   max_context_summaries: 1000
+
+  # Hybrid Search (dense + sparse vectors)
+  # enable_hybrid_search: true activates Qdrant hybrid search using both dense embeddings
+  # and the code-aware sparse tokenizer (camelCase/snake_case splitting via FNV hashing).
+  # sparse_vector_name must match the named sparse vector in your Qdrant collection schema.
+  # If you change this after initial indexing, re-index all collections.
+  enable_hybrid_search: true
+  sparse_vector_name: "code_sparse"
 
 # ============================================================================
 # Agent Configuration (Autonomous Issue Implementation)
