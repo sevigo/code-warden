@@ -157,7 +157,7 @@ func TestUpdateRepoContext(t *testing.T) {
 	filesToDelete := []string{"old.go"}
 
 	fullPath := filepath.Join(repoDir, "new.go")
-	require.NoError(t, os.WriteFile(fullPath, []byte("package new\n"), 0644))
+	require.NoError(t, os.WriteFile(fullPath, []byte("package new\n\nfunc DoWork() error { return nil }\n"), 0644))
 
 	// Expectations
 	mockVS.EXPECT().DeleteDocumentsFromCollection(gomock.Any(), repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete).Return(nil)

@@ -460,6 +460,18 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 	// Build line offset map for computing line numbers
 	lineOffsets := buildLineOffsets(validContent)
 
+	// Filter boilerplate chunks (import blocks, package-only lines, etc.) before
+	// processing so they don't occupy vector-store slots or dilute search results.
+	filtered := splitDocs[:0]
+	for _, chunk := range splitDocs {
+		if isLikelyBoilerplate(chunk.PageContent) {
+			i.cfg.Logger.Debug("skipping boilerplate chunk", "file", file)
+			continue
+		}
+		filtered = append(filtered, chunk)
+	}
+	splitDocs = filtered
+
 	for idx := range splitDocs {
 		// Ensure sparse vectors are generated for hybrid search if possible
 		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
@@ -540,15 +552,29 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		}
 
 		allDocs = append(allDocs, defDocs...)
-
-		if len(defDocs) > 0 {
-			i.cfg.Logger.Debug("extracted definitions from file",
-				"file", file,
-				"definitions", len(defDocs))
-		}
+		allDocs = append(allDocs, i.buildTOCDocs(ctx, file, defDocs)...)
 	}
 
 	return allDocs
+}
+
+// buildTOCDocs creates a file-level TOC chunk from definition docs and returns
+// it as a slice (empty if no definitions). Extracted to keep ProcessFile's
+// nesting depth within linter limits.
+func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schema.Document) []schema.Document {
+	if len(defDocs) == 0 {
+		return nil
+	}
+	i.cfg.Logger.Debug("extracted definitions from file", "file", file, "definitions", len(defDocs))
+	toc := buildTOCChunk(file, defDocs)
+	if toc == nil {
+		return nil
+	}
+	if sparseVec, err := sparse.GenerateSparseVector(ctx, toc.PageContent); err == nil {
+		toc.Sparse = sparseVec
+	}
+	i.cfg.Logger.Debug("built TOC chunk", "file", file, "symbols", len(defDocs))
+	return []schema.Document{*toc}
 }
 
 // buildLineOffsets creates a map of line number to byte offset.

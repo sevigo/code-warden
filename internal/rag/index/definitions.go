@@ -81,7 +81,10 @@ func (d *DefinitionExtractor) extractWithParser(parser schema.ParserPlugin, full
 			continue
 		}
 
-		// Build the definition content from signature and documentation
+		// Build the definition content from signature and documentation.
+		// Prepending the doc comment means the embedding captures both the
+		// natural-language description (what it does) and the code signature
+		// (how to use it), improving semantic retrieval significantly.
 		var content strings.Builder
 		if def.Documentation != "" {
 			content.WriteString(def.Documentation)
@@ -90,15 +93,16 @@ func (d *DefinitionExtractor) extractWithParser(parser schema.ParserPlugin, full
 		content.WriteString(def.Signature)
 
 		doc := schema.NewDocument(content.String(), map[string]any{
-			"chunk_type":   "definition",
-			"source":       relPath,
-			"line":         def.LineStart,
-			"end_line":     def.LineEnd,
-			"identifier":   def.Name,
-			"kind":         def.Type,
-			"package_name": metadata.PackageName,
-			"is_exported":  def.Visibility == "public",
-			"signature":    def.Signature,
+			"chunk_type":    "definition",
+			"source":        relPath,
+			"line":          def.LineStart,
+			"end_line":      def.LineEnd,
+			"identifier":    def.Name,
+			"kind":          def.Type,
+			"package_name":  metadata.PackageName,
+			"is_exported":   def.Visibility == "public",
+			"signature":     def.Signature,
+			"documentation": def.Documentation,
 		})
 
 		docs = append(docs, doc)
@@ -156,18 +160,28 @@ func (d *DefinitionExtractor) extractWithRegex(fullPath, relPath string, content
 				continue
 			}
 
+			docComment := extractDocComment(strContent, start, ext)
 			definition := extractCompleteDefinition(strContent, start, end, pattern.kind)
+
+			// Prepend doc comment so the embedding captures both description and code.
+			var defContent strings.Builder
+			if docComment != "" {
+				defContent.WriteString(docComment)
+				defContent.WriteString("\n")
+			}
+			defContent.WriteString(definition)
 
 			line := countLines(strContent[:start])
 
-			doc := schema.NewDocument(definition, map[string]any{
-				"chunk_type":   "definition",
-				"source":       relPath,
-				"line":         line,
-				"identifier":   name,
-				"kind":         pattern.kind,
-				"package_name": extractPackageName(strContent),
-				"is_exported":  ext != extGo || isExported(name, ext),
+			doc := schema.NewDocument(defContent.String(), map[string]any{
+				"chunk_type":    "definition",
+				"source":        relPath,
+				"line":          line,
+				"identifier":    name,
+				"kind":          pattern.kind,
+				"package_name":  extractPackageName(strContent),
+				"is_exported":   ext != extGo || isExported(name, ext),
+				"documentation": docComment,
 			})
 
 			docs = append(docs, doc)
@@ -318,6 +332,53 @@ func extractCompleteDefinition(content string, start, end int, kind string) stri
 	}
 
 	return strings.TrimSpace(content[start:end])
+}
+
+// extractDocComment walks backwards from byteOffset in content to collect the
+// comment block immediately preceding a definition. Returns an empty string if
+// no comment is found.  Language-specific comment prefixes are used so that
+// Go `//`, JSDoc `/** */`, Python `#`, Rust `///`, and Java `/** */` are all
+// handled correctly.
+func extractDocComment(content string, byteOffset int, ext string) string {
+	lines := strings.Split(content[:byteOffset], "\n")
+
+	var commentLines []string
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			// A blank line separating comments from the definition — stop.
+			if len(commentLines) > 0 {
+				break
+			}
+			continue
+		}
+
+		isComment := false
+		switch ext {
+		case extGo:
+			isComment = strings.HasPrefix(trimmed, "//")
+		case extTypeScript, extTSX, extJavaScript, extJSX:
+			isComment = strings.HasPrefix(trimmed, "//") ||
+				strings.HasPrefix(trimmed, "*") ||
+				strings.HasPrefix(trimmed, "/*")
+		case extPython:
+			isComment = strings.HasPrefix(trimmed, "#")
+		case extJava:
+			isComment = strings.HasPrefix(trimmed, "//") ||
+				strings.HasPrefix(trimmed, "*") ||
+				strings.HasPrefix(trimmed, "/*")
+		case extRust:
+			isComment = strings.HasPrefix(trimmed, "///") || strings.HasPrefix(trimmed, "//")
+		}
+
+		if !isComment {
+			break
+		}
+		commentLines = append([]string{line}, commentLines...)
+	}
+
+	return strings.TrimSpace(strings.Join(commentLines, "\n"))
 }
 
 // extractPackageName attempts to extract the package name from file content.
