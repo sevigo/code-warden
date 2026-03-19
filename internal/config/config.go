@@ -277,8 +277,9 @@ type AIConfig struct {
 	HTTPRequestTimeout        string `mapstructure:"http_request_timeout"`         // Overall HTTP request timeout including body (e.g., "5m", "10m")
 
 	// Context Assembly
-	ContextTokenBudget  int `mapstructure:"context_token_budget"`  // Max tokens for RAG context (default: 16000)
-	MaxContextSummaries int `mapstructure:"max_context_summaries"` // Max number of architectural summaries (default: 1000)
+	ContextTokenBudget      int     `mapstructure:"context_token_budget"`      // Max tokens for RAG context (default: 16000)
+	MaxContextSummaries     int     `mapstructure:"max_context_summaries"`     // Max number of architectural summaries (default: 1000)
+	RetrievalScoreThreshold float32 `mapstructure:"retrieval_score_threshold"` // Min cosine similarity to include a retrieved doc (0.0 = disabled)
 
 	// Review Output Options
 	EnableCodeSuggestions bool   `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
@@ -465,8 +466,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.http_response_header_timeout", "180s") // 3 minutes for slow model loading
 	v.SetDefault("ai.http_request_timeout", "600s")         // 10 minutes overall timeout for large requests
 	v.SetDefault("ai.consensus_quorum", 0.66)
-	v.SetDefault("ai.context_token_budget", 16000)   // Reasonable default for 128K context models
-	v.SetDefault("ai.enable_code_suggestions", true) // Include code suggestions by default
+	v.SetDefault("ai.context_token_budget", 16000)    // Reasonable default for 128K context models
+	v.SetDefault("ai.retrieval_score_threshold", 0.0) // 0.0 = disabled; set e.g. 0.3 to filter weak matches
+	v.SetDefault("ai.enable_code_suggestions", true)  // Include code suggestions by default
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")

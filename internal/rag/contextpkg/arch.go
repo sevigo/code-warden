@@ -96,11 +96,13 @@ func (b *builderImpl) GenerateArchSummaries(ctx context.Context, collectionName,
 
 // fetchSummaryCache loads existing arch summaries from the vector store for cache comparison.
 func (b *builderImpl) fetchSummaryCache(ctx context.Context, scopedStore storage.ScopedVectorStore) map[string]string {
-	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 500,
-		vectorstores.WithFilters(map[string]any{
-			"chunk_type": "arch",
-		}),
-	)
+	searchOpts := []vectorstores.Option{
+		vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}),
+	}
+	if b.cfg.AIConfig.RetrievalScoreThreshold > 0 {
+		searchOpts = append(searchOpts, vectorstores.WithScoreThreshold(b.cfg.AIConfig.RetrievalScoreThreshold))
+	}
+	cacheDocs, err := scopedStore.SimilaritySearch(ctx, "summary", 500, searchOpts...)
 	if err != nil {
 		b.cfg.Logger.Warn("failed to fetch existing summaries for cache", "error", err)
 		return make(map[string]string)
@@ -336,11 +338,13 @@ func (b *builderImpl) GetArchContextForPaths(ctx context.Context, scopedStore st
 
 		// Search for this directory's summary using filter
 		query := fmt.Sprintf("Summary of directory %s", dir)
-		docs, err := scopedStore.SimilaritySearch(ctx, query, 3,
-			vectorstores.WithFilters(map[string]any{
-				"chunk_type": "arch",
-			}),
-		)
+		archSearchOpts := []vectorstores.Option{
+			vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}),
+		}
+		if b.cfg.AIConfig.RetrievalScoreThreshold > 0 {
+			archSearchOpts = append(archSearchOpts, vectorstores.WithScoreThreshold(b.cfg.AIConfig.RetrievalScoreThreshold))
+		}
+		docs, err := scopedStore.SimilaritySearch(ctx, query, 3, archSearchOpts...)
 		if err != nil {
 			b.cfg.Logger.Debug("failed to search arch summaries", "dir", dir, "error", err)
 			continue

@@ -102,9 +102,19 @@ func (b *builderImpl) fetchImpactResults(ctx context.Context, retriever *vectors
 				return
 			}
 
+			// Include both directions of the dependency graph:
+			//   Dependents  — code that imports the changed package (downstream impact)
+			//   Dependencies — code that the changed package imports from this repo (upstream context)
+			// Both are relevant to a reviewer: dependents show who may break, dependencies
+			// show what contracts the changed code must satisfy.
+			combined := append(network.Dependents, network.Dependencies...) //nolint:gocritic // intentional new slice
 			depMu.Lock()
-			depResults[dr.File.Filename] = network.Dependents
-			b.cfg.Logger.Debug("impact graph fetched", "file", dr.File.Filename, "dependents", len(network.Dependents))
+			depResults[dr.File.Filename] = combined
+			b.cfg.Logger.Debug("impact graph fetched",
+				"file", dr.File.Filename,
+				"dependents", len(network.Dependents),
+				"dependencies", len(network.Dependencies),
+			)
 			depMu.Unlock()
 		}(req)
 	}
