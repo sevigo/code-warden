@@ -334,19 +334,9 @@ func (o *Orchestrator) cleanupOldSessions() {
 
 ### Current Limitations
 
-1. **No Lint/Test Verification**: The system prompt instructs the agent to run `make lint && make test`, but there's no MCP tool to verify execution.
-
+1. **No Lint/Test Verification**: The system prompt instructs the agent to run `make lint && make test`, but there is no MCP tool to verify execution or capture the output.
 2. **No Post-PR Review**: After PR creation, no automatic `/review` is triggered on the actual PR for GitHub visibility.
-
 3. **In-Memory Sessions**: Session state is stored in memory and lost on server restart.
-
-### Resolved Issues
-
-1. ~~**VectorStore Sharing**~~: ✅ Fixed - The `review_code` tool no longer indexes agent changes. It queries the existing main-branch VectorStore, preventing pollution from work-in-progress code.
-
-2. ~~**No Concurrency Limits**~~: ✅ Fixed - `MaxConcurrentSessions` config (default: 3) limits parallel agents. New requests are rejected when limit is reached.
-
-3. ~~**No Workspace Cleanup**~~: ✅ Fixed - Workspaces are cleaned up after session completion and during periodic cleanup of old sessions.
 
 ### Security Considerations
 
@@ -404,18 +394,8 @@ This design keeps review time within the 60-second MCP tool timeout, since full 
 
 ## Future Improvements
 
-1. ~~**Session-Scoped VectorStore**~~: ✅ Resolved - The `review_code` tool no longer indexes agent changes, using the existing main-branch VectorStore instead.
-
-2. **Auto-PR Review**: Trigger standard `/review` workflow after PR creation for GitHub visibility.
-
-3. **Command Verification Tool**: Add `run_command` MCP tool to verify lint/test execution.
-
-4. **Session Persistence**: Store session state in database for recovery after restart.
-
-5. **Iteration Logging**: Track each review iteration with detailed feedback.
-
-6. ~~**Concurrency Controls**~~: ✅ Resolved - `MaxConcurrentSessions` config (default: 3) limits parallel agents.
-
-7. ~~**Workspace Cleanup**~~: ✅ Resolved - Workspaces are cleaned up after session completion and during periodic cleanup.
-
-8. **Progress Updates**: Comment on issue with implementation progress.
+1. **Auto-PR Review**: Trigger standard `/review` workflow after PR creation for GitHub visibility.
+2. **Command Verification Tool**: Add `run_command` MCP tool to verify lint/test execution results.
+3. **Session Persistence**: Store session state in PostgreSQL for recovery after server restart.
+4. **Iteration Logging**: Track each review iteration with detailed per-iteration feedback.
+5. **Progress Updates**: Post progress comments on the issue during long-running implementations.

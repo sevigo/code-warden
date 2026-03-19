@@ -22,7 +22,7 @@ Code-Warden is a self-hosted GitHub App that performs contextual code reviews us
 │                                      │                                           │
 │                          ┌───────────▼───────────┐                              │
 │                          │     RAG Service       │                              │
-│                          │  (5-stage pipeline)   │                              │
+│                          │  (6-stage pipeline)   │                              │
 │                          └───────────┬───────────┘                              │
 │                                      │                                           │
 │                          ┌───────────▼───────────┐                              │
@@ -84,7 +84,7 @@ Code-Warden builds on GoFrame to provide:
 | Component | Purpose | Location |
 |-----------|---------|----------|
 | **GitHub App** | Webhook handling, PR/issue processing | `internal/github/`, `internal/server/` |
-| **RAG Service** | 5-stage context building for reviews | `internal/rag/` |
+| **RAG Service** | 6-stage context building for reviews | `internal/rag/` |
 | **MCP Server** | JSON-RPC tools for AI agents | `internal/mcp/` |
 | **Agent Orchestrator** | Session management, workspace isolation | `internal/agent/` |
 | **Job System** | Background job dispatch and execution | `internal/jobs/` |
@@ -158,7 +158,7 @@ Code-Warden builds on GoFrame to provide:
                      ▼                                       ▼
             ┌────────────────┐                    ┌────────────────┐
             │  RepoManager   │                    │  RAG Service   │
-            │  (git clone,   │                    │  (5-stage)     │
+            │  (git clone,   │                    │  (6-stage)     │
             │   diff calc)   │                    └───────┬────────┘
             └────────────────┘                            │
                                                           ▼
@@ -223,76 +223,9 @@ type Tool interface {
 }
 ```
 
-## Directory Structure
-
-```
-code-warden/
-├── cmd/
-│   ├── server/          # GitHub App webhook server
-│   ├── cli/             # Administrative CLI (warden-cli)
-│   ├── terminal/        # Terminal UI for local interaction
-│   └── mcp-test/        # MCP server testing utility
-├── internal/
-│   ├── agent/           # Agent orchestration (OpenCode integration)
-│   ├── core/            # Domain entities and interfaces
-│   ├── config/          # Configuration management
-│   ├── db/              # PostgreSQL database access
-│   ├── github/          # GitHub API client and webhook handling
-│   ├── gitutil/         # Git operations utilities
-│   ├── jobs/            # Background job execution
-│   ├── llm/             # LLM integration, prompts, output parsing
-│   ├── logger/          # Structured logging setup
-│   ├── mcp/             # Model Context Protocol server
-│   ├── prescan/         # Pre-scanning logic
-│   ├── rag/             # 5-stage RAG pipeline
-│   ├── repomanager/     # Git repository lifecycle
-│   ├── server/          # HTTP server and handlers
-│   ├── storage/         # PostgreSQL and Qdrant abstractions
-│   └── wire/            # Dependency injection setup
-└── docs/                # Documentation
-```
-
 ## Configuration
 
-Configuration is managed via `config.yaml` with environment variable overrides:
-
-```yaml
-# Application settings
-server:
-  port: 8080
-
-# GitHub App credentials
-github:
-  app_id: 123456
-  webhook_secret: "secret"
-  private_key_path: "/path/to/key.pem"
-
-# AI/LLM settings
-ai:
-  llm_provider: ollama          # "ollama" or "gemini"
-  generator_model: gemma3:latest
-  embedder_model: nomic-embed-text
-  enable_hyde: true
-
-# Agent settings (for /implement)
-agent:
-  enabled: true
-  provider: opencode
-  model: llama3.1:70b
-  timeout: 30m
-  max_concurrent_sessions: 3
-
-# Database settings
-database:
-  host: localhost
-  port: 5432
-  name: code_warden
-
-# Vector store settings
-storage:
-  qdrant_host: localhost
-  qdrant_port: 6333
-```
+See [config.yaml.example](../config.yaml.example) for the full annotated configuration reference.
 
 ## Why Not Move Agentic Code to GoFrame?
 

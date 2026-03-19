@@ -4,7 +4,7 @@ This document describes the Retrieval-Augmented Generation (RAG) pipeline used b
 
 ## Overview
 
-Code-Warden uses a **multi-stage retrieval pipeline** to gather comprehensive context before generating code reviews. This architecture is specifically designed to minimize LLM hallucinations by grounding all findings in retrieved repository context.
+Code-Warden uses a **6-stage retrieval pipeline** to gather comprehensive context before generating code reviews. This architecture is specifically designed to minimize LLM hallucinations by grounding all findings in retrieved repository context.
 
 ## Pipeline Architecture
 
@@ -13,21 +13,21 @@ Code-Warden uses a **multi-stage retrieval pipeline** to gather comprehensive co
 │                        CODE-WARDEN RAG PIPELINE                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  [PR Diff] ──► [5-Stage Parallel Context Building] ──► [Context Assembly]   │
+│  [PR Diff] ──► [6-Stage Parallel Context Building] ──► [Context Assembly]   │
 │                                                             │                │
 │  Context Stages (parallel):                                ▼                │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐                 │
 │  │ 1. Architectural│  │ 2. HyDE         │  │ 3. Impact   │                 │
 │  │    Context      │  │    Context      │  │    Context  │                 │
-│  │    (dir summaries)│  │    (query     │  │    (dependency │              │
-│  │                 │  │     expansion) │  │     graph)  │                 │
+│  │  (dir summaries)│  │    (query       │  │ (dependency │                 │
+│  │                 │  │     expansion)  │  │    graph)   │                 │
 │  └─────────────────┘  └─────────────────┘  └─────────────┘                 │
-│  ┌─────────────────┐  ┌─────────────────┐                                  │
-│  │ 4. Description  │  │ 5. Definitions  │                                  │
-│  │    Context      │  │    Context      │                                  │
-│  │    (MultiQuery) │  │    (symbol      │                                  │
-│  │                 │  │     resolution) │                                  │
-│  └─────────────────┘  └─────────────────┘                                  │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────┐                 │
+│  │ 4. Description  │  │ 5. Definitions  │  │ 6. Test     │                 │
+│  │    Context      │  │    Context      │  │    Coverage │                 │
+│  │  (MultiQuery +  │  │    (symbol      │  │  (relevant  │                 │
+│  │ commit messages)│  │     resolution) │  │    tests)   │                 │
+│  └─────────────────┘  └─────────────────┘  └─────────────┘                 │
 │                                                             │                │
 │                                                             ▼                │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
@@ -92,19 +92,20 @@ network, _ := retriever.GetContextNetwork(ctx, packageName, imports)
 ### 4. Description Context
 **Purpose:** Find code related to the PR's stated intent
 
-**Mechanism:** MultiQuery retrieval - generates multiple query variations from PR description
+**Mechanism:** MultiQuery retrieval — generates multiple query variations from a combined description that includes the PR title, body, and the first line of each commit message. Commit messages are fetched from the GitHub API before the review starts and added to the event context.
 
-**Location:** `internal/rag/contextpkg/builder.go:168-203`
+**Location:** `internal/rag/contextpkg/builder.go`, `internal/rag/review/review.go:buildPRDescription`
 
 ### 5. Definitions Context
 **Purpose:** Resolve type/function definitions for symbols in the diff
 
 **Mechanism:**
 1. Extract symbols from patch using regex patterns
-2. Query `DefinitionRetriever` for each symbol
-3. Include full definition text in context
-4. Cap at ~15k characters to prevent token budget exhaustion
-5. Prioritize interfaces/types over implementations
+2. **Fast path:** exact Qdrant payload filter (`chunk_type=definition`, `identifier=symbol`) — precise, no false positives
+3. **Fallback:** semantic search via `DefinitionRetriever` if exact match returns nothing
+4. Include full definition text in context
+5. Cap at ~15k characters to prevent token budget exhaustion
+6. Prioritize interfaces/types over implementations
 
 **Location:** `internal/rag/contextpkg/symbols.go`
 
@@ -130,33 +131,20 @@ network, _ := retriever.GetContextNetwork(ctx, packageName, imports)
 ## Hallucination Reduction Mechanisms
 
 ### Layer 1: Empty Context Detection
-**File:** `internal/rag/rag_review.go`
+**File:** `internal/rag/review/reviewer.go`
 
 When no context is retrieved, the system:
 1. Logs a `HIGH HALLUCINATION RISK` warning
 2. Injects explicit warnings into the prompt
 3. Adds disclaimer to review summary
 
-```go
-if contextString == "" && definitionsContext == "" {
-    r.logger.Warn("HIGH HALLUCINATION RISK: no context retrieved...")
-    // Inject warnings into prompt
-}
-```
-
 ### Layer 2: Snippet Relevance Validation
-**File:** `internal/rag/rag_context.go:312-327`
+**File:** `internal/rag/contextpkg/format.go`
 
-Uses a fast LLM to validate retrieved snippets:
-```go
-func validateSnippetRelevance(ctx, snippet, prContext) bool {
-    // Returns false if snippet is irrelevant
-    // Fails OPEN (includes snippet) if validator unavailable
-}
-```
+Uses a fast LLM to validate retrieved snippets before including them in context. Fails open — if the validator is unavailable, the snippet is included rather than dropped.
 
 ### Layer 3: Document Deduplication
-**File:** `internal/rag/rag_context.go:572-587`
+**File:** `internal/rag/contextpkg/format.go`
 
 Parent-aware document keys prevent redundant context:
 ```go
@@ -169,62 +157,62 @@ func getDocKey(doc) string {
 ```
 
 ### Layer 4: Hybrid Search
-**File:** Multiple locations
+**Files:** `internal/rag/contextpkg/`, `internal/rag/question/`
 
-Combines dense embeddings with sparse (BM25-style) vectors:
+Combines dense embeddings with code-aware sparse vectors (camelCase/snake_case tokenization via FNV hashing). Applied at every retrieval site — HyDE, description, test coverage, symbol lookup:
 ```go
 sparseVec, _ := sparse.GenerateSparseVector(ctx, query)
 docs, _ := store.SimilaritySearch(ctx, query, 5,
     vectorstores.WithSparseQuery(sparseVec))
 ```
 
-### Layer 5: Symbol Resolution
+### Layer 5: Exact Symbol Lookup
 **File:** `internal/rag/contextpkg/symbols.go`
 
-Uses exact-match filters for definition lookup:
+Definition lookup uses an exact Qdrant payload filter as the first pass before falling back to semantic search:
 ```go
-docs, _ := defRetriever.GetDefinition(ctx, symbol)
-// Filter: identifier=symbol AND is_definition=true
-// Now includes sparse vector for better exact matching
-// Capped at ~15k characters to prevent token exhaustion
+// Fast path: exact filter
+exactDocs, _ := store.SimilaritySearch(ctx, symbol, 1,
+    vectorstores.WithFilters(map[string]any{
+        "chunk_type": "definition",
+        "identifier": symbol,
+    }))
+// Fallback: semantic search via DefinitionRetriever
 ```
 
-### Layer 6: Test Filtering
+### Layer 6: Test File Filtering
 **File:** `internal/rag/contextpkg/format.go`
 
-Test files are filtered from production code retrieval:
-```go
-func filterTestDocs(docs []schema.Document) []schema.Document {
-    // Removes documents with is_test: true from impact/description context
-    // Tests are only retrieved via test coverage stage
-}
-```
+Test files (`is_test: true`) are filtered out of impact and description context. They are only surfaced through the dedicated test coverage stage, which retrieves them by matched symbol rather than semantic similarity.
 
 ### Layer 7: Test Coverage Linkage
 **File:** `internal/rag/index/test_linkage.go`
 
-During indexing, test files are analyzed to extract tested symbols:
-```go
-// Test file metadata includes:
-// - tested_symbols: ["UserService", "CreateUser"]
-// - source_file: "internal/rag/service.go"
-// These are used to find relevant tests during review
+During indexing, test files are analyzed to extract which symbols they exercise. This metadata is stored alongside the chunk:
+```json
+{
+  "is_test": true,
+  "tested_symbols": ["UserService", "CreateUser"],
+  "source_file": "internal/rag/service.go"
+}
 ```
+During review, stage 6 uses these fields to pull in tests that directly exercise changed symbols.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `internal/rag/contextpkg/builder.go` | Multi-stage context building orchestration |
-| `internal/rag/contextpkg/arch.go` | Architecture context from pre-computed summaries |
-| `internal/rag/contextpkg/hyde.go` | HyDE query expansion with language-aware prompts |
-| `internal/rag/contextpkg/symbols.go` | Definition resolution with prioritization |
-| `internal/rag/contextpkg/test_coverage.go` | Test coverage retrieval for changed symbols |
-| `internal/rag/contextpkg/format.go` | Context assembly and formatting |
-| `internal/rag/index/indexer.go` | Document chunking and metadata extraction |
-| `internal/rag/index/definitions.go` | Type/function definition extraction |
-| `internal/rag/index/test_linkage.go` | Test-to-code symbol linkage extraction |
-| `internal/rag/review/reviewer.go` | Review generation with validation |
+| `internal/rag/contextpkg/builder.go` | 6-stage context building orchestration |
+| `internal/rag/contextpkg/arch.go` | Stage 1: architecture context from pre-computed summaries |
+| `internal/rag/contextpkg/hyde.go` | Stage 2: HyDE query expansion with language-aware prompts |
+| `internal/rag/contextpkg/symbols.go` | Stage 5: definition resolution (exact filter + semantic fallback) |
+| `internal/rag/contextpkg/test_coverage.go` | Stage 6: test coverage retrieval for changed symbols |
+| `internal/rag/contextpkg/format.go` | Context assembly, deduplication, validation, test filtering |
+| `internal/rag/review/review.go` | `buildPRDescription` — merges PR title/body/commit messages for stage 4 |
+| `internal/rag/index/indexer.go` | Document chunking, sparse vector generation, metadata extraction |
+| `internal/rag/index/definitions.go` | Type/function definition extraction per language |
+| `internal/rag/index/test_linkage.go` | Test-to-code symbol linkage extraction during indexing |
+| `internal/rag/review/reviewer.go` | Review generation, empty context detection, LLM call |
 | `internal/llm/prompts/*.prompt` | Prompt templates |
 
 ## GoFrame Patterns Used
@@ -272,6 +260,11 @@ Key log messages to monitor:
 
 ## Future Improvements
 
-1. Add metrics for sparse vector failure rate
-2. Cache architecture and impact retrieval per diff hash
-3. Implement pre-computed call graph edges for accurate impact analysis
+See [TODO.md](../TODO.md) for the full roadmap. RAG-specific items:
+
+- Add metrics for sparse vector failure rate and retrieval hit rates per stage
+- Cache architecture and impact retrieval per diff hash
+- Implement pre-computed call graph edges for more accurate impact analysis
+- Query decomposition / multi-query retrieval for complex PR descriptions
+- Contextual chunk compression — strip boilerplate from retrieved chunks before inserting into prompt
+- Retrieval eval set to measure recall@k and tune retrieval parameters offline
