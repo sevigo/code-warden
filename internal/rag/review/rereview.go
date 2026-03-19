@@ -29,8 +29,8 @@ var (
 
 func getDocKey(doc schema.Document) string {
 	source, _ := doc.Metadata["source"].(string)
-	lineStart, _ := doc.Metadata["lineStart"].(int)
-	lineEnd, _ := doc.Metadata["lineEnd"].(int)
+	lineStart, _ := doc.Metadata["line"].(int)
+	lineEnd, _ := doc.Metadata["end_line"].(int)
 	return fmt.Sprintf("%s:%d-%d", source, lineStart, lineEnd)
 }
 

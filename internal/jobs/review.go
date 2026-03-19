@@ -335,7 +335,7 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 	}
 
 	// 3. Generate Re-Review using RAG service
-	structuredReview, _, err := j.ragService.GenerateReReview(ctx, reviewEnv.repo, event, lastReview, reviewEnv.ghClient, changedFiles)
+	structuredReview, rawReReview, err := j.ragService.GenerateReReview(ctx, reviewEnv.repo, event, lastReview, reviewEnv.ghClient, changedFiles)
 	if err != nil {
 		err = fmt.Errorf("failed to generate re-review: %w", err)
 		return err
@@ -346,8 +346,11 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 		return fmt.Errorf("failed to post re-review comment: %w", err)
 	}
 
-	// Update reReviewContent for DB save
-	reReviewContent := structuredReview.Summary
+	// Store the raw LLM output so future re-reviews can parse suggestions from it.
+	reReviewContent := rawReReview
+	if reReviewContent == "" {
+		reReviewContent = structuredReview.Summary
+	}
 
 	// 5. Save the re-review as a new review record? Yes, to maintain history.
 	dbReview := &core.Review{
