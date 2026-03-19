@@ -87,6 +87,7 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 	var baseRetriever schema.Retriever
 	queryLLM, err := b.cfg.GetLLM(ctx, b.cfg.AIConfig.FastModel)
 	if err == nil {
+		b.cfg.Logger.Debug("HyDE base retriever: MultiQueryRetriever", "model", b.cfg.AIConfig.FastModel)
 		baseRetriever = vectorstores.MultiQueryRetriever{
 			Store:         scopedStore,
 			LLM:           queryLLM,
@@ -223,6 +224,7 @@ func (b *builderImpl) generateHyDESnippetForFile(ctx context.Context, patch, fil
 	if b.cfg.HyDECache != nil {
 		if cached, ok := b.cfg.HyDECache.Load(cacheKey); ok {
 			if snippet, valid := cached.(string); valid {
+				b.cfg.Logger.Debug("HyDE cache hit", "file", filePath)
 				return snippet, nil
 			}
 		}

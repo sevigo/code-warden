@@ -354,9 +354,12 @@ func (b *builderImpl) GetArchContextForPaths(ctx context.Context, scopedStore st
 		if len(docs) > 0 {
 			fmt.Fprintf(&archContext, "## %s\n%s\n\n", dir, docs[0].PageContent)
 			seenDirs[dir] = struct{}{}
+		} else {
+			b.cfg.Logger.Debug("no arch summary found for directory", "dir", dir)
 		}
 	}
 
+	b.cfg.Logger.Debug("arch context assembled", "dirs_found", len(seenDirs), "dirs_queried", len(dirs))
 	return archContext.String(), nil
 }
 

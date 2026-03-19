@@ -465,6 +465,8 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
 		if err == nil {
 			splitDocs[idx].Sparse = sparseVec
+		} else {
+			i.cfg.Logger.Debug("sparse vector generation failed for chunk, using dense only", "file", file, "chunk", idx, "error", err)
 		}
 
 		// Set chunk_type explicitly for code chunks
@@ -482,14 +484,17 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		// language syntax and avoids noise like keywords and common variable names.
 		// Fall back to regex only when no parser is available for this extension.
 		var symbols []string
+		usedParser := false
 		if i.cfg.ParserRegistry != nil {
 			if parser, parserErr := i.cfg.ParserRegistry.GetParserForExtension(ext); parserErr == nil {
 				symbols = parser.ExtractUsedSymbols(splitDocs[idx].PageContent)
+				usedParser = len(symbols) > 0
 			}
 		}
 		if len(symbols) == 0 {
 			symbols = extractSymbolsFromChunk(splitDocs[idx].PageContent, ext)
 		}
+		i.cfg.Logger.Debug("symbol extraction complete", "file", file, "chunk", idx, "symbols", len(symbols), "parser", usedParser)
 		if len(symbols) > 0 {
 			splitDocs[idx].Metadata["symbols"] = symbols
 			// Primary symbol is the first exported one

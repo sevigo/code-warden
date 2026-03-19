@@ -53,24 +53,32 @@ func (b *builderImpl) getImpactDocs(ctx context.Context, store storage.ScopedVec
 
 func (b *builderImpl) buildImpactRequests(repoPath string, files []internalgithub.ChangedFile) []depRequest {
 	reqs := make([]depRequest, 0, len(files))
+	skipped := 0
 	for _, f := range files {
 		parser, err := b.cfg.ParserRegistry.GetParserForFile(f.Filename, nil)
 		if err != nil {
+			skipped++
 			continue
 		}
 
 		fullPath, err := b.validateAndJoinPath(repoPath, f.Filename)
 		if err != nil {
+			b.cfg.Logger.Debug("impact: skipping file with invalid path", "file", f.Filename, "error", err)
+			skipped++
 			continue
 		}
 
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
+			b.cfg.Logger.Debug("impact: skipping unreadable file", "file", f.Filename, "error", err)
+			skipped++
 			continue
 		}
 
 		meta, err := parser.ExtractMetadata(string(content), f.Filename)
 		if err != nil {
+			b.cfg.Logger.Debug("impact: skipping file with metadata extraction error", "file", f.Filename, "error", err)
+			skipped++
 			continue
 		}
 
@@ -80,6 +88,7 @@ func (b *builderImpl) buildImpactRequests(repoPath string, files []internalgithu
 			File:    f,
 		})
 	}
+	b.cfg.Logger.Debug("impact requests built", "total_files", len(files), "parseable", len(reqs), "skipped", skipped)
 	return reqs
 }
 
@@ -99,6 +108,7 @@ func (b *builderImpl) fetchImpactResults(ctx context.Context, retriever *vectors
 
 			network, err := retriever.GetContextNetwork(ctx, dr.Pkg, dr.Imports)
 			if err != nil {
+				b.cfg.Logger.Warn("impact: failed to fetch context network", "file", dr.File.Filename, "pkg", dr.Pkg, "error", err)
 				return
 			}
 
