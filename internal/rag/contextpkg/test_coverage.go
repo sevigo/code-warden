@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 	"golang.org/x/sync/errgroup"
@@ -115,6 +116,11 @@ func (b *builderImpl) searchTestChunksForSymbol(
 	}
 	if b.cfg.AIConfig.RetrievalScoreThreshold > 0 {
 		opts = append(opts, vectorstores.WithScoreThreshold(b.cfg.AIConfig.RetrievalScoreThreshold))
+	}
+	if sparseVec, sparseErr := sparse.GenerateSparseVector(ctx, symbol); sparseErr == nil {
+		opts = append(opts, vectorstores.WithSparseQuery(sparseVec))
+	} else {
+		b.cfg.Logger.Debug("sparse vector generation failed for test coverage, using dense only", "symbol", symbol, "error", sparseErr)
 	}
 	docs, err := scopedStore.SimilaritySearch(ctx, symbol, 5, opts...)
 	if err != nil {

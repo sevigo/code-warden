@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sevigo/goframe/schema"
+	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
 	internalgithub "github.com/sevigo/code-warden/internal/github"
@@ -84,6 +85,73 @@ func TestExtractSymbolsFromPatch(t *testing.T) {
 				if !found {
 					t.Errorf("extractSymbolsFromPatch() missing expected symbol %q in result %v", expected, got)
 				}
+			}
+		})
+	}
+}
+
+func TestFilterRemovedLines(t *testing.T) {
+	tests := []struct {
+		name     string
+		patch    string
+		expected string
+	}{
+		{
+			name:     "empty patch",
+			patch:    "",
+			expected: "",
+		},
+		{
+			name:     "removed lines only",
+			patch:    "-func OldFunction() {}\n-type OldType struct{}",
+			expected: "func OldFunction() {}\ntype OldType struct{}",
+		},
+		{
+			name:     "ignores hunk header",
+			patch:    "--- a/file.go\n-func Deleted() {}",
+			expected: "func Deleted() {}",
+		},
+		{
+			name:     "ignores added and context lines",
+			patch:    "+func New() {}\n context\n-func Old() {}",
+			expected: "func Old() {}",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterRemovedLines(tt.patch)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestExtractSymbolsFromPatch_RemovedLines(t *testing.T) {
+	tests := []struct {
+		name         string
+		patch        string
+		expectedSyms []string
+	}{
+		{
+			name:         "type deleted from removed lines",
+			patch:        "-type OldConfig struct {\n-    Timeout int\n-}",
+			expectedSyms: []string{"OldConfig"},
+		},
+		{
+			name:         "both added and removed line symbols captured",
+			patch:        "-type OldConfig struct{}\n+type NewConfig struct{}",
+			expectedSyms: []string{"OldConfig", "NewConfig"},
+		},
+		{
+			name:         "deleted function captured",
+			patch:        "-func ProcessOld() error {\n-    return nil\n-}",
+			expectedSyms: []string{"ProcessOld"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractSymbolsFromPatch(tt.patch)
+			for _, sym := range tt.expectedSyms {
+				assert.Contains(t, got, sym, "expected symbol %q in result %v", sym, got)
 			}
 		})
 	}

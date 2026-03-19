@@ -1,6 +1,7 @@
 package contextpkg
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/sevigo/goframe/schema"
@@ -53,6 +54,40 @@ func TestStripPatchNoise(t *testing.T) {
 			assert.Equal(t, tt.expected, got)
 		})
 	}
+}
+
+// simpleCache is a minimal Cache implementation for tests.
+type simpleCache struct {
+	m map[string]any
+}
+
+func (c *simpleCache) Load(key string) (any, bool) {
+	v, ok := c.m[key]
+	return v, ok
+}
+
+func (c *simpleCache) Store(key string, value any) {
+	c.m[key] = value
+}
+
+// TestGenerateHyDESnippetForFile_CacheHit verifies that a pre-populated cache
+// entry is returned without calling the LLM.
+func TestGenerateHyDESnippetForFile_CacheHit(t *testing.T) {
+	b := &builderImpl{cfg: Config{Logger: slog.Default()}}
+
+	cache := &simpleCache{m: make(map[string]any)}
+	b.cfg.HyDECache = cache
+
+	patch := "+func Process() error { return nil }"
+	filePath := "internal/service.go"
+	cacheKey := b.hashPatch(filePath + ":" + patch)
+	cache.Store(cacheKey, "cached hypothetical snippet")
+
+	// GeneratorLLM is nil — if the cache miss path were taken, this would panic.
+	result, err := b.generateHyDESnippetForFile(t.Context(), patch, filePath, "Go")
+
+	assert.NoError(t, err)
+	assert.Equal(t, "cached hypothetical snippet", result)
 }
 
 func TestPreFilterBM25(t *testing.T) {
