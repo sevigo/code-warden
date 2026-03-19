@@ -137,6 +137,62 @@ The feedback signals above need a storage and application layer:
 
 ---
 
+## 💬 Developer Onboarding Assistant (Terminal → Web)
+
+The `cmd/terminal` binary is a working POC for this: a Bubbletea TUI that lets you point it at any indexed repo and ask free-form questions ("how does auth work?", "what's the pattern for adding a new endpoint?"). The foundation is solid but there are concrete gaps before this is genuinely useful for onboarding.
+
+### What's Already Working
+
+- Bubbletea TUI with themes, `/add`, `/list`, `/select`, `/rescan` commands
+- Free-form questions answered via `RAGService.AnswerQuestion` with hybrid search
+- Arch summaries (`chunk_type=arch`) and project context (`chunk_type=project_context`) are already generated at index time — this is the core onboarding data
+- ValidatingRetrievalQA (optional fast model pre-filters irrelevant chunks before main LLM)
+
+### Gaps to Fix
+
+**1. Conversation history is not reaching the LLM**
+
+`answerWithValidation` ignores the history parameter entirely. `answerWithoutValidation` passes it to the prompt builder, but `question.prompt` has no `{{.History}}` field in its template — the history is built but never rendered. Multi-turn conversation does not work. Fix: add `{{.History}}` to `question.prompt` and wire it through `answerWithValidation`.
+
+**2. QA retrieval doesn't use the arch summaries**
+
+`AnswerQuestion` does a flat similarity search with k=5 across all chunk types. Onboarding questions ("how is this codebase structured?", "where do I add a new service?") are best answered from `chunk_type=arch` and `chunk_type=project_context` chunks — but those have equal weight with individual function chunks in retrieval. Add a two-pass retrieval: always include the relevant arch summary for the directories mentioned in the question, then fill remaining slots with regular similarity results.
+
+**3. No source citations in answers**
+
+Answers say "the auth service does X" but don't say "see `internal/auth/service.go:45`". For onboarding, knowing *where* to look is as important as the explanation. Add source file + line number to the rendered answer, the same way the review comments include file references.
+
+**4. No streaming**
+
+Answers appear all at once after potentially 30+ seconds of silence. The TUI looks frozen. Add streaming output — Bubbletea supports this via `tea.Cmd` ticks. GoFrame's `GenerateContent` supports streaming already.
+
+**5. No `/explain [path]` command**
+
+A dedicated command that retrieves the arch summary and TOC for a specific directory or file and explains it in plain language. More useful than a generic question for "show me what `internal/rag/` does."
+
+**6. Onboarding-specific prompt**
+
+The current `question.prompt` answers like a generic assistant. For onboarding, the tone should be: "here's the pattern used in this codebase, here's where to find it, here's what you'd need to change to do X." Separate prompt key `onboarding_question` or add a mode flag.
+
+### Integration into the Web UI
+
+The terminal is useful for local/debug use but the real onboarding use case is in-browser. Once the web UI exists (see UI / Dashboard below), add a chat interface per repository: select repo → ask questions → get answers with source links. Same `RAGService.AnswerQuestion` backend, different frontend.
+
+### Additional Indexing Data Needed for Onboarding
+
+The arch summaries and project context already cover most of what a new engineer needs. The gaps:
+
+| Data | How to get it | Value |
+|---|---|---|
+| **CODEOWNERS** | Parse `.github/CODEOWNERS` at index time | "Who owns `internal/storage/`?" → route to right person |
+| **File hotspots** | `git log --follow --format=%H -- <file>` → count commits | Surface most-changed files; those are the ones to understand first |
+| **README.md priority** | Index directory READMEs with `chunk_type=docs` and higher retrieval weight | Direct human-written explanations should rank above inferred arch summaries |
+| **Commit messages for context** | Already fetched per-PR; extend to index recent commit messages per file as `chunk_type=history` | "What's been happening in `internal/jobs/`?" |
+
+CODEOWNERS and README files are the highest-value additions — low effort, immediately useful for onboarding questions about ownership and intent.
+
+---
+
 ## 🤖 Agent Integration (`/implement`)
 
 The `/implement` command works end-to-end but has several gaps that significantly affect usability and reliability. These are ordered by impact.
