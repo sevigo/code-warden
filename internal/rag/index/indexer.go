@@ -75,23 +75,23 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 
 	// Count total files upfront for accurate progress reporting
 	totalFiles := 0
-	filepath.WalkDir(repoPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	if walkErr := filepath.WalkDir(repoPath, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
 			return nil
 		}
 		// Quick filter for common exclusions
 		name := d.Name()
 		if strings.HasPrefix(name, ".") && name != "." {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
 			return nil
 		}
-		if !d.IsDir() {
-			totalFiles++
-		}
+		totalFiles++
 		return nil
-	})
+	}); walkErr != nil {
+		i.cfg.Logger.Warn("failed to count files for progress", "error", walkErr)
+	}
 	i.cfg.Logger.Info("counted files for indexing", "total", totalFiles)
 
 	// Smart Scan: Fetch existing file states for fast skipping
@@ -244,10 +244,10 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 				batchFiles = batchFiles[:0]
 			}
 
+			done := int(atomic.LoadInt64(&processedCount) + atomic.LoadInt64(&skippedCount))
 			resultsMu.Unlock()
 
 			// Report progress periodically to avoid hammering the caller
-			done := int(atomic.LoadInt64(&processedCount) + atomic.LoadInt64(&skippedCount))
 			if progressFn != nil && done%progressInterval == 0 {
 				progressFn(done, int(atomic.LoadInt64(&totalSeen)))
 			}
@@ -256,7 +256,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 
 	// Phase 1: Stream file discovery via GitLoader (filtering, binary detection, generated-code skip).
 	// We only use source paths from the batch; ProcessFile handles all content processing.
-	err = loader.LoadAndProcessStream(ctx, func(_ context.Context, docs []schema.Document) error {
+	if streamErr := loader.LoadAndProcessStream(ctx, func(_ context.Context, docs []schema.Document) error {
 		// Collect unique source paths from this batch.
 		seen := make(map[string]struct{})
 		for _, doc := range docs {
@@ -283,7 +283,9 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 			}
 		}
 		return nil
-	})
+	}); streamErr != nil {
+		return fmt.Errorf("failed to load files from repository: %w", streamErr)
+	}
 
 	// Cleanup: close fileChan and wait for workers
 	close(fileChan)
