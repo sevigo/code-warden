@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Send, Plus, Shield, User, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Send, Plus, Shield, User, AlertCircle, Copy, Check, Loader2, MessageSquare, Code, Search, Cpu } from 'lucide-react'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -17,25 +17,52 @@ interface Message {
 }
 
 const SUGGESTED_QUESTIONS = [
-  "What's the overall architecture of this project?",
-  "How does authentication work here?",
-  "What are the main entry points?",
-  "Explain the main service structure",
+  { icon: Cpu, text: "What's the overall architecture of this project?" },
+  { icon: Search, text: "How does authentication work here?" },
+  { icon: Code, text: "What are the main entry points?" },
+  { icon: MessageSquare, text: "Explain the main service structure" },
 ]
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="absolute top-2 right-2 p-1.5 rounded-md bg-zinc-700/80 hover:bg-zinc-600 text-zinc-300 opacity-0 group-hover/code:opacity-100 transition-all"
+      aria-label="Copy code to clipboard"
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
+  )
+}
 
 const markdownComponents = {
   code({ node, inline, className, children, ...props }: any) {
     const match = /language-(\w+)/.exec(className || '')
+    const codeString = String(children).replace(/\n$/, '')
     return !inline && match ? (
-      <SyntaxHighlighter
-        style={oneDark}
-        language={match[1]}
-        PreTag="div"
-        className="!rounded-lg !text-xs !my-3"
-        {...props}
-      >
-        {String(children).replace(/\n$/, '')}
-      </SyntaxHighlighter>
+      <div className="relative group/code">
+        <div className="flex items-center justify-between px-4 py-1.5 bg-zinc-800 rounded-t-lg border-b border-zinc-700/50">
+          <span className="text-[11px] text-zinc-500 font-mono">{match[1]}</span>
+        </div>
+        <SyntaxHighlighter
+          style={oneDark}
+          language={match[1]}
+          PreTag="div"
+          className="!rounded-t-none !rounded-b-lg !text-xs !my-0 !mt-0"
+          {...props}
+        >
+          {codeString}
+        </SyntaxHighlighter>
+        <CopyButton text={codeString} />
+      </div>
     ) : (
       <code
         className="bg-zinc-700/60 px-1.5 py-0.5 rounded text-xs font-mono text-zinc-200"
@@ -54,7 +81,7 @@ const markdownComponents = {
   h3: ({ children }: any) => <h3 className="text-sm font-semibold mb-1.5 mt-3 first:mt-0">{children}</h3>,
   strong: ({ children }: any) => <strong className="font-semibold text-zinc-100">{children}</strong>,
   blockquote: ({ children }: any) => (
-    <blockquote className="border-l-2 border-zinc-600 pl-3 my-2 text-zinc-400 italic">{children}</blockquote>
+    <blockquote className="border-l-2 border-primary/40 pl-3 my-2 text-zinc-400 italic">{children}</blockquote>
   ),
   table: ({ children }: any) => (
     <div className="overflow-x-auto my-3">
@@ -87,15 +114,16 @@ function UserAvatar() {
 
 function TypingIndicator() {
   return (
-    <div className="flex gap-3 items-start">
+    <div className="flex gap-3 items-start animate-fade-in">
       <AIAvatar />
       <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-2xl rounded-tl-sm px-4 py-3">
-        <div className="flex gap-1 items-center h-4">
-          <span className="h-1.5 w-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-          <span className="h-1.5 w-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-          <span className="h-1.5 w-1.5 bg-zinc-400 rounded-full animate-bounce" />
+        <div className="flex gap-1.5 items-center h-4">
+          <span className="h-2 w-2 bg-primary/60 rounded-full animate-bounce [animation-delay:-0.3s]" />
+          <span className="h-2 w-2 bg-primary/60 rounded-full animate-bounce [animation-delay:-0.15s]" />
+          <span className="h-2 w-2 bg-primary/60 rounded-full animate-bounce" />
         </div>
       </div>
+      <span className="text-xs text-muted-foreground mt-2">Thinking...</span>
     </div>
   )
 }
@@ -108,7 +136,7 @@ function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const id = parseInt(repoId ?? '0', 10)
 
-  const { data: repo } = useQuery<Repository>({
+  const { data: repo, isLoading: repoLoading } = useQuery<Repository>({
     queryKey: ['repo', repoId],
     queryFn: () => api.repos.get(id),
     enabled: !!repoId,
@@ -214,15 +242,25 @@ function ChatPage() {
 
   const [org, repoName] = (repo?.full_name ?? '/').split('/')
 
+  if (repoLoading) {
+    return (
+      <div className="h-screen flex flex-col bg-background items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary mb-3" />
+        <p className="text-sm text-muted-foreground">Loading chat...</p>
+      </div>
+    )
+  }
+
   return (
     <div className="h-screen flex flex-col bg-background">
       {/* Header */}
-      <header className="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur px-4 py-3 shrink-0">
+      <header className="border-b border-zinc-800/70 bg-zinc-950/80 backdrop-blur px-4 py-3 shrink-0">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
               to={`/repos/${repoId}`}
               className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 transition-colors"
+              aria-label="Back to repository details"
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>
@@ -254,10 +292,13 @@ function ChatPage() {
       {/* Messages */}
       <ScrollArea className="flex-1">
         {messages.length === 0 ? (
-          <div className="flex items-center justify-center px-4 py-24">
+          <div className="flex items-center justify-center px-4 py-24 animate-fade-in">
             <div className="text-center max-w-lg w-full">
-              <div className="h-14 w-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-5">
-                <Shield className="h-7 w-7 text-primary" />
+              <div className="relative mx-auto mb-5 w-fit">
+                <div className="absolute inset-0 rounded-2xl bg-primary/15 blur-xl" />
+                <div className="relative h-14 w-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+                  <Shield className="h-7 w-7 text-primary" />
+                </div>
               </div>
               <h2 className="text-xl font-semibold mb-2 text-foreground">
                 Ask about <span className="text-primary">{repo?.full_name ?? 'this repository'}</span>
@@ -268,13 +309,14 @@ function ChatPage() {
                 for file-level context.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                {SUGGESTED_QUESTIONS.map((q) => (
+                {SUGGESTED_QUESTIONS.map(({ icon: Icon, text }) => (
                   <button
-                    key={q}
-                    onClick={() => submitMessage(q)}
-                    className="text-left px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-primary/40 hover:bg-zinc-800/60 text-zinc-300 transition-all duration-150"
+                    key={text}
+                    onClick={() => submitMessage(text)}
+                    className="flex items-start gap-3 text-left px-4 py-3 rounded-xl bg-zinc-900/80 border border-zinc-800 hover:border-primary/30 hover:bg-zinc-800/60 text-zinc-300 transition-all duration-150 group"
                   >
-                    {q}
+                    <Icon className="h-4 w-4 text-primary/60 group-hover:text-primary shrink-0 mt-0.5 transition-colors" />
+                    <span>{text}</span>
                   </button>
                 ))}
               </div>
@@ -283,7 +325,7 @@ function ChatPage() {
         ) : (
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
             {messages.map((message) => (
-              <div key={message.id}>
+              <div key={message.id} className="animate-fade-in">
                 {message.role === 'user' ? (
                   /* User message */
                   <div className="flex gap-3 items-start justify-end">
@@ -324,9 +366,9 @@ function ChatPage() {
       </ScrollArea>
 
       {/* Input */}
-      <div className="border-t border-zinc-800 bg-zinc-900/80 backdrop-blur px-4 py-4 shrink-0">
+      <div className="border-t border-zinc-800/70 bg-zinc-950/80 backdrop-blur px-4 py-4 shrink-0">
         <form onSubmit={handleFormSubmit} className="max-w-3xl mx-auto">
-          <div className="flex gap-2 items-end bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
+          <div className="flex gap-2 items-end bg-zinc-800/80 border border-zinc-700/80 rounded-xl px-3 py-2 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
             <textarea
               ref={textareaRef}
               value={input}
@@ -335,6 +377,7 @@ function ChatPage() {
               onKeyDown={handleKeyDown}
               placeholder="Ask a question… or /explain <path>"
               rows={1}
+              aria-label="Chat message input"
               className="flex-1 bg-transparent text-foreground text-sm leading-relaxed placeholder:text-zinc-600 focus:outline-none resize-none py-1"
               disabled={chat.isPending || explain.isPending}
             />
@@ -342,12 +385,13 @@ function ChatPage() {
               type="submit"
               disabled={!input.trim() || chat.isPending || explain.isPending}
               className="p-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0 mb-0.5"
+              aria-label="Send message"
             >
               <Send className="h-3.5 w-3.5" />
             </button>
           </div>
-          <p className="text-[11px] text-zinc-600 mt-2 text-center">
-            Enter to send · Shift+Enter for new line · <code className="font-mono">/explain &lt;path&gt;</code> for file context
+          <p className="text-[11px] text-zinc-500 mt-2 text-center">
+            <kbd className="font-mono bg-zinc-800 px-1 py-0.5 rounded text-zinc-400 text-[10px]">Enter</kbd> to send · <kbd className="font-mono bg-zinc-800 px-1 py-0.5 rounded text-zinc-400 text-[10px]">Shift+Enter</kbd> for new line · <code className="font-mono text-zinc-400">/explain &lt;path&gt;</code> for file context
           </p>
         </form>
       </div>

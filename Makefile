@@ -20,7 +20,7 @@ OPENCODE_PORT=4096
 OPENCODE_MCP_URL=http://127.0.0.1:8081/sse
 
 .DEFAULT_GOAL := all
-.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev ui-deps build-ui dev-ui
+.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev ui-deps build-ui dev-ui run/server run/ui
 
 all: build
 
@@ -45,6 +45,11 @@ build-terminal:
 run: build-server
 	@echo "Starting server ($(SERVER_BINARY_NAME))..."
 	@$(BIN_DIR)/$(SERVER_BINARY_NAME)
+
+# Convenience aliases
+run/server: run
+
+run/ui: dev-ui
 
 run-cli:
 	@echo "Starting CLI ($(CLI_BINARY_NAME))..."
