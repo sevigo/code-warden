@@ -1,0 +1,25 @@
+You are an expert code analyst. Generate a concise summary for the following code file that will be indexed for semantic search.
+
+**File:** {{.Path}}
+
+```{{.Language}}
+{{.Content}}
+```
+
+Generate a brief summary (2-3 sentences max) that includes:
+
+1. **Purpose**: What does this file do?
+2. **Key exports**: Main functions, types, or constants (limit to 5)
+3. **Keywords**: Important concepts, events, APIs, or patterns for search (limit to 10)
+
+Format your response as:
+PURPOSE: <one sentence>
+EXPORTS: <comma-separated list>
+KEYWORDS: <comma-separated list of important terms for semantic search>
+
+Be specific and include technical terms that would help retrieve this file. Example:
+- For webhook handlers: include "webhook", "event", specific event types like "issue_comment", "pull_request"
+- For parsers: include format types, parsing strategies
+- For storage: include database names, collection types, key operations
+
+Focus on terms developers would search for when looking for this code.
