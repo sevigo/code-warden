@@ -123,7 +123,7 @@ export default function RepoCard({ repo, onScan }: RepoCardProps) {
           </div>
 
           {/* Actions */}
-          <div className="flex items-center gap-2 shrink-0 mt-0.5" onClick={(e) => e.preventDefault()}>
+          <div className="flex items-center gap-2 shrink-0 mt-0.5">
             {(noScan || isFailed) && (
               <Button
                 size="sm"
@@ -145,10 +145,8 @@ export default function RepoCard({ repo, onScan }: RepoCardProps) {
             )}
 
             {isCompleted && (
-              <Button size="sm" variant="outline" className="gap-1.5 group-hover:bg-primary group-hover:text-primary-foreground group-hover:border-primary transition-colors" asChild>
-                <Link to={`/repos/${repo.id}`} onClick={(e) => e.stopPropagation()}>
-                  Explore →
-                </Link>
+              <Button size="sm" variant="outline" className="gap-1.5 group-hover:bg-primary group-hover:text-primary-foreground group-hover:border-primary transition-colors">
+                Explore →
               </Button>
             )}
           </div>

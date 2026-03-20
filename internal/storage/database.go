@@ -239,7 +239,7 @@ func (s *postgresStore) GetRepositoryByID(ctx context.Context, id int64) (*Repos
 	query := `
 		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, embedder_model_name, generated_context, context_updated_at, created_at, updated_at
 		FROM repositories
-		WHERE id = $1 AND deleted_at IS NULL`
+		WHERE id = $1`
 
 	var repo Repository
 	err := s.db.GetContext(ctx, &repo, query, id)
