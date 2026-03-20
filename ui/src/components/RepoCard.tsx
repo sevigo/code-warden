@@ -1,9 +1,9 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { GitBranch, RefreshCw, CheckCircle2, XCircle, Clock, FolderOpen, ArrowRight } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { GitBranch, RefreshCw, FolderOpen, ArrowRight } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
+import StatusBadge from '@/components/StatusBadge'
 import { api } from '@/lib/api'
 import type { Repository, ScanState } from '@/lib/api'
 
@@ -12,47 +12,11 @@ interface RepoCardProps {
   onScan?: () => void
 }
 
-function StatusBadge({ status }: { status: ScanState['status'] | null | undefined }) {
-  if (!status) {
-    return (
-      <Badge variant="secondary" className="gap-1.5 text-xs">
-        <Clock className="h-3 w-3" />
-        Not Indexed
-      </Badge>
-    )
-  }
-  switch (status) {
-    case 'scanning':
-    case 'in_progress':
-    case 'pending':
-      return (
-        <Badge className="gap-1.5 text-xs bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/20">
-          <RefreshCw className="h-3 w-3 animate-spin" />
-          Indexing
-        </Badge>
-      )
-    case 'completed':
-      return (
-        <Badge className="gap-1.5 text-xs bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20">
-          <CheckCircle2 className="h-3 w-3" />
-          Ready
-        </Badge>
-      )
-    case 'failed':
-      return (
-        <Badge variant="destructive" className="gap-1.5 text-xs">
-          <XCircle className="h-3 w-3" />
-          Failed
-        </Badge>
-      )
-    default:
-      return (
-        <Badge variant="secondary" className="gap-1.5 text-xs">
-          <Clock className="h-3 w-3" />
-          Not Indexed
-        </Badge>
-      )
-  }
+/** Deterministic hue from name for avatar gradient */
+function nameHue(name: string): number {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash)
+  return Math.abs(hash) % 360
 }
 
 export default function RepoCard({ repo, onScan }: RepoCardProps) {
@@ -77,7 +41,7 @@ export default function RepoCard({ repo, onScan }: RepoCardProps) {
 
   const shortSHA = repo.last_indexed_sha ? repo.last_indexed_sha.slice(0, 7) : null
   const [org, repoName] = repo.full_name.split('/')
-  const orgInitials = (org ?? '??').slice(0, 2).toUpperCase()
+  const hue = nameHue(repo.full_name)
 
   // Status accent color for top border
   const accentClass = isCompleted
@@ -86,22 +50,29 @@ export default function RepoCard({ repo, onScan }: RepoCardProps) {
     ? 'border-t-blue-500/60'
     : isFailed
     ? 'border-t-red-500/60'
-    : 'border-t-zinc-700'
+    : 'border-t-zinc-700/60'
 
   const card = (
     <div
-      className={`group relative flex flex-col rounded-xl border border-zinc-800 border-t-2 ${accentClass} bg-card transition-all duration-200 ${
-        isCompleted ? 'hover:border-zinc-700 hover:shadow-xl hover:shadow-black/30 hover:-translate-y-0.5 cursor-pointer' : ''
-      }`}
+      className={`group relative flex flex-col rounded-xl border border-zinc-800/80 border-t-2 ${accentClass} bg-card transition-all duration-200 hover:border-zinc-700 hover:shadow-xl hover:shadow-black/20 hover:-translate-y-0.5 ${
+        isScanning ? 'animate-pulse-glow' : ''
+      } ${isCompleted ? 'cursor-pointer' : ''}`}
     >
       {/* Card body */}
       <div className="flex flex-col flex-1 p-5 gap-4">
         {/* Top row: avatar + status */}
         <div className="flex items-start justify-between gap-2">
-          <div className="h-10 w-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
-            <span className="text-xs font-bold text-zinc-300 font-mono">{orgInitials}</span>
+          <div
+            className="h-10 w-10 rounded-xl flex items-center justify-center shrink-0 border border-white/10"
+            style={{
+              background: `linear-gradient(135deg, hsl(${hue} 50% 25%), hsl(${hue + 40} 40% 18%))`,
+            }}
+          >
+            <span className="text-xs font-bold text-white/90 font-mono">
+              {(org ?? '??').slice(0, 2).toUpperCase()}
+            </span>
           </div>
-          <StatusBadge status={scanState?.status} />
+          <StatusBadge status={scanState?.status} size="sm" />
         </div>
 
         {/* Repo name */}
@@ -131,10 +102,11 @@ export default function RepoCard({ repo, onScan }: RepoCardProps) {
               <RefreshCw className="h-3 w-3 animate-spin shrink-0" />
               <span className="truncate">{scanState?.progress?.stage || 'Scanning...'}</span>
             </div>
-            <Progress value={progressPercent > 0 ? progressPercent : undefined} className="h-1" />
+            <Progress value={progressPercent > 0 ? progressPercent : undefined} className="h-1.5" />
             {scanState?.progress && scanState.progress.files_total > 0 && (
-              <p className="text-xs text-zinc-600">
+              <p className="text-xs text-zinc-500">
                 {scanState.progress.files_done.toLocaleString()} / {scanState.progress.files_total.toLocaleString()} files
+                {progressPercent > 0 && <span className="ml-2 text-blue-400 font-medium">{progressPercent}%</span>}
               </p>
             )}
           </div>
@@ -142,7 +114,7 @@ export default function RepoCard({ repo, onScan }: RepoCardProps) {
       </div>
 
       {/* Footer action */}
-      <div className="border-t border-zinc-800 px-5 py-3">
+      <div className="border-t border-zinc-800/60 px-5 py-3 bg-zinc-900/30 rounded-b-xl">
         {(noScan || isFailed) && (
           <Button
             size="sm"
