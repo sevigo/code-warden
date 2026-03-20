@@ -104,7 +104,6 @@ type RepoStatsResponse struct {
 	FilesCount     int    `json:"files_count"`
 	LastIndexedSHA string `json:"last_indexed_sha"`
 	LastScanDate   string `json:"last_scan_date"`
-	ReviewsCount   int    `json:"reviews_count"`
 }
 
 func (h *WebUIHandler) GetRepoStats(w http.ResponseWriter, r *http.Request) {

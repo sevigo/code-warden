@@ -33,7 +33,6 @@ export interface RepoStats {
   files_count: number
   last_indexed_sha: string
   last_scan_date: string
-  reviews_count: number
 }
 
 export interface ChatRequest {

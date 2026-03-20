@@ -140,9 +140,30 @@ function ChatPage() {
     },
   })
 
+  const explain = useMutation({
+    mutationFn: (path: string) => api.chat.explain(id, { path }),
+    onSuccess: (response) => {
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now().toString(), role: 'assistant', content: response.content },
+      ])
+    },
+    onError: (error) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: 'assistant',
+          content: error instanceof Error ? error.message : 'Failed to explain path',
+          isError: true,
+        },
+      ])
+    },
+  })
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, chat.isPending])
+  }, [messages, chat.isPending, explain.isPending])
 
   const handleTextareaInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
     const ta = e.currentTarget
@@ -153,7 +174,7 @@ function ChatPage() {
   const submitMessage = useCallback(
     (text: string) => {
       const question = text.trim()
-      if (!question || chat.isPending) return
+      if (!question || chat.isPending || explain.isPending) return
 
       setInput('')
       if (textareaRef.current) {
@@ -166,22 +187,7 @@ function ChatPage() {
           ...prev,
           { id: Date.now().toString(), role: 'user', content: question },
         ])
-        api.chat.explain(id, { path }).then((response) => {
-          setMessages((prev) => [
-            ...prev,
-            { id: (Date.now() + 1).toString(), role: 'assistant', content: response.content },
-          ])
-        }).catch((err) => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: (Date.now() + 1).toString(),
-              role: 'assistant',
-              content: err instanceof Error ? err.message : 'Failed to explain path',
-              isError: true,
-            },
-          ])
-        })
+        explain.mutate(path)
         return
       }
 
@@ -191,7 +197,7 @@ function ChatPage() {
       ])
       chat.mutate(question)
     },
-    [chat, id]
+    [chat, explain, id]
   )
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -311,7 +317,7 @@ function ChatPage() {
               </div>
             ))}
 
-            {chat.isPending && <TypingIndicator />}
+            {(chat.isPending || explain.isPending) && <TypingIndicator />}
             <div ref={messagesEndRef} />
           </div>
         )}
@@ -330,11 +336,11 @@ function ChatPage() {
               placeholder="Ask a question… or /explain <path>"
               rows={1}
               className="flex-1 bg-transparent text-foreground text-sm leading-relaxed placeholder:text-zinc-600 focus:outline-none resize-none py-1"
-              disabled={chat.isPending}
+              disabled={chat.isPending || explain.isPending}
             />
             <button
               type="submit"
-              disabled={!input.trim() || chat.isPending}
+              disabled={!input.trim() || chat.isPending || explain.isPending}
               className="p-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0 mb-0.5"
             >
               <Send className="h-3.5 w-3.5" />
