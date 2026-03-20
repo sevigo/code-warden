@@ -41,12 +41,11 @@ func TestSetupRepoContext_Basic(t *testing.T) {
 	repo := &storage.Repository{
 		ID:                   1,
 		QdrantCollectionName: "test_coll",
-		EmbedderModelName:    "test_model",
 	}
 
 	// Expectations
 	mockStore.EXPECT().GetFilesForRepo(gomock.Any(), repo.ID).Return(make(map[string]storage.FileRecord), nil)
-	mockVS.EXPECT().ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName).Return(mockSVS)
+	mockVS.EXPECT().ForRepo(repo.QdrantCollectionName, "test_model").Return(mockSVS)
 	mockSVS.EXPECT().AddDocuments(gomock.Any(), gomock.Any()).Return([]string{"id1"}, nil)
 	mockStore.EXPECT().UpsertFiles(gomock.Any(), repo.ID, gomock.Any()).Return(nil)
 
@@ -56,6 +55,7 @@ func TestSetupRepoContext_Basic(t *testing.T) {
 		Splitter:       &mockSplitter{},
 		ParserRegistry: parsers.NewRegistry(slog.Default()),
 		Logger:         slog.Default(),
+		EmbedderModel:  "test_model",
 	}
 	indexer := New(cfg)
 
@@ -95,6 +95,7 @@ func TestSetupRepoContext_SmartScan(t *testing.T) {
 		Splitter:       &mockSplitter{},
 		ParserRegistry: parsers.NewRegistry(slog.Default()),
 		Logger:         slog.Default(),
+		EmbedderModel:  "test_model",
 	}
 	indexer := New(cfg)
 
@@ -114,7 +115,6 @@ func TestSetupRepoContext_Pruning(t *testing.T) {
 	repo := &storage.Repository{
 		ID:                   1,
 		QdrantCollectionName: "test_coll",
-		EmbedderModelName:    "test_model",
 	}
 
 	// Database has a file that is no longer on disk
@@ -123,11 +123,11 @@ func TestSetupRepoContext_Pruning(t *testing.T) {
 		staleFile: {FilePath: staleFile, FileHash: "somehash"},
 	}, nil)
 
-	mockVS.EXPECT().ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName).Return(mocks.NewMockScopedVectorStore(ctrl))
+	mockVS.EXPECT().ForRepo(repo.QdrantCollectionName, "test_model").Return(mocks.NewMockScopedVectorStore(ctrl))
 
 	// Pruning expectations
 	mockStore.EXPECT().DeleteFiles(gomock.Any(), repo.ID, []string{staleFile}).Return(nil)
-	mockVS.EXPECT().DeleteDocumentsFromCollectionByFilter(gomock.Any(), repo.QdrantCollectionName, repo.EmbedderModelName, gomock.Any()).Return(nil)
+	mockVS.EXPECT().DeleteDocumentsFromCollectionByFilter(gomock.Any(), repo.QdrantCollectionName, "test_model", gomock.Any()).Return(nil)
 
 	cfg := Config{
 		Store:          mockStore,
@@ -135,6 +135,7 @@ func TestSetupRepoContext_Pruning(t *testing.T) {
 		Splitter:       &mockSplitter{},
 		ParserRegistry: parsers.NewRegistry(slog.Default()),
 		Logger:         slog.Default(),
+		EmbedderModel:  "test_model",
 	}
 	indexer := New(cfg)
 
@@ -151,7 +152,7 @@ func TestUpdateRepoContext(t *testing.T) {
 	mockSVS := mocks.NewMockScopedVectorStore(ctrl)
 
 	repoDir := t.TempDir()
-	repo := &storage.Repository{ID: 1, QdrantCollectionName: "test_coll", EmbedderModelName: "test_model"}
+	repo := &storage.Repository{ID: 1, QdrantCollectionName: "test_coll"}
 
 	filesToProcess := []string{"new.go"}
 	filesToDelete := []string{"old.go"}
@@ -160,8 +161,8 @@ func TestUpdateRepoContext(t *testing.T) {
 	require.NoError(t, os.WriteFile(fullPath, []byte("package new\n\nfunc DoWork() error { return nil }\n"), 0644))
 
 	// Expectations
-	mockVS.EXPECT().DeleteDocumentsFromCollection(gomock.Any(), repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete).Return(nil)
-	mockVS.EXPECT().ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName).Return(mockSVS)
+	mockVS.EXPECT().DeleteDocumentsFromCollection(gomock.Any(), repo.QdrantCollectionName, "test_model", filesToDelete).Return(nil)
+	mockVS.EXPECT().ForRepo(repo.QdrantCollectionName, "test_model").Return(mockSVS)
 	mockSVS.EXPECT().AddDocuments(gomock.Any(), gomock.Any()).Return([]string{"id2"}, nil)
 	mockStore.EXPECT().UpsertFiles(gomock.Any(), repo.ID, gomock.Any()).Return(nil)
 
@@ -171,6 +172,7 @@ func TestUpdateRepoContext(t *testing.T) {
 		Splitter:       &mockSplitter{},
 		ParserRegistry: parsers.NewRegistry(slog.Default()),
 		Logger:         slog.Default(),
+		EmbedderModel:  "test_model",
 	}
 	indexer := New(cfg)
 

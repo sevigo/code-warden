@@ -31,6 +31,7 @@ type Config struct {
 	ConsensusTimeout string
 	ConsensusQuorum  float64
 	BuildContext     ContextBuilderFunc
+	EmbedderModel    string
 }
 
 // Service orchestrates code review generation.

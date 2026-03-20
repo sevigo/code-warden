@@ -10,6 +10,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server/handler"
@@ -18,11 +19,11 @@ import (
 
 // NewRouter creates and configures a new HTTP router with middleware and API routes.
 func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
-	return NewRouterWithStore(cfg, dispatcher, nil, nil, nil, logger)
+	return NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, logger)
 }
 
 // NewRouterWithStore creates a router with storage for web UI endpoints.
-func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, logger *slog.Logger) *chi.Mux {
+func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Configure middleware stack
@@ -45,7 +46,7 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store
 
 		// Web UI API routes
 		if store != nil {
-			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, cfg, logger)
+			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, gitClient, cfg, logger)
 
 			// Fast endpoints — short timeout is fine
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos", webUIHandler.ListRepos)

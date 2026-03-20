@@ -29,6 +29,7 @@ type Config struct {
 	ParserRegistry parsers.ParserRegistry
 	Splitter       textsplitter.TextSplitter
 	Logger         *slog.Logger
+	EmbedderModel  string
 }
 
 // Indexer handles document ingestion and semantic chunking.
@@ -95,7 +96,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		return fmt.Errorf("failed to initialize git loader: %w", err)
 	}
 
-	scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+	scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
 	var processedCount int
 	var skippedCount int
 	var mu sync.Mutex
@@ -313,7 +314,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		// Actually `processFilesParallel` handles UPSERT.
 		// Deleting from Qdrant requires `DeleteDocumentsByFilter` ("source" in pathsToDelete).
 		if len(pathsToDelete) > 0 && repo.QdrantCollectionName != "" {
-			if err := i.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, map[string]any{"source": map[string]any{"$in": pathsToDelete}}); err != nil {
+			if err := i.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, i.cfg.EmbedderModel, map[string]any{"source": map[string]any{"$in": pathsToDelete}}); err != nil {
 				i.cfg.Logger.Warn("failed to delete vectors for removed files", "error", err)
 			}
 		}
@@ -365,7 +366,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
 		i.cfg.Logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
-		if err := i.cfg.VectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete); err != nil {
+		if err := i.cfg.VectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, i.cfg.EmbedderModel, filesToDelete); err != nil {
 			i.cfg.Logger.Error("failed to delete some embeddings", "error", err)
 		}
 	}
@@ -418,7 +419,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 
 	if len(allDocs) > 0 {
 		i.cfg.Logger.Info("adding/updating documents in vector store", "count", len(allDocs))
-		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
 		if _, err := scopedStore.AddDocuments(ctx, allDocs); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}

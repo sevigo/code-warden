@@ -59,14 +59,14 @@ func (s *Service) GenerateReReview(ctx context.Context, repo *storage.Repository
 	}
 
 	// Build standard context
-	standardContext, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, buildPRDescription(event))
+	standardContext, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
 
 	// Extract search queries from original review
 	feedbackQueries := s.extractCommentsFromReview(ctx, originalReview.ReviewContent)
 	s.cfg.Logger.Info("extracted feedback-driven search queries", "count", len(feedbackQueries))
 
 	// Feedback-driven searches
-	feedbackContext := s.buildFeedbackDrivenContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, feedbackQueries, event.UserInstructions)
+	feedbackContext := s.buildFeedbackDrivenContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, feedbackQueries, event.UserInstructions)
 
 	// Combine contexts
 	combinedContext := s.combineReReviewContext(standardContext, feedbackContext)

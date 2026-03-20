@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/rag"
 	indexpkg "github.com/sevigo/code-warden/internal/rag/index"
 	"github.com/sevigo/code-warden/internal/repomanager"
@@ -24,15 +28,17 @@ type WebUIHandler struct {
 	store      storage.Store
 	ragService rag.Service
 	repoMgr    repomanager.RepoManager
+	gitClient  *gitutil.Client
 	cfg        *config.Config
 	logger     *slog.Logger
 }
 
-func NewWebUIHandler(store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, cfg *config.Config, logger *slog.Logger) *WebUIHandler {
+func NewWebUIHandler(store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, cfg *config.Config, logger *slog.Logger) *WebUIHandler {
 	return &WebUIHandler{
 		store:      store,
 		ragService: ragService,
 		repoMgr:    repoMgr,
+		gitClient:  gitClient,
 		cfg:        cfg,
 		logger:     logger,
 	}
@@ -43,7 +49,6 @@ type RepositoryResponse struct {
 	FullName             string `json:"full_name"`
 	ClonePath            string `json:"clone_path"`
 	QdrantCollectionName string `json:"qdrant_collection_name"`
-	EmbedderModelName    string `json:"embedder_model_name"`
 	LastIndexedSHA       string `json:"last_indexed_sha"`
 	CreatedAt            string `json:"created_at"`
 	UpdatedAt            string `json:"updated_at"`
@@ -72,8 +77,7 @@ type ArtifactsInfo struct {
 }
 
 type RegisterRepoRequest struct {
-	ClonePath string `json:"clone_path"`
-	FullName  string `json:"full_name"`
+	FullName string `json:"full_name"`
 }
 
 type ChatRequest struct {
@@ -197,17 +201,17 @@ func (h *WebUIHandler) RegisterRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ClonePath == "" || req.FullName == "" {
-		http.Error(w, "clone_path and full_name are required", http.StatusBadRequest)
+	if req.FullName == "" {
+		http.Error(w, "full_name is required", http.StatusBadRequest)
 		return
 	}
 
-	collectionName := repomanager.GenerateCollectionName(req.FullName, h.cfg.AI.EmbedderModel)
+	clonePath := filepath.Join(h.cfg.Storage.RepoPath, req.FullName)
+	collectionName := repomanager.GenerateCollectionName(req.FullName)
 	repo := &storage.Repository{
 		FullName:             req.FullName,
-		ClonePath:            req.ClonePath,
+		ClonePath:            clonePath,
 		QdrantCollectionName: collectionName,
-		EmbedderModelName:    h.cfg.AI.EmbedderModel,
 	}
 
 	if err := h.store.CreateRepository(ctx, repo); err != nil {
@@ -244,6 +248,10 @@ func (h *WebUIHandler) GetScanStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.json(w, toScanStateResponse(state))
+}
+
+func isPlaceholderToken(token string) bool {
+	return token == "" || strings.HasPrefix(token, "ghp_your_")
 }
 
 func (h *WebUIHandler) TriggerScan(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +305,36 @@ func (h *WebUIHandler) runScan(repoID int64, repo *storage.Repository) {
 }
 
 func (h *WebUIHandler) doScan(ctx context.Context, repoID int64, repo *storage.Repository) error {
+	// Check if repo exists locally, clone if needed
+	if _, err := os.Stat(repo.ClonePath); os.IsNotExist(err) {
+		h.logger.Info("Repository not found locally, cloning", "repo", repo.FullName, "path", repo.ClonePath)
+
+		// 1. Determine which token to use
+		token := h.cfg.GitHub.Token
+		if isPlaceholderToken(token) {
+			token = ""
+		}
+		if repo.InstallationID > 0 {
+			_, instToken, err := github.CreateInstallationClient(ctx, h.cfg, repo.InstallationID, h.logger)
+			if err != nil {
+				h.logger.Warn("failed to create installation client for manual scan, falling back to config token",
+					"repo", repo.FullName,
+					"installation_id", repo.InstallationID,
+					"error", err)
+			} else {
+				token = instToken
+			}
+		}
+
+		cloneURL := fmt.Sprintf("https://github.com/%s.git", repo.FullName)
+		if err := os.MkdirAll(filepath.Dir(repo.ClonePath), 0750); err != nil {
+			return fmt.Errorf("create parent dir: %w", err)
+		}
+		if _, err := h.gitClient.Clone(ctx, cloneURL, repo.ClonePath, token); err != nil {
+			return fmt.Errorf("clone repository: %w", err)
+		}
+	}
+
 	scanResult, err := h.repoMgr.ScanLocalRepo(ctx, repo.ClonePath, repo.FullName, true)
 	if err != nil {
 		return fmt.Errorf("scan local repo: %w", err)
@@ -403,7 +441,7 @@ func (h *WebUIHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := h.ragService.AnswerQuestion(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, req.Question, req.History)
+	answer, err := h.ragService.AnswerQuestion(ctx, repo.QdrantCollectionName, h.cfg.AI.EmbedderModel, req.Question, req.History)
 	if err != nil {
 		h.logger.Error("failed to answer question", "error", err)
 		http.Error(w, "failed to answer question", http.StatusInternalServerError)
@@ -444,7 +482,7 @@ func (h *WebUIHandler) Explain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := h.ragService.ExplainPath(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, req.Path)
+	content, err := h.ragService.ExplainPath(ctx, repo.QdrantCollectionName, h.cfg.AI.EmbedderModel, req.Path)
 	if err != nil {
 		h.logger.Error("failed to explain path", "error", err)
 		http.Error(w, "failed to explain path", http.StatusInternalServerError)
@@ -510,7 +548,6 @@ func toRepositoryResponse(repo *storage.Repository) RepositoryResponse {
 		FullName:             repo.FullName,
 		ClonePath:            repo.ClonePath,
 		QdrantCollectionName: repo.QdrantCollectionName,
-		EmbedderModelName:    repo.EmbedderModelName,
 		LastIndexedSHA:       repo.LastIndexedSHA,
 		CreatedAt:            repo.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:            repo.UpdatedAt.Format(time.RFC3339),

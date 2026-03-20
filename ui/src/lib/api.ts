@@ -3,7 +3,6 @@ export interface Repository {
   full_name: string
   clone_path: string
   qdrant_collection_name: string
-  embedder_model_name: string
   last_indexed_sha: string
   created_at: string
   updated_at: string
@@ -53,7 +52,6 @@ export interface ExplainResponse {
 }
 
 export interface RegisterRepoRequest {
-  clone_path: string
   full_name: string
 }
 

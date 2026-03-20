@@ -40,14 +40,11 @@ func parseRemoteURL(raw string) (string, bool) {
 	return "", false
 }
 
-func GenerateCollectionName(repoFullName, embedderName string) string {
+func GenerateCollectionName(repoFullName string) string {
 	safeRepo := strings.ToLower(strings.ReplaceAll(repoFullName, "/", "-"))
-	safeEmbed := strings.ToLower(strings.Split(embedderName, ":")[0])
-
 	safeRepo = collectionNameRegexp.ReplaceAllString(safeRepo, "")
-	safeEmbed = collectionNameRegexp.ReplaceAllString(safeEmbed, "")
 
-	name := "repo-" + safeRepo + "-" + safeEmbed
+	name := "repo-" + safeRepo
 	if len(name) > maxCollectionNameLength {
 		return name[:maxCollectionNameLength]
 	}

@@ -196,6 +196,7 @@ func NewService(
 		ParserRegistry: pr,
 		Splitter:       splitter,
 		Logger:         logger,
+		EmbedderModel:  cfg.AI.EmbedderModel,
 	}
 
 	r := &ragService{
@@ -237,6 +238,7 @@ func NewService(
 		ConsensusTimeout: cfg.AI.ConsensusTimeout,
 		ConsensusQuorum:  cfg.AI.ConsensusQuorum,
 		BuildContext:     r.contextBuilder.BuildRelevantContext,
+		EmbedderModel:    cfg.AI.EmbedderModel,
 	}
 	r.reviewService = reviewpkg.NewService(reviewCfg)
 
@@ -382,14 +384,12 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	if err != nil {
 		return err
 	}
-	// Generate architectural summaries for directories (post-processing)
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, nil); err != nil {
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, r.cfg.AI.EmbedderModel, repoPath, nil); err != nil {
 		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
 	}
 
-	// Phase 8: Synthesize the global Project Context document (REDUCE)
 	r.logger.Info("📉 Synthesizing global Project Context document", "repo", repo.FullName)
-	projectContext, err := r.GenerateProjectContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName)
+	projectContext, err := r.GenerateProjectContext(ctx, repo.QdrantCollectionName, r.cfg.AI.EmbedderModel)
 	if err != nil {
 		r.logger.Warn("failed to synthesize project context, continuing without it", "error", err)
 	} else if projectContext != "" {
@@ -410,7 +410,7 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		return err
 	}
 	// Trigger targeted arch summary re-generation
-	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repoPath, append(filesToProcess, filesToDelete...)); err != nil {
+	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, r.cfg.AI.EmbedderModel, repoPath, append(filesToProcess, filesToDelete...)); err != nil {
 		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
 	}
 	return nil

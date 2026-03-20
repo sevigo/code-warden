@@ -26,29 +26,7 @@ func (m *manager) syncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 		return nil, fmt.Errorf("query repository state: %w", err)
 	}
 	if errors.Is(err, storage.ErrNotFound) {
-		repoRec = nil // Explicitly set to nil for clarity
-	}
-
-	// A model‑change forces a full re‑index.
-	if repoRec != nil && repoRec.EmbedderModelName != m.cfg.AI.EmbedderModel {
-		m.logger.Warn("embedder model changed, forcing full re‑index",
-			"repo", ev.RepoFullName,
-			"old", repoRec.EmbedderModelName,
-			"new", m.cfg.AI.EmbedderModel,
-			"new_collection", GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel),
-		)
-		if err := m.vectorStore.DeleteCollection(ctx, repoRec.QdrantCollectionName); err != nil {
-			m.logger.Warn("delete old qdrant collection failed (might not exist)", "err", err)
-		}
-
-		// Update repository record to reflect new model
-		repoRec.EmbedderModelName = m.cfg.AI.EmbedderModel
-		repoRec.QdrantCollectionName = GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel)
-		repoRec.LastIndexedSHA = "" // Reset SHA to force full re-list in incrementalUpdate
-
-		if err := m.store.UpdateRepository(ctx, repoRec); err != nil {
-			return nil, fmt.Errorf("failed to update repo record for new embedder: %w", err)
-		}
+		repoRec = nil
 	}
 
 	clonePath := filepath.Join(m.cfg.Storage.RepoPath, ev.RepoFullName)
@@ -104,9 +82,7 @@ func (m *manager) cloneAndIndex(
 	newRec := &storage.Repository{
 		FullName:             ev.RepoFullName,
 		ClonePath:            clonePath,
-		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName, m.cfg.AI.EmbedderModel),
-		EmbedderModelName:    m.cfg.AI.EmbedderModel,
-		// LastIndexedSHA is zeroed here; it is set by the job once Qdrant indexing succeeds.
+		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName),
 	}
 
 	if existing != nil {
