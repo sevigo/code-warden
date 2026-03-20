@@ -37,8 +37,8 @@ func NewServerWithStore(ctx context.Context, cfg *config.Config, dispatcher core
 		server: &http.Server{
 			Addr:         ":" + cfg.Server.Port,
 			Handler:      router,
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 15 * time.Minute, // LLM endpoints can take minutes
 			IdleTimeout:  120 * time.Second,
 		},
 		logger: logger,
