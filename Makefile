@@ -5,6 +5,9 @@ SERVER_CMD_PATH=./cmd/server
 CLI_BINARY_NAME=warden-cli
 CLI_CMD_PATH=./cmd/cli
 
+TERMINAL_BINARY_NAME=warden-term
+TERMINAL_CMD_PATH=./cmd/terminal
+
 # Output directory for all binaries and tools
 BIN_DIR=$(CURDIR)/bin
 
@@ -21,7 +24,7 @@ OPENCODE_MCP_URL=http://127.0.0.1:8081/sse
 
 all: build
 
-build: build-server build-cli
+build: build-server build-cli build-terminal
 	@echo "All binaries built successfully in $(BIN_DIR)/"
 
 build-server:
@@ -34,6 +37,11 @@ build-cli:
 	@mkdir -p $(BIN_DIR)
 	@go build -v -o $(BIN_DIR)/$(CLI_BINARY_NAME) $(CLI_CMD_PATH)
 
+build-terminal:
+	@echo "Building terminal UI ($(TERMINAL_BINARY_NAME))..."
+	@mkdir -p $(BIN_DIR)
+	@go build -v -o $(BIN_DIR)/$(TERMINAL_BINARY_NAME) $(TERMINAL_CMD_PATH)
+
 run: build-server
 	@echo "Starting server ($(SERVER_BINARY_NAME))..."
 	@$(BIN_DIR)/$(SERVER_BINARY_NAME)
@@ -41,6 +49,10 @@ run: build-server
 run-cli:
 	@echo "Starting CLI ($(CLI_BINARY_NAME))..."
 	@go run $(CLI_CMD_PATH)
+
+run-terminal:
+	@echo "Starting terminal UI ($(TERMINAL_BINARY_NAME))..."
+	@go run $(TERMINAL_CMD_PATH)
 
 test:
 	@echo "Running tests..."

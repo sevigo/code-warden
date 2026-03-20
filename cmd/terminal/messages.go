@@ -29,6 +29,12 @@ type repoAddedMsg struct {
 // Represents a complete, non-streaming answer from the LLM.
 type answerCompleteMsg struct{ content string }
 
+type explainCompleteMsg struct {
+	path    string
+	content string
+	err     error
+}
+
 // A generic error message for reporting failures from commands.
 type errorMsg struct{ err error }
 

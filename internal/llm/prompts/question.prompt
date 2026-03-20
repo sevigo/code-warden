@@ -6,7 +6,14 @@ Use ONLY the provided context to answer the question. Do not make assumptions or
 
 Your answer should be clear, concise, and formatted in Markdown.
 
+When referencing code, include file paths and line numbers when available from the context (e.g., "As shown in `internal/auth/service.go:45`..."). This helps users locate the relevant code.
+
+{{if .History}}
 ---
+CONVERSATION HISTORY:
+{{.History}}
+---
+{{end}}
 CONTEXT FROM THE REPOSITORY:
 {{.Context}}
 ---

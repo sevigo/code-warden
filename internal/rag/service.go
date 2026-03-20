@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
+	"github.com/sevigo/goframe/vectorstores"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -39,6 +41,7 @@ type Service interface {
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
+	ExplainPath(ctx context.Context, collectionName, embedderModelName, path string) (string, error)
 	ProcessFile(ctx context.Context, repoPath, file string) []schema.Document
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)
 	GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
@@ -344,6 +347,34 @@ func (r *ragService) AnswerQuestion(ctx context.Context, collectionName, embedde
 
 	svc := questionpkg.NewService(qaCfg)
 	return svc.AnswerQuestion(ctx, collectionName, embedderModelName, question, history)
+}
+
+func (r *ragService) ExplainPath(ctx context.Context, collectionName, embedderModelName, path string) (string, error) {
+	r.logger.Info("explaining path", "collection", collectionName, "path", path)
+	scopedStore := r.vectorStore.ForRepo(collectionName, embedderModelName)
+
+	docs, err := scopedStore.SimilaritySearch(ctx, path, 1,
+		vectorstores.WithFilters(map[string]any{
+			"chunk_type": "arch",
+			"source":     path,
+		}))
+	if err != nil {
+		return "", fmt.Errorf("failed to retrieve arch context: %w", err)
+	}
+
+	if len(docs) == 0 {
+		return fmt.Sprintf("No architectural context found for path: %s\n\nTry a broader path or type your question directly.", path), nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Architecture: %s\n\n", path)
+	for _, doc := range docs {
+		fmt.Fprintf(&b, "%s\n\n", doc.PageContent)
+		if source, ok := doc.Metadata["source"].(string); ok {
+			fmt.Fprintf(&b, "_Source: %s_\n\n", source)
+		}
+	}
+	return b.String(), nil
 }
 
 func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
