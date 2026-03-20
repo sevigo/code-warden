@@ -41,23 +41,23 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store
 	r.Route("/api/v1", func(r chi.Router) {
 		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
 		// Short timeout for webhook delivery acknowledgement
-		r.With(middleware.Timeout(30 * time.Second)).Post("/webhook/github", webhookHandler.Handle)
+		r.With(middleware.Timeout(30*time.Second)).Post("/webhook/github", webhookHandler.Handle)
 
 		// Web UI API routes
 		if store != nil {
 			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, cfg, logger)
 
 			// Fast endpoints — short timeout is fine
-			r.With(middleware.Timeout(30 * time.Second)).Get("/repos", webUIHandler.ListRepos)
-			r.With(middleware.Timeout(30 * time.Second)).Post("/repos", webUIHandler.RegisterRepo)
-			r.With(middleware.Timeout(30 * time.Second)).Get("/repos/{repoId}", webUIHandler.GetRepo)
-			r.With(middleware.Timeout(30 * time.Second)).Post("/repos/{repoId}/scan", webUIHandler.TriggerScan)
-			r.With(middleware.Timeout(30 * time.Second)).Get("/repos/{repoId}/status", webUIHandler.GetScanStatus)
-			r.With(middleware.Timeout(30 * time.Second)).Get("/repos/{repoId}/stats", webUIHandler.GetRepoStats)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos", webUIHandler.ListRepos)
+			r.With(middleware.Timeout(30*time.Second)).Post("/repos", webUIHandler.RegisterRepo)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}", webUIHandler.GetRepo)
+			r.With(middleware.Timeout(30*time.Second)).Post("/repos/{repoId}/scan", webUIHandler.TriggerScan)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/status", webUIHandler.GetScanStatus)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/stats", webUIHandler.GetRepoStats)
 
 			// LLM endpoints — 10 min timeout (Ollama can be slow)
-			r.With(middleware.Timeout(10 * time.Minute)).Post("/repos/{repoId}/chat", webUIHandler.Chat)
-			r.With(middleware.Timeout(10 * time.Minute)).Post("/repos/{repoId}/explain", webUIHandler.Explain)
+			r.With(middleware.Timeout(10*time.Minute)).Post("/repos/{repoId}/chat", webUIHandler.Chat)
+			r.With(middleware.Timeout(10*time.Minute)).Post("/repos/{repoId}/explain", webUIHandler.Explain)
 
 			// SSE — no timeout, long-lived connection
 			r.Get("/events", webUIHandler.SSEEvents)
