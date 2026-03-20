@@ -1,22 +1,23 @@
 import { RefreshCw, CheckCircle2, XCircle, Clock } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import type { ScanState } from '@/lib/api'
 
 interface StatusBadgeProps {
-  status: ScanState['status'] | null | undefined
+  status: string | null | undefined
   size?: 'sm' | 'default'
 }
 
 export default function StatusBadge({ status, size = 'default' }: StatusBadgeProps) {
-  const sizeClass = size === 'sm' ? 'text-[11px] px-2 py-0' : 'text-xs'
+  const base = 'inline-flex items-center gap-1.5 rounded-full font-medium'
+  const sizeClass = size === 'sm'
+    ? 'text-[11px] px-2 py-0.5'
+    : 'text-xs px-2.5 py-1'
   const iconSize = size === 'sm' ? 'h-2.5 w-2.5' : 'h-3 w-3'
 
   if (!status) {
     return (
-      <Badge variant="secondary" className={`gap-1.5 ${sizeClass}`}>
+      <span className={`${base} ${sizeClass} bg-zinc-500/10 text-zinc-500`}>
         <Clock className={iconSize} />
         Not Indexed
-      </Badge>
+      </span>
     )
   }
 
@@ -25,31 +26,31 @@ export default function StatusBadge({ status, size = 'default' }: StatusBadgePro
     case 'in_progress':
     case 'pending':
       return (
-        <Badge className={`gap-1.5 ${sizeClass} bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/20`}>
+        <span className={`${base} ${sizeClass} bg-blue-500/10 text-blue-400`}>
           <RefreshCw className={`${iconSize} animate-spin`} />
           Indexing
-        </Badge>
+        </span>
       )
     case 'completed':
       return (
-        <Badge className={`gap-1.5 ${sizeClass} bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20`}>
+        <span className={`${base} ${sizeClass} bg-emerald-500/10 text-emerald-400`}>
           <CheckCircle2 className={iconSize} />
           Ready
-        </Badge>
+        </span>
       )
     case 'failed':
       return (
-        <Badge variant="destructive" className={`gap-1.5 ${sizeClass}`}>
+        <span className={`${base} ${sizeClass} bg-red-500/10 text-red-400`}>
           <XCircle className={iconSize} />
           Failed
-        </Badge>
+        </span>
       )
     default:
       return (
-        <Badge variant="secondary" className={`gap-1.5 ${sizeClass}`}>
+        <span className={`${base} ${sizeClass} bg-zinc-500/10 text-zinc-500`}>
           <Clock className={iconSize} />
           Not Indexed
-        </Badge>
+        </span>
       )
   }
 }

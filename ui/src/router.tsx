@@ -15,6 +15,6 @@ export const router = createBrowserRouter([
   },
   {
     path: '/repos/:repoId/chat',
-    element: <ChatPage />,
+    element: <Layout fluid><ChatPage /></Layout>,
   },
 ])

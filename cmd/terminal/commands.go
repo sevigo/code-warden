@@ -113,12 +113,11 @@ func addRepoCmd(app *app.App, fullName, path string) tea.Cmd {
 		if existingRepo != nil {
 			return repoAddedMsg{err: fmt.Errorf("repository '%s' is already registered", fullName)}
 		}
-		collectionName := repomanager.GenerateCollectionName(fullName, app.Cfg.AI.EmbedderModel)
+		collectionName := repomanager.GenerateCollectionName(fullName)
 		newRepo := &storage.Repository{
 			FullName:             fullName,
 			ClonePath:            path,
 			QdrantCollectionName: collectionName,
-			EmbedderModelName:    app.Cfg.AI.EmbedderModel,
 		}
 		if err := app.Store.CreateRepository(ctx, newRepo); err != nil {
 			return repoAddedMsg{err: fmt.Errorf("failed to create repository record: %w", err)}

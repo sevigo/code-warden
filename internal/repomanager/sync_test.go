@@ -209,7 +209,6 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 			"test-user/test-repo": {
 				FullName:             "test-user/test-repo",
 				ClonePath:            localPath,
-				EmbedderModelName:    "test-model",
 				QdrantCollectionName: "test_coll",
 				LastIndexedSHA:       commit1.String(), // Missing from shallow clone triggers fallback
 			},

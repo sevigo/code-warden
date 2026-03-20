@@ -40,7 +40,7 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 		repoConfig = core.DefaultRepoConfig()
 	}
 
-	s.cfg.Logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber, "embedder", repo.EmbedderModelName)
+	s.cfg.Logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber, "embedder", s.cfg.EmbedderModel)
 	if diff == "" {
 		s.cfg.Logger.Info("no code changes in pull request", "pr", event.PRNumber)
 		noChangesReview := &core.StructuredReview{
@@ -57,7 +57,7 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 	}
 
 	// Get context
-	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, buildPRDescription(event))
+	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
 
 	// Check for empty context to warn about hallucination risk
 	contextEmpty := contextIsEmpty(contextString, definitionsContext)

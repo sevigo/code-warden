@@ -13,6 +13,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/rag/review"
+	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -81,7 +82,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, genera
 	// 3. Early check for context generation ONLY
 	if generateContextOnly {
 		s.Manager.logger.Info("Running Context Generation ONLY mode")
-		contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
+		contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, s.Manager.cfg.AI.EmbedderModel)
 		if err != nil {
 			return fmt.Errorf("failed to generate project context: %w", err)
 		}
@@ -172,7 +173,7 @@ func (s *Scanner) Scan(ctx context.Context, input string, force, verbose, genera
 // autoGenerateProjectContext generates and saves a project context document.
 func (s *Scanner) autoGenerateProjectContext(ctx context.Context, repoRecord *storage.Repository) {
 	s.Manager.logger.Info("Auto-generating Project Context after successful scan")
-	contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, repoRecord.EmbedderModelName)
+	contextDoc, err := s.RAGService.GenerateProjectContext(ctx, repoRecord.QdrantCollectionName, s.Manager.cfg.AI.EmbedderModel)
 	if err != nil {
 		s.Manager.logger.Warn("failed to update project context automatically", "error", err)
 		return
@@ -372,8 +373,7 @@ func (s *Scanner) ensureRepoRecord(ctx context.Context, fullName, path string) (
 		newRec := &storage.Repository{
 			FullName:             fullName,
 			ClonePath:            path,
-			EmbedderModelName:    s.Manager.cfg.AI.EmbedderModel,
-			QdrantCollectionName: strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(fullName, "/", "_"), "-", "_")+"_"+s.Manager.cfg.AI.EmbedderModel, ":", "_"),
+			QdrantCollectionName: repomanager.GenerateCollectionName(fullName),
 		}
 		if err := s.Manager.store.CreateRepository(ctx, newRec); err != nil {
 			return nil, err
@@ -381,25 +381,16 @@ func (s *Scanner) ensureRepoRecord(ctx context.Context, fullName, path string) (
 		return newRec, nil
 	}
 
-	// Check for model mismatch OR collection name mismatch
-	// Note: We deliberately include the full model name (sanitized) in the collection name to prevent collisions.
-	sanitizedModel := strings.ReplaceAll(s.Manager.cfg.AI.EmbedderModel, ":", "_")
-	expectedCollectionName := strings.ReplaceAll(strings.ReplaceAll(fullName, "/", "_"), "-", "_") + "_" + sanitizedModel
+	if rec.QdrantCollectionName != repomanager.GenerateCollectionName(fullName) {
+		s.Manager.logger.Warn("Collection name mismatch, updating",
+			"old_collection", rec.QdrantCollectionName, "new_collection", repomanager.GenerateCollectionName(fullName))
 
-	if rec.EmbedderModelName != s.Manager.cfg.AI.EmbedderModel || rec.QdrantCollectionName != expectedCollectionName {
-		s.Manager.logger.Warn("Repo configuration mismatch",
-			"old_model", rec.EmbedderModelName, "new_model", s.Manager.cfg.AI.EmbedderModel,
-			"old_collection", rec.QdrantCollectionName, "new_collection", expectedCollectionName)
-
-		// Update record
-		rec.EmbedderModelName = s.Manager.cfg.AI.EmbedderModel
-		rec.QdrantCollectionName = expectedCollectionName
+		rec.QdrantCollectionName = repomanager.GenerateCollectionName(fullName)
 
 		if err := s.Manager.store.UpdateRepository(ctx, rec); err != nil {
 			return nil, fmt.Errorf("failed to update repo record: %w", err)
 		}
 
-		// Reset scan state
 		stateMgr := NewStateManager(s.Manager.store, rec.ID)
 		emptyProgress := &Progress{
 			Files:       make(map[string]bool),

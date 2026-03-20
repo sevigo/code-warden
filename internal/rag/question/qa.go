@@ -105,8 +105,8 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 
 	scopedStore := s.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
 
-	archDocs := s.retrieveArchSummaries(ctx, scopedStore, question)
-	s.cfg.Logger.Debug("retrieved arch summaries", "count", len(archDocs))
+	relevantDocs := s.retrieveRelevantDocs(ctx, scopedStore, question)
+	s.cfg.Logger.Debug("retrieved initial relevant docs", "count", len(relevantDocs))
 
 	sparseQuery, err := sparse.GenerateSparseVector(ctx, question)
 	var retriever schema.Retriever
@@ -114,13 +114,13 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 		s.cfg.Logger.Warn("failed to generate sparse query", "error", err)
 		retriever = &hybridRetriever{
 			store:     scopedStore,
-			archDocs:  archDocs,
+			archDocs:  relevantDocs,
 			baseLimit: similarityLimit,
 		}
 	} else {
 		retriever = &hybridRetriever{
 			store:     scopedStore,
-			archDocs:  archDocs,
+			archDocs:  relevantDocs,
 			sparse:    sparseQuery,
 			baseLimit: similarityLimit,
 		}
@@ -131,6 +131,37 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 	}
 
 	return s.answerWithoutValidation(ctx, retriever, question, history)
+}
+
+func (s *QAService) retrieveRelevantDocs(ctx context.Context, store storage.ScopedVectorStore, question string) []schema.Document {
+	// Stage 1: Always retrieve architecture summaries (existing logic)
+	docs := s.retrieveArchSummaries(ctx, store, question)
+
+	// Stage 2: If keywords are present, retrieve definition chunks
+	// These explain how things are defined and structured, crucial for system-internal questions
+	keywords := []string{"symbol", "scan", "indexing", "definition"}
+	hasKeyword := false
+	lowerQuestion := strings.ToLower(question)
+	for _, kw := range keywords {
+		if strings.Contains(lowerQuestion, kw) {
+			hasKeyword = true
+			break
+		}
+	}
+
+	if !hasKeyword {
+		return docs
+	}
+
+	s.cfg.Logger.Debug("keyword detected, retrieving additional definition chunks")
+	defDocs, err := store.SimilaritySearch(ctx, question, archResultLimit,
+		vectorstores.WithFilters(map[string]any{"chunk_type": "definition"}))
+	if err != nil {
+		s.cfg.Logger.Warn("failed to retrieve definition chunks", "error", err)
+		return docs
+	}
+
+	return deduplicateDocs(append(docs, defDocs...))
 }
 
 func (s *QAService) retrieveArchSummaries(ctx context.Context, store storage.ScopedVectorStore, question string) []schema.Document {

@@ -378,7 +378,7 @@ func (m *model) processExplainCommand(args []string) tea.Cmd {
 		explainPathCmd(
 			m.app,
 			m.selectedRepo.QdrantCollectionName,
-			m.selectedRepo.EmbedderModelName,
+			m.app.Cfg.AI.EmbedderModel,
 			path,
 		),
 	)
@@ -398,7 +398,7 @@ func (m *model) processQuestion(input string) tea.Cmd {
 		answerQuestionCmd(
 			m.app,
 			m.selectedRepo.QdrantCollectionName,
-			m.selectedRepo.EmbedderModelName,
+			m.app.Cfg.AI.EmbedderModel,
 			input,
 			m.conversationHistory,
 		),
