@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sevigo/goframe/embeddings/sparse"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
@@ -301,7 +302,15 @@ func (b *builderImpl) generateSummaryForDirectory(ctx context.Context, info *Dir
 		"file_count":   len(info.Files),
 	})
 
-	b.cfg.Logger.Debug("generated architectural summary",
+	// Generate sparse vector for hybrid search
+	sparseVec, err := sparse.GenerateSparseVector(ctx, response)
+	if err == nil {
+		doc.Sparse = sparseVec
+	} else {
+		b.cfg.Logger.Debug("failed to generate sparse vector for arch summary", "path", info.Path, "error", err)
+	}
+
+	b.cfg.Logger.Info("generated architectural summary",
 		"path", info.Path,
 		"summary_length", len(response),
 	)
