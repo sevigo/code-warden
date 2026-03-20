@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Send, Plus } from 'lucide-react'
+import { ArrowLeft, Send, Plus, Shield, User, AlertCircle } from 'lucide-react'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -23,14 +23,77 @@ const SUGGESTED_QUESTIONS = [
   "Explain the main service structure",
 ]
 
+const markdownComponents = {
+  code({ node, inline, className, children, ...props }: any) {
+    const match = /language-(\w+)/.exec(className || '')
+    return !inline && match ? (
+      <SyntaxHighlighter
+        style={oneDark}
+        language={match[1]}
+        PreTag="div"
+        className="!rounded-lg !text-xs !my-3"
+        {...props}
+      >
+        {String(children).replace(/\n$/, '')}
+      </SyntaxHighlighter>
+    ) : (
+      <code
+        className="bg-zinc-700/60 px-1.5 py-0.5 rounded text-xs font-mono text-zinc-200"
+        {...props}
+      >
+        {children}
+      </code>
+    )
+  },
+  p: ({ children }: any) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
+  ul: ({ children }: any) => <ul className="mb-3 ml-4 space-y-1 list-disc">{children}</ul>,
+  ol: ({ children }: any) => <ol className="mb-3 ml-4 space-y-1 list-decimal">{children}</ol>,
+  li: ({ children }: any) => <li className="leading-relaxed">{children}</li>,
+  h1: ({ children }: any) => <h1 className="text-base font-bold mb-2 mt-4 first:mt-0">{children}</h1>,
+  h2: ({ children }: any) => <h2 className="text-sm font-bold mb-2 mt-4 first:mt-0">{children}</h2>,
+  h3: ({ children }: any) => <h3 className="text-sm font-semibold mb-1.5 mt-3 first:mt-0">{children}</h3>,
+  strong: ({ children }: any) => <strong className="font-semibold text-zinc-100">{children}</strong>,
+  blockquote: ({ children }: any) => (
+    <blockquote className="border-l-2 border-zinc-600 pl-3 my-2 text-zinc-400 italic">{children}</blockquote>
+  ),
+  table: ({ children }: any) => (
+    <div className="overflow-x-auto my-3">
+      <table className="text-xs border-collapse w-full">{children}</table>
+    </div>
+  ),
+  th: ({ children }: any) => (
+    <th className="border border-zinc-700 px-3 py-1.5 text-left font-semibold bg-zinc-800">{children}</th>
+  ),
+  td: ({ children }: any) => (
+    <td className="border border-zinc-700 px-3 py-1.5">{children}</td>
+  ),
+}
+
+function AIAvatar() {
+  return (
+    <div className="h-8 w-8 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center shrink-0 mt-0.5">
+      <Shield className="h-4 w-4 text-primary" />
+    </div>
+  )
+}
+
+function UserAvatar() {
+  return (
+    <div className="h-8 w-8 rounded-lg bg-zinc-700 border border-zinc-600 flex items-center justify-center shrink-0 mt-0.5">
+      <User className="h-4 w-4 text-zinc-300" />
+    </div>
+  )
+}
+
 function TypingIndicator() {
   return (
-    <div className="flex justify-start">
-      <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3">
+    <div className="flex gap-3 items-start">
+      <AIAvatar />
+      <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-2xl rounded-tl-sm px-4 py-3">
         <div className="flex gap-1 items-center h-4">
-          <span className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce [animation-delay:-0.3s]" />
-          <span className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce [animation-delay:-0.15s]" />
-          <span className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" />
+          <span className="h-1.5 w-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+          <span className="h-1.5 w-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+          <span className="h-1.5 w-1.5 bg-zinc-400 rounded-full animate-bounce" />
         </div>
       </div>
     </div>
@@ -70,7 +133,7 @@ function ChatPage() {
         {
           id: Date.now().toString(),
           role: 'assistant',
-          content: `Error: ${error instanceof Error ? error.message : 'Failed to get response'}`,
+          content: error instanceof Error ? error.message : 'Failed to get response',
           isError: true,
         },
       ])
@@ -97,7 +160,6 @@ function ChatPage() {
         textareaRef.current.style.height = 'auto'
       }
 
-      // Handle /explain command
       if (question.startsWith('/explain ')) {
         const path = question.slice('/explain '.length).trim()
         setMessages((prev) => [
@@ -115,7 +177,7 @@ function ChatPage() {
             {
               id: (Date.now() + 1).toString(),
               role: 'assistant',
-              content: `Error: ${err instanceof Error ? err.message : 'Failed to explain path'}`,
+              content: err instanceof Error ? err.message : 'Failed to explain path',
               isError: true,
             },
           ])
@@ -144,33 +206,40 @@ function ChatPage() {
     submitMessage(input)
   }
 
+  const [org, repoName] = (repo?.full_name ?? '/').split('/')
+
   return (
     <div className="h-screen flex flex-col bg-background">
       {/* Header */}
-      <header className="border-b border-border bg-card px-4 py-3 shrink-0">
+      <header className="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur px-4 py-3 shrink-0">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link
               to={`/repos/${repoId}`}
-              className="p-1.5 rounded-md hover:bg-muted text-muted-foreground transition-colors"
+              className="p-1.5 rounded-lg hover:bg-zinc-800 text-zinc-400 transition-colors"
             >
-              <ArrowLeft className="h-5 w-5" />
+              <ArrowLeft className="h-4 w-4" />
             </Link>
-            <div>
-              <h1 className="font-semibold text-foreground text-sm">
-                {repo?.full_name ?? 'Loading...'}
-              </h1>
-              <p className="text-xs text-muted-foreground">AI Chat</p>
+            <div className="flex items-center gap-2.5">
+              <div className="h-7 w-7 rounded-md bg-primary/20 border border-primary/30 flex items-center justify-center">
+                <Shield className="h-3.5 w-3.5 text-primary" />
+              </div>
+              <div>
+                <h1 className="font-semibold text-foreground text-sm leading-none">
+                  <span className="text-zinc-500 font-normal">{org}/</span>{repoName}
+                </h1>
+                <p className="text-[11px] text-zinc-500 mt-0.5">AI Chat · {messages.filter(m => m.role === 'user').length} messages</p>
+              </div>
             </div>
           </div>
 
           {messages.length > 0 && (
             <button
               onClick={() => setMessages([])}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-muted transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
             >
               <Plus className="h-3.5 w-3.5" />
-              New conversation
+              New chat
             </button>
           )}
         </div>
@@ -179,20 +248,25 @@ function ChatPage() {
       {/* Messages */}
       <ScrollArea className="flex-1">
         {messages.length === 0 ? (
-          <div className="h-full flex items-center justify-center px-4 py-20">
-            <div className="text-center max-w-md w-full">
+          <div className="flex items-center justify-center px-4 py-24">
+            <div className="text-center max-w-lg w-full">
+              <div className="h-14 w-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-5">
+                <Shield className="h-7 w-7 text-primary" />
+              </div>
               <h2 className="text-xl font-semibold mb-2 text-foreground">
-                Explore {repo?.full_name ?? 'this repository'}
+                Ask about <span className="text-primary">{repo?.full_name ?? 'this repository'}</span>
               </h2>
-              <p className="text-muted-foreground text-sm mb-6">
-                Ask questions about the codebase architecture, patterns, and functionality.
+              <p className="text-muted-foreground text-sm mb-8">
+                Architecture, patterns, implementation details — or use{' '}
+                <code className="font-mono text-xs bg-zinc-800 px-1.5 py-0.5 rounded text-zinc-300">/explain &lt;path&gt;</code>{' '}
+                for file-level context.
               </p>
-              <div className="space-y-2 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
                 {SUGGESTED_QUESTIONS.map((q) => (
                   <button
                     key={q}
                     onClick={() => submitMessage(q)}
-                    className="block w-full text-left px-4 py-3 rounded-lg bg-card border border-border hover:border-primary/50 hover:bg-accent text-foreground transition-colors"
+                    className="text-left px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-primary/40 hover:bg-zinc-800/60 text-zinc-300 transition-all duration-150"
                   >
                     {q}
                   </button>
@@ -201,52 +275,39 @@ function ChatPage() {
             </div>
           </div>
         ) : (
-          <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+          <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
             {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm ${
-                    message.role === 'user'
-                      ? 'bg-primary text-primary-foreground rounded-tr-sm'
-                      : message.isError
-                        ? 'bg-red-500/10 text-red-400 rounded-tl-sm'
-                        : 'bg-muted text-foreground rounded-tl-sm'
-                  }`}
-                >
-                  {message.role === 'assistant' ? (
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <ReactMarkdown
-                        components={{
-                          code({ node, inline, className, children, ...props }: any) {
-                            const match = /language-(\w+)/.exec(className || '')
-                            return !inline && match ? (
-                              <SyntaxHighlighter
-                                style={oneDark}
-                                language={match[1]}
-                                PreTag="div"
-                                className="rounded-md text-sm"
-                                {...props}
-                              >
-                                {String(children).replace(/\n$/, '')}
-                              </SyntaxHighlighter>
-                            ) : (
-                              <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono" {...props}>
-                                {children}
-                              </code>
-                            )
-                          },
-                        }}
-                      >
+              <div key={message.id}>
+                {message.role === 'user' ? (
+                  /* User message */
+                  <div className="flex gap-3 items-start justify-end">
+                    <div className="max-w-[80%] bg-primary rounded-2xl rounded-tr-sm px-4 py-3">
+                      <p className="text-sm text-primary-foreground whitespace-pre-wrap leading-relaxed">
                         {message.content}
-                      </ReactMarkdown>
+                      </p>
                     </div>
-                  ) : (
-                    <p className="whitespace-pre-wrap">{message.content}</p>
-                  )}
-                </div>
+                    <UserAvatar />
+                  </div>
+                ) : (
+                  /* AI message */
+                  <div className="flex gap-3 items-start">
+                    <AIAvatar />
+                    <div className="flex-1 min-w-0">
+                      {message.isError ? (
+                        <div className="flex items-start gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+                          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                          <span>{message.content}</span>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-zinc-200 leading-relaxed">
+                          <ReactMarkdown components={markdownComponents}>
+                            {message.content}
+                          </ReactMarkdown>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
 
@@ -257,30 +318,32 @@ function ChatPage() {
       </ScrollArea>
 
       {/* Input */}
-      <div className="border-t border-border bg-card px-4 py-3 shrink-0">
-        <form onSubmit={handleFormSubmit} className="max-w-3xl mx-auto flex gap-2 items-end">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onInput={handleTextareaInput}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask a question... (Enter to send, Shift+Enter for newline, /explain <path> for file explanation)"
-            rows={1}
-            className="flex-1 px-4 py-2.5 rounded-xl border border-border bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary resize-none text-sm leading-relaxed placeholder:text-muted-foreground"
-            disabled={chat.isPending}
-          />
-          <button
-            type="submit"
-            disabled={!input.trim() || chat.isPending}
-            className="px-3 py-2.5 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors shrink-0"
-          >
-            <Send className="h-4 w-4" />
-          </button>
+      <div className="border-t border-zinc-800 bg-zinc-900/80 backdrop-blur px-4 py-4 shrink-0">
+        <form onSubmit={handleFormSubmit} className="max-w-3xl mx-auto">
+          <div className="flex gap-2 items-end bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onInput={handleTextareaInput}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask a question… or /explain <path>"
+              rows={1}
+              className="flex-1 bg-transparent text-foreground text-sm leading-relaxed placeholder:text-zinc-600 focus:outline-none resize-none py-1"
+              disabled={chat.isPending}
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || chat.isPending}
+              className="p-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0 mb-0.5"
+            >
+              <Send className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <p className="text-[11px] text-zinc-600 mt-2 text-center">
+            Enter to send · Shift+Enter for new line · <code className="font-mono">/explain &lt;path&gt;</code> for file context
+          </p>
         </form>
-        <p className="max-w-3xl mx-auto text-xs text-muted-foreground mt-1.5 pl-1">
-          Press Enter to send · Shift+Enter for new line · Use <code>/explain &lt;path&gt;</code> to explain a file or directory
-        </p>
       </div>
     </div>
   )

@@ -127,7 +127,7 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 	}
 
 	if s.cfg.ValidatorLLM != nil {
-		return s.answerWithValidation(ctx, retriever, question)
+		return s.answerWithValidation(ctx, retriever, question, history)
 	}
 
 	return s.answerWithoutValidation(ctx, retriever, question, history)
@@ -179,10 +179,16 @@ func (s *QAService) extractPaths(question string) []string {
 }
 
 // answerWithValidation uses ValidatingRetrievalQA which validates retrieved chunks
-// before passing to the generator. Note: Multi-turn conversation history is not currently
-// supported in this path due to limitations in ValidatingRetrievalQA's prompt customization.
-func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string) (string, error) {
+// before passing to the generator. History is prepended to the question so the
+// model has conversational context even though the chain doesn't natively support it.
+func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.Retriever, question string, history []string) (string, error) {
 	s.cfg.Logger.Debug("answering with validation")
+
+	questionWithHistory := question
+	if len(history) > 0 {
+		questionWithHistory = strings.Join(history, "\n") + "\n" + question
+	}
+
 	chain, err := chains.NewValidatingRetrievalQA(
 		retriever,
 		s.cfg.GeneratorLLM,
@@ -193,7 +199,7 @@ func (s *QAService) answerWithValidation(ctx context.Context, retriever schema.R
 		return "", fmt.Errorf("failed to create validating retrieval QA chain: %w", err)
 	}
 
-	answer, err := chain.Call(ctx, question)
+	answer, err := chain.Call(ctx, questionWithHistory)
 	if err != nil {
 		return "", fmt.Errorf("validating QA chain failed: %w", err)
 	}
