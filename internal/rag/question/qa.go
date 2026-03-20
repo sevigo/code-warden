@@ -136,7 +136,7 @@ func (s *QAService) AnswerQuestion(ctx context.Context, collectionName, embedder
 func (s *QAService) retrieveArchSummaries(ctx context.Context, store storage.ScopedVectorStore, question string) []schema.Document {
 	paths := s.extractPaths(question)
 	if len(paths) == 0 {
-		docs, err := store.SimilaritySearch(ctx, "architecture structure overview module", archResultLimit,
+		docs, err := store.SimilaritySearch(ctx, question, archResultLimit,
 			vectorstores.WithFilters(map[string]any{"chunk_type": "arch"}))
 		if err != nil {
 			s.cfg.Logger.Warn("failed to retrieve general arch summaries", "error", err)

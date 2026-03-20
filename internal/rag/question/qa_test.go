@@ -41,8 +41,8 @@ func TestAnswerQuestion(t *testing.T) {
 	model := "model"
 
 	mockVS.EXPECT().ForRepo(collection, model).Return(mockSVS)
-	// First call: arch summaries retrieval (for general case when no paths detected)
-	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), "architecture structure overview module", gomock.Any(), gomock.Any()).Return([]schema.Document{}, nil)
+	// First call: arch summaries retrieval using question for relevance
+	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), question, gomock.Any(), gomock.Any()).Return([]schema.Document{}, nil)
 	// Second call: actual similarity search for the question
 	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), question, gomock.Any(), gomock.Any()).Return([]schema.Document{{PageContent: "doc1"}}, nil)
 
@@ -82,8 +82,8 @@ func TestAnswerWithValidation(t *testing.T) {
 	model := "model"
 
 	mockVS.EXPECT().ForRepo(collection, model).Return(mockSVS)
-	// First call: arch summaries retrieval (for general case when no paths detected)
-	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), "architecture structure overview module", gomock.Any(), gomock.Any()).Return([]schema.Document{}, nil)
+	// First call: arch summaries retrieval using question for relevance
+	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), question, gomock.Any(), gomock.Any()).Return([]schema.Document{}, nil)
 	// Second call: actual similarity search for the question
 	mockSVS.EXPECT().SimilaritySearch(gomock.Any(), question, gomock.Any(), gomock.Any()).Return([]schema.Document{{PageContent: "relevant doc"}}, nil)
 
