@@ -186,6 +186,8 @@ func NewService(
 		Splitter:       splitter,
 		Logger:         logger,
 		EmbedderModel:  cfg.AI.EmbedderModel,
+		LLM:            gen,
+		PromptMgr:      promptMgr,
 	}
 
 	r := &ragService{

@@ -14,11 +14,13 @@ import (
 
 	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/embeddings/sparse"
+	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
 
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -30,6 +32,8 @@ type Config struct {
 	Splitter       textsplitter.TextSplitter
 	Logger         *slog.Logger
 	EmbedderModel  string
+	LLM            llms.Model
+	PromptMgr      *llm.PromptManager
 }
 
 // Indexer handles document ingestion and semantic chunking.
@@ -451,6 +455,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 
 // ProcessFile reads, parses, and chunks a single file for indexing.
 // Returns code chunks and definition chunks.
+// Chunks are enriched with a file-level summary for better semantic retrieval.
 //
 //nolint:funlen,gocognit
 func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
@@ -477,6 +482,12 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 
 	ext := strings.ToLower(filepath.Ext(file))
 
+	// Generate file-level summary for better retrieval (LLM call, cached by content hash)
+	var fileSummary string
+	if i.cfg.LLM != nil && i.cfg.PromptMgr != nil {
+		fileSummary = i.generateFileSummary(ctx, file, validContent)
+	}
+
 	// Build line offset map for computing line numbers
 	lineOffsets := buildLineOffsets(validContent)
 
@@ -493,6 +504,13 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 	splitDocs = filtered
 
 	for idx := range splitDocs {
+		// Enrich chunk content with file summary for better semantic retrieval
+		// This allows both dense and sparse search to find keywords from the summary
+		if fileSummary != "" {
+			splitDocs[idx].PageContent = splitDocs[idx].PageContent + "\n\n[File Summary: " + fileSummary + "]"
+			splitDocs[idx].Metadata["file_summary"] = fileSummary
+		}
+
 		// Ensure sparse vectors are generated for hybrid search if possible
 		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
 		if err == nil {
@@ -733,4 +751,75 @@ func isCodeKeyword(sym string) bool {
 		"fmt": true, "strings": true, "errors": true, "json": true, "http": true,
 	}
 	return keywords[sym]
+}
+
+// fileSummaryCache stores file summaries to avoid regenerating for the same content.
+type fileSummaryCache struct {
+	mu    sync.RWMutex
+	cache map[string]string // contentHash -> summary
+}
+
+var globalFileSummaryCache = &fileSummaryCache{
+	cache: make(map[string]string),
+}
+
+// generateFileSummary generates an LLM-based summary for a file.
+// Results are cached by content hash to avoid redundant LLM calls.
+func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content string) string {
+	if i.cfg.LLM == nil || i.cfg.PromptMgr == nil {
+		return ""
+	}
+
+	// Check cache first
+	contentHash := hashContent(content)
+	globalFileSummaryCache.mu.RLock()
+	if summary, ok := globalFileSummaryCache.cache[contentHash]; ok {
+		globalFileSummaryCache.mu.RUnlock()
+		return summary
+	}
+	globalFileSummaryCache.mu.RUnlock()
+
+	// Truncate content if too long (LLMs have context limits)
+	maxContent := 8000
+	if len(content) > maxContent {
+		content = content[:maxContent]
+	}
+
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	promptData := map[string]string{
+		"Path":     filePath,
+		"Language": ext[1:], // Remove leading dot
+		"Content":  content,
+	}
+
+	prompt, err := i.cfg.PromptMgr.Render(llm.FileSummaryPrompt, promptData)
+	if err != nil {
+		i.cfg.Logger.Debug("failed to render file summary prompt", "file", filePath, "error", err)
+		return ""
+	}
+
+	summary, err := llms.GenerateFromSinglePrompt(ctx, i.cfg.LLM, prompt)
+	if err != nil {
+		i.cfg.Logger.Debug("failed to generate file summary", "file", filePath, "error", err)
+		return ""
+	}
+
+	// Cache result
+	globalFileSummaryCache.mu.Lock()
+	globalFileSummaryCache.cache[contentHash] = summary
+	globalFileSummaryCache.mu.Unlock()
+
+	i.cfg.Logger.Debug("generated file summary", "file", filePath, "length", len(summary))
+
+	return summary
+}
+
+// hashContent generates a simple hash for content caching.
+func hashContent(content string) string {
+	// Simple hash for caching - use first/last chars and length
+	if len(content) < 100 {
+		return fmt.Sprintf("%d:%s", len(content), content)
+	}
+	return fmt.Sprintf("%d:%s...%s", len(content), content[:50], content[len(content)-50:])
 }
