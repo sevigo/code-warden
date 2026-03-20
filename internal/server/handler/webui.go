@@ -248,9 +248,8 @@ func (h *WebUIHandler) GetScanStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebUIHandler) TriggerScan(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	repoIDStr := chi.URLParam(r, "repoId")
-	var repoID int64
-	if _, err := fmt.Sscanf(repoIDStr, "%d", &repoID); err != nil {
+	repoID, err := parseRepoID(r)
+	if err != nil {
 		http.Error(w, "invalid repo id", http.StatusBadRequest)
 		return
 	}
@@ -266,101 +265,89 @@ func (h *WebUIHandler) TriggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	progress, _ := json.Marshal(ProgressInfo{
-		FilesTotal: 0,
-		FilesDone:  0,
-		Stage:      "scanning",
-	})
-
-	state := &storage.ScanState{
+	initialProgress, _ := json.Marshal(ProgressInfo{Stage: "scanning"})
+	if err := h.store.UpsertScanState(ctx, &storage.ScanState{
 		RepositoryID: repoID,
 		Status:       "scanning",
-		Progress:     progress,
-	}
-
-	if err := h.store.UpsertScanState(ctx, state); err != nil {
+		Progress:     initialProgress,
+	}); err != nil {
 		h.logger.Error("failed to create scan state", "error", err)
 		http.Error(w, "failed to trigger scan", http.StatusInternalServerError)
 		return
 	}
 
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-
-		scanResult, err := h.repoMgr.ScanLocalRepo(bgCtx, repo.ClonePath, repo.FullName, true)
-		if err != nil {
-			h.logger.Error("scan failed", "repo", repo.FullName, "error", err)
-			failProgress, _ := json.Marshal(ProgressInfo{Stage: "failed"})
-			failState := &storage.ScanState{
-				RepositoryID: repoID,
-				Status:       "failed",
-				Progress:     failProgress,
-			}
-			if uErr := h.store.UpsertScanState(bgCtx, failState); uErr != nil {
-				h.logger.Error("failed to update scan state to failed", "error", uErr)
-			}
-			return
-		}
-
-		repoConfig, err := config.LoadRepoConfig(scanResult.RepoPath)
-		if err != nil {
-			if errors.Is(err, config.ErrConfigNotFound) {
-				h.logger.Info("no .code-warden.yml found, using defaults", "repo", scanResult.RepoFullName)
-			} else {
-				h.logger.Warn("failed to parse .code-warden.yml, using defaults", "error", err, "repo", scanResult.RepoFullName)
-			}
-			repoConfig = core.DefaultRepoConfig()
-		}
-
-		repoRecord, err := h.store.GetRepositoryByID(bgCtx, repoID)
-		if err != nil {
-			h.logger.Error("failed to reload repo record after scan", "error", err)
-			failProgress, _ := json.Marshal(ProgressInfo{Stage: "failed"})
-			failState := &storage.ScanState{
-				RepositoryID: repoID,
-				Status:       "failed",
-				Progress:     failProgress,
-			}
-			_ = h.store.UpsertScanState(bgCtx, failState)
-			return
-		}
-
-		if err := h.ragService.SetupRepoContext(bgCtx, repoConfig, repoRecord, scanResult.RepoPath); err != nil {
-			h.logger.Error("RAG setup failed", "repo", repo.FullName, "error", err)
-			failProgress, _ := json.Marshal(ProgressInfo{Stage: "failed"})
-			failState := &storage.ScanState{
-				RepositoryID: repoID,
-				Status:       "failed",
-				Progress:     failProgress,
-			}
-			_ = h.store.UpsertScanState(bgCtx, failState)
-			return
-		}
-
-		artifactsJSON, _ := json.Marshal(ArtifactsInfo{
-			ChunksCount: 0,
-			IndexedAt:   time.Now().Format(time.RFC3339),
-		})
-		artifactsRaw := json.RawMessage(artifactsJSON)
-		doneProgress, _ := json.Marshal(ProgressInfo{Stage: "completed"})
-		doneState := &storage.ScanState{
-			RepositoryID: repoID,
-			Status:       "completed",
-			Progress:     doneProgress,
-			Artifacts:    &artifactsRaw,
-		}
-		if uErr := h.store.UpsertScanState(bgCtx, doneState); uErr != nil {
-			h.logger.Error("failed to update scan state to completed", "error", uErr)
-		}
-
-		if err := h.repoMgr.UpdateRepoSHA(bgCtx, repo.FullName, scanResult.HeadSHA); err != nil {
-			h.logger.Warn("failed to update repo SHA after scan", "error", err)
-		}
-	}()
+	// The goroutine must outlive the HTTP request, so we use a fresh context
+	// rather than r.Context() which is cancelled once the response is sent.
+	go h.runScan(repoID, repo) //nolint:gosec // intentional: scan outlives the request
 
 	w.WriteHeader(http.StatusAccepted)
 	h.json(w, map[string]string{"status": "scanning"})
+}
+
+// runScan performs the full RAG indexing pipeline in the background.
+// It owns its own context with a 30-minute timeout.
+func (h *WebUIHandler) runScan(repoID int64, repo *storage.Repository) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	if err := h.doScan(ctx, repoID, repo); err != nil {
+		h.logger.Error("scan failed", "repo", repo.FullName, "error", err)
+		h.setScanFailed(ctx, repoID)
+	}
+}
+
+func (h *WebUIHandler) doScan(ctx context.Context, repoID int64, repo *storage.Repository) error {
+	scanResult, err := h.repoMgr.ScanLocalRepo(ctx, repo.ClonePath, repo.FullName, true)
+	if err != nil {
+		return fmt.Errorf("scan local repo: %w", err)
+	}
+
+	repoConfig, err := config.LoadRepoConfig(scanResult.RepoPath)
+	if err != nil {
+		if errors.Is(err, config.ErrConfigNotFound) {
+			h.logger.Info("no .code-warden.yml found, using defaults", "repo", scanResult.RepoFullName)
+		} else {
+			h.logger.Warn("failed to parse .code-warden.yml, using defaults", "error", err, "repo", scanResult.RepoFullName)
+		}
+		repoConfig = core.DefaultRepoConfig()
+	}
+
+	repoRecord, err := h.store.GetRepositoryByID(ctx, repoID)
+	if err != nil {
+		return fmt.Errorf("reload repo record: %w", err)
+	}
+
+	if err := h.ragService.SetupRepoContext(ctx, repoConfig, repoRecord, scanResult.RepoPath); err != nil {
+		return fmt.Errorf("RAG setup: %w", err)
+	}
+
+	artifactsJSON, _ := json.Marshal(ArtifactsInfo{ChunksCount: 0, IndexedAt: time.Now().Format(time.RFC3339)})
+	artifactsRaw := json.RawMessage(artifactsJSON)
+	doneProgress, _ := json.Marshal(ProgressInfo{Stage: "completed"})
+	if err := h.store.UpsertScanState(ctx, &storage.ScanState{
+		RepositoryID: repoID,
+		Status:       "completed",
+		Progress:     doneProgress,
+		Artifacts:    &artifactsRaw,
+	}); err != nil {
+		h.logger.Error("failed to update scan state to completed", "error", err)
+	}
+
+	if err := h.repoMgr.UpdateRepoSHA(ctx, repo.FullName, scanResult.HeadSHA); err != nil {
+		h.logger.Warn("failed to update repo SHA after scan", "error", err)
+	}
+	return nil
+}
+
+func (h *WebUIHandler) setScanFailed(ctx context.Context, repoID int64) {
+	failProgress, _ := json.Marshal(ProgressInfo{Stage: "failed"})
+	if err := h.store.UpsertScanState(ctx, &storage.ScanState{
+		RepositoryID: repoID,
+		Status:       "failed",
+		Progress:     failProgress,
+	}); err != nil {
+		h.logger.Error("failed to update scan state to failed", "error", err)
+	}
 }
 
 func (h *WebUIHandler) Chat(w http.ResponseWriter, r *http.Request) {
