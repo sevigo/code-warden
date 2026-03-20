@@ -304,35 +304,49 @@ func (h *WebUIHandler) runScan(repoID int64, repo *storage.Repository) {
 	}
 }
 
+func (h *WebUIHandler) ensureRepoCloned(ctx context.Context, repo *storage.Repository) error {
+	cleanPath := filepath.Clean(repo.ClonePath)
+	_, err := os.Stat(cleanPath)
+	if err == nil {
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("stat clone path: %w", err)
+	}
+
+	h.logger.Info("Repository not found locally, cloning", "repo", repo.FullName, "path", cleanPath)
+
+	// 1. Determine which token to use
+	token := h.cfg.GitHub.Token
+	if isPlaceholderToken(token) {
+		token = ""
+	}
+	if repo.InstallationID > 0 {
+		_, instToken, err := github.CreateInstallationClient(ctx, h.cfg, repo.InstallationID, h.logger)
+		if err != nil {
+			h.logger.Warn("failed to create installation client for manual scan, falling back to config token",
+				"repo", repo.FullName,
+				"installation_id", repo.InstallationID,
+				"error", err)
+		} else {
+			token = instToken
+		}
+	}
+
+	cloneURL := fmt.Sprintf("https://github.com/%s.git", repo.FullName)
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0750); err != nil {
+		return fmt.Errorf("create parent dir: %w", err)
+	}
+	if _, err := h.gitClient.Clone(ctx, cloneURL, cleanPath, token); err != nil {
+		return fmt.Errorf("clone repository: %w", err)
+	}
+	return nil
+}
+
 func (h *WebUIHandler) doScan(ctx context.Context, repoID int64, repo *storage.Repository) error {
 	// Check if repo exists locally, clone if needed
-	if _, err := os.Stat(repo.ClonePath); os.IsNotExist(err) {
-		h.logger.Info("Repository not found locally, cloning", "repo", repo.FullName, "path", repo.ClonePath)
-
-		// 1. Determine which token to use
-		token := h.cfg.GitHub.Token
-		if isPlaceholderToken(token) {
-			token = ""
-		}
-		if repo.InstallationID > 0 {
-			_, instToken, err := github.CreateInstallationClient(ctx, h.cfg, repo.InstallationID, h.logger)
-			if err != nil {
-				h.logger.Warn("failed to create installation client for manual scan, falling back to config token",
-					"repo", repo.FullName,
-					"installation_id", repo.InstallationID,
-					"error", err)
-			} else {
-				token = instToken
-			}
-		}
-
-		cloneURL := fmt.Sprintf("https://github.com/%s.git", repo.FullName)
-		if err := os.MkdirAll(filepath.Dir(repo.ClonePath), 0750); err != nil {
-			return fmt.Errorf("create parent dir: %w", err)
-		}
-		if _, err := h.gitClient.Clone(ctx, cloneURL, repo.ClonePath, token); err != nil {
-			return fmt.Errorf("clone repository: %w", err)
-		}
+	if err := h.ensureRepoCloned(ctx, repo); err != nil {
+		return err
 	}
 
 	scanResult, err := h.repoMgr.ScanLocalRepo(ctx, repo.ClonePath, repo.FullName, true)

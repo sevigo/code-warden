@@ -156,20 +156,9 @@ func NewService(
 	}
 
 	// Create context packer with configurable token budget.
-	tokenizer := llm.AsTokenizer(gen)
-	contextPacker, err := contextpacker.New(tokenizer, tokenBudget,
-		contextpacker.WithTemplate(contextpacker.CompactTemplate),
-		contextpacker.WithLogger(logger),
-	)
+	contextPacker, err := newContextPacker(gen, tokenBudget, logger)
 	if err != nil {
-		logger.Warn("failed to create context packer with model tokenizer, using estimation fallback", "error", err)
-		// Fallback to estimation-based packer
-		contextPacker, err = contextpacker.New(llm.NewEstimatingTokenizer(), tokenBudget,
-			contextpacker.WithTemplate(contextpacker.CompactTemplate),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize context packer: %w", err)
-		}
+		return nil, err
 	}
 
 	qaCfg := questionpkg.Config{
@@ -243,6 +232,26 @@ func NewService(
 	r.reviewService = reviewpkg.NewService(reviewCfg)
 
 	return r, nil
+}
+
+func newContextPacker(gen llms.Model, tokenBudget int, logger *slog.Logger) (*contextpacker.Packer, error) {
+	tokenizer := llm.AsTokenizer(gen)
+	cp, err := contextpacker.New(tokenizer, tokenBudget,
+		contextpacker.WithTemplate(contextpacker.CompactTemplate),
+		contextpacker.WithLogger(logger),
+	)
+	if err == nil {
+		return cp, nil
+	}
+
+	logger.Warn("failed to create context packer with model tokenizer, using estimation fallback", "error", err)
+	cp, err = contextpacker.New(llm.NewEstimatingTokenizer(), tokenBudget,
+		contextpacker.WithTemplate(contextpacker.CompactTemplate),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize context packer: %w", err)
+	}
+	return cp, nil
 }
 
 // GetTextSplitter returns the configured text splitter.
