@@ -592,8 +592,13 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		defExtractor := NewDefinitionExtractor(i.cfg.ParserRegistry, i.cfg.Logger)
 		defDocs := defExtractor.ExtractDefinitions(ctx, fullPath, file, contentBytes)
 
-		// Generate sparse vectors for definition chunks
+		// Enrich definition chunks with file summary for better semantic retrieval
 		for idx := range defDocs {
+			if fileSummary != "" {
+				defDocs[idx].PageContent = defDocs[idx].PageContent + "\n\n[File Summary: " + fileSummary + "]"
+				defDocs[idx].Metadata["file_summary"] = fileSummary
+			}
+			// Generate sparse vectors for definition chunks
 			sparseVec, err := sparse.GenerateSparseVector(ctx, defDocs[idx].PageContent)
 			if err == nil {
 				defDocs[idx].Sparse = sparseVec
@@ -601,7 +606,7 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		}
 
 		allDocs = append(allDocs, defDocs...)
-		allDocs = append(allDocs, i.buildTOCDocs(ctx, file, defDocs)...)
+		allDocs = append(allDocs, i.buildTOCDocs(ctx, file, defDocs, fileSummary)...)
 	}
 
 	return allDocs
@@ -610,7 +615,7 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 // buildTOCDocs creates a file-level TOC chunk from definition docs and returns
 // it as a slice (empty if no definitions). Extracted to keep ProcessFile's
 // nesting depth within linter limits.
-func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schema.Document) []schema.Document {
+func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schema.Document, fileSummary string) []schema.Document {
 	if len(defDocs) == 0 {
 		return nil
 	}
@@ -618,6 +623,10 @@ func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schem
 	toc := buildTOCChunk(file, defDocs)
 	if toc == nil {
 		return nil
+	}
+	if fileSummary != "" {
+		toc.PageContent = toc.PageContent + "\n\n[File Summary: " + fileSummary + "]"
+		toc.Metadata["file_summary"] = fileSummary
 	}
 	if sparseVec, err := sparse.GenerateSparseVector(ctx, toc.PageContent); err == nil {
 		toc.Sparse = sparseVec
@@ -821,7 +830,7 @@ func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content str
 	globalFileSummaryCache.cache[contentHash] = summary
 	globalFileSummaryCache.mu.Unlock()
 
-	i.cfg.Logger.Debug("generated file summary", "file", filePath, "length", len(summary))
+	i.cfg.Logger.Info("generated file summary", "file", filePath, "summary", summary)
 
 	return summary
 }
