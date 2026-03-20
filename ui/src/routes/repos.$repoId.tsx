@@ -30,6 +30,7 @@ function StatusBadge({ status }: { status: ScanState['status'] | null | undefine
   }
   switch (status) {
     case 'scanning':
+    case 'in_progress':
     case 'pending':
       return (
         <Badge className="gap-1.5 bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/20">
@@ -89,7 +90,7 @@ export default function RepoDetail() {
     queryFn: () => api.repos.status(id),
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data && (data.status === 'scanning' || data.status === 'pending')) return 2000
+      if (data && (data.status === 'scanning' || data.status === 'in_progress' || data.status === 'pending')) return 2000
       return false
     },
     enabled: !!repoId,
@@ -129,7 +130,7 @@ export default function RepoDetail() {
   }
 
   const isCompleted = scanState?.status === 'completed'
-  const isScanning = scanState?.status === 'scanning' || scanState?.status === 'pending'
+  const isScanning = scanState?.status === 'scanning' || scanState?.status === 'in_progress' || scanState?.status === 'pending'
   const hasStats = stats && stats.chunks_count > 0
 
   const progressPercent =

@@ -23,6 +23,7 @@ function StatusBadge({ status }: { status: ScanState['status'] | null | undefine
   }
   switch (status) {
     case 'scanning':
+    case 'in_progress':
     case 'pending':
       return (
         <Badge className="gap-1.5 text-xs bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/20">
@@ -58,13 +59,13 @@ export default function RepoCard({ repo, onScan }: RepoCardProps) {
   const { data: scanState } = useQuery<ScanState | null>({
     queryKey: ['scanState', repo.id],
     queryFn: () => api.repos.status(repo.id),
-    refetchInterval: (query) =>
-      query.state.data?.status === 'scanning' || query.state.data?.status === 'pending'
-        ? 2000
-        : false,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status
+      return s === 'scanning' || s === 'in_progress' || s === 'pending' ? 2000 : false
+    },
   })
 
-  const isScanning = scanState?.status === 'scanning' || scanState?.status === 'pending'
+  const isScanning = scanState?.status === 'scanning' || scanState?.status === 'in_progress' || scanState?.status === 'pending'
   const isCompleted = scanState?.status === 'completed'
   const isFailed = scanState?.status === 'failed'
   const noScan = !scanState
