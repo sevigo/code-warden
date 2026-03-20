@@ -57,6 +57,9 @@ func (s *mockStore) GetAllReviewsForPR(_ context.Context, _ string, _ int) ([]*c
 func (s *mockStore) GetRepositoryByClonePath(_ context.Context, _ string) (*storage.Repository, error) {
 	return nil, nil
 }
+func (s *mockStore) GetRepositoryByID(_ context.Context, _ int64) (*storage.Repository, error) {
+	return nil, nil
+}
 func (s *mockStore) GetAllRepositories(_ context.Context) ([]*storage.Repository, error) {
 	return nil, nil
 }

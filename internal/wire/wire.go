@@ -41,7 +41,7 @@ import (
 func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	wire.Build(
 		app.NewApp,
-		server.NewServer,
+		server.NewServerWithStore,
 		config.LoadConfig,
 		db.NewDatabase,
 		storage.NewStore,

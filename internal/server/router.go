@@ -10,11 +10,19 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/rag"
+	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server/handler"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // NewRouter creates and configures a new HTTP router with middleware and API routes.
 func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
+	return NewRouterWithStore(cfg, dispatcher, nil, nil, nil, logger)
+}
+
+// NewRouterWithStore creates a router with storage for web UI endpoints.
+func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, logger *slog.Logger) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Configure middleware stack
@@ -34,7 +42,43 @@ func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.L
 	r.Route("/api/v1", func(r chi.Router) {
 		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
 		r.Post("/webhook/github", webhookHandler.Handle)
+
+		// Web UI API routes
+		if store != nil {
+			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, cfg, logger)
+
+			// Repository management
+			r.Get("/repos", webUIHandler.ListRepos)
+			r.Post("/repos", webUIHandler.RegisterRepo)
+			r.Get("/repos/{repoId}", webUIHandler.GetRepo)
+			r.Post("/repos/{repoId}/scan", webUIHandler.TriggerScan)
+			r.Get("/repos/{repoId}/status", webUIHandler.GetScanStatus)
+			r.Get("/repos/{repoId}/stats", webUIHandler.GetRepoStats)
+			r.Post("/repos/{repoId}/chat", webUIHandler.Chat)
+			r.Post("/repos/{repoId}/explain", webUIHandler.Explain)
+
+			// Real-time events
+			r.Get("/events", webUIHandler.SSEEvents)
+		}
 	})
+
+	// Serve static UI files (built React app)
+	if store != nil {
+		fs := http.FileServer(http.Dir("./ui/dist"))
+		r.Handle("/assets/*", fs)
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, "./ui/dist/index.html")
+		})
+		// SPA fallback - serve index.html for unmatched routes
+		r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+			// Don't fallback for API routes
+			if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+				http.NotFound(w, r)
+				return
+			}
+			http.ServeFile(w, r, "./ui/dist/index.html")
+		})
+	}
 
 	return r
 }

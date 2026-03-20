@@ -69,6 +69,7 @@ type Store interface {
 	CreateRepository(ctx context.Context, repo *Repository) error
 	GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error)
 	GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error)
+	GetRepositoryByID(ctx context.Context, id int64) (*Repository, error)
 	UpdateRepository(ctx context.Context, repo *Repository) error
 
 	GetAllRepositories(ctx context.Context) ([]*Repository, error)
@@ -229,6 +230,24 @@ func (s *postgresStore) GetRepositoryByClonePath(ctx context.Context, clonePath 
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to get repository by clone path %s: %w", clonePath, err)
+	}
+	return &repo, nil
+}
+
+// GetRepositoryByID retrieves a repository by its primary key ID.
+func (s *postgresStore) GetRepositoryByID(ctx context.Context, id int64) (*Repository, error) {
+	query := `
+		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, embedder_model_name, generated_context, context_updated_at, created_at, updated_at
+		FROM repositories
+		WHERE id = $1 AND deleted_at IS NULL`
+
+	var repo Repository
+	err := s.db.GetContext(ctx, &repo, query, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to get repository by id %d: %w", id, err)
 	}
 	return &repo, nil
 }

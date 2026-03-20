@@ -20,7 +20,7 @@ OPENCODE_PORT=4096
 OPENCODE_MCP_URL=http://127.0.0.1:8081/sse
 
 .DEFAULT_GOAL := all
-.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev
+.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev ui-deps build-ui dev-ui
 
 all: build
 
@@ -109,3 +109,20 @@ clean:
 clean-data:
 	@echo "Cleaning up data..."
 	@powershell -ExecutionPolicy Bypass -File ./scripts/cleanup.ps1
+
+# Web UI targets
+ui-deps:
+	@echo "Installing UI dependencies..."
+	@cd ui && npm install
+
+build-ui:
+	@echo "Building web UI..."
+	@cd ui && npm run build
+
+dev-ui:
+	@echo "Starting web UI development server..."
+	@cd ui && npm run dev
+
+# Full build including UI
+build-all: build build-ui
+	@echo "All binaries and UI built successfully"
