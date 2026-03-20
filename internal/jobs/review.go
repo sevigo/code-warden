@@ -652,7 +652,7 @@ func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *cor
 	switch {
 	case updateResult.IsInitialClone:
 		j.logger.Info("⚠️ Initial indexing required (fresh clone or reset state)", "repo", repo.FullName)
-		err := j.ragService.SetupRepoContext(ctx, repoConfig, repo, updateResult.RepoPath)
+		err := j.ragService.SetupRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, nil)
 		if err != nil {
 			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
 		}

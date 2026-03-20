@@ -293,7 +293,7 @@ func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResu
 	case syncResult.IsInitialClone:
 		timer.infof("Performing initial full indexing")
 		timer.infof("Collection: %s", collectionName)
-		if err := a.RAGService.SetupRepoContext(ctx, nil, repo, repoPath); err != nil {
+		if err := a.RAGService.SetupRepoContext(ctx, nil, repo, repoPath, nil); err != nil {
 			return fmt.Errorf("failed to setup repo context: %w", err)
 		}
 	case len(syncResult.FilesToAddOrUpdate) > 0 || len(syncResult.FilesToDelete) > 0:

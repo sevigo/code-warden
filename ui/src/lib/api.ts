@@ -12,8 +12,9 @@ export interface Repository {
 export interface ScanState {
   id: number
   repository_id: number
-  status: 'pending' | 'scanning' | 'completed' | 'failed' | 'not_indexed'
-  progress: {
+  // 'scanning'/'in_progress'/'pending' from web or prescan CLI; 'not_indexed' is UI-only (no scan state)
+  status: 'pending' | 'in_progress' | 'scanning' | 'completed' | 'failed' | 'not_indexed'
+  progress?: {
     files_total: number
     files_done: number
     stage: string

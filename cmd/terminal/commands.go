@@ -66,6 +66,7 @@ func scanRepoCmd(app *app.App, path, repoFullName string, force bool) tea.Cmd {
 				repoConfig,
 				repoRecord,
 				updateResult.RepoPath,
+				nil,
 			)
 		} else if len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0 {
 			err = app.RAGService.UpdateRepoContext(

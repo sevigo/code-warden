@@ -83,6 +83,7 @@ If the repository has never been indexed, it will perform an initial full scan.`
 				repoConfig,
 				repoRecord,
 				updateResult.RepoPath,
+				nil,
 			)
 
 		case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
