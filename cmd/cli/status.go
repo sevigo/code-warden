@@ -47,9 +47,13 @@ var statusCmd = &cobra.Command{
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 		fmt.Fprintln(w, "REPOSITORY\tLAST INDEXED SHA\tQDRANT COLLECTION\tLAST UPDATED")
 		for _, repo := range repos {
+			sha := repo.LastIndexedSHA
+			if len(sha) > 7 {
+				sha = sha[:7]
+			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 				repo.FullName,
-				repo.LastIndexedSHA[:7], // Short SHA
+				sha,
 				repo.QdrantCollectionName,
 				repo.UpdatedAt.Format(time.RFC822),
 			)
