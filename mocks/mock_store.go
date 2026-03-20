@@ -145,6 +145,21 @@ func (mr *MockStoreMockRecorder) GetRepositoryByClonePath(ctx, clonePath any) *g
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRepositoryByClonePath", reflect.TypeOf((*MockStore)(nil).GetRepositoryByClonePath), ctx, clonePath)
 }
 
+// GetRepositoryByID mocks base method.
+func (m *MockStore) GetRepositoryByID(ctx context.Context, id int64) (*storage.Repository, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRepositoryByID", ctx, id)
+	ret0, _ := ret[0].(*storage.Repository)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetRepositoryByID indicates an expected call of GetRepositoryByID.
+func (mr *MockStoreMockRecorder) GetRepositoryByID(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRepositoryByID", reflect.TypeOf((*MockStore)(nil).GetRepositoryByID), ctx, id)
+}
+
 // GetRepositoryByFullName mocks base method.
 func (m *MockStore) GetRepositoryByFullName(ctx context.Context, fullName string) (*storage.Repository, error) {
 	m.ctrl.T.Helper()

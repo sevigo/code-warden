@@ -10,11 +10,19 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/rag"
+	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server/handler"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // NewRouter creates and configures a new HTTP router with middleware and API routes.
 func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
+	return NewRouterWithStore(cfg, dispatcher, nil, nil, nil, logger)
+}
+
+// NewRouterWithStore creates a router with storage for web UI endpoints.
+func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, logger *slog.Logger) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Configure middleware stack
@@ -22,7 +30,6 @@ func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.L
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(60 * time.Second))
 
 	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -33,8 +40,47 @@ func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.L
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
-		r.Post("/webhook/github", webhookHandler.Handle)
+		// Short timeout for webhook delivery acknowledgement
+		r.With(middleware.Timeout(30*time.Second)).Post("/webhook/github", webhookHandler.Handle)
+
+		// Web UI API routes
+		if store != nil {
+			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, cfg, logger)
+
+			// Fast endpoints — short timeout is fine
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos", webUIHandler.ListRepos)
+			r.With(middleware.Timeout(30*time.Second)).Post("/repos", webUIHandler.RegisterRepo)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}", webUIHandler.GetRepo)
+			r.With(middleware.Timeout(30*time.Second)).Post("/repos/{repoId}/scan", webUIHandler.TriggerScan)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/status", webUIHandler.GetScanStatus)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/stats", webUIHandler.GetRepoStats)
+
+			// LLM endpoints — 10 min timeout (Ollama can be slow)
+			r.With(middleware.Timeout(10*time.Minute)).Post("/repos/{repoId}/chat", webUIHandler.Chat)
+			r.With(middleware.Timeout(10*time.Minute)).Post("/repos/{repoId}/explain", webUIHandler.Explain)
+
+			// SSE — no timeout, long-lived connection
+			r.Get("/events", webUIHandler.SSEEvents)
+		}
 	})
+
+	// Serve static UI files (built React app)
+	if store != nil {
+		fs := http.FileServer(http.Dir("./ui/dist"))
+		r.Handle("/assets/*", fs)
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, "./ui/dist/index.html")
+		})
+		// SPA fallback - serve index.html for unmatched routes
+		r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+			// Don't fallback for API routes
+			if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+				http.NotFound(w, r)
+				return
+			}
+			http.ServeFile(w, r, "./ui/dist/index.html")
+		})
+	}
 
 	return r
 }

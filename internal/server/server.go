@@ -11,6 +11,9 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/rag"
+	"github.com/sevigo/code-warden/internal/repomanager"
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // Server wraps an HTTP server with graceful shutdown capabilities.
@@ -22,7 +25,12 @@ type Server struct {
 
 // NewServer creates a new HTTP server with the given configuration and job dispatcher.
 func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *Server {
-	router := NewRouter(cfg, dispatcher, logger)
+	return NewServerWithStore(ctx, cfg, dispatcher, nil, nil, nil, logger)
+}
+
+// NewServerWithStore creates a new HTTP server with storage for web UI endpoints.
+func NewServerWithStore(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, logger *slog.Logger) *Server {
+	router := NewRouterWithStore(cfg, dispatcher, store, ragService, repoMgr, logger)
 
 	return &Server{
 		ctx: ctx,
