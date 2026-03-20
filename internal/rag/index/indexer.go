@@ -468,7 +468,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 // Returns code chunks and definition chunks.
 // Chunks are enriched with a file-level summary for better semantic retrieval.
 //
-//nolint:funlen,gocognit
+//nolint:funlen,gocyclo,gocognit,cyclop // file processing has inherent complexity from multiple metadata extraction paths
 func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
 	fullPath := filepath.Join(repoPath, file)
 
@@ -478,6 +478,15 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		i.cfg.Logger.Error("failed to read file for processing", "file", file, "error", err)
 		return nil
 	}
+
+	ext := strings.ToLower(filepath.Ext(file))
+
+	// Check if this is a README or documentation file
+	isReadme := strings.EqualFold(filepath.Base(file), "readme.md") ||
+		strings.EqualFold(filepath.Base(file), "readme.markdown") ||
+		strings.EqualFold(filepath.Base(file), "readme")
+	isRootReadme := isReadme && (filepath.Dir(file) == "." || filepath.Dir(file) == "")
+	isDocsFile := ext == ".md" || ext == ".markdown" || ext == ".rst" || ext == ".adoc"
 
 	// Ensure valid UTF-8 and create a document for the splitter.
 	validContent := strings.ToValidUTF8(string(contentBytes), "")
@@ -490,8 +499,6 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		i.cfg.Logger.Error("failed to split document with code-aware splitter", "file", file, "error", err)
 		return nil
 	}
-
-	ext := strings.ToLower(filepath.Ext(file))
 
 	// Generate file-level summary for better retrieval (LLM call, cached by content hash)
 	var fileSummary string
@@ -530,7 +537,13 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 			i.cfg.Logger.Debug("sparse vector generation failed for chunk, using dense only", "file", file, "chunk", idx, "error", err)
 		}
 
-		// Set chunk_type explicitly for code chunks
+		// Set chunk_type and metadata based on file type
+		if isDocsFile {
+			i.setDocsMetadata(&splitDocs[idx], file, isReadme, isRootReadme)
+			continue // Skip symbol extraction for docs
+		}
+
+		// Code file metadata
 		splitDocs[idx].Metadata["chunk_type"] = "code"
 		splitDocs[idx].Metadata["language"] = ext
 
