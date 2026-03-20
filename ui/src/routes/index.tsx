@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Shield, Plus } from 'lucide-react'
+import { Shield, Plus, Search } from 'lucide-react'
 import RepoCard from '@/components/RepoCard'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,6 +19,7 @@ function Dashboard() {
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [formError, setFormError] = useState('')
+  const [search, setSearch] = useState('')
 
   const { data: repos, isLoading } = useQuery<Repository[]>({
     queryKey: ['repos'],
@@ -69,27 +70,50 @@ function Dashboard() {
     }
   }
 
+  const filtered = repos?.filter((r) =>
+    search === '' || r.full_name.toLowerCase().includes(search.toLowerCase())
+  )
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-7">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-foreground">Repositories</h1>
-        <Button onClick={() => setShowAdd(true)}>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Repositories</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Manage and explore your indexed codebases
+          </p>
+        </div>
+        <Button onClick={() => setShowAdd(true)} className="shrink-0">
           <Plus className="h-4 w-4 mr-2" />
           Add Repository
         </Button>
       </div>
 
+      {/* Search bar — only show when there are repos */}
+      {repos && repos.length > 1 && (
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter repositories..."
+            className="w-full pl-9 pr-4 py-2.5 rounded-lg border border-border bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-primary text-sm placeholder:text-muted-foreground"
+          />
+        </div>
+      )}
+
       {/* Content */}
       {isLoading ? (
-        <div className="space-y-3">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-20 bg-card rounded-lg border border-border animate-pulse" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-24 bg-card rounded-xl border border-zinc-800 animate-pulse" />
           ))}
         </div>
-      ) : repos && repos.length > 0 ? (
-        <div className="space-y-3">
-          {repos.map((repo) => (
+      ) : filtered && filtered.length > 0 ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {filtered.map((repo) => (
             <RepoCard
               key={repo.id}
               repo={repo}
@@ -97,12 +121,18 @@ function Dashboard() {
             />
           ))}
         </div>
+      ) : repos && repos.length > 0 ? (
+        <div className="py-16 text-center text-muted-foreground text-sm">
+          No repositories match your search.
+        </div>
       ) : (
         /* Empty state */
         <div className="flex flex-col items-center justify-center py-20 text-center">
-          <Shield className="h-12 w-12 text-muted-foreground mb-4" />
-          <h2 className="text-lg font-semibold mb-1">No repositories yet</h2>
-          <p className="text-muted-foreground text-sm mb-8 max-w-sm">
+          <div className="h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-5">
+            <Shield className="h-8 w-8 text-primary" />
+          </div>
+          <h2 className="text-xl font-semibold mb-2">No repositories yet</h2>
+          <p className="text-muted-foreground text-sm mb-8 max-w-md">
             Add a local repository to start exploring your codebase with AI-powered insights.
           </p>
           <div className="text-left space-y-3 mb-8 w-full max-w-sm">
@@ -112,20 +142,23 @@ function Dashboard() {
               'Ask questions about your codebase',
             ].map((step, i) => (
               <div key={i} className="flex items-start gap-3">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-medium">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-semibold">
                   {i + 1}
                 </span>
                 <span className="text-sm text-muted-foreground pt-0.5">{step}</span>
               </div>
             ))}
           </div>
-          <Button onClick={() => setShowAdd(true)}>Add your first repository</Button>
+          <Button onClick={() => setShowAdd(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            Add your first repository
+          </Button>
         </div>
       )}
 
       {/* Add Repository Dialog */}
       <Dialog open={showAdd} onOpenChange={handleDialogChange}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Add Repository</DialogTitle>
           </DialogHeader>
@@ -139,7 +172,7 @@ function Dashboard() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="owner/repo"
-                className="w-full px-3 py-2 rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                className="w-full px-3 py-2.5 rounded-lg border border-border bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary text-sm placeholder:text-muted-foreground"
                 autoFocus
               />
             </div>
@@ -152,11 +185,11 @@ function Dashboard() {
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
                 placeholder="/path/to/repository"
-                className="w-full px-3 py-2 rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                className="w-full px-3 py-2.5 rounded-lg border border-border bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary text-sm placeholder:text-muted-foreground font-mono"
               />
             </div>
             {formError && (
-              <p className="text-sm text-red-400 bg-red-500/10 rounded-md px-3 py-2">{formError}</p>
+              <p className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2.5">{formError}</p>
             )}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => handleDialogChange(false)}>
