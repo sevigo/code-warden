@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -210,6 +211,10 @@ func (h *WebUIHandler) RegisterRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.CreateRepository(ctx, repo); err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+			http.Error(w, fmt.Sprintf("repository %q already exists", req.FullName), http.StatusConflict)
+			return
+		}
 		h.logger.Error("failed to create repository", "error", err)
 		http.Error(w, "failed to create repository", http.StatusInternalServerError)
 		return
