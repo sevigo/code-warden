@@ -36,7 +36,7 @@ import (
 
 // Service is the main RAG pipeline interface for indexing, review, and Q&A.
 type Service interface {
-	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error
+	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, progressFn indexpkg.ProgressFunc) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
@@ -377,8 +377,8 @@ func (r *ragService) ExplainPath(ctx context.Context, collectionName, embedderMo
 	return b.String(), nil
 }
 
-func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
-	err := r.indexer.SetupRepoContext(ctx, repoConfig, repo, repoPath)
+func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, progressFn indexpkg.ProgressFunc) error {
+	err := r.indexer.SetupRepoContext(ctx, repoConfig, repo, repoPath, progressFn)
 	if err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sevigo/goframe/documentloaders"
@@ -40,6 +41,12 @@ func New(cfg Config) *Indexer {
 	return &Indexer{cfg: cfg}
 }
 
+// ProgressFunc is called periodically during indexing with the number of
+// files processed so far and the total discovered so far (total grows as
+// the file stream is consumed, so it may increase over time).
+// Implementations must be safe to call from multiple goroutines.
+type ProgressFunc func(done, total int)
+
 // SetupRepoContext indexes a repository for the first time or re-indexes
 // using smart scan (file-hash based skipping).
 //
@@ -49,7 +56,7 @@ func New(cfg Config) *Indexer {
 // the full-index and incremental-update paths.
 //
 //nolint:cyclop,gocyclo,gocognit,funlen // orchestrates complex smart-scan workflow
-func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string) error {
+func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, progressFn ProgressFunc) error {
 	i.cfg.Logger.Info("performing smart indexing with GoFrame GitLoader",
 		"path", repoPath,
 		"collection", repo.QdrantCollectionName,
@@ -92,6 +99,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	var processedCount int
 	var skippedCount int
 	var mu sync.Mutex
+	var totalSeen int64 // atomically incremented as files are discovered
 
 	// Keep track of all files processed by the loader to identify deletions later
 	filesProcessedByLoader := make(map[string]struct{})
@@ -179,6 +187,8 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	var allSkipped int
 	var resultsMu sync.Mutex
 
+	const progressInterval = 10 // report every N files to avoid excessive DB writes
+
 	collectorDone := make(chan struct{})
 	go func() {
 		defer close(collectorDone)
@@ -209,7 +219,14 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 				batchDocs = batchDocs[:0]
 				batchFiles = batchFiles[:0]
 			}
+
+			done := allProcessed + allSkipped
 			resultsMu.Unlock()
+
+			// Report progress periodically to avoid hammering the caller
+			if progressFn != nil && done%progressInterval == 0 {
+				progressFn(done, int(atomic.LoadInt64(&totalSeen)))
+			}
 		}
 	}()
 
@@ -227,6 +244,8 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 				continue
 			}
 			seen[source] = struct{}{}
+
+			atomic.AddInt64(&totalSeen, 1)
 
 			filesProcessedByLoaderMu.Lock()
 			filesProcessedByLoader[source] = struct{}{}

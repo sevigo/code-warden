@@ -15,6 +15,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/rag"
+	indexpkg "github.com/sevigo/code-warden/internal/rag/index"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -317,7 +318,8 @@ func (h *WebUIHandler) doScan(ctx context.Context, repoID int64, repo *storage.R
 		return fmt.Errorf("reload repo record: %w", err)
 	}
 
-	if err := h.ragService.SetupRepoContext(ctx, repoConfig, repoRecord, scanResult.RepoPath); err != nil {
+	progressFn := h.makeScanProgressFn(ctx, repoID)
+	if err := h.ragService.SetupRepoContext(ctx, repoConfig, repoRecord, scanResult.RepoPath, progressFn); err != nil {
 		return fmt.Errorf("RAG setup: %w", err)
 	}
 
@@ -347,6 +349,27 @@ func (h *WebUIHandler) setScanFailed(ctx context.Context, repoID int64) {
 		Progress:     failProgress,
 	}); err != nil {
 		h.logger.Error("failed to update scan state to failed", "error", err)
+	}
+}
+
+// makeScanProgressFn returns a ProgressFunc that writes indexing progress to
+// scan_state every time it is called (the indexer calls it every ~10 files).
+// Uses a detached background context so the write survives after the request
+// context is cancelled (scan runs in a goroutine that owns its own context).
+func (h *WebUIHandler) makeScanProgressFn(ctx context.Context, repoID int64) indexpkg.ProgressFunc {
+	return func(done, total int) {
+		p, _ := json.Marshal(ProgressInfo{
+			Stage:      "indexing",
+			FilesDone:  done,
+			FilesTotal: total,
+		})
+		if err := h.store.UpsertScanState(ctx, &storage.ScanState{
+			RepositoryID: repoID,
+			Status:       "scanning",
+			Progress:     p,
+		}); err != nil {
+			h.logger.Warn("failed to write scan progress", "error", err)
+		}
 	}
 }
 

@@ -59,7 +59,7 @@ func TestSetupRepoContext_Basic(t *testing.T) {
 	}
 	indexer := New(cfg)
 
-	err = indexer.SetupRepoContext(context.Background(), nil, repo, repoDir)
+	err = indexer.SetupRepoContext(context.Background(), nil, repo, repoDir, nil)
 	assert.NoError(t, err)
 }
 
@@ -98,7 +98,7 @@ func TestSetupRepoContext_SmartScan(t *testing.T) {
 	}
 	indexer := New(cfg)
 
-	err = indexer.SetupRepoContext(context.Background(), nil, repo, repoDir)
+	err = indexer.SetupRepoContext(context.Background(), nil, repo, repoDir, nil)
 	assert.NoError(t, err)
 }
 
@@ -138,7 +138,7 @@ func TestSetupRepoContext_Pruning(t *testing.T) {
 	}
 	indexer := New(cfg)
 
-	err := indexer.SetupRepoContext(context.Background(), nil, repo, repoDir)
+	err := indexer.SetupRepoContext(context.Background(), nil, repo, repoDir, nil)
 	assert.NoError(t, err)
 }
 

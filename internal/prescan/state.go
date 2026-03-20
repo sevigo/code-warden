@@ -20,8 +20,8 @@ const (
 )
 
 type Progress struct {
-	TotalFiles     int             `json:"total_files"`
-	ProcessedFiles int             `json:"processed_files"`
+	TotalFiles     int             `json:"files_total"`
+	ProcessedFiles int             `json:"files_done"`
 	Files          map[string]bool `json:"files"` // map[filepath]processed
 	LastUpdated    time.Time       `json:"last_updated"`
 }
