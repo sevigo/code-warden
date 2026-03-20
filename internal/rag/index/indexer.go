@@ -73,6 +73,27 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	finalExcludeDirs := BuildExcludeDirs(repoConfig)
 	startTime := time.Now()
 
+	// Count total files upfront for accurate progress reporting
+	totalFiles := 0
+	filepath.WalkDir(repoPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		// Quick filter for common exclusions
+		name := d.Name()
+		if strings.HasPrefix(name, ".") && name != "." {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() {
+			totalFiles++
+		}
+		return nil
+	})
+	i.cfg.Logger.Info("counted files for indexing", "total", totalFiles)
+
 	// Smart Scan: Fetch existing file states for fast skipping
 	existingFiles, err := i.cfg.Store.GetFilesForRepo(ctx, repo.ID)
 	if err != nil {
@@ -101,10 +122,9 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	}
 
 	scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
-	var processedCount int
-	var skippedCount int
-	var mu sync.Mutex
-	var totalSeen int64 // atomically incremented as files are discovered
+	var processedCount int64 // atomic counter for progress
+	var skippedCount int64   // atomic counter for progress
+	var totalSeen int64      // atomically incremented as files are discovered
 
 	// Keep track of all files processed by the loader to identify deletions later
 	filesProcessedByLoader := make(map[string]struct{})
@@ -125,6 +145,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		fileToUpdate storage.FileRecord
 		processed    bool
 		skipped      bool
+		filePath     string // for progress reporting
 	}
 
 	// Use larger buffer to prevent pipeline deadlock
@@ -162,7 +183,13 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 					// Skip unchanged files
 					if hash != "" {
 						if rec, exists := existingFilesCopy[work.file]; exists && rec.FileHash == hash {
-							resultChan <- fileResult{processed: true, skipped: true}
+							// Report progress for skipped file
+							if progressFn != nil {
+								done := int(atomic.LoadInt64(&processedCount) + atomic.LoadInt64(&skippedCount) + 1)
+								progressFn(done, totalFiles)
+							}
+							atomic.AddInt64(&skippedCount, 1)
+							resultChan <- fileResult{processed: true, skipped: true, filePath: work.file}
 							continue
 						}
 					}
@@ -181,16 +208,15 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 						}
 					}
 
-					resultChan <- fileResult{docsToInsert: docs, fileToUpdate: fileRec, processed: true}
+					resultChan <- fileResult{docsToInsert: docs, fileToUpdate: fileRec, processed: true, filePath: work.file}
+					atomic.AddInt64(&processedCount, 1)
 				}
 			}
 		}()
 	}
 
 	// Start result collector goroutine to prevent deadlock
-	var allProcessed int
-	var allSkipped int
-	var resultsMu sync.Mutex
+	resultsMu := sync.Mutex{}
 
 	const progressInterval = 10 // report every N files to avoid excessive DB writes
 
@@ -199,13 +225,6 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		defer close(collectorDone)
 		for res := range resultChan {
 			resultsMu.Lock()
-			if res.skipped {
-				allSkipped++
-			}
-			if res.processed {
-				allProcessed++
-			}
-
 			// Accumulate for batch insert
 			batchDocs = append(batchDocs, res.docsToInsert...)
 			if res.fileToUpdate.FilePath != "" {
@@ -225,10 +244,10 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 				batchFiles = batchFiles[:0]
 			}
 
-			done := allProcessed + allSkipped
 			resultsMu.Unlock()
 
 			// Report progress periodically to avoid hammering the caller
+			done := int(atomic.LoadInt64(&processedCount) + atomic.LoadInt64(&skippedCount))
 			if progressFn != nil && done%progressInterval == 0 {
 				progressFn(done, int(atomic.LoadInt64(&totalSeen)))
 			}
@@ -280,16 +299,6 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
 			i.cfg.Logger.Error("failed to update file state in final DB batch", "error", err)
 		}
-	}
-
-	// Update counts
-	mu.Lock()
-	processedCount = allProcessed
-	skippedCount = allSkipped
-	mu.Unlock()
-
-	if err != nil {
-		return fmt.Errorf("repository ingestion failed: %w", err)
 	}
 
 	// Cleanup: Delete records for files that are genuinely absent from disk AND were not processed by loader.
