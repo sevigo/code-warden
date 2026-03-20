@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/google/wire"
@@ -301,13 +300,13 @@ func provideGlobalMCPServer(ctx context.Context, cfg *config.Config, logger *slo
 		"workspace", cfg.Agent.DefaultWorkspace,
 		"repo", cfg.Agent.DefaultWorkspaceRepo)
 
-	repo, err := getOrCreateDefaultRepo(ctx, store, cfg.Agent.DefaultWorkspaceRepo, cfg.Agent.DefaultWorkspace, cfg.AI.EmbedderModel, logger)
+	repo, err := getOrCreateDefaultRepo(ctx, store, cfg.Agent.DefaultWorkspaceRepo, cfg.Agent.DefaultWorkspace, logger)
 	if err != nil {
 		logger.Error("Failed to setup default workspace", "error", err)
 		return nil, fmt.Errorf("failed to setup default workspace: %w", err)
 	}
 
-	scopedStore := vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+	scopedStore := vectorStore.ForRepo(repo.QdrantCollectionName, cfg.AI.EmbedderModel)
 
 	standaloneCfg := &globalmcp.StandaloneConfig{
 		Store:       store,
@@ -320,7 +319,7 @@ func provideGlobalMCPServer(ctx context.Context, cfg *config.Config, logger *slo
 	return globalmcp.NewStandaloneServer(cfg, logger, registry, standaloneCfg), nil
 }
 
-func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullName, repoPath, embedderModel string, logger *slog.Logger) (*storage.Repository, error) {
+func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullName, repoPath string, logger *slog.Logger) (*storage.Repository, error) {
 	repo, err := store.GetRepositoryByFullName(ctx, repoFullName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check for existing repository: %w", err)
@@ -333,12 +332,11 @@ func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullNa
 
 	logger.Info("Creating new repository record for default workspace", "repo", repoFullName)
 
-	collectionName := generateCollectionName(repoFullName, embedderModel)
+	collectionName := repomanager.GenerateCollectionName(repoFullName)
 	repo = &storage.Repository{
 		FullName:             repoFullName,
 		ClonePath:            repoPath,
 		QdrantCollectionName: collectionName,
-		EmbedderModelName:    embedderModel,
 	}
 
 	if err := store.CreateRepository(ctx, repo); err != nil {
@@ -346,11 +344,6 @@ func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullNa
 	}
 
 	return repo, nil
-}
-
-func generateCollectionName(repoFullName, embedderModel string) string {
-	sanitized := strings.ReplaceAll(repoFullName, "/", "_")
-	return fmt.Sprintf("%s_%s", sanitized, embedderModel)
 }
 
 func provideWorkspaceRegistry(logger *slog.Logger) *globalmcp.WorkspaceRegistry {

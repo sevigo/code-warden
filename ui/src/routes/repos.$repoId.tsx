@@ -1,76 +1,48 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
+import { motion } from 'framer-motion'
 import {
   ArrowLeft,
   MessageSquare,
   GitBranch,
   RefreshCw,
-  CheckCircle2,
-  XCircle,
-  Clock,
   Layers,
   FileCode,
   Hash,
   CalendarDays,
+  Loader2,
 } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
+import StatusBadge from '@/components/StatusBadge'
 import { api } from '@/lib/api'
 import type { Repository, ScanState, RepoStats } from '@/lib/api'
 
-function StatusBadge({ status }: { status: ScanState['status'] | null | undefined }) {
-  if (!status) {
-    return (
-      <Badge variant="secondary" className="gap-1.5">
-        <Clock className="h-3 w-3" />
-        Not Indexed
-      </Badge>
-    )
-  }
-  switch (status) {
-    case 'scanning':
-    case 'in_progress':
-    case 'pending':
-      return (
-        <Badge className="gap-1.5 bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/20">
-          <RefreshCw className="h-3 w-3 animate-spin" />
-          Indexing
-        </Badge>
-      )
-    case 'completed':
-      return (
-        <Badge className="gap-1.5 bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20">
-          <CheckCircle2 className="h-3 w-3" />
-          Ready
-        </Badge>
-      )
-    case 'failed':
-      return (
-        <Badge variant="destructive" className="gap-1.5">
-          <XCircle className="h-3 w-3" />
-          Failed
-        </Badge>
-      )
-    default:
-      return (
-        <Badge variant="secondary" className="gap-1.5">
-          <Clock className="h-3 w-3" />
-          Not Indexed
-        </Badge>
-      )
-  }
+const stagger = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.06 } },
 }
 
-function StatCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
+const fadeUp = {
+  hidden: { opacity: 0, y: 12 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.35 } },
+}
+
+function BentoStat({ icon: Icon, label, value, accent, large }: {
+  icon: React.ElementType; label: string; value: string; accent: string; large?: boolean
+}) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-card p-4">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
-        <Icon className="h-3.5 w-3.5" />
-        {label}
+    <motion.div
+      variants={fadeUp}
+      className={`rounded-2xl bg-card p-5 flex flex-col justify-between ${large ? 'md:col-span-2 md:row-span-1' : ''}`}
+    >
+      <div className={`h-9 w-9 rounded-xl flex items-center justify-center mb-4 ${accent}`}>
+        <Icon className="h-4.5 w-4.5" />
       </div>
-      <p className="text-xl font-semibold text-foreground font-mono">{value}</p>
-    </div>
+      <div>
+        <p className={`font-bold text-foreground font-mono ${large ? 'text-3xl' : 'text-2xl'}`}>{value}</p>
+        <p className="text-xs text-muted-foreground mt-1">{label}</p>
+      </div>
+    </motion.div>
   )
 }
 
@@ -96,7 +68,7 @@ export default function RepoDetail() {
     enabled: !!repoId,
   })
 
-  const { data: stats } = useQuery<RepoStats>({
+  const { data: stats, isLoading: statsLoading } = useQuery<RepoStats>({
     queryKey: ['stats', repoId],
     queryFn: () => api.repos.stats(parseInt(repoId!)),
     enabled: !!repoId,
@@ -111,20 +83,20 @@ export default function RepoDetail() {
 
   if (repoLoading) {
     return (
-      <div className="space-y-6 animate-pulse">
-        <div className="h-8 bg-card rounded-lg w-72" />
-        <div className="h-40 bg-card rounded-xl border border-zinc-800" />
+      <div className="flex flex-col items-center justify-center py-32 gap-3">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground">Loading repository...</p>
       </div>
     )
   }
 
   if (!repo) {
     return (
-      <div>
+      <div className="flex flex-col items-center justify-center py-32 text-center gap-4 animate-fade-in">
         <p className="text-muted-foreground">Repository not found.</p>
-        <Link to="/" className="text-primary hover:underline text-sm mt-2 block">
-          ← Back to repositories
-        </Link>
+        <Button asChild variant="outline">
+          <Link to="/">← Back</Link>
+        </Button>
       </div>
     )
   }
@@ -141,131 +113,154 @@ export default function RepoDetail() {
   const [org, repoName] = repo.full_name.split('/')
 
   return (
-    <div className="space-y-7">
+    <motion.div
+      className="space-y-8"
+      initial="hidden"
+      animate="show"
+      variants={stagger}
+    >
       {/* Header */}
-      <div className="flex items-center gap-4">
+      <motion.div variants={fadeUp} className="flex items-center gap-4">
         <Link
           to="/"
-          className="p-2 rounded-lg hover:bg-muted text-muted-foreground transition-colors shrink-0"
+          className="p-2 rounded-lg hover:bg-accent/50 text-muted-foreground transition-colors shrink-0"
+          aria-label="Back"
         >
           <ArrowLeft className="h-5 w-5" />
         </Link>
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="h-10 w-10 rounded-xl bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
-            <span className="text-xs font-bold text-zinc-300 font-mono">
-              {org?.slice(0, 2).toUpperCase()}
-            </span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-bold text-foreground">
+              <span className="text-muted-foreground font-normal">{org}/</span>{repoName}
+            </h1>
+            <StatusBadge status={scanState?.status} />
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl font-bold text-foreground">
-                <span className="text-muted-foreground font-normal">{org}/</span>{repoName}
-              </h1>
-              <StatusBadge status={scanState?.status} />
-            </div>
-            <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{repo.clone_path}</p>
-          </div>
+          <p className="text-xs text-muted-foreground/60 font-mono truncate mt-1">{repo.clone_path}</p>
         </div>
         <Button
           variant="outline"
           size="sm"
           onClick={() => triggerScan.mutate()}
           disabled={isScanning || triggerScan.isPending}
-          className="shrink-0"
+          className="shrink-0 rounded-lg"
         >
           <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isScanning ? 'animate-spin' : ''}`} />
           {isScanning ? 'Scanning...' : 'Re-scan'}
         </Button>
-      </div>
+      </motion.div>
 
-      {/* Scan progress */}
+      {/* Active scan progress */}
       {isScanning && scanState && (
-        <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-5 space-y-3">
-          <div className="flex items-center gap-2 text-sm text-blue-300">
-            <RefreshCw className="h-4 w-4 animate-spin shrink-0" />
-            <span className="font-medium">{scanState.progress?.stage || 'Scanning in progress...'}</span>
+        <motion.div variants={fadeUp} className="rounded-2xl bg-blue-500/5 p-6 space-y-4">
+          <div className="flex items-center gap-2.5">
+            <div className="h-8 w-8 rounded-lg bg-blue-500/15 flex items-center justify-center animate-glow-pulse">
+              <RefreshCw className="h-4 w-4 text-blue-400 animate-spin" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-foreground">{scanState.progress?.stage || 'Scanning in progress...'}</p>
+              {scanState.progress?.current_file && (
+                <p className="text-xs text-muted-foreground/60 font-mono truncate">{scanState.progress.current_file}</p>
+              )}
+            </div>
           </div>
-          {scanState.progress?.current_file && (
-            <p className="text-xs text-blue-400/60 font-mono truncate pl-6">
-              {scanState.progress.current_file}
-            </p>
-          )}
-          <Progress value={progressPercent > 0 ? progressPercent : undefined} className="h-1.5" />
+          <div className="h-1.5 rounded-full bg-blue-500/10 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-blue-400 transition-all duration-500"
+              style={{ width: progressPercent > 0 ? `${progressPercent}%` : '15%' }}
+            />
+          </div>
           {scanState.progress && scanState.progress.files_total > 0 && (
-            <p className="text-xs text-blue-400/60 pl-6">
-              {scanState.progress.files_done.toLocaleString()} / {scanState.progress.files_total.toLocaleString()} files
-              {progressPercent > 0 && <span className="ml-2 text-blue-300">{progressPercent}%</span>}
+            <p className="text-xs text-muted-foreground">
+              {scanState.progress.files_done.toLocaleString()} / {scanState.progress.files_total.toLocaleString()} files indexed
+              {progressPercent > 0 && <span className="ml-2 text-blue-400 font-medium">{progressPercent}%</span>}
             </p>
           )}
-        </div>
+        </motion.div>
       )}
 
       {/* Not indexed CTA */}
       {!scanState && !isScanning && (
-        <div className="rounded-xl border border-dashed border-zinc-700 bg-zinc-900/50 p-10 text-center">
-          <div className="h-14 w-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
-            <Layers className="h-7 w-7 text-primary" />
+        <motion.div variants={fadeUp} className="rounded-2xl bg-card p-10 text-center">
+          <div className="relative mx-auto mb-5 w-fit">
+            <div className="absolute inset-0 rounded-2xl bg-primary/15 blur-xl scale-150" />
+            <div className="relative h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+              <Layers className="h-8 w-8 text-primary" />
+            </div>
           </div>
           <h2 className="text-lg font-semibold mb-2">This repository hasn't been indexed yet</h2>
           <p className="text-muted-foreground text-sm mb-6 max-w-sm mx-auto">
-            Run the initial scan to index the codebase and enable AI-powered exploration and Q&amp;A.
+            Run the initial scan to enable AI-powered exploration and Q&amp;A.
           </p>
-          <Button onClick={() => triggerScan.mutate()} disabled={triggerScan.isPending} size="lg">
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Run Initial Scan
+          <Button onClick={() => triggerScan.mutate()} disabled={triggerScan.isPending} size="lg" className="rounded-xl px-8">
+            {triggerScan.isPending ? (
+              <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Starting...</>
+            ) : (
+              <><RefreshCw className="h-4 w-4 mr-2" />Run Initial Scan</>
+            )}
           </Button>
-        </div>
+        </motion.div>
       )}
 
-      {/* Stats row */}
-      {isCompleted && hasStats && (
+      {/* Bento stats */}
+      {isCompleted && statsLoading && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard icon={Layers} label="Chunks" value={stats.chunks_count.toLocaleString()} />
-          <StatCard icon={FileCode} label="Files indexed" value={stats.files_count.toLocaleString()} />
-          <StatCard
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="rounded-2xl bg-card p-5 h-28 animate-shimmer" />
+          ))}
+        </div>
+      )}
+      {isCompleted && hasStats && (
+        <motion.div variants={stagger} className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <BentoStat icon={FileCode} label="Files indexed" value={stats.files_count.toLocaleString()} accent="bg-sky-500/10 text-sky-400" large />
+          <BentoStat icon={Layers} label="Chunks" value={stats.chunks_count.toLocaleString()} accent="bg-violet-500/10 text-violet-400" />
+          <BentoStat
             icon={Hash}
             label="Last SHA"
             value={stats.last_indexed_sha ? stats.last_indexed_sha.slice(0, 7) : '—'}
+            accent="bg-amber-500/10 text-amber-400"
           />
-          <StatCard
+          <BentoStat
             icon={CalendarDays}
             label="Last scan"
             value={stats.last_scan_date ? new Date(stats.last_scan_date).toLocaleDateString() : '—'}
+            accent="bg-emerald-500/10 text-emerald-400"
           />
-        </div>
+        </motion.div>
       )}
 
       {/* Action cards */}
       {isCompleted && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <motion.div variants={stagger} className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Explore with AI */}
-          <div className="rounded-xl border border-zinc-800 bg-card p-6 flex flex-col gap-4 hover:border-primary/40 transition-colors">
-            <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-                <MessageSquare className="h-5 w-5 text-primary" />
+          <motion.div variants={fadeUp}>
+            <Link
+              to={`/repos/${repoId}/chat`}
+              className="block rounded-2xl bg-card p-6 hover:shadow-lg hover:shadow-primary/5 transition-all duration-200 group h-full"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
+                  <MessageSquare className="h-5 w-5 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-foreground">Explore with AI</h3>
+                  <p className="text-xs text-muted-foreground">Chat about your codebase</p>
+                </div>
               </div>
-              <div>
-                <h3 className="font-semibold text-foreground">Explore with AI</h3>
-                <p className="text-xs text-muted-foreground">Chat about your codebase</p>
-              </div>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Ask questions about architecture, patterns, and functionality. Use{' '}
-              <code className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">/explain &lt;path&gt;</code>{' '}
-              to get architectural context for any file or directory.
-            </p>
-            <Button asChild className="w-full mt-auto">
-              <Link to={`/repos/${repoId}/chat`}>
-                <MessageSquare className="h-4 w-4 mr-2" />
-                Start Chat
-              </Link>
-            </Button>
-          </div>
+              <p className="text-sm text-muted-foreground mb-5">
+                Ask about architecture, patterns, functionality. Use{' '}
+                <code className="font-mono text-xs bg-accent/50 px-1.5 py-0.5 rounded text-foreground">/explain &lt;path&gt;</code>{' '}
+                for file context.
+              </p>
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-primary group-hover:gap-2.5 transition-all">
+                Start Chat <ArrowLeft className="h-4 w-4 rotate-180" />
+              </span>
+            </Link>
+          </motion.div>
 
-          {/* Index info */}
-          <div className="rounded-xl border border-zinc-800 bg-card p-6 flex flex-col gap-4">
-            <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-xl bg-muted flex items-center justify-center shrink-0">
+          {/* Repository info */}
+          <motion.div variants={fadeUp} className="rounded-2xl bg-card p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="h-10 w-10 rounded-xl bg-accent/50 flex items-center justify-center shrink-0">
                 <GitBranch className="h-5 w-5 text-muted-foreground" />
               </div>
               <div>
@@ -273,19 +268,19 @@ export default function RepoDetail() {
                 <p className="text-xs text-muted-foreground">Index details</p>
               </div>
             </div>
-            <div className="space-y-3 text-sm flex-1">
-              <div className="flex justify-between items-center py-2 border-b border-zinc-800">
+            <div className="space-y-0 text-sm">
+              <div className="flex justify-between items-center py-3 border-b border-border/30">
                 <span className="text-muted-foreground">Full name</span>
-                <span className="font-medium font-mono text-xs">{repo.full_name}</span>
+                <span className="font-medium font-mono text-xs text-foreground">{repo.full_name}</span>
               </div>
-              <div className="flex justify-between items-center py-2 border-b border-zinc-800">
-                <span className="text-muted-foreground">Path</span>
-                <code className="font-mono text-xs text-zinc-400 max-w-[200px] truncate text-right">{repo.clone_path}</code>
+              <div className="flex justify-between items-center py-3 border-b border-border/30 gap-4">
+                <span className="text-muted-foreground shrink-0">Path</span>
+                <code className="font-mono text-xs text-muted-foreground truncate">{repo.clone_path}</code>
               </div>
               {repo.last_indexed_sha && (
-                <div className="flex justify-between items-center py-2">
+                <div className="flex justify-between items-center py-3">
                   <span className="text-muted-foreground">Indexed SHA</span>
-                  <code className="font-mono text-xs">{repo.last_indexed_sha.slice(0, 12)}</code>
+                  <code className="font-mono text-xs text-foreground">{repo.last_indexed_sha.slice(0, 12)}</code>
                 </div>
               )}
             </div>
@@ -294,14 +289,17 @@ export default function RepoDetail() {
               size="sm"
               onClick={() => triggerScan.mutate()}
               disabled={triggerScan.isPending}
-              className="w-full"
+              className="w-full mt-4 rounded-lg"
             >
-              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-              Re-index Repository
+              {triggerScan.isPending ? (
+                <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />Starting...</>
+              ) : (
+                <><RefreshCw className="h-3.5 w-3.5 mr-1.5" />Re-index</>
+              )}
             </Button>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
-    </div>
+    </motion.div>
   )
 }

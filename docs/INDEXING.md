@@ -225,3 +225,14 @@ Each repository gets its own Qdrant collection named after the repository (`owne
 - A dense vector field using the configured embedding dimension
 - A sparse vector field named `code_sparse` (configurable via `ai.sparse_vector_name`)
 - Payload indexing on `chunk_type`, `identifier`, `source`, `is_test` for fast filtering
+
+---
+
+## Internal Code-Warden Indexing Strategy
+
+To ensure the RAG pipeline can answer questions about its own internals, the indexing strategy follows these rules for system-critical components (e.g., `Indexer.ProcessFile`, `DefinitionExtractor`):
+
+1. **Explicit Symbol Extraction**: Defining symbols like `Indexer` or `DefinitionExtractor` ensures they are stored as `chunk_type: "definition"` points.
+2. **Multi-Stage Retrieval**: When a query contains system-level keywords (e.g., `scan`, `symbols`, `indexing`), the retrieval pipeline explicitly pulls from the `definition` chunk set in addition to directory-level `arch` summaries.
+3. **Prescan Awareness**: Architectural summaries (`arch`) explain the *what* and *where*, while definition chunks explain the *how*. Both are required for the LLM to provide implementation-specific answers about Code-Warden's own codebase.
+

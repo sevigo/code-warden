@@ -110,7 +110,7 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
 
-	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
 	contextBuildTime := time.Since(startTime)
 
 	s.cfg.Logger.Info("stage started", "name", "ConsensusGathering", "models_count", len(models),

@@ -27,11 +27,11 @@ var (
 type Repository struct {
 	ID                   int64        `json:"id" db:"id"`
 	RepoID               int64        `json:"repo_id" db:"repo_id"`
+	InstallationID       int64        `json:"installation_id" db:"installation_id"`
 	FullName             string       `json:"full_name" db:"full_name"`
 	ClonePath            string       `json:"clone_path" db:"clone_path"`
 	QdrantCollectionName string       `json:"qdrant_collection_name" db:"qdrant_collection_name"`
 	LastIndexedSHA       string       `json:"last_indexed_sha" db:"last_indexed_sha"`
-	EmbedderModelName    string       `json:"embedder_model_name" db:"embedder_model_name"`
 	LastReviewDate       time.Time    `json:"last_review_date" db:"last_review_date"`
 	GeneratedContext     string       `json:"generated_context" db:"generated_context"`
 	ContextUpdatedAt     sql.NullTime `json:"context_updated_at" db:"context_updated_at"`
@@ -136,8 +136,8 @@ func (s *postgresStore) GetLatestReviewForPR(ctx context.Context, repoFullName s
 // CreateRepository inserts a new repository record into the database.
 func (s *postgresStore) CreateRepository(ctx context.Context, repo *Repository) error {
 	query := `
-		INSERT INTO repositories (full_name, clone_path, qdrant_collection_name, embedder_model_name, last_indexed_sha, generated_context, context_updated_at) 
-		VALUES (:full_name, :clone_path, :qdrant_collection_name, :embedder_model_name, :last_indexed_sha, :generated_context, :context_updated_at) 
+		INSERT INTO repositories (full_name, clone_path, qdrant_collection_name, last_indexed_sha, generated_context, context_updated_at, installation_id) 
+		VALUES (:full_name, :clone_path, :qdrant_collection_name, :last_indexed_sha, :generated_context, :context_updated_at, :installation_id) 
 		RETURNING id, created_at, updated_at`
 	stmt, err := s.db.PrepareNamedContext(ctx, query)
 	if err != nil {
@@ -150,7 +150,7 @@ func (s *postgresStore) CreateRepository(ctx context.Context, repo *Repository) 
 // GetRepositoryByFullName retrieves a repository by its full name.
 func (s *postgresStore) GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error) {
 	query := `
-SELECT id, full_name, clone_path, qdrant_collection_name, embedder_model_name, last_indexed_sha, generated_context, context_updated_at, created_at, updated_at 
+SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, generated_context, context_updated_at, created_at, updated_at, installation_id 
 FROM repositories 
 WHERE full_name = $1`
 	var repo Repository
@@ -171,7 +171,6 @@ func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) 
 		SET 
 			clone_path = :clone_path, 
 			qdrant_collection_name = :qdrant_collection_name, 
-			embedder_model_name = :embedder_model_name,
 			last_indexed_sha = :last_indexed_sha,
 			generated_context = :generated_context,
 			context_updated_at = :context_updated_at,
@@ -204,7 +203,7 @@ func (s *postgresStore) GetAllReviewsForPR(ctx context.Context, repoFullName str
 // GetAllRepositories retrieves all non-deleted repositories from the database.
 func (s *postgresStore) GetAllRepositories(ctx context.Context) ([]*Repository, error) {
 	query := `
-		SELECT id, full_name, clone_path, qdrant_collection_name, embedder_model_name, last_indexed_sha, generated_context, context_updated_at, created_at, updated_at
+		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, generated_context, context_updated_at, created_at, updated_at, installation_id
 		FROM repositories
 		ORDER BY full_name ASC`
 
@@ -219,7 +218,7 @@ func (s *postgresStore) GetAllRepositories(ctx context.Context) ([]*Repository, 
 // GetRepositoryByClonePath retrieves a repository by its local clone path.
 func (s *postgresStore) GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error) {
 	query := `
-		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, embedder_model_name, generated_context, context_updated_at, created_at, updated_at
+		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, generated_context, context_updated_at, created_at, updated_at, installation_id
 		FROM repositories
 		WHERE clone_path = $1`
 
@@ -237,7 +236,7 @@ func (s *postgresStore) GetRepositoryByClonePath(ctx context.Context, clonePath 
 // GetRepositoryByID retrieves a repository by its primary key ID.
 func (s *postgresStore) GetRepositoryByID(ctx context.Context, id int64) (*Repository, error) {
 	query := `
-		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, embedder_model_name, generated_context, context_updated_at, created_at, updated_at
+		SELECT id, full_name, clone_path, qdrant_collection_name, last_indexed_sha, generated_context, context_updated_at, created_at, updated_at, installation_id
 		FROM repositories
 		WHERE id = $1`
 

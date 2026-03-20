@@ -131,7 +131,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	}
 
 	// 2. Sync the repository to get the latest code
-	updateResult, err := j.repoMgr.SyncRepo(ctx, event, "")
+	updateResult, err := j.repoMgr.SyncRepo(ctx, event, ghToken)
 	if err != nil {
 		return fmt.Errorf("failed to sync repo: %w", err)
 	}
@@ -146,7 +146,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
 
 	// 5. Get scoped vector store for this repo
-	scopedStore := j.vectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+	scopedStore := j.vectorStore.ForRepo(repo.QdrantCollectionName, j.cfg.AI.EmbedderModel)
 
 	// 6. Parse agent timeout
 	timeout, err := j.cfg.Agent.GetTimeout()

@@ -19,6 +19,7 @@ const (
 	CodeGenerationPrompt        PromptKey = "code_generation"
 	ReReviewPrompt              PromptKey = "rereview"
 	ArchSummaryPrompt           PromptKey = "arch_summary"
+	FileSummaryPrompt           PromptKey = "file_summary"
 	QuestionPrompt              PromptKey = "question"
 	HyDEPrompt                  PromptKey = "hyde_code"
 	ConsensusReviewPrompt       PromptKey = "consensus_review"

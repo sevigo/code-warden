@@ -14,11 +14,13 @@ import (
 
 	"github.com/sevigo/goframe/documentloaders"
 	"github.com/sevigo/goframe/embeddings/sparse"
+	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
 
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -29,6 +31,9 @@ type Config struct {
 	ParserRegistry parsers.ParserRegistry
 	Splitter       textsplitter.TextSplitter
 	Logger         *slog.Logger
+	EmbedderModel  string
+	LLM            llms.Model
+	PromptMgr      *llm.PromptManager
 }
 
 // Indexer handles document ingestion and semantic chunking.
@@ -68,6 +73,27 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	finalExcludeDirs := BuildExcludeDirs(repoConfig)
 	startTime := time.Now()
 
+	// Count total files upfront for accurate progress reporting
+	totalFiles := 0
+	filepath.WalkDir(repoPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		// Quick filter for common exclusions
+		name := d.Name()
+		if strings.HasPrefix(name, ".") && name != "." {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() {
+			totalFiles++
+		}
+		return nil
+	})
+	i.cfg.Logger.Info("counted files for indexing", "total", totalFiles)
+
 	// Smart Scan: Fetch existing file states for fast skipping
 	existingFiles, err := i.cfg.Store.GetFilesForRepo(ctx, repo.ID)
 	if err != nil {
@@ -95,11 +121,10 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		return fmt.Errorf("failed to initialize git loader: %w", err)
 	}
 
-	scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
-	var processedCount int
-	var skippedCount int
-	var mu sync.Mutex
-	var totalSeen int64 // atomically incremented as files are discovered
+	scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
+	var processedCount int64 // atomic counter for progress
+	var skippedCount int64   // atomic counter for progress
+	var totalSeen int64      // atomically incremented as files are discovered
 
 	// Keep track of all files processed by the loader to identify deletions later
 	filesProcessedByLoader := make(map[string]struct{})
@@ -120,6 +145,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		fileToUpdate storage.FileRecord
 		processed    bool
 		skipped      bool
+		filePath     string // for progress reporting
 	}
 
 	// Use larger buffer to prevent pipeline deadlock
@@ -157,7 +183,13 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 					// Skip unchanged files
 					if hash != "" {
 						if rec, exists := existingFilesCopy[work.file]; exists && rec.FileHash == hash {
-							resultChan <- fileResult{processed: true, skipped: true}
+							// Report progress for skipped file
+							if progressFn != nil {
+								done := int(atomic.LoadInt64(&processedCount) + atomic.LoadInt64(&skippedCount) + 1)
+								progressFn(done, totalFiles)
+							}
+							atomic.AddInt64(&skippedCount, 1)
+							resultChan <- fileResult{processed: true, skipped: true, filePath: work.file}
 							continue
 						}
 					}
@@ -176,16 +208,15 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 						}
 					}
 
-					resultChan <- fileResult{docsToInsert: docs, fileToUpdate: fileRec, processed: true}
+					resultChan <- fileResult{docsToInsert: docs, fileToUpdate: fileRec, processed: true, filePath: work.file}
+					atomic.AddInt64(&processedCount, 1)
 				}
 			}
 		}()
 	}
 
 	// Start result collector goroutine to prevent deadlock
-	var allProcessed int
-	var allSkipped int
-	var resultsMu sync.Mutex
+	resultsMu := sync.Mutex{}
 
 	const progressInterval = 10 // report every N files to avoid excessive DB writes
 
@@ -194,13 +225,6 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		defer close(collectorDone)
 		for res := range resultChan {
 			resultsMu.Lock()
-			if res.skipped {
-				allSkipped++
-			}
-			if res.processed {
-				allProcessed++
-			}
-
 			// Accumulate for batch insert
 			batchDocs = append(batchDocs, res.docsToInsert...)
 			if res.fileToUpdate.FilePath != "" {
@@ -220,7 +244,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 				batchFiles = batchFiles[:0]
 			}
 
-			done := allProcessed + allSkipped
+			done := int(atomic.LoadInt64(&processedCount) + atomic.LoadInt64(&skippedCount))
 			resultsMu.Unlock()
 
 			// Report progress periodically to avoid hammering the caller
@@ -277,16 +301,6 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		}
 	}
 
-	// Update counts
-	mu.Lock()
-	processedCount = allProcessed
-	skippedCount = allSkipped
-	mu.Unlock()
-
-	if err != nil {
-		return fmt.Errorf("repository ingestion failed: %w", err)
-	}
-
 	// Cleanup: Delete records for files that are genuinely absent from disk AND were not processed by loader.
 	// We check the filesystem directly rather than relying on filesProcessedByLoader alone,
 	// but we respect filesProcessedByLoader as "exists" to avoid unnecessary stat calls.
@@ -313,7 +327,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 		// Actually `processFilesParallel` handles UPSERT.
 		// Deleting from Qdrant requires `DeleteDocumentsByFilter` ("source" in pathsToDelete).
 		if len(pathsToDelete) > 0 && repo.QdrantCollectionName != "" {
-			if err := i.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, map[string]any{"source": map[string]any{"$in": pathsToDelete}}); err != nil {
+			if err := i.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, repo.QdrantCollectionName, i.cfg.EmbedderModel, map[string]any{"source": map[string]any{"$in": pathsToDelete}}); err != nil {
 				i.cfg.Logger.Warn("failed to delete vectors for removed files", "error", err)
 			}
 		}
@@ -365,7 +379,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
 		i.cfg.Logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
-		if err := i.cfg.VectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, repo.EmbedderModelName, filesToDelete); err != nil {
+		if err := i.cfg.VectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, i.cfg.EmbedderModel, filesToDelete); err != nil {
 			i.cfg.Logger.Error("failed to delete some embeddings", "error", err)
 		}
 	}
@@ -418,7 +432,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 
 	if len(allDocs) > 0 {
 		i.cfg.Logger.Info("adding/updating documents in vector store", "count", len(allDocs))
-		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, repo.EmbedderModelName)
+		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
 		if _, err := scopedStore.AddDocuments(ctx, allDocs); err != nil {
 			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
 		}
@@ -450,6 +464,7 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 
 // ProcessFile reads, parses, and chunks a single file for indexing.
 // Returns code chunks and definition chunks.
+// Chunks are enriched with a file-level summary for better semantic retrieval.
 //
 //nolint:funlen,gocognit
 func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {
@@ -476,6 +491,12 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 
 	ext := strings.ToLower(filepath.Ext(file))
 
+	// Generate file-level summary for better retrieval (LLM call, cached by content hash)
+	var fileSummary string
+	if i.cfg.LLM != nil && i.cfg.PromptMgr != nil {
+		fileSummary = i.generateFileSummary(ctx, file, validContent)
+	}
+
 	// Build line offset map for computing line numbers
 	lineOffsets := buildLineOffsets(validContent)
 
@@ -492,6 +513,13 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 	splitDocs = filtered
 
 	for idx := range splitDocs {
+		// Enrich chunk content with file summary for better semantic retrieval
+		// This allows both dense and sparse search to find keywords from the summary
+		if fileSummary != "" {
+			splitDocs[idx].PageContent = splitDocs[idx].PageContent + "\n\n[File Summary: " + fileSummary + "]"
+			splitDocs[idx].Metadata["file_summary"] = fileSummary
+		}
+
 		// Ensure sparse vectors are generated for hybrid search if possible
 		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
 		if err == nil {
@@ -732,4 +760,75 @@ func isCodeKeyword(sym string) bool {
 		"fmt": true, "strings": true, "errors": true, "json": true, "http": true,
 	}
 	return keywords[sym]
+}
+
+// fileSummaryCache stores file summaries to avoid regenerating for the same content.
+type fileSummaryCache struct {
+	mu    sync.RWMutex
+	cache map[string]string // contentHash -> summary
+}
+
+var globalFileSummaryCache = &fileSummaryCache{
+	cache: make(map[string]string),
+}
+
+// generateFileSummary generates an LLM-based summary for a file.
+// Results are cached by content hash to avoid redundant LLM calls.
+func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content string) string {
+	if i.cfg.LLM == nil || i.cfg.PromptMgr == nil {
+		return ""
+	}
+
+	// Check cache first
+	contentHash := hashContent(content)
+	globalFileSummaryCache.mu.RLock()
+	if summary, ok := globalFileSummaryCache.cache[contentHash]; ok {
+		globalFileSummaryCache.mu.RUnlock()
+		return summary
+	}
+	globalFileSummaryCache.mu.RUnlock()
+
+	// Truncate content if too long (LLMs have context limits)
+	maxContent := 8000
+	if len(content) > maxContent {
+		content = content[:maxContent]
+	}
+
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	promptData := map[string]string{
+		"Path":     filePath,
+		"Language": ext[1:], // Remove leading dot
+		"Content":  content,
+	}
+
+	prompt, err := i.cfg.PromptMgr.Render(llm.FileSummaryPrompt, promptData)
+	if err != nil {
+		i.cfg.Logger.Debug("failed to render file summary prompt", "file", filePath, "error", err)
+		return ""
+	}
+
+	summary, err := llms.GenerateFromSinglePrompt(ctx, i.cfg.LLM, prompt)
+	if err != nil {
+		i.cfg.Logger.Debug("failed to generate file summary", "file", filePath, "error", err)
+		return ""
+	}
+
+	// Cache result
+	globalFileSummaryCache.mu.Lock()
+	globalFileSummaryCache.cache[contentHash] = summary
+	globalFileSummaryCache.mu.Unlock()
+
+	i.cfg.Logger.Debug("generated file summary", "file", filePath, "length", len(summary))
+
+	return summary
+}
+
+// hashContent generates a simple hash for content caching.
+func hashContent(content string) string {
+	// Simple hash for caching - use first/last chars and length
+	if len(content) < 100 {
+		return fmt.Sprintf("%d:%s", len(content), content)
+	}
+	return fmt.Sprintf("%d:%s...%s", len(content), content[:50], content[len(content)-50:])
 }

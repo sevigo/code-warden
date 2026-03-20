@@ -1,0 +1,1 @@
+ALTER TABLE repositories DROP COLUMN IF EXISTS embedder_model_name;

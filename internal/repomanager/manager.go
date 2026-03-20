@@ -12,6 +12,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -59,7 +60,34 @@ func (m *manager) SyncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 	mu.Lock()
 	defer mu.Unlock()
 
+	// 1. If token is missing/placeholder, try to use config token
+	if isPlaceholderToken(token) {
+		token = m.cfg.GitHub.Token
+	}
+
+	// 2. If token is still placeholder, clear it
+	if isPlaceholderToken(token) {
+		token = ""
+	}
+
+	// 3. If no token but we have an installation ID, fetch a fresh token
+	if token == "" && ev.InstallationID > 0 {
+		_, instToken, err := github.CreateInstallationClient(ctx, m.cfg, ev.InstallationID, m.logger)
+		if err != nil {
+			m.logger.Warn("failed to create installation client for sync, falling back to empty token",
+				"repo", ev.RepoFullName,
+				"installation_id", ev.InstallationID,
+				"error", err)
+		} else {
+			token = instToken
+		}
+	}
+
 	return m.syncRepo(ctx, ev, token)
+}
+
+func isPlaceholderToken(token string) bool {
+	return token == "" || strings.HasPrefix(token, "ghp_your_")
 }
 
 func (m *manager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string, force bool) (*core.UpdateResult, error) {

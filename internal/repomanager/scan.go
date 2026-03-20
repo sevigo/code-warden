@@ -36,12 +36,6 @@ func (m *manager) scanLocalRepo(
 		}
 	}
 
-	if rec, _ := m.store.GetRepositoryByFullName(ctx, repoFullName); rec != nil && rec.EmbedderModelName != m.cfg.AI.EmbedderModel {
-		m.logger.Warn("embedder model changed – full re‑scan", "repo", repoFullName)
-		_ = m.vectorStore.DeleteCollection(ctx, rec.QdrantCollectionName) // ignore error – we still want to continue
-		force = true
-	}
-
 	if force {
 		return m.fullLocalScan(ctx, repoPath, repoFullName, headSHA)
 	}
@@ -122,13 +116,10 @@ func (m *manager) ensureRepoRecord(ctx context.Context, fullName, clonePath stri
 		rec = nil
 	}
 	if rec == nil {
-		// Determine embedder model (could be passed as arg or default)
-		embedderModel := m.cfg.AI.EmbedderModel
 		newRec := &storage.Repository{
 			FullName:             fullName,
 			ClonePath:            clonePath,
-			QdrantCollectionName: GenerateCollectionName(fullName, embedderModel),
-			EmbedderModelName:    embedderModel,
+			QdrantCollectionName: GenerateCollectionName(fullName),
 			LastIndexedSHA:       "",
 		}
 		if err := m.store.CreateRepository(ctx, newRec); err != nil {

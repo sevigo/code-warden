@@ -237,7 +237,11 @@ func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to parse repository URL '%s': %w", repoURL, err)
 	}
-	parsedURL.User = url.UserPassword("x-access-token", token)
+
+	// Only add authentication if token is provided
+	if token != "" {
+		parsedURL.User = url.UserPassword("x-access-token", token)
+	}
 	return parsedURL.String(), nil
 }
 
