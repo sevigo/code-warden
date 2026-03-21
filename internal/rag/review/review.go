@@ -11,7 +11,22 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag/metadata"
 	"github.com/sevigo/code-warden/internal/storage"
+)
+
+const (
+	// Minimum number of consecutive added lines to consider as a meaningful chunk
+	// for duplication detection. Smaller chunks tend to be noisy.
+	minChunkLines = 4
+
+	// Maximum number of chunks to check for duplication. Limits vector DB queries
+	// on large PRs to avoid performance issues.
+	maxChunksToCheck = 10
+
+	// Minimum cosine similarity score to consider a match as a potential duplicate.
+	// 0.85 is a reasonable threshold for semantic similarity with most embedding models.
+	duplicationSimilarityThreshold = 0.85
 )
 
 // buildPRDescription builds the PR description string passed to BuildContext,
@@ -32,6 +47,92 @@ func buildPRDescription(event *core.GitHubEvent) string {
 		fmt.Fprintf(&sb, "- %s\n", strings.TrimSpace(firstLine))
 	}
 	return sb.String()
+}
+
+// extractAddedChunks parses a git patch and returns blocks of consecutively added lines.
+func extractAddedChunks(patch string) []string {
+	var chunks []string
+	var currentChunk []string
+
+	lines := strings.Split(patch, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			content := strings.TrimPrefix(line, "+")
+			// Skip entirely empty lines or simple brackets to avoid noisy chunks
+			trimmed := strings.TrimSpace(content)
+			if trimmed == "" || trimmed == "}" || trimmed == "{" || trimmed == "};" || trimmed == "()" {
+				continue
+			}
+			currentChunk = append(currentChunk, content)
+		} else {
+			if len(currentChunk) >= minChunkLines {
+				chunks = append(chunks, strings.Join(currentChunk, "\n"))
+			}
+			currentChunk = nil
+		}
+	}
+	if len(currentChunk) >= minChunkLines {
+		chunks = append(chunks, strings.Join(currentChunk, "\n"))
+	}
+	return chunks
+}
+
+// checkCodeDuplication queries the VectorDB for semantic duplicates of the newly added code chunks.
+func (s *Service) checkCodeDuplication(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) string {
+	if s.cfg.VectorStore == nil {
+		return ""
+	}
+
+	var allChunks []string
+	for _, cf := range changedFiles {
+		if cf.Patch == "" {
+			continue
+		}
+		chunks := extractAddedChunks(cf.Patch)
+		allChunks = append(allChunks, chunks...)
+	}
+
+	if len(allChunks) == 0 {
+		return ""
+	}
+
+	// Limit chunks to avoid blowing up the vector DB with thousands of queries on massive PRs.
+	if len(allChunks) > maxChunksToCheck {
+		allChunks = allChunks[:maxChunksToCheck]
+	}
+
+	scopedStore := s.cfg.VectorStore.ForRepo(collectionName, s.cfg.EmbedderModel)
+
+	var duplicates strings.Builder
+	foundCount := 0
+
+	for i, chunk := range allChunks {
+		results, err := scopedStore.SimilaritySearchWithScores(ctx, chunk, 1)
+		if err != nil || len(results) == 0 {
+			continue
+		}
+
+		topMatch := results[0]
+		if topMatch.Score > duplicationSimilarityThreshold {
+			source, _ := topMatch.Document.Metadata["source"].(string)
+			line := metadata.ExtractLineNumber(topMatch.Document.Metadata)
+
+			fmt.Fprintf(&duplicates, "### Potential Duplicate %d (Similarity Score: %.2f)\n", i+1, topMatch.Score)
+			fmt.Fprintf(&duplicates, "**Newly Added Code:**\n```\n%s\n```\n", chunk)
+			fmt.Fprintf(&duplicates, "**Existing Code Found in `%s` (Line %d):**\n```\n%s\n```\n\n", source, line, topMatch.Document.PageContent)
+			foundCount++
+		}
+	}
+
+	if foundCount == 0 {
+		return ""
+	}
+
+	return "POTENTIAL CODE DUPLICATIONS FOUND:\n" +
+		"The following existing functions semantically match newly added code in this PR. " +
+		"Analyze these matches. If the new code duplicates existing functionality, suggest " +
+		"replacing the new code with a call to the existing function (DRY principle).\n\n" +
+		duplicates.String()
 }
 
 // GenerateReview generates a structured code review using the RAG pipeline.
@@ -58,6 +159,12 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 
 	// Get context
 	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+
+	// Detect duplications by generating embeddings for the exact added lines
+	duplicationContext := s.checkCodeDuplication(ctx, repo.QdrantCollectionName, changedFiles)
+	if duplicationContext != "" {
+		contextString = contextString + "\n\n" + duplicationContext
+	}
 
 	// Check for empty context to warn about hallucination risk
 	contextEmpty := contextIsEmpty(contextString, definitionsContext)

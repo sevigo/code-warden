@@ -14,6 +14,7 @@ import (
 	"github.com/sevigo/goframe/vectorstores"
 
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag/metadata"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -86,28 +87,7 @@ func deduplicateDocs(docs []schema.Document) []schema.Document {
 	var result []schema.Document
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
-
-		var line int
-		if v, ok := doc.Metadata["line"]; ok {
-			switch val := v.(type) {
-			case int:
-				line = val
-			case float64:
-				line = int(val)
-			case int64:
-				line = int(val)
-			}
-		} else if v, ok := doc.Metadata["start_line"]; ok {
-			switch val := v.(type) {
-			case int:
-				line = val
-			case float64:
-				line = int(val)
-			case int64:
-				line = int(val)
-			}
-		}
-
+		line := metadata.ExtractLineNumber(doc.Metadata)
 		chunkType, _ := doc.Metadata["chunk_type"].(string)
 
 		key := fmt.Sprintf("%s:%d:%s", source, line, chunkType)

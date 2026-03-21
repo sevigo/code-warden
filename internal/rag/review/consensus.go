@@ -111,6 +111,12 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 	}
 
 	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+
+	// Detect duplications by generating embeddings for the exact added lines
+	if dupCtx := s.checkCodeDuplication(ctx, repo.QdrantCollectionName, changedFiles); dupCtx != "" {
+		contextString += "\n\n" + dupCtx
+	}
+
 	contextBuildTime := time.Since(startTime)
 
 	s.cfg.Logger.Info("stage started", "name", "ConsensusGathering", "models_count", len(models),

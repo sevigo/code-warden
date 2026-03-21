@@ -69,6 +69,7 @@ You have been provided with pre-computed context in the "ARCHITECTURAL OVERVIEW"
 
 2. **Architecture & Design**
    - Check for violations of clean code principles, improper abstractions, or tight coupling
+   - **DRY / Duplication**: If the Architectural Overview/Context section contains "POTENTIAL CODE DUPLICATIONS FOUND", analyze them carefully. If the PR adds new logic that is functionally equivalent to an existing function listed there, generate a Suggestion to replace the new code with a call to the existing function.
    - **Interface Design**: Verify exported types are minimal and well-documented
    - **Separation of Concerns**: Check for business logic leaking into data/presentation layers
    - **Hidden Dependencies**: Flag unexported helper functions that create untestable coupling
