@@ -258,11 +258,7 @@ func (s *postgresStore) GetFilesForRepo(ctx context.Context, repoID int64) (map[
 	if err != nil {
 		return nil, fmt.Errorf("failed to list files for repo %d: %w", repoID, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			slog.ErrorContext(ctx, "failed to close rows in GetFilesForRepo", "error", err)
-		}
-	}()
+	defer rows.Close()
 
 	files := make(map[string]FileRecord)
 	for rows.Next() {
@@ -278,13 +274,6 @@ func (s *postgresStore) GetFilesForRepo(ctx context.Context, repoID int64) (map[
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed iterating file records for repo %d: %w", repoID, err)
-	}
-
-	if err := rows.Close(); err != nil {
-		// Only log if context wasn't already canceled to avoid masking cancellation
-		if ctx.Err() == nil {
-			slog.ErrorContext(ctx, "failed to close rows in GetFilesForRepo", "error", err)
-		}
 	}
 
 	return files, nil
