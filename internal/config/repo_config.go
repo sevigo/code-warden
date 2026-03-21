@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -32,4 +33,24 @@ func LoadRepoConfig(repoPath string) (*core.RepoConfig, error) {
 		return nil, fmt.Errorf("%w: %w", ErrConfigParsing, err)
 	}
 	return config, nil
+}
+
+// LoadRepoConfigWithDefaults loads the repo config and returns defaults on error.
+// It logs appropriate messages based on whether the config was not found or failed to parse.
+func LoadRepoConfigWithDefaults(repoPath, repoFullName string, logger *slog.Logger) *core.RepoConfig {
+	repoConfig, err := LoadRepoConfig(repoPath)
+	if err == nil {
+		return repoConfig
+	}
+
+	if errors.Is(err, ErrConfigNotFound) {
+		if logger != nil {
+			logger.Info("no .code-warden.yml found, using defaults", "repo", repoFullName)
+		}
+	} else {
+		if logger != nil {
+			logger.Warn("failed to parse .code-warden.yml, using defaults", "error", err, "repo", repoFullName)
+		}
+	}
+	return core.DefaultRepoConfig()
 }

@@ -63,21 +63,13 @@ func (t *GetCallers) ParametersSchema() map[string]any {
 }
 
 func (t *GetCallers) Execute(ctx context.Context, args map[string]any) (any, error) {
-	function, ok := args["function"].(string)
-	if !ok || function == "" {
-		return nil, fmt.Errorf("function is required")
+	function, err := GetRequiredString(args, "function", MaxSymbolLength)
+	if err != nil {
+		return nil, err
 	}
 	t.Logger.Info("get_callers: executing tool", "function", function)
 
-	limit := 20
-	if l, ok := args["limit"].(float64); ok {
-		limit = int(l)
-		if limit < 1 {
-			limit = 1
-		} else if limit > MaxResultLimit {
-			limit = MaxResultLimit
-		}
-	}
+	limit := ParseLimit(args, 20)
 
 	// Search for call sites: "function(" pattern
 	query := fmt.Sprintf("%s( call invocation", function)

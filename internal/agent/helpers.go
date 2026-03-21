@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/sevigo/code-warden/internal/stringsutil"
 )
 
 // matrixAgentNames is a pool of Matrix-universe character and concept names
@@ -75,10 +77,7 @@ func isSafeChar(c rune) bool {
 
 // truncateString truncates a string to maxLen characters.
 func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return stringsutil.Truncate(s, maxLen, "...")
 }
 
 // truncateTail returns the last maxLen characters of a string.

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,19 +9,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sevigo/code-warden/internal/config"
-	"github.com/sevigo/code-warden/internal/core"
-	"github.com/sevigo/code-warden/internal/wire"
 )
 
 var (
 	updateRepoFullName string
 	updateForce        bool
-)
-
-// Custom error types for better error handling
-var (
-	ErrUpdateConfigNotFound = errors.New("config file not found")
-	ErrUpdateConfigParsing  = errors.New("config parsing failed")
 )
 
 var updateCmd = &cobra.Command{
@@ -41,9 +32,9 @@ If the repository has never been indexed, it will perform an initial full scan.`
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
-		app, cleanup, err := wire.InitializeApp(ctx)
+		app, cleanup, err := InitializeApp(ctx, false)
 		if err != nil {
-			return fmt.Errorf("failed to initialize application: %w", err)
+			return err
 		}
 		defer cleanup()
 
@@ -53,15 +44,7 @@ If the repository has never been indexed, it will perform an initial full scan.`
 		}
 		slog.Info("Local repository update analysis complete", "repo", updateResult.RepoFullName, "head_sha", updateResult.HeadSHA)
 
-		repoConfig, err := config.LoadRepoConfig(updateResult.RepoPath)
-		if err != nil {
-			if errors.Is(err, config.ErrConfigNotFound) {
-				slog.Info("no .code-warden.yml found, using defaults", "repo", updateResult.RepoFullName)
-			} else {
-				slog.Warn("failed to parse .code-warden.yml, using defaults", "error", err, "repo", updateResult.RepoFullName)
-			}
-			repoConfig = core.DefaultRepoConfig()
-		}
+		repoConfig := config.LoadRepoConfigWithDefaults(updateResult.RepoPath, updateResult.RepoFullName, slog.Default())
 
 		repoRecord, err := app.RepoMgr.GetRepoRecord(ctx, updateResult.RepoFullName)
 		if err != nil {
@@ -70,40 +53,11 @@ If the repository has never been indexed, it will perform an initial full scan.`
 		if repoRecord == nil {
 			return fmt.Errorf("repository record is unexpectedly nil for %s", updateResult.RepoFullName)
 		}
-		collectionName := repoRecord.QdrantCollectionName
 
 		// Update the vector store with the changes
-		slog.Info("Updating vector store", "collection", collectionName, "is_full_scan", updateResult.IsInitialClone)
+		slog.Info("Updating vector store", "collection", repoRecord.QdrantCollectionName, "is_full_scan", updateResult.IsInitialClone)
 
-		switch {
-		case updateResult.IsInitialClone:
-			slog.Info("Performing initial full indexing")
-			err = app.RAGService.SetupRepoContext(
-				ctx,
-				repoConfig,
-				repoRecord,
-				updateResult.RepoPath,
-				nil,
-			)
-
-		case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
-			slog.Info("Performing incremental indexing",
-				"add_or_update", len(updateResult.FilesToAddOrUpdate),
-				"delete", len(updateResult.FilesToDelete),
-			)
-			err = app.RAGService.UpdateRepoContext(
-				ctx,
-				repoConfig,
-				repoRecord,
-				updateResult.RepoPath,
-				updateResult.FilesToAddOrUpdate,
-				updateResult.FilesToDelete,
-			)
-
-		default:
-			slog.Info("No file changes detected, skipping vector store update.")
-		}
-		if err != nil {
+		if err := app.RAGService.SyncRepoIndex(ctx, repoConfig, repoRecord, updateResult, nil); err != nil {
 			return fmt.Errorf("failed to update vector store: %w", err)
 		}
 

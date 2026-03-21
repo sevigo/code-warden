@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
-	"github.com/sevigo/code-warden/internal/wire"
 )
 
 var outputJSON bool
@@ -22,9 +20,9 @@ var statusCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx := context.Background()
 
-		app, cleanup, err := wire.InitializeApp(ctx)
+		app, cleanup, err := InitializeApp(ctx, false)
 		if err != nil {
-			return fmt.Errorf("failed to initialize app services: %w", err)
+			return err
 		}
 		defer cleanup()
 

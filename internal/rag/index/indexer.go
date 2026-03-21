@@ -2,8 +2,6 @@ package index
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,6 +20,7 @@ import (
 	"github.com/sevigo/goframe/textsplitter"
 
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/cryptoutil"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -872,6 +871,5 @@ func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content str
 
 // hashContent generates a simple hash for content caching.
 func hashContent(content string) string {
-	h := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(h[:])
+	return cryptoutil.HashString(content)
 }

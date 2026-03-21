@@ -63,25 +63,13 @@ func (t *SearchCode) ParametersSchema() map[string]any {
 }
 
 func (t *SearchCode) Execute(ctx context.Context, args map[string]any) (any, error) {
-	query, ok := args["query"].(string)
-	if !ok || query == "" {
-		t.Logger.Warn("search_code: missing query parameter")
-		return nil, fmt.Errorf("query is required")
-	}
-	if len(query) > MaxQueryLength {
-		t.Logger.Warn("search_code: query too long", "length", len(query))
-		return nil, fmt.Errorf("query exceeds maximum length of %d characters", MaxQueryLength)
+	query, err := GetRequiredString(args, "query", MaxQueryLength)
+	if err != nil {
+		t.Logger.Warn("search_code: invalid query", "error", err)
+		return nil, err
 	}
 
-	limit := 10
-	if l, ok := args["limit"].(float64); ok {
-		limit = int(l)
-		if limit < MinResultLimit {
-			limit = MinResultLimit
-		} else if limit > MaxResultLimit {
-			limit = MaxResultLimit
-		}
-	}
+	limit := ParseLimit(args, 10)
 
 	opts := []vectorstores.Option{}
 	chunkType := ""

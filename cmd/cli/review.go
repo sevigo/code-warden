@@ -15,7 +15,7 @@ import (
 	"github.com/sevigo/code-warden/internal/gitutil"
 	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
-	"github.com/sevigo/code-warden/internal/wire"
+	"github.com/sevigo/code-warden/internal/stringsutil"
 )
 
 var verbose bool
@@ -127,22 +127,7 @@ func runReview(_ *cobra.Command, args []string) error {
 }
 
 func initializeReviewApp(ctx context.Context) (*app.App, func(), error) {
-	appInstance, cleanup, err := wire.InitializeApp(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize app: %w\n\nTip: Check that your config.yaml exists and is valid", err)
-	}
-
-	if err := appInstance.Cfg.ValidateForCLI(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("configuration validation failed: %w", err)
-	}
-
-	if err := appInstance.DB.RunMigrations(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
-	return appInstance, cleanup, nil
+	return InitializeApp(ctx, true)
 }
 
 func executeReviewFlow(ctx context.Context, appInstance *app.App, prURL string, timer *stepTimer) (*core.StructuredReview, error) {
@@ -286,22 +271,16 @@ func syncRepository(ctx context.Context, appInstance *app.App, event *core.GitHu
 }
 
 func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResult, repo *storage.Repository, timer *stepTimer) error {
-	repoPath := syncResult.RepoPath
-	collectionName := repo.QdrantCollectionName
-
+	timer.infof("Collection: %s", repo.QdrantCollectionName)
+	if err := a.RAGService.SyncRepoIndex(ctx, nil, repo, syncResult, nil); err != nil {
+		return fmt.Errorf("failed to sync repo index: %w", err)
+	}
 	switch {
 	case syncResult.IsInitialClone:
-		timer.infof("Performing initial full indexing")
-		timer.infof("Collection: %s", collectionName)
-		if err := a.RAGService.SetupRepoContext(ctx, nil, repo, repoPath, nil); err != nil {
-			return fmt.Errorf("failed to setup repo context: %w", err)
-		}
+		timer.infof("Performed initial full indexing")
 	case len(syncResult.FilesToAddOrUpdate) > 0 || len(syncResult.FilesToDelete) > 0:
 		timer.infof("Incremental update: %d added/modified, %d deleted",
 			len(syncResult.FilesToAddOrUpdate), len(syncResult.FilesToDelete))
-		if err := a.RAGService.UpdateRepoContext(ctx, nil, repo, repoPath, syncResult.FilesToAddOrUpdate, syncResult.FilesToDelete); err != nil {
-			return fmt.Errorf("failed to update repo context: %w", err)
-		}
 	default:
 		timer.infof("Index up to date, skipping")
 	}
@@ -309,10 +288,7 @@ func handleIndexing(ctx context.Context, a *app.App, syncResult *core.UpdateResu
 }
 
 func truncateSHA(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
+	return stringsutil.TruncateSHA(sha)
 }
 
 func printReview(review *core.StructuredReview) {

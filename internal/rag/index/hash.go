@@ -1,29 +1,16 @@
 package index
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/sevigo/code-warden/internal/cryptoutil"
 	"github.com/sevigo/code-warden/internal/llm"
 )
 
 // ComputeFileHash returns the SHA-256 hex digest of a file.
 func ComputeFileHash(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return cryptoutil.HashFile(path)
 }
 
 // IsTestFile returns true if the specified file path seems to be a test file based on conventions.

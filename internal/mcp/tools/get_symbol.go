@@ -55,15 +55,11 @@ func (t *GetSymbol) ParametersSchema() map[string]any {
 }
 
 func (t *GetSymbol) Execute(ctx context.Context, args map[string]any) (any, error) {
-	name, ok := args["name"].(string)
-	if !ok || name == "" {
-		return nil, fmt.Errorf("name is required")
+	name, err := GetRequiredString(args, "name", MaxSymbolLength)
+	if err != nil {
+		return nil, err
 	}
 	t.Logger.Info("get_symbol: executing tool", "name", name)
-	if len(name) > MaxSymbolLength {
-		t.Logger.Warn("get_symbol: symbol name too long", "length", len(name))
-		return nil, fmt.Errorf("symbol name exceeds maximum length of %d characters", MaxSymbolLength)
-	}
 
 	// Search for symbol definition
 	query := fmt.Sprintf("definition of %s type function interface struct", name)

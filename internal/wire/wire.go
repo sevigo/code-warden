@@ -27,7 +27,6 @@ import (
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/embeddings"
-	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
@@ -143,42 +142,23 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
-		logger.Info("configuring Ollama HTTP client for generator",
+		logger.Info("configuring Ollama for generator",
 			"response_header_timeout", headerTimeout,
 			"request_timeout", requestTimeout,
 			"model", cfg.AI.GeneratorModel,
 		)
 
-		clientCfg := httpclient.NewConfig(
-			httpclient.WithResponseHeaderTimeout(headerTimeout),
-		)
-		// Set overall timeout: use configured value, or 0 (no limit) to rely on ResponseHeaderTimeout
-		if requestTimeout > 0 {
-			clientCfg.Timeout = requestTimeout
-		} else {
-			clientCfg.Timeout = 0 // Disable overall timeout, let ResponseHeaderTimeout control
-		}
-
-		opts := []ollama.Option{
-			ollama.WithServerURL(cfg.AI.OllamaHost),
-			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
-			ollama.WithHTTPClient(httpclient.NewClient(clientCfg)),
-			ollama.WithModel(cfg.AI.GeneratorModel),
-			ollama.WithLogger(logger),
-			ollama.WithRetryAttempts(3),
-			ollama.WithRetryDelay(2 * time.Second),
-		}
-		// Add thinking/reasoning mode if enabled
-		if cfg.AI.EnableThinking {
-			opts = append(opts, ollama.WithThinking(true))
-			if cfg.AI.ThinkingEffort != "" {
-				opts = append(opts, ollama.WithReasoningEffort(cfg.AI.ThinkingEffort))
-			}
-		}
-		// Add keep_alive for model memory management
-		if cfg.AI.ModelKeepAlive != "" {
-			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
-		}
+		opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
+			ServerURL:          cfg.AI.OllamaHost,
+			APIKey:             cfg.AI.OllamaAPIKey,
+			Model:              cfg.AI.GeneratorModel,
+			HTTPHeaderTimeout:  headerTimeout,
+			HTTPRequestTimeout: requestTimeout,
+			ModelKeepAlive:     cfg.AI.ModelKeepAlive,
+			EnableThinking:     cfg.AI.EnableThinking,
+			ThinkingEffort:     cfg.AI.ThinkingEffort,
+			Logger:             logger,
+		})
 		return ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.AI.LLMProvider)
@@ -199,35 +179,21 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
-		logger.Info("configuring Ollama HTTP client for embedder",
+		logger.Info("configuring Ollama for embedder",
 			"response_header_timeout", headerTimeout,
 			"request_timeout", requestTimeout,
 			"model", cfg.AI.EmbedderModel,
 		)
 
-		clientCfg := httpclient.NewConfig(
-			httpclient.WithResponseHeaderTimeout(headerTimeout),
-		)
-		// Set overall timeout: use configured value, or 0 (no limit) to rely on ResponseHeaderTimeout
-		if requestTimeout > 0 {
-			clientCfg.Timeout = requestTimeout
-		} else {
-			clientCfg.Timeout = 0 // Disable overall timeout, let ResponseHeaderTimeout control
-		}
-
-		opts := []ollama.Option{
-			ollama.WithServerURL(cfg.AI.OllamaHost),
-			ollama.WithAPIKey(cfg.AI.OllamaAPIKey),
-			ollama.WithModel(cfg.AI.EmbedderModel),
-			ollama.WithHTTPClient(httpclient.NewClient(clientCfg)),
-			ollama.WithLogger(logger),
-			ollama.WithRetryAttempts(3),
-			ollama.WithRetryDelay(2 * time.Second),
-		}
-		// Add keep_alive for model memory management
-		if cfg.AI.ModelKeepAlive != "" {
-			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
-		}
+		opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
+			ServerURL:          cfg.AI.OllamaHost,
+			APIKey:             cfg.AI.OllamaAPIKey,
+			Model:              cfg.AI.EmbedderModel,
+			HTTPHeaderTimeout:  headerTimeout,
+			HTTPRequestTimeout: requestTimeout,
+			ModelKeepAlive:     cfg.AI.ModelKeepAlive,
+			Logger:             logger,
+		})
 		embedderLLM, err = ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.AI.EmbedderProvider)
@@ -361,34 +327,20 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logge
 	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 	requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
-	logger.Info("configuring Ollama HTTP client for reranker",
+	logger.Info("configuring Ollama for reranker",
 		"response_header_timeout", headerTimeout,
 		"request_timeout", requestTimeout,
 		"model", cfg.AI.RerankerModel,
 	)
 
-	clientCfg := httpclient.NewConfig(
-		httpclient.WithResponseHeaderTimeout(headerTimeout),
-	)
-	// Set overall timeout: use configured value, or 0 (no limit) to rely on ResponseHeaderTimeout
-	if requestTimeout > 0 {
-		clientCfg.Timeout = requestTimeout
-	} else {
-		clientCfg.Timeout = 0 // Disable overall timeout, let ResponseHeaderTimeout control
-	}
-
-	opts := []ollama.Option{
-		ollama.WithServerURL(cfg.AI.OllamaHost),
-		ollama.WithModel(cfg.AI.RerankerModel),
-		ollama.WithHTTPClient(httpclient.NewClient(clientCfg)),
-		ollama.WithLogger(logger),
-		ollama.WithRetryAttempts(3),
-		ollama.WithRetryDelay(2 * time.Second),
-	}
-	// Add keep_alive for model memory management
-	if cfg.AI.ModelKeepAlive != "" {
-		opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
-	}
+	opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
+		ServerURL:          cfg.AI.OllamaHost,
+		Model:              cfg.AI.RerankerModel,
+		HTTPHeaderTimeout:  headerTimeout,
+		HTTPRequestTimeout: requestTimeout,
+		ModelKeepAlive:     cfg.AI.ModelKeepAlive,
+		Logger:             logger,
+	})
 
 	rerankLLM, err := ollama.New(opts...)
 	if err != nil {

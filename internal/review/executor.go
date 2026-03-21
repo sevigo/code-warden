@@ -4,14 +4,13 @@ package review
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/cryptoutil"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/rag"
 	ragReview "github.com/sevigo/code-warden/internal/rag/review"
@@ -173,6 +172,5 @@ func (e *Executor) Execute(ctx context.Context, params Params) (*Result, error) 
 
 // hashDiff creates a SHA-256 hex hash of the diff for tracking changes.
 func hashDiff(diff string) string {
-	h := sha256.Sum256([]byte(diff))
-	return hex.EncodeToString(h[:])
+	return cryptoutil.HashString(diff)
 }
