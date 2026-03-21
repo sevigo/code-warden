@@ -30,8 +30,8 @@ type DB struct {
 // NewDatabase creates a new database connection.
 func NewDatabase(cfg *config.DBConfig) (*DB, func(), error) {
 	// Construct DSN from config fields
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database)
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database, cfg.SSLMode)
 
 	// Open connection (sqlx.Connect opens and pings)
 	conn, err := sqlx.Connect("postgres", dsn)
