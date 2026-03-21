@@ -2,6 +2,8 @@ package index
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -844,6 +846,10 @@ func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content str
 
 	// Cache result
 	globalFileSummaryCache.mu.Lock()
+	if len(globalFileSummaryCache.cache) > 5000 { // Prevent unbounded memory growth
+		// Simple clear-all eviction. For a more robust solution, an LRU cache could be used.
+		globalFileSummaryCache.cache = make(map[string]string)
+	}
 	globalFileSummaryCache.cache[contentHash] = summary
 	globalFileSummaryCache.mu.Unlock()
 
@@ -854,9 +860,6 @@ func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content str
 
 // hashContent generates a simple hash for content caching.
 func hashContent(content string) string {
-	// Simple hash for caching - use first/last chars and length
-	if len(content) < 100 {
-		return fmt.Sprintf("%d:%s", len(content), content)
-	}
-	return fmt.Sprintf("%d:%s...%s", len(content), content[:50], content[len(content)-50:])
+	h := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(h[:])
 }
