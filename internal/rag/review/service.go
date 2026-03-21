@@ -21,6 +21,11 @@ type ContextBuilderFunc func(ctx context.Context, collectionName, embedderModelN
 // LLMFactory returns an LLM instance for a given model name.
 type LLMFactory func(ctx context.Context, modelName string) (llms.Model, error)
 
+// InvestigateFunc fills context gaps via targeted vector store queries (Phase 2).
+// Returns additional context to append; empty string means no gaps found or Phase 2 disabled.
+// Implementations must be failure-safe and never return an error.
+type InvestigateFunc func(ctx context.Context, collectionName, diff, mainContext, definitionsContext string) string
+
 // Config holds dependencies for the Service.
 type Config struct {
 	VectorStore      storage.VectorStore
@@ -32,6 +37,9 @@ type Config struct {
 	ConsensusQuorum  float64
 	BuildContext     ContextBuilderFunc
 	EmbedderModel    string
+	// Investigate is called after BuildContext to fill context gaps (Phase 2 agentic review).
+	// If nil, Phase 2 is skipped.
+	Investigate InvestigateFunc
 }
 
 // Service orchestrates code review generation.

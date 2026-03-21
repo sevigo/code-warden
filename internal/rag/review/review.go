@@ -156,8 +156,16 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 		s.cfg.Logger.Info("extracted changed files from diff for internal review", "count", len(changedFiles))
 	}
 
-	// Get context
+	// Phase 1: fixed parallel RAG stages
 	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+
+	// Phase 2: LLM-directed gap filling (only when Phase 1 returned meaningful context)
+	if s.cfg.Investigate != nil && !contextIsEmpty(contextString, definitionsContext) {
+		additionalContext := s.cfg.Investigate(ctx, repo.QdrantCollectionName, diff, contextString, definitionsContext)
+		if additionalContext != "" {
+			contextString += "\n\n" + additionalContext
+		}
+	}
 
 	// Detect duplications by generating embeddings for the exact added lines
 	duplicationContext := s.checkCodeDuplication(ctx, repo.QdrantCollectionName, changedFiles)
