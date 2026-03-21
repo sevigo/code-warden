@@ -16,16 +16,13 @@ import (
 )
 
 const (
-	// Minimum number of consecutive added lines to consider as a meaningful chunk
-	// for duplication detection. Smaller chunks tend to be noisy.
+	// Minimum consecutive added lines to consider a meaningful chunk for duplication detection
 	minChunkLines = 4
 
-	// Maximum number of chunks to check for duplication. Limits vector DB queries
-	// on large PRs to avoid performance issues.
+	// Maximum chunks to check for duplication (limits vector DB queries on large PRs)
 	maxChunksToCheck = 10
 
-	// Minimum cosine similarity score to consider a match as a potential duplicate.
-	// 0.85 is a reasonable threshold for semantic similarity with most embedding models.
+	// Minimum cosine similarity to consider a match as potential duplicate
 	duplicationSimilarityThreshold = 0.85
 )
 
@@ -204,6 +201,11 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 	if structuredReview.Verdict == "" {
 		structuredReview.Verdict = core.VerdictComment // Default if missing
 	}
+
+	// Filter and validate suggestions
+	validator := NewSuggestionValidator(diff, changedFiles)
+	filter := DefaultFilter()
+	structuredReview = filter.FilterAndRank(structuredReview, validator, s.cfg.Logger.Info)
 
 	// Add disclaimer to summary if context was empty
 	if contextEmpty {
