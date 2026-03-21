@@ -134,6 +134,8 @@ type ragService struct {
 }
 
 // NewService creates and returns a new RAG [Service].
+//
+//nolint:funlen // Complex initialization with multiple component configs
 func NewService(
 	cfg *config.Config,
 	promptMgr *llm.PromptManager,

@@ -81,30 +81,26 @@ func TestParseGapOutput_MultipleGaps(t *testing.T) {
 	}
 }
 
-func TestParseIntArg_Float64(t *testing.T) {
-	args := map[string]any{"limit": float64(7)}
-	if got := parseIntArg(args, "limit", 5); got != 7 {
+func TestParseLimitArg_Float64(t *testing.T) {
+	if got := parseLimitArg(float64(7)); got != 7 {
 		t.Errorf("expected 7, got %d", got)
 	}
 }
 
-func TestParseIntArg_Int(t *testing.T) {
-	args := map[string]any{"limit": 3}
-	if got := parseIntArg(args, "limit", 5); got != 3 {
+func TestParseLimitArg_Int(t *testing.T) {
+	if got := parseLimitArg(3); got != 3 {
 		t.Errorf("expected 3, got %d", got)
 	}
 }
 
-func TestParseIntArg_Missing(t *testing.T) {
-	args := map[string]any{}
-	if got := parseIntArg(args, "limit", 5); got != 5 {
+func TestParseLimitArg_Missing(t *testing.T) {
+	if got := parseLimitArg(nil); got != 5 {
 		t.Errorf("expected default 5, got %d", got)
 	}
 }
 
-func TestParseIntArg_Negative(t *testing.T) {
-	args := map[string]any{"limit": float64(-1)}
-	if got := parseIntArg(args, "limit", 5); got != 5 {
+func TestParseLimitArg_Negative(t *testing.T) {
+	if got := parseLimitArg(float64(-1)); got != 5 {
 		t.Errorf("expected default 5 for negative value, got %d", got)
 	}
 }
@@ -125,5 +121,31 @@ func TestTruncateStr_Overflow(t *testing.T) {
 	got := truncateStr("hello world", 5)
 	if got != "hello\n...[truncated]" {
 		t.Errorf("unexpected result: %q", got)
+	}
+}
+
+func TestEscapeCodeFences_NoFences(t *testing.T) {
+	input := "func main() { println(\"hello\") }"
+	got := escapeCodeFences(input)
+	if got != input {
+		t.Errorf("unexpected modification: %q", got)
+	}
+}
+
+func TestEscapeCodeFences_WithFences(t *testing.T) {
+	input := "code:\n```go\nfunc main() {}\n```\nmore"
+	expected := "code:\n` ` `go\nfunc main() {}\n` ` `\nmore"
+	got := escapeCodeFences(input)
+	if got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestEscapeCodeFences_MultipleFences(t *testing.T) {
+	input := "```\ncode1\n```\n```\ncode2\n```"
+	expected := "` ` `\ncode1\n` ` `\n` ` `\ncode2\n` ` `"
+	got := escapeCodeFences(input)
+	if got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
 	}
 }

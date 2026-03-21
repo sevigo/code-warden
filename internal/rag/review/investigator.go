@@ -21,6 +21,8 @@ const (
 	maxDiffChars        = 8000
 	maxContextChars     = 4000
 	maxDefinitionsChars = 3000
+	// Total character budget for Phase 2 context to prevent context overflow.
+	maxPhase2Chars = 12000
 )
 
 // GapQuery represents a single tool invocation chosen by the gap-finding LLM.
@@ -103,10 +105,18 @@ func (inv *Investigator) Investigate(
 	inv.logger.Info("phase 2 executing gap queries", "count", len(gaps))
 
 	var sections []string
+	totalChars := 0
 	for i, gap := range gaps {
 		result := inv.executeGap(ctx, scopedStore, gap)
 		if result != "" {
-			sections = append(sections, fmt.Sprintf("### Gap %d: %s\n%s", i+1, gap.Reason, result))
+			sectionText := fmt.Sprintf("### Gap %d: %s\n%s", i+1, gap.Reason, result)
+			// Enforce character budget to prevent context overflow
+			if totalChars+len(sectionText) > maxPhase2Chars {
+				inv.logger.Info("phase 2: character budget exhausted, stopping early", "budget", maxPhase2Chars)
+				break
+			}
+			sections = append(sections, sectionText)
+			totalChars += len(sectionText)
 		}
 	}
 
@@ -115,7 +125,7 @@ func (inv *Investigator) Investigate(
 		return ""
 	}
 
-	inv.logger.Info("phase 2 completed", "gaps_filled", len(sections))
+	inv.logger.Info("phase 2 completed", "gaps_filled", len(sections), "total_chars", totalChars)
 	return "# Additional Context (Phase 2 Investigation)\n\n" + strings.Join(sections, "\n\n")
 }
 
@@ -183,7 +193,7 @@ func (inv *Investigator) executeSearchCode(ctx context.Context, store storage.Sc
 	if !ok || query == "" {
 		return ""
 	}
-	limit := parseIntArg(args, "limit", defaultGapArgs)
+	limit := parseLimitArg(args["limit"])
 
 	opts := []vectorstores.Option{}
 	if ct, ok := args["chunk_type"].(string); ok && ct != "" {
@@ -199,7 +209,8 @@ func (inv *Investigator) executeSearchCode(ctx context.Context, store storage.Sc
 	var sb strings.Builder
 	for _, ds := range docs {
 		source, _ := ds.Document.Metadata["source"].(string)
-		fmt.Fprintf(&sb, "**%s**\n```\n%s\n```\n", source, ds.Document.PageContent)
+		content := escapeCodeFences(ds.Document.PageContent)
+		fmt.Fprintf(&sb, "**%s**\n```\n%s\n```\n", source, content)
 	}
 	return sb.String()
 }
@@ -229,7 +240,8 @@ func (inv *Investigator) executeGetSymbol(ctx context.Context, store storage.Sco
 
 	doc := docs[0]
 	source, _ := doc.Metadata["source"].(string)
-	return fmt.Sprintf("**Definition of `%s`** (from %s)\n```\n%s\n```\n", name, source, doc.PageContent)
+	content := escapeCodeFences(doc.PageContent)
+	return fmt.Sprintf("**Definition of `%s`** (from %s)\n```\n%s\n```\n", name, source, content)
 }
 
 func (inv *Investigator) executeFindUsages(ctx context.Context, store storage.ScopedVectorStore, args map[string]any) string {
@@ -237,7 +249,7 @@ func (inv *Investigator) executeFindUsages(ctx context.Context, store storage.Sc
 	if !ok || symbol == "" {
 		return ""
 	}
-	limit := parseIntArg(args, "limit", defaultGapArgs)
+	limit := parseLimitArg(args["limit"])
 
 	query := symbol + " usage call reference"
 	docs, err := store.SimilaritySearchWithScores(ctx, query, limit*2,
@@ -257,7 +269,8 @@ func (inv *Investigator) executeFindUsages(ctx context.Context, store storage.Sc
 			continue
 		}
 		source, _ := ds.Document.Metadata["source"].(string)
-		fmt.Fprintf(&sb, "**%s**\n```\n%s\n```\n", source, ds.Document.PageContent)
+		content := escapeCodeFences(ds.Document.PageContent)
+		fmt.Fprintf(&sb, "**%s**\n```\n%s\n```\n", source, content)
 		count++
 		if count >= limit {
 			break
@@ -266,18 +279,25 @@ func (inv *Investigator) executeFindUsages(ctx context.Context, store storage.Sc
 	return sb.String()
 }
 
-func parseIntArg(args map[string]any, key string, defaultVal int) int {
-	switch v := args[key].(type) {
+func escapeCodeFences(content string) string {
+	if strings.Contains(content, "```") {
+		return strings.ReplaceAll(content, "```", "` ` `")
+	}
+	return content
+}
+
+func parseLimitArg(v any) int {
+	switch val := v.(type) {
 	case float64:
-		if n := int(v); n > 0 {
+		if n := int(val); n > 0 {
 			return n
 		}
 	case int:
-		if v > 0 {
-			return v
+		if val > 0 {
+			return val
 		}
 	}
-	return defaultVal
+	return defaultGapArgs
 }
 
 func truncateStr(s string, maxLen int) string {
