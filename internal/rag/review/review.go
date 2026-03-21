@@ -34,6 +34,102 @@ func buildPRDescription(event *core.GitHubEvent) string {
 	return sb.String()
 }
 
+// extractAddedChunks parses a git patch and returns blocks of consecutively added lines.
+func extractAddedChunks(patch string) []string {
+	var chunks []string
+	var currentChunk []string
+
+	lines := strings.Split(patch, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			content := strings.TrimPrefix(line, "+")
+			// Skip entirely empty lines or simple brackets to avoid noisy chunks
+			trimmed := strings.TrimSpace(content)
+			if trimmed == "" || trimmed == "}" || trimmed == "{" || trimmed == "};" || trimmed == "()" {
+				continue
+			}
+			currentChunk = append(currentChunk, content)
+		} else {
+			if len(currentChunk) >= 4 { // only consider chunks of at least 4 lines of actual code
+				chunks = append(chunks, strings.Join(currentChunk, "\n"))
+			}
+			currentChunk = nil
+		}
+	}
+	if len(currentChunk) >= 4 {
+		chunks = append(chunks, strings.Join(currentChunk, "\n"))
+	}
+	return chunks
+}
+
+// checkCodeDuplication queries the VectorDB for semantic duplicates of the newly added code chunks.
+func (s *Service) checkCodeDuplication(ctx context.Context, collectionName string, changedFiles []internalgithub.ChangedFile) string {
+	if s.cfg.VectorStore == nil {
+		return ""
+	}
+
+	var allChunks []string
+	for _, cf := range changedFiles {
+		if cf.Patch == "" {
+			continue
+		}
+		chunks := extractAddedChunks(cf.Patch)
+		allChunks = append(allChunks, chunks...)
+	}
+
+	if len(allChunks) == 0 {
+		return ""
+	}
+
+	// Limit to max 10 chunks to avoid blowing up the vector DB with thousands of queries on massive PRs.
+	if len(allChunks) > 10 {
+		allChunks = allChunks[:10]
+	}
+
+	scopedStore := s.cfg.VectorStore.ForRepo(collectionName, s.cfg.EmbedderModel)
+
+	var duplicates strings.Builder
+	foundCount := 0
+
+	for i, chunk := range allChunks {
+		results, err := scopedStore.SimilaritySearchWithScores(ctx, chunk, 1)
+		if err != nil || len(results) == 0 {
+			continue
+		}
+
+		topMatch := results[0]
+		// Cosine similarity > 0.85 indicates high semantic similarity.
+		if topMatch.Score > 0.85 {
+			var source string
+			if s, ok := topMatch.Document.Metadata["source"].(string); ok {
+				source = s
+			}
+			// Use Line or StartLine depending on what's available
+			var line int
+			if l, ok := topMatch.Document.Metadata["line"].(float64); ok {
+				line = int(l)
+			} else if sl, ok := topMatch.Document.Metadata["start_line"].(float64); ok {
+				line = int(sl)
+			}
+
+			fmt.Fprintf(&duplicates, "### Potential Duplicate %d (Similarity Score: %.2f)\n", i+1, topMatch.Score)
+			fmt.Fprintf(&duplicates, "**Newly Added Code:**\n```\n%s\n```\n", chunk)
+			fmt.Fprintf(&duplicates, "**Existing Code Found in `%s` (Line %d):**\n```\n%s\n```\n\n", source, line, topMatch.Document.PageContent)
+			foundCount++
+		}
+	}
+
+	if foundCount == 0 {
+		return ""
+	}
+
+	return "POTENTIAL CODE DUPLICATIONS FOUND:\n" +
+		"The following existing functions semantically match newly added code in this PR. " +
+		"Analyze these matches. If the new code duplicates existing functionality, suggest " +
+		"replacing the new code with a call to the existing function (DRY principle).\n\n" +
+		duplicates.String()
+}
+
 // GenerateReview generates a structured code review using the RAG pipeline.
 func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
@@ -58,6 +154,12 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 
 	// Get context
 	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+
+	// Detect duplications by generating embeddings for the exact added lines
+	duplicationContext := s.checkCodeDuplication(ctx, repo.QdrantCollectionName, changedFiles)
+	if duplicationContext != "" {
+		contextString = contextString + "\n\n" + duplicationContext
+	}
 
 	// Check for empty context to warn about hallucination risk
 	contextEmpty := contextIsEmpty(contextString, definitionsContext)
