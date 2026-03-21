@@ -509,6 +509,7 @@ func (h *WebUIHandler) json(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		h.logger.Error("failed to encode JSON response", "error", err)
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
 
