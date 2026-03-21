@@ -110,7 +110,17 @@ func (b *builderImpl) gatherHyDEContext(ctx context.Context, collection, embedde
 		TopK:      5,
 		MinScore:  b.cfg.AIConfig.RerankMinScore,
 		CandidateFilter: func(query string, docs []schema.Document) []schema.Document {
-			return preFilterBM25(stripPatchNoise(query), docs, 10)
+			// Augment BM25 filter with file keywords for better recall
+			keywords := b.getFileKeywords()
+			enrichedQuery := stripPatchNoise(query)
+			if len(keywords) > 0 {
+				// Add up to 5 keywords to improve semantic matching
+				if len(keywords) > 5 {
+					keywords = keywords[:5]
+				}
+				enrichedQuery = enrichedQuery + " " + strings.Join(keywords, " ")
+			}
+			return preFilterBM25(enrichedQuery, docs, 10)
 		},
 	}
 
