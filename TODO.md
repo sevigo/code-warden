@@ -274,6 +274,132 @@ Better approach: after `push_branch` succeeds, query the GitHub API for the bran
 
 ---
 
+## 🔍 Two-Phase Agentic Code Review (Webhook Path)
+
+### Problem
+
+The current webhook review pipeline (`/review`, `/rereview`) is a single-pass system:
+
+1. RAG retrieves context in 6 parallel stages (arch, HyDE, symbols, impact, description, test coverage)
+2. The assembled context is packed into the prompt
+3. The LLM generates the review in one call
+
+The LLM has no ability to ask for more information. If the context assembly missed a critical type definition, an important caller, or a dependency that would break — the LLM either hallucinates or silently omits the finding. This is the structural reason reviews behave like a smart linter rather than a design reviewer: the LLM can only reason about what it happened to receive.
+
+The agent path (`/implement`) already solves this via MCP tools (`get_symbol`, `find_usages`, `get_callers`, `search_code`). The goal of this item is to bring the same investigative capability to the standard webhook review path.
+
+### Solution: Two-Phase Review
+
+The review becomes two LLM calls with a targeted retrieval loop between them.
+
+**Phase 1 — Systematic baseline (existing RAG pipeline, unchanged)**
+
+Run the current 6-stage RAG context assembly exactly as-is. This guarantees systematic coverage: definitions, callers, tests, arch summaries are always retrieved regardless of the LLM's interests. Do not remove or modify this phase.
+
+**Phase 2 — Gap identification and targeted retrieval (new)**
+
+After Phase 1 context is assembled but before the review is generated, add a new step:
+
+1. Send the diff + Phase 1 context to the LLM with a lightweight "gap identification" prompt:
+
+   > "You are about to review this pull request. Based on the diff and the context provided, list the specific symbols, files, or call sites you need to look up before you can give a confident review. Be specific. Format as a JSON array of tool calls."
+
+2. The LLM returns a list of tool calls — e.g.:
+   ```json
+   [
+     {"tool": "get_symbol",   "args": {"name": "ProcessRequest"}},
+     {"tool": "find_usages",  "args": {"symbol": "DefaultTimeout"}},
+     {"tool": "get_callers",  "args": {"symbol": "SyncRepo"}}
+   ]
+   ```
+
+3. Execute each tool call against the existing MCP tool implementations (they already work correctly).
+
+4. Append the results to the context from Phase 1.
+
+5. Generate the final review with the enriched context.
+
+**Important constraints:**
+- Cap tool calls at **15 per review** to prevent rabbit holes and control latency.
+- If the LLM requests more than 15, execute the first 15 in order of appearance.
+- If a tool call fails, skip it silently and continue — Phase 2 failures must never block a review.
+- Total added latency should be < 20 seconds for typical PRs (tool calls are Qdrant lookups, not LLM calls).
+- The gap identification prompt should use the **fast model** (`AIConfig.FastModel`), not the generator model.
+
+### What to Build
+
+**New type: `internal/review/investigator.go`**
+
+```go
+// Investigator runs Phase 2: gap identification and targeted retrieval.
+type Investigator struct {
+    mcpServer  *mcp.Server   // existing MCP server, already has all tools
+    fastLLM    llms.Model    // from AIConfig.FastModel
+    promptMgr  *llm.PromptManager
+    logger     *slog.Logger
+}
+
+// Investigate takes the diff, changed files, and Phase 1 context.
+// It asks the LLM what it needs, executes those lookups, and returns
+// additional context to be merged with the Phase 1 context.
+// It never returns an error — failures are logged and an empty string is returned.
+func (inv *Investigator) Investigate(ctx context.Context, diff string, phase1Context string) string
+```
+
+**New prompt: `internal/llm/prompts/gap_identification.prompt`**
+
+The prompt receives:
+- `{{.Diff}}` — the raw unified diff
+- `{{.Context}}` — the Phase 1 assembled context
+
+It must return a JSON array of objects, each with `"tool"` (string) and `"args"` (object). The allowed tools are: `search_code`, `get_symbol`, `find_usages`, `get_callers`, `get_callees`, `get_arch_context`. Do not include `review_code`, `push_branch`, or any GitHub tools — those are not retrieval tools.
+
+**Wiring into `internal/review/executor.go`**
+
+In `Executor.Run()`, after `ragService.BuildContext()` returns Phase 1 context and before `ragService.GenerateReview()` is called:
+
+```go
+// Phase 2: let the LLM identify and fill gaps
+if inv.investigator != nil {
+    additionalContext := inv.investigator.Investigate(ctx, params.Diff, phase1Context)
+    if additionalContext != "" {
+        phase1Context = phase1Context + "\n\n# Additional Context (Targeted Lookup)\n\n" + additionalContext
+    }
+}
+```
+
+The `Investigator` is optional — if not wired (e.g. in tests), Phase 2 is skipped silently.
+
+**Wiring the MCP server**
+
+The `Investigator` needs access to MCP tool execution. Use `mcp.Server.CallTool(ctx, name, args)` directly — it already handles governance and registry lookup. The `mcp.Server` is already constructed in `internal/wire/wire.go`; inject it into `Executor` alongside `ragService`.
+
+**New prompt key: `internal/llm/keys.go`**
+
+Add `GapIdentificationPrompt` key.
+
+### What NOT to Change
+
+- The Phase 1 RAG pipeline (`contextpkg`, `rag/review`, `rag/index`) — do not modify.
+- The MCP tool implementations — they are used as-is via `CallTool`.
+- The suggestion filtering, validator, and GitHub posting logic — Phase 2 only affects context, not output processing.
+- The consensus review path — wire `Investigator` there too but keep the consensus logic unchanged.
+
+### Acceptance Criteria
+
+1. A review triggered by `/review` executes Phase 2 before the final LLM call.
+2. If Phase 2 is disabled (nil investigator or fast model unavailable), review works exactly as before.
+3. Phase 2 adds at most 15 tool calls and completes within 30 seconds.
+4. Tool call results are appended to context with a clear section header so the LLM knows their source.
+5. A unit test mocks the fast LLM to return a known tool call list and asserts the results are merged into context.
+6. An integration test verifies that a review on a repo with known symbols retrieves the correct definitions in Phase 2.
+
+### Why This Ordering Matters
+
+Phase 1 before Phase 2 is deliberate. Phase 1 provides systematic coverage the LLM would not know to ask for (e.g. test coverage for symbols it hasn't seen yet). Phase 2 lets the LLM go deeper on things it identified as uncertain from Phase 1. The two phases are complementary, not competing.
+
+---
+
 ## 🛒 Product & Competitive Positioning
 
 To be viable as a service for teams with larger repos:

@@ -28,6 +28,7 @@ const (
 	IntentExtractionPrompt      PromptKey = "intent_extraction"
 	ReuseVerificationPrompt     PromptKey = "reuse_verification"
 	ProjectContextPrompt        PromptKey = "project_context"
+	GapIdentificationPrompt     PromptKey = "gap_identification"
 )
 
 type PromptManager struct {

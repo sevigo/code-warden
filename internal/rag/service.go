@@ -134,6 +134,8 @@ type ragService struct {
 }
 
 // NewService creates and returns a new RAG [Service].
+//
+//nolint:funlen // Complex initialization with multiple component configs
 func NewService(
 	cfg *config.Config,
 	promptMgr *llm.PromptManager,
@@ -239,6 +241,20 @@ func NewService(
 		BuildContext:     r.contextBuilder.BuildRelevantContext,
 		EmbedderModel:    cfg.AI.EmbedderModel,
 	}
+
+	// Wire Phase 2 investigator when a fast model is configured.
+	if cfg.AI.FastModel != "" {
+		investigator := reviewpkg.NewInvestigator(
+			vs,
+			promptMgr,
+			cfg.AI.EmbedderModel,
+			cfg.AI.FastModel,
+			r.getOrCreateLLM,
+			logger.With("component", "investigator"),
+		)
+		reviewCfg.Investigate = investigator.Investigate
+	}
+
 	r.reviewService = reviewpkg.NewService(reviewCfg)
 
 	return r, nil
