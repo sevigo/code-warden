@@ -264,10 +264,11 @@ func (b *builderImpl) formatSplitDocs(allDocs []schema.Document, descKeys map[st
 		}
 
 		content := b.getDocContent(doc)
+		escapedContent := escapeCodeFences(content)
 		if _, isDesc := descKeys[source]; isDesc && prDescription != "" {
-			fmt.Fprintf(&descBuilder, "File: %s\n```\n%s\n```\n\n", source, content)
+			fmt.Fprintf(&descBuilder, "File: %s\n```\n%s\n```\n\n", source, escapedContent)
 		} else {
-			fmt.Fprintf(&impactBuilder, "**%s**:\n```\n%s\n```\n\n", source, content)
+			fmt.Fprintf(&impactBuilder, "**%s**:\n```\n%s\n```\n\n", source, escapedContent)
 		}
 	}
 

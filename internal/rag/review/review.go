@@ -103,21 +103,23 @@ func (s *Service) checkCodeDuplication(ctx context.Context, collectionName strin
 	var duplicates strings.Builder
 	foundCount := 0
 
-	for i, chunk := range allChunks {
-		results, err := scopedStore.SimilaritySearchWithScores(ctx, chunk, 1)
+	for _, chunk := range allChunks {
+		// Query multiple results to find all potential duplicates, not just the closest
+		results, err := scopedStore.SimilaritySearchWithScores(ctx, chunk, 5)
 		if err != nil || len(results) == 0 {
 			continue
 		}
 
-		topMatch := results[0]
-		if topMatch.Score > duplicationSimilarityThreshold {
-			source, _ := topMatch.Document.Metadata["source"].(string)
-			line := metadata.ExtractLineNumber(topMatch.Document.Metadata)
+		for _, match := range results {
+			if match.Score > duplicationSimilarityThreshold {
+				source, _ := match.Document.Metadata["source"].(string)
+				line := metadata.ExtractLineNumber(match.Document.Metadata)
 
-			fmt.Fprintf(&duplicates, "### Potential Duplicate %d (Similarity Score: %.2f)\n", i+1, topMatch.Score)
-			fmt.Fprintf(&duplicates, "**Newly Added Code:**\n```\n%s\n```\n", chunk)
-			fmt.Fprintf(&duplicates, "**Existing Code Found in `%s` (Line %d):**\n```\n%s\n```\n\n", source, line, topMatch.Document.PageContent)
-			foundCount++
+				fmt.Fprintf(&duplicates, "### Potential Duplicate %d (Similarity Score: %.2f)\n", foundCount+1, match.Score)
+				fmt.Fprintf(&duplicates, "**Newly Added Code:**\n```\n%s\n```\n", chunk)
+				fmt.Fprintf(&duplicates, "**Existing Code Found in `%s` (Line %d):**\n```\n%s\n```\n\n", source, line, match.Document.PageContent)
+				foundCount++
+			}
 		}
 	}
 

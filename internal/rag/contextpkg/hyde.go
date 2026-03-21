@@ -224,9 +224,10 @@ func (b *builderImpl) retrieveHyDEDocsForFile(ctx context.Context, reranker vect
 // generateHyDESnippetForFile generates a hypothetical post-patch code snippet for
 // a specific file. The language and file path are injected into the prompt so the
 // LLM produces idiomatic, context-aware code rather than generic output.
-// Cache key includes the file path to prevent cross-file cache collisions.
+// Cache key uses null byte separators to prevent collision since null bytes cannot
+// appear in file paths or model names.
 func (b *builderImpl) generateHyDESnippetForFile(ctx context.Context, patch, filePath, language string) (string, error) {
-	cacheKey := b.hashPatch(filePath + ":" + patch)
+	cacheKey := b.hashPatch(b.cfg.AIConfig.FastModel + "\x00" + filePath + "\x00" + patch)
 
 	if b.cfg.HyDECache != nil {
 		if cached, ok := b.cfg.HyDECache.Load(cacheKey); ok {
@@ -353,9 +354,17 @@ func (b *builderImpl) buildHyDEContent(hyde [][]schema.Document, indices []int, 
 				continue
 			}
 			seenKeys[key] = struct{}{}
-			fmt.Fprintf(&builder, "## Related to: %s\n```\n%s\n```\n\n", filePath, b.getDocContent(doc))
+			escapedContent := escapeCodeFences(b.getDocContent(doc))
+			fmt.Fprintf(&builder, "## Related to: %s\n```\n%s\n```\n\n", filePath, escapedContent)
 		}
 	}
 
 	return builder.String()
+}
+
+func escapeCodeFences(content string) string {
+	if strings.Contains(content, "```") {
+		return strings.ReplaceAll(content, "```", "` ` `")
+	}
+	return content
 }
