@@ -124,18 +124,10 @@ func (s *statusUpdater) PostStructuredReview(ctx context.Context, event *core.Gi
 			continue
 		}
 
-		// Enforce sane line ordering: startLine must be <= LineNumber
+		// Use validated StartLine (normalized by validator if it was invalid)
 		startLine := sug.StartLine
-		if startLine == 0 || startLine > sug.LineNumber {
-			if startLine > sug.LineNumber {
-				s.logger.Warn("normalizing invalid line range",
-					"file", sug.FilePath,
-					"start_line", startLine,
-					"line_number", sug.LineNumber,
-					"normalized_to", sug.LineNumber,
-				)
-			}
-			startLine = sug.LineNumber // treat as single-line at sug.LineNumber
+		if startLine == 0 {
+			startLine = sug.LineNumber
 		}
 		comments = append(comments, DraftReviewComment{
 			Path:      sug.FilePath,

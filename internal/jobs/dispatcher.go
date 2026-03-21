@@ -87,13 +87,13 @@ func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core
 }
 
 // Dispatch queues a GitHub event for processing by a worker.
+// The provided context carries the HTTP request deadline and should be used
+// for any blocking operations during queue submission.
 func (d *dispatcher) Dispatch(ctx context.Context, event *core.GitHubEvent) error {
 	d.logger.Info("queuing code review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
-	jobCtx := d.mainCtx
-
 	select {
-	case d.jobQueue <- &jobPayload{ctx: jobCtx, event: event}:
+	case d.jobQueue <- &jobPayload{ctx: ctx, event: event}:
 		return nil
 	default:
 		d.logger.Warn("ALERT: Job queue is full, dropping review job",
