@@ -439,6 +439,9 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 		i.cfg.Logger.Info("adding/updating documents in vector store", "count", len(allDocs))
 		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
 
+		successfulFiles := make(map[string]bool)
+		batchFailures := 0
+
 		const batchSize = 500
 		for startIndex := 0; startIndex < len(allDocs); startIndex += batchSize {
 			endIndex := startIndex + batchSize
@@ -448,28 +451,45 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 
 			batch := allDocs[startIndex:endIndex]
 			if _, err := scopedStore.AddDocuments(ctx, batch); err != nil {
-				return fmt.Errorf("failed to add/update embeddings for changed files in batch: %w", err)
+				i.cfg.Logger.Error("failed to add documents in batch", "error", err, "batch_start", startIndex)
+				batchFailures++
+				continue
+			}
+
+			for _, doc := range batch {
+				if source, ok := doc.Metadata["source"].(string); ok {
+					successfulFiles[source] = true
+				}
 			}
 		}
 
-		// Update file hashes so smart-scan can skip these files next time.
-		var fileRecords []storage.FileRecord
-		for _, f := range filesToProcess {
-			fullPath := filepath.Join(repoPath, f)
-			hash, err := ComputeFileHash(fullPath)
-			if err != nil {
-				i.cfg.Logger.Warn("failed to hash file for tracking", "file", f, "error", err)
-				continue
+		i.cfg.Logger.Info("vector insertion complete",
+			"total_docs", len(allDocs),
+			"successful_files", len(successfulFiles),
+			"batch_failures", batchFailures,
+		)
+
+		if len(successfulFiles) > 0 {
+			var fileRecords []storage.FileRecord
+			for f := range successfulFiles {
+				fullPath := filepath.Join(repoPath, f)
+				hash, err := ComputeFileHash(fullPath)
+				if err != nil {
+					i.cfg.Logger.Warn("failed to hash file for tracking", "file", f, "error", err)
+					continue
+				}
+				fileRecords = append(fileRecords, storage.FileRecord{
+					RepositoryID: repo.ID,
+					FilePath:     f,
+					FileHash:     hash,
+				})
 			}
-			fileRecords = append(fileRecords, storage.FileRecord{
-				RepositoryID: repo.ID,
-				FilePath:     f,
-				FileHash:     hash,
-			})
-		}
-		if len(fileRecords) > 0 {
-			if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, fileRecords); err != nil {
-				i.cfg.Logger.Warn("failed to update file hashes in DB", "error", err)
+
+			if len(fileRecords) > 0 {
+				if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, fileRecords); err != nil {
+					i.cfg.Logger.Error("failed to update file hashes in DB - vectors may be re-indexed on next scan",
+						"error", err, "file_count", len(fileRecords))
+				}
 			}
 		}
 	}
