@@ -173,8 +173,6 @@ func (b *builderImpl) searchTestChunksForSymbol(
 }
 
 // extractSymbolsFromDefinitions extracts symbol names from the definitions context.
-//
-//nolint:gocognit
 func extractSymbolsFromDefinitions(definitionsContext string) map[string]bool {
 	symbols := make(map[string]bool)
 
@@ -198,20 +196,9 @@ func extractSymbolsFromDefinitions(definitionsContext string) map[string]bool {
 	// Also extract from diff if present (patterns like "func Foo", "type Foo")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		// Match function definitions
 		if strings.HasPrefix(line, "func ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				// Handle method receivers: func (r *Receiver) Method
-				if strings.HasPrefix(parts[1], "(") && len(parts) >= 4 {
-					symbols[parts[3]] = true
-				} else {
-					symbols[parts[1]] = true
-				}
-			}
-		}
-		// Match type definitions
-		if strings.HasPrefix(line, "type ") {
+			extractFuncSymbol(line, symbols)
+		} else if strings.HasPrefix(line, "type ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				symbols[parts[1]] = true
@@ -222,7 +209,27 @@ func extractSymbolsFromDefinitions(definitionsContext string) map[string]bool {
 	return symbols
 }
 
-// isTestFilePath checks if a path is a test file.
+func extractFuncSymbol(line string, symbols map[string]bool) {
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		return
+	}
+	// Handle method receivers: func (r *Receiver) Method
+	if strings.HasPrefix(parts[1], "(") && len(parts) >= 4 {
+		name := parts[3]
+		if idx := strings.IndexByte(name, '('); idx >= 0 {
+			name = name[:idx]
+		}
+		symbols[name] = true
+	} else {
+		name := parts[1]
+		if idx := strings.IndexByte(name, '('); idx >= 0 {
+			name = name[:idx]
+		}
+		symbols[name] = true
+	}
+}
+
 func isTestFilePath(path string) bool {
 	return strings.HasSuffix(path, "_test.go") ||
 		strings.HasSuffix(path, ".test.ts") ||

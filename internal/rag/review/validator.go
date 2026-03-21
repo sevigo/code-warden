@@ -216,7 +216,7 @@ func validateSourceCitation(sug *core.Suggestion, validator *SuggestionValidator
 }
 
 func makeDedupKey(sug *core.Suggestion) string {
-	return strings.ToLower(sug.FilePath + ":" + categoryKey(sug.Comment) + ":" + sug.Category)
+	return strings.ToLower(sug.FilePath + ":" + strconv.Itoa(sug.LineNumber) + ":" + categoryKey(sug.Comment) + ":" + sug.Category)
 }
 
 func sortBySeverityAndConfidence(suggestions []core.Suggestion) {

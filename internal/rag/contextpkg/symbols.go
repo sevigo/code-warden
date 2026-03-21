@@ -141,13 +141,23 @@ func filterRemovedLines(patch string) string {
 	return strings.Join(removed, "\n")
 }
 
+func filterContextLines(patch string) string {
+	lines := strings.Split(patch, "\n")
+	var context []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, " ") && len(line) > 1 {
+			context = append(context, line[1:]) // Strip the leading ' '
+		}
+	}
+	return strings.Join(context, "\n")
+}
+
 func extractSymbolsFromPatch(patch string) []string {
 	symbols := make(map[string]struct{})
 
-	// Extract from both added and removed lines.
-	// Deleted or renamed symbols are equally important: the reviewer needs
-	// to know what depended on a symbol that was removed or changed.
-	sources := []string{filterAddedLines(patch), filterRemovedLines(patch)}
+	// Extract from added, removed, and context lines.
+	// Context lines contain unchanged code that may reference important symbols.
+	sources := []string{filterAddedLines(patch), filterRemovedLines(patch), filterContextLines(patch)}
 
 	patterns := []*regexp.Regexp{
 		symbolTypeDefRegex,

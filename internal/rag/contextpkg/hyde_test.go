@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/sevigo/goframe/schema"
+
+	"github.com/sevigo/code-warden/internal/config"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -73,14 +76,17 @@ func (c *simpleCache) Store(key string, value any) {
 // TestGenerateHyDESnippetForFile_CacheHit verifies that a pre-populated cache
 // entry is returned without calling the LLM.
 func TestGenerateHyDESnippetForFile_CacheHit(t *testing.T) {
-	b := &builderImpl{cfg: Config{Logger: slog.Default()}}
+	b := &builderImpl{cfg: Config{
+		Logger:    slog.Default(),
+		AIConfig:  config.AIConfig{FastModel: "test-model"},
+		HyDECache: &simpleCache{m: make(map[string]any)},
+	}}
 
-	cache := &simpleCache{m: make(map[string]any)}
-	b.cfg.HyDECache = cache
-
+	cache := b.cfg.HyDECache.(*simpleCache)
 	patch := "+func Process() error { return nil }"
 	filePath := "internal/service.go"
-	cacheKey := b.hashPatch(filePath + ":" + patch)
+	// Cache key format: model\x00filePath\x00patch
+	cacheKey := b.hashPatch(b.cfg.AIConfig.FastModel + "\x00" + filePath + "\x00" + patch)
 	cache.Store(cacheKey, "cached hypothetical snippet")
 
 	// GeneratorLLM is nil — if the cache miss path were taken, this would panic.
