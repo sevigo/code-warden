@@ -24,7 +24,9 @@ type Builder interface {
 
 // builderImpl implements context building logic.
 type builderImpl struct {
-	cfg Config
+	cfg            Config
+	fileKeywords   []string
+	fileKeywordsMu sync.RWMutex
 }
 
 // NewBuilder creates a new [Builder] instance.
@@ -64,13 +66,14 @@ func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, 
 	}
 
 	testCoverageContext := b.formatTestCoverageContext(results.testCoverageDocs)
-	fullContext := b.assembleContext(ctx, results.archContext, results.tocContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.hydeResults, results.hydeIndices, changedFiles)
+	fullContext := b.assembleContext(ctx, results.archContext, results.tocContext, results.fileSummaryContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.hydeResults, results.hydeIndices, changedFiles)
 	return fullContext, results.definitionsContext
 }
 
 type contextResults struct {
 	archContext        string
 	tocContext         string
+	fileSummaryContext string
 	definitionsContext string
 	impactDocs         []schema.Document
 	descriptionDocs    []schema.Document
@@ -84,6 +87,11 @@ func (b *builderImpl) buildContextConcurrently(
 	changedFiles []internalgithub.ChangedFile, scopedStore storage.ScopedVectorStore,
 ) *contextResults {
 	results := &contextResults{}
+
+	// Run FileSummaryContext first to collect keywords for HyDE boosting.
+	// This stage is fast (exact filter queries) and must complete before HyDE
+	// to ensure keywords are available.
+	results.fileSummaryContext = b.gatherFileSummaryContext(ctx, scopedStore, changedFiles)
 
 	// Each stage runs independently. A failure in one stage must not cancel the
 	// others — losing arch context because HyDE hit a transient Qdrant error, or
@@ -221,8 +229,8 @@ func (b *builderImpl) gatherDescriptionDocs(ctx context.Context, collection, emb
 	return allDocs, nil
 }
 
-func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
-	docs := b.buildContextDocuments(arch, toc, impact, description, definitions, testCoverage, hyde, indices, files)
+func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, fileSummary, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
+	docs := b.buildContextDocuments(arch, toc, fileSummary, impact, description, definitions, testCoverage, hyde, indices, files)
 
 	if b.cfg.ContextPacker == nil {
 		b.cfg.Logger.Error("context packer not initialized, using limited fallback")
@@ -238,6 +246,7 @@ func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, impact, de
 	b.cfg.Logger.Info("relevant context built",
 		"changed_files", len(files),
 		"arch_len", len(arch),
+		"file_summary_len", len(fileSummary),
 		"impact_len", len(impact),
 		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
