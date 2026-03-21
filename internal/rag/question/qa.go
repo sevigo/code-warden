@@ -22,7 +22,7 @@ const (
 	similarityLimit = 15
 )
 
-var pathPattern = regexp.MustCompile(`(?:^|\s|["'` + "`" + `])([\w/.-]+/[\w/.-]+)(?:$|\s|["'` + "`" + `])`)
+var pathPattern = regexp.MustCompile(`(?:^|\s|["'` + "`" + `])([\w/.-]+\.[a-zA-Z0-9]+|[\w/.-]+/[\w/.-]+)(?:$|\s|["'` + "`" + `])`)
 
 // PromptData holds data for the Q&A prompt template.
 type PromptData struct {
@@ -68,6 +68,10 @@ func (r *hybridRetriever) GetRelevantDocuments(ctx context.Context, query string
 		docs, err = r.store.SimilaritySearch(ctx, query, r.baseLimit)
 	}
 	if err != nil {
+		// FALLBACK: If vector DB errors out on query, gracefully return what we have (e.g. archDocs)
+		if len(r.archDocs) > 0 {
+			return deduplicateDocs(r.archDocs), nil
+		}
 		return nil, err
 	}
 
