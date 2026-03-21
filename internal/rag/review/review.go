@@ -11,7 +11,22 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag/metadata"
 	"github.com/sevigo/code-warden/internal/storage"
+)
+
+const (
+	// Minimum number of consecutive added lines to consider as a meaningful chunk
+	// for duplication detection. Smaller chunks tend to be noisy.
+	minChunkLines = 4
+
+	// Maximum number of chunks to check for duplication. Limits vector DB queries
+	// on large PRs to avoid performance issues.
+	maxChunksToCheck = 10
+
+	// Minimum cosine similarity score to consider a match as a potential duplicate.
+	// 0.85 is a reasonable threshold for semantic similarity with most embedding models.
+	duplicationSimilarityThreshold = 0.85
 )
 
 // buildPRDescription builds the PR description string passed to BuildContext,
@@ -50,13 +65,13 @@ func extractAddedChunks(patch string) []string {
 			}
 			currentChunk = append(currentChunk, content)
 		} else {
-			if len(currentChunk) >= 4 { // only consider chunks of at least 4 lines of actual code
+			if len(currentChunk) >= minChunkLines {
 				chunks = append(chunks, strings.Join(currentChunk, "\n"))
 			}
 			currentChunk = nil
 		}
 	}
-	if len(currentChunk) >= 4 {
+	if len(currentChunk) >= minChunkLines {
 		chunks = append(chunks, strings.Join(currentChunk, "\n"))
 	}
 	return chunks
@@ -81,9 +96,9 @@ func (s *Service) checkCodeDuplication(ctx context.Context, collectionName strin
 		return ""
 	}
 
-	// Limit to max 10 chunks to avoid blowing up the vector DB with thousands of queries on massive PRs.
-	if len(allChunks) > 10 {
-		allChunks = allChunks[:10]
+	// Limit chunks to avoid blowing up the vector DB with thousands of queries on massive PRs.
+	if len(allChunks) > maxChunksToCheck {
+		allChunks = allChunks[:maxChunksToCheck]
 	}
 
 	scopedStore := s.cfg.VectorStore.ForRepo(collectionName, s.cfg.EmbedderModel)
@@ -98,19 +113,9 @@ func (s *Service) checkCodeDuplication(ctx context.Context, collectionName strin
 		}
 
 		topMatch := results[0]
-		// Cosine similarity > 0.85 indicates high semantic similarity.
-		if topMatch.Score > 0.85 {
-			var source string
-			if s, ok := topMatch.Document.Metadata["source"].(string); ok {
-				source = s
-			}
-			// Use Line or StartLine depending on what's available
-			var line int
-			if l, ok := topMatch.Document.Metadata["line"].(float64); ok {
-				line = int(l)
-			} else if sl, ok := topMatch.Document.Metadata["start_line"].(float64); ok {
-				line = int(sl)
-			}
+		if topMatch.Score > duplicationSimilarityThreshold {
+			source, _ := topMatch.Document.Metadata["source"].(string)
+			line := metadata.ExtractLineNumber(topMatch.Document.Metadata)
 
 			fmt.Fprintf(&duplicates, "### Potential Duplicate %d (Similarity Score: %.2f)\n", i+1, topMatch.Score)
 			fmt.Fprintf(&duplicates, "**Newly Added Code:**\n```\n%s\n```\n", chunk)
