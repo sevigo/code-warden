@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sevigo/code-warden/internal/prescan"
-	"github.com/sevigo/code-warden/internal/wire"
 )
 
 var (
@@ -30,9 +29,9 @@ var prescanCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour) // Long timeout for large repos
 		defer cancel()
 
-		app, cleanup, err := wire.InitializeApp(ctx)
+		app, cleanup, err := InitializeApp(ctx, false)
 		if err != nil {
-			return fmt.Errorf("failed to initialize application: %w", err)
+			return err
 		}
 		defer cleanup()
 

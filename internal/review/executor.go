@@ -4,14 +4,13 @@ package review
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/cryptoutil"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/rag"
 	ragReview "github.com/sevigo/code-warden/internal/rag/review"
@@ -80,12 +79,23 @@ func (e *Executor) Execute(ctx context.Context, params Params) (*Result, error) 
 	startTime := time.Now()
 
 	if params.Diff == "" {
+		raw := "No code changes."
+		if e.config.ReviewsDir != "" {
+			ts := time.Now().Format("20060102-150405")
+			result := ragReview.ComparisonResult{
+				Model:    "review",
+				Review:   raw,
+				Duration: time.Since(startTime),
+			}
+			ragReview.SaveReviewArtifact(e.config.Logger, e.config.ReviewsDir, result, params.Event, ts)
+		}
+
 		return &Result{
 			Review: &core.StructuredReview{
 				Summary:     "This pull request contains no code changes. Looks good to me!",
 				Suggestions: []core.Suggestion{},
 			},
-			RawReview: "No code changes.",
+			RawReview: raw,
 			DiffHash:  hashDiff(""),
 		}, nil
 	}
@@ -162,6 +172,5 @@ func (e *Executor) Execute(ctx context.Context, params Params) (*Result, error) 
 
 // hashDiff creates a SHA-256 hex hash of the diff for tracking changes.
 func hashDiff(diff string) string {
-	h := sha256.Sum256([]byte(diff))
-	return hex.EncodeToString(h[:])
+	return cryptoutil.HashString(diff)
 }

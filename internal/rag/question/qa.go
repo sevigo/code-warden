@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	archResultLimit = 2
-	similarityLimit = 5
+	archResultLimit = 4
+	similarityLimit = 15
 )
 
-var pathPattern = regexp.MustCompile(`(?:^|\s|["'` + "`" + `])([\w/.-]+/[\w/.-]+)(?:$|\s|["'` + "`" + `])`)
+var pathPattern = regexp.MustCompile(`(?:^|\s|["'` + "`" + `])([\w/.-]+\.[a-zA-Z0-9]+|[\w/.-]+/[\w/.-]+)(?:$|\s|["'` + "`" + `])`)
 
 // PromptData holds data for the Q&A prompt template.
 type PromptData struct {
@@ -68,6 +68,10 @@ func (r *hybridRetriever) GetRelevantDocuments(ctx context.Context, query string
 		docs, err = r.store.SimilaritySearch(ctx, query, r.baseLimit)
 	}
 	if err != nil {
+		// FALLBACK: If vector DB errors out on query, gracefully return what we have (e.g. archDocs)
+		if len(r.archDocs) > 0 {
+			return deduplicateDocs(r.archDocs), nil
+		}
 		return nil, err
 	}
 
@@ -82,16 +86,38 @@ func deduplicateDocs(docs []schema.Document) []schema.Document {
 	var result []schema.Document
 	for _, doc := range docs {
 		source, _ := doc.Metadata["source"].(string)
-		var startLine int
-		switch v := doc.Metadata["start_line"].(type) {
-		case int:
-			startLine = v
-		case float64:
-			startLine = int(v)
-		case int64:
-			startLine = int(v)
+
+		var line int
+		if v, ok := doc.Metadata["line"]; ok {
+			switch val := v.(type) {
+			case int:
+				line = val
+			case float64:
+				line = int(val)
+			case int64:
+				line = int(val)
+			}
+		} else if v, ok := doc.Metadata["start_line"]; ok {
+			switch val := v.(type) {
+			case int:
+				line = val
+			case float64:
+				line = int(val)
+			case int64:
+				line = int(val)
+			}
 		}
-		key := fmt.Sprintf("%s:%d", source, startLine)
+
+		chunkType, _ := doc.Metadata["chunk_type"].(string)
+
+		key := fmt.Sprintf("%s:%d:%s", source, line, chunkType)
+
+		// For chunks that lack line numbers (like architecture summaries or definitions),
+		// include the page content in the key to prevent accidental squashing of different chunks.
+		if line == 0 {
+			key = fmt.Sprintf("%s:0:%s:%s", source, chunkType, doc.PageContent)
+		}
+
 		if !seen[key] {
 			seen[key] = true
 			result = append(result, doc)

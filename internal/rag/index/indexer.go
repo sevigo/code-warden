@@ -20,6 +20,7 @@ import (
 	"github.com/sevigo/goframe/textsplitter"
 
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/cryptoutil"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
 )
@@ -235,9 +236,10 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 			if len(batchDocs) >= batchSize {
 				if _, err := scopedStore.AddDocuments(ctx, batchDocs); err != nil {
 					i.cfg.Logger.Error("failed to add vectors in batch", "error", err)
-				}
-				if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
-					i.cfg.Logger.Error("failed to update file state in DB", "error", err)
+				} else {
+					if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
+						i.cfg.Logger.Error("failed to update file state in DB", "error", err)
+					}
 				}
 				// Clear batches but keep capacity
 				batchDocs = batchDocs[:0]
@@ -297,9 +299,10 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	if len(batchDocs) > 0 {
 		if _, err := scopedStore.AddDocuments(ctx, batchDocs); err != nil {
 			i.cfg.Logger.Error("failed to add vectors in final batch", "error", err)
-		}
-		if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
-			i.cfg.Logger.Error("failed to update file state in final DB batch", "error", err)
+		} else {
+			if err := i.cfg.Store.UpsertFiles(ctx, repo.ID, batchFiles); err != nil {
+				i.cfg.Logger.Error("failed to update file state in final DB batch", "error", err)
+			}
 		}
 	}
 
@@ -435,8 +438,18 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 	if len(allDocs) > 0 {
 		i.cfg.Logger.Info("adding/updating documents in vector store", "count", len(allDocs))
 		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
-		if _, err := scopedStore.AddDocuments(ctx, allDocs); err != nil {
-			return fmt.Errorf("failed to add/update embeddings for changed files: %w", err)
+
+		const batchSize = 500
+		for startIndex := 0; startIndex < len(allDocs); startIndex += batchSize {
+			endIndex := startIndex + batchSize
+			if endIndex > len(allDocs) {
+				endIndex = len(allDocs)
+			}
+
+			batch := allDocs[startIndex:endIndex]
+			if _, err := scopedStore.AddDocuments(ctx, batch); err != nil {
+				return fmt.Errorf("failed to add/update embeddings for changed files in batch: %w", err)
+			}
 		}
 
 		// Update file hashes so smart-scan can skip these files next time.
@@ -844,6 +857,10 @@ func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content str
 
 	// Cache result
 	globalFileSummaryCache.mu.Lock()
+	if len(globalFileSummaryCache.cache) > 5000 { // Prevent unbounded memory growth
+		// Simple clear-all eviction. For a more robust solution, an LRU cache could be used.
+		globalFileSummaryCache.cache = make(map[string]string)
+	}
 	globalFileSummaryCache.cache[contentHash] = summary
 	globalFileSummaryCache.mu.Unlock()
 
@@ -854,9 +871,5 @@ func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content str
 
 // hashContent generates a simple hash for content caching.
 func hashContent(content string) string {
-	// Simple hash for caching - use first/last chars and length
-	if len(content) < 100 {
-		return fmt.Sprintf("%d:%s", len(content), content)
-	}
-	return fmt.Sprintf("%d:%s...%s", len(content), content[:50], content[len(content)-50:])
+	return cryptoutil.HashString(content)
 }

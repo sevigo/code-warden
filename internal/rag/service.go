@@ -38,6 +38,7 @@ import (
 type Service interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, progressFn indexpkg.ProgressFunc) error
 	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
+	SyncRepoIndex(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, updateResult *core.UpdateResult, progressFn indexpkg.ProgressFunc) error
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	AnswerQuestion(ctx context.Context, collectionName, embedderModelName, question string, history []string) (string, error)
@@ -432,6 +433,26 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
 	}
 	return nil
+}
+
+// SyncRepoIndex handles the common pattern of syncing repository index based on update result.
+// It chooses between initial full indexing and incremental update based on the update result.
+func (r *ragService) SyncRepoIndex(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, updateResult *core.UpdateResult, progressFn indexpkg.ProgressFunc) error {
+	switch {
+	case updateResult.IsInitialClone:
+		r.logger.Info("performing initial full indexing", "repo", repo.FullName)
+		return r.SetupRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, progressFn)
+	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
+		r.logger.Info("performing incremental indexing",
+			"repo", repo.FullName,
+			"added_or_updated", len(updateResult.FilesToAddOrUpdate),
+			"deleted", len(updateResult.FilesToDelete),
+		)
+		return r.UpdateRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
+	default:
+		r.logger.Info("no changes detected, skipping indexing", "repo", repo.FullName)
+		return nil
+	}
 }
 
 func (r *ragService) ProcessFile(ctx context.Context, repoPath, file string) []schema.Document {

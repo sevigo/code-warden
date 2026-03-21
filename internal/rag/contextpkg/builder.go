@@ -2,13 +2,12 @@ package contextpkg
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"sync"
 
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 
+	"github.com/sevigo/code-warden/internal/cryptoutil"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/rag/detect"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -253,6 +252,5 @@ func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, impact, de
 
 // hashPatch returns a 128-bit hex hash of the patch content for cache keying.
 func (b *builderImpl) hashPatch(patch string) string {
-	hash := sha256.Sum256([]byte(patch))
-	return hex.EncodeToString(hash[:16])
+	return cryptoutil.HashStringShort(patch)
 }

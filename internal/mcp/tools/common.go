@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 )
 
 // Input validation limits.
@@ -32,4 +33,39 @@ func ProjectRootFromContext(ctx context.Context) string {
 // WithProjectRoot returns a context with the given project root.
 func WithProjectRoot(ctx context.Context, root string) context.Context {
 	return context.WithValue(ctx, projectRootKey, root)
+}
+
+// GetRequiredString extracts a required string parameter from args.
+// Returns an error if the parameter is missing or exceeds maxLength.
+func GetRequiredString(args map[string]any, paramName string, maxLength int) (string, error) {
+	val, ok := args[paramName].(string)
+	if !ok || val == "" {
+		return "", fmt.Errorf("%s is required", paramName)
+	}
+	if maxLength > 0 && len(val) > maxLength {
+		return "", fmt.Errorf("%s exceeds maximum length of %d characters", paramName, maxLength)
+	}
+	return val, nil
+}
+
+// GetOptionalString extracts an optional string parameter from args.
+// Returns empty string if not present.
+func GetOptionalString(args map[string]any, paramName string) string {
+	val, _ := args[paramName].(string)
+	return val
+}
+
+// ParseLimit extracts a limit parameter from args with bounds checking.
+// Returns defaultLimit if not present or invalid.
+func ParseLimit(args map[string]any, defaultLimit int) int {
+	limit := defaultLimit
+	if l, ok := args["limit"].(float64); ok {
+		limit = int(l)
+		if limit < MinResultLimit {
+			limit = MinResultLimit
+		} else if limit > MaxResultLimit {
+			limit = MaxResultLimit
+		}
+	}
+	return limit
 }

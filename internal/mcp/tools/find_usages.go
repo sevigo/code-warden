@@ -63,21 +63,13 @@ func (t *FindUsages) ParametersSchema() map[string]any {
 }
 
 func (t *FindUsages) Execute(ctx context.Context, args map[string]any) (any, error) {
-	symbol, ok := args["symbol"].(string)
-	if !ok || symbol == "" {
-		return nil, fmt.Errorf("symbol is required")
+	symbol, err := GetRequiredString(args, "symbol", MaxSymbolLength)
+	if err != nil {
+		return nil, err
 	}
 	t.Logger.Info("find_usages: executing tool", "symbol", symbol)
 
-	limit := 20
-	if l, ok := args["limit"].(float64); ok {
-		limit = int(l)
-		if limit < 1 {
-			limit = 1
-		} else if limit > MaxResultLimit {
-			limit = MaxResultLimit
-		}
-	}
+	limit := ParseLimit(args, 20)
 
 	// Build query that emphasizes usage patterns
 	// Use multiple query variations to catch different usage contexts

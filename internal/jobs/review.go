@@ -19,11 +19,7 @@ import (
 	"github.com/sevigo/code-warden/internal/repomanager"
 	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
-)
-
-var (
-	ErrConfigNotFound = errors.New("config file not found")
-	ErrConfigParsing  = errors.New("config parsing failed")
+	"github.com/sevigo/code-warden/internal/stringsutil"
 )
 
 type ReviewJob struct {
@@ -639,37 +635,15 @@ func extractBriefTitle(comment string) string {
 
 // truncateTitle truncates a title to a maximum length.
 func truncateTitle(title string, maxLen int) string {
-	if len(title) <= maxLen {
-		return title
-	}
-	return title[:maxLen-3] + "..."
+	return stringsutil.Truncate(title, maxLen, "...")
 }
 
 // updateVectorStoreAndSHA performs incremental indexing of the default branch changes.
 // It persists DefaultBranchSHA (not the PR HeadSHA) as LastIndexedSHA to keep
 // the Qdrant baseline aligned with main.
 func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, updateResult *core.UpdateResult) error {
-	switch {
-	case updateResult.IsInitialClone:
-		j.logger.Info("⚠️ Initial indexing required (fresh clone or reset state)", "repo", repo.FullName)
-		err := j.ragService.SetupRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, nil)
-		if err != nil {
-			return fmt.Errorf("failed to perform initial repository indexing: %w", err)
-		}
-
-	case len(updateResult.FilesToAddOrUpdate) > 0 || len(updateResult.FilesToDelete) > 0:
-		j.logger.Info("⚡ Incremental update required (default branch advanced)",
-			"repo", repo.FullName,
-			"changed_files", len(updateResult.FilesToAddOrUpdate),
-			"deleted_files", len(updateResult.FilesToDelete),
-		)
-		err := j.ragService.UpdateRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
-		if err != nil {
-			return fmt.Errorf("failed to update repository context in vector store: %w", err)
-		}
-
-	default:
-		j.logger.Info("✅ Repository up-to-date. Skipping Scan.", "repo", repo.FullName)
+	if err := j.ragService.SyncRepoIndex(ctx, repoConfig, repo, updateResult, nil); err != nil {
+		return fmt.Errorf("failed to sync repository index: %w", err)
 	}
 
 	// Persist the DEFAULT BRANCH SHA (not the PR HeadSHA) so the next sync
@@ -752,16 +726,7 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 }
 
 func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *core.RepoConfig {
-	repoConfig, configErr := config.LoadRepoConfig(repoPath)
-	if configErr != nil {
-		if errors.Is(configErr, ErrConfigNotFound) {
-			j.logger.Info("no .code-warden.yml found, using defaults", "repo", repoFullName)
-		} else {
-			j.logger.Warn("failed to parse .code-warden.yml, using defaults", "error", configErr, "repo", repoFullName)
-		}
-		return core.DefaultRepoConfig()
-	}
-	return repoConfig
+	return config.LoadRepoConfigWithDefaults(repoPath, repoFullName, j.logger)
 }
 
 // firstNonEmpty returns the first non-empty string from the given strings.
