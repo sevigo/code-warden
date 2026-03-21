@@ -149,6 +149,13 @@ func NewService(
 	// which treats identifiers like processPayment and XMLParser as better search signals.
 	sparse.RegisterProvider(sparsecode.NewCodeSparseProvider())
 
+	// Log hybrid search configuration
+	if cfg.AI.EnableHybrid {
+		logger.Info("Hybrid search enabled", "sparse_vector_name", cfg.AI.SparseVectorName)
+	} else {
+		logger.Info("Hybrid search disabled, using dense vectors only")
+	}
+
 	// Get token budget from config, with fallback.
 	tokenBudget := cfg.AI.ContextTokenBudget
 	if tokenBudget <= 0 {

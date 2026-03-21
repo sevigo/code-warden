@@ -529,10 +529,10 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 			splitDocs[idx].Metadata["file_summary"] = fileSummary
 		}
 
-		// Ensure sparse vectors are generated for hybrid search if possible
 		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
 		if err == nil {
 			splitDocs[idx].Sparse = sparseVec
+			i.cfg.Logger.Debug("sparse vector generated for chunk", "file", file, "chunk", idx, "sparse_indices", len(sparseVec.Indices))
 		} else {
 			i.cfg.Logger.Debug("sparse vector generation failed for chunk, using dense only", "file", file, "chunk", idx, "error", err)
 		}
@@ -605,16 +605,17 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		defExtractor := NewDefinitionExtractor(i.cfg.ParserRegistry, i.cfg.Logger)
 		defDocs := defExtractor.ExtractDefinitions(ctx, fullPath, file, contentBytes)
 
-		// Enrich definition chunks with file summary for better semantic retrieval
 		for idx := range defDocs {
 			if fileSummary != "" {
 				defDocs[idx].PageContent = defDocs[idx].PageContent + "\n\n[File Summary: " + fileSummary + "]"
 				defDocs[idx].Metadata["file_summary"] = fileSummary
 			}
-			// Generate sparse vectors for definition chunks
 			sparseVec, err := sparse.GenerateSparseVector(ctx, defDocs[idx].PageContent)
 			if err == nil {
 				defDocs[idx].Sparse = sparseVec
+				i.cfg.Logger.Debug("sparse vector generated for definition", "file", file, "definition", idx, "sparse_indices", len(sparseVec.Indices))
+			} else {
+				i.cfg.Logger.Debug("sparse vector generation failed for definition, using dense only", "file", file, "definition", idx, "error", err)
 			}
 		}
 
@@ -643,6 +644,9 @@ func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schem
 	}
 	if sparseVec, err := sparse.GenerateSparseVector(ctx, toc.PageContent); err == nil {
 		toc.Sparse = sparseVec
+		i.cfg.Logger.Debug("sparse vector generated for TOC", "file", file, "sparse_indices", len(sparseVec.Indices))
+	} else {
+		i.cfg.Logger.Debug("sparse vector generation failed for TOC, using dense only", "file", file, "error", err)
 	}
 	i.cfg.Logger.Debug("built TOC chunk", "file", file, "symbols", len(defDocs))
 	return []schema.Document{*toc}
