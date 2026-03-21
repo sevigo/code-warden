@@ -360,7 +360,9 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 	// Create context with timeout
 	//nolint:gosec // G118: cancel stored in session for cleanup in runAgentCLI/runAgentSDK
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
+	session.mu.Lock()
 	session.cancel = cancel
+	session.mu.Unlock()
 
 	// Start agent in background
 	go o.runAgent(ctx, session)
@@ -383,8 +385,12 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 			o.logger.Error("failed to register workspace with global MCP registry",
 				"session_id", sessionID, "error", err)
 		} else {
+			tokenDisplay := token
+			if len(token) > 8 {
+				tokenDisplay = token[:8] + "..."
+			}
 			o.logger.Info("registered workspace with global MCP registry",
-				"session_id", sessionID, "token", token[:8]+"...", "mcp_endpoint", mcpEndpoint)
+				"session_id", sessionID, "token", tokenDisplay, "mcp_endpoint", mcpEndpoint)
 		}
 	}
 
@@ -415,9 +421,11 @@ func (o *Orchestrator) CancelSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
+	session.mu.Lock()
 	if session.cancel != nil {
 		session.cancel()
 	}
+	session.mu.Unlock()
 
 	session.SetStatus(StatusCancelled)
 	session.mu.Lock()

@@ -83,6 +83,7 @@ func (m *manager) cloneAndIndex(
 		FullName:             ev.RepoFullName,
 		ClonePath:            clonePath,
 		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName),
+		InstallationID:       ev.InstallationID,
 	}
 
 	if existing != nil {
