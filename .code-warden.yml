@@ -34,6 +34,10 @@ exclude_dirs:
   - "scripts"     # Utility scripts, often not core logic
   - "mocks"       # Generated mock code
   - ".github"     # CI configuration
+  - "ui"
+  - "data"
+  - ".opencode"
+  - "node_modules"
 
 # File extensions to exclude from indexing.
 exclude_exts:
