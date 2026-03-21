@@ -439,14 +439,14 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 	if len(allDocs) > 0 {
 		i.cfg.Logger.Info("adding/updating documents in vector store", "count", len(allDocs))
 		scopedStore := i.cfg.VectorStore.ForRepo(repo.QdrantCollectionName, i.cfg.EmbedderModel)
-		
+
 		const batchSize = 500
 		for startIndex := 0; startIndex < len(allDocs); startIndex += batchSize {
 			endIndex := startIndex + batchSize
 			if endIndex > len(allDocs) {
 				endIndex = len(allDocs)
 			}
-			
+
 			batch := allDocs[startIndex:endIndex]
 			if _, err := scopedStore.AddDocuments(ctx, batch); err != nil {
 				return fmt.Errorf("failed to add/update embeddings for changed files in batch: %w", err)

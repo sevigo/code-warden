@@ -80,12 +80,23 @@ func (e *Executor) Execute(ctx context.Context, params Params) (*Result, error) 
 	startTime := time.Now()
 
 	if params.Diff == "" {
+		raw := "No code changes."
+		if e.config.ReviewsDir != "" {
+			ts := time.Now().Format("20060102-150405")
+			result := ragReview.ComparisonResult{
+				Model:    "review",
+				Review:   raw,
+				Duration: time.Since(startTime),
+			}
+			ragReview.SaveReviewArtifact(e.config.Logger, e.config.ReviewsDir, result, params.Event, ts)
+		}
+
 		return &Result{
 			Review: &core.StructuredReview{
 				Summary:     "This pull request contains no code changes. Looks good to me!",
 				Suggestions: []core.Suggestion{},
 			},
-			RawReview: "No code changes.",
+			RawReview: raw,
 			DiffHash:  hashDiff(""),
 		}, nil
 	}
