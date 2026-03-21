@@ -158,6 +158,7 @@ func (f *SuggestionFilter) FilterAndRank(
 
 		validateLineNumber(sug, validator, f.ValidateLineNums, logFunc)
 		validateSourceCitation(sug, validator, f.ValidateSources, logFunc)
+		validateStartLine(sug, logFunc)
 
 		if f.Deduplicate {
 			key := makeDedupKey(sug)
@@ -186,6 +187,22 @@ func shouldSkip(sug *core.Suggestion, minConfidence int, logFunc func(msg string
 		return true
 	}
 	return false
+}
+
+func validateStartLine(sug *core.Suggestion, logFunc func(msg string, args ...any)) {
+	if sug.StartLine <= 0 {
+		return // Single-line suggestion, nothing to validate
+	}
+	if sug.StartLine > sug.LineNumber {
+		if logFunc != nil {
+			logFunc("normalizing invalid start_line > line_number",
+				"file", sug.FilePath,
+				"start_line", sug.StartLine,
+				"line_number", sug.LineNumber,
+			)
+		}
+		sug.StartLine = 0 // Fall back to single-line
+	}
 }
 
 func validateLineNumber(sug *core.Suggestion, validator *SuggestionValidator, shouldValidate bool, logFunc func(msg string, args ...any)) {
