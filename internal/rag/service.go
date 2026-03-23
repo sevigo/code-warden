@@ -423,6 +423,10 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 		r.logger.Warn("failed to generate architectural summaries, continuing without them", "error", err)
 	}
 
+	if err := r.contextBuilder.GeneratePackageSummaries(ctx, repo.QdrantCollectionName, r.cfg.AI.EmbedderModel); err != nil {
+		r.logger.Warn("failed to generate package summaries, continuing without them", "error", err)
+	}
+
 	r.logger.Info("📉 Synthesizing global Project Context document", "repo", repo.FullName)
 	projectContext, err := r.GenerateProjectContext(ctx, repo.QdrantCollectionName, r.cfg.AI.EmbedderModel)
 	if err != nil {

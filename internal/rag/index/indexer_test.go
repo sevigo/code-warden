@@ -201,6 +201,70 @@ func TestGenerateFileSummary_NoExtension(t *testing.T) {
 	assert.Equal(t, "go", language)
 }
 
+func TestParseFileSummaryResponse(t *testing.T) {
+	tests := []struct {
+		name         string
+		response     string
+		wantSummary  string
+		wantKeywords []string
+		wantExports  []string
+	}{
+		{
+			name:         "full response",
+			response:     "PURPOSE: Handles webhook events from GitHub\nEXPORTS: WebhookHandler, ProcessEvent, ValidatePayload\nKEYWORDS: webhook, github, event, handler, payload",
+			wantSummary:  "Handles webhook events from GitHub",
+			wantKeywords: []string{"webhook", "github", "event", "handler", "payload"},
+			wantExports:  []string{"WebhookHandler", "ProcessEvent", "ValidatePayload"},
+		},
+		{
+			name:         "purpose and keywords only",
+			response:     "PURPOSE: Main entry point for the application\nKEYWORDS: main, entry, bootstrap",
+			wantSummary:  "Main entry point for the application",
+			wantKeywords: []string{"main", "entry", "bootstrap"},
+			wantExports:  nil,
+		},
+		{
+			name:         "exports only",
+			response:     "EXPORTS: Run, Stop, Status",
+			wantSummary:  "",
+			wantKeywords: nil,
+			wantExports:  []string{"Run", "Stop", "Status"},
+		},
+		{
+			name: "multi-line response",
+			response: `PURPOSE: Database connection pool manager
+EXPORTS: Pool, Connection, Query
+KEYWORDS: database, pool, connection, sql, postgres`,
+			wantSummary:  "Database connection pool manager",
+			wantKeywords: []string{"database", "pool", "connection", "sql", "postgres"},
+			wantExports:  []string{"Pool", "Connection", "Query"},
+		},
+		{
+			name:         "empty response",
+			response:     "",
+			wantSummary:  "",
+			wantKeywords: nil,
+			wantExports:  nil,
+		},
+		{
+			name:         "whitespace in values",
+			response:     "PURPOSE:   Some purpose with spaces  \nKEYWORDS:  tag1 ,  tag2 , tag3 ",
+			wantSummary:  "Some purpose with spaces",
+			wantKeywords: []string{"tag1", "tag2", "tag3"},
+			wantExports:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary, keywords, exports := parseFileSummaryResponse(tt.response)
+			assert.Equal(t, tt.wantSummary, summary)
+			assert.Equal(t, tt.wantKeywords, keywords)
+			assert.Equal(t, tt.wantExports, exports)
+		})
+	}
+}
+
 func TestUpdateRepoContext(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

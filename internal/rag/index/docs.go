@@ -153,24 +153,22 @@ func (i *Indexer) generateDocsSummary(ctx context.Context, _ string, content str
 		return ""
 	}
 
-	// Check cache
 	contentHash := hashContent(content)
 	globalFileSummaryCache.mu.RLock()
-	if summary, ok := globalFileSummaryCache.cache[contentHash]; ok {
+	if result, ok := globalFileSummaryCache.cache[contentHash]; ok {
 		globalFileSummaryCache.mu.RUnlock()
-		return summary
+		return result.summary
 	}
 	globalFileSummaryCache.mu.RUnlock()
 
-	// Use inline summary (avoids LLM call for docs)
 	summary := i.generateInlineSummary(ctx, content)
 	if summary == "" {
 		return ""
 	}
 
-	// Cache result
+	result := fileSummaryResult{summary: summary}
 	globalFileSummaryCache.mu.Lock()
-	globalFileSummaryCache.cache[contentHash] = summary
+	globalFileSummaryCache.cache[contentHash] = result
 	globalFileSummaryCache.mu.Unlock()
 
 	return summary
