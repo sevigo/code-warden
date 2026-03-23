@@ -47,7 +47,7 @@ func TestBuildPackageChunks(t *testing.T) {
 		},
 	}
 
-	chunks := BuildPackageChunks(t.Context(), "", fileDocs, nil, nil)
+	chunks := BuildPackageChunks(t.Context(), fileDocs, nil)
 
 	assert.NotEmpty(t, chunks, "should generate package chunks")
 
@@ -104,7 +104,7 @@ func TestBuildPackageChunksMultipleDirectories(t *testing.T) {
 		},
 	}
 
-	chunks := BuildPackageChunks(t.Context(), "", fileDocs, nil, nil)
+	chunks := BuildPackageChunks(t.Context(), fileDocs, nil)
 
 	pkgNames := make(map[string]bool)
 	for _, chunk := range chunks {

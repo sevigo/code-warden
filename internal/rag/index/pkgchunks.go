@@ -9,8 +9,13 @@ import (
 	"strings"
 
 	"github.com/sevigo/goframe/embeddings/sparse"
-	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
+)
+
+const (
+	maxExportsPerPackage  = 50
+	maxKeywordsPerPackage = 30
+	maxSymbolsPerRelation = 10
 )
 
 type PackageInfo struct {
@@ -37,7 +42,7 @@ type CrossFileRelation struct {
 }
 
 // BuildPackageChunks creates package-level summary chunks from file documents.
-func BuildPackageChunks(ctx context.Context, _ string, fileDocs map[string][]schema.Document, _ parsers.ParserRegistry, logger *slog.Logger) []schema.Document {
+func BuildPackageChunks(ctx context.Context, fileDocs map[string][]schema.Document, logger *slog.Logger) []schema.Document {
 	packageMap := make(map[string]*PackageInfo)
 
 	for filePath, docs := range fileDocs {
@@ -128,6 +133,10 @@ func buildPackageDocuments(ctx context.Context, packageMap map[string]*PackageIn
 		sort.Strings(pkg.Files)
 		pkg.Files = dedupeAndSortStrings(pkg.Files)
 
+		if len(pkg.Exports) > maxExportsPerPackage {
+			pkg.Exports = pkg.Exports[:maxExportsPerPackage]
+		}
+
 		content := buildPackageContent(pkg)
 
 		doc := schema.NewDocument(content, map[string]any{
@@ -164,8 +173,8 @@ func buildPackageContent(pkg *PackageInfo) string {
 			cleaned := strings.TrimSpace(strings.TrimPrefix(exp.DocComment, "//"))
 			cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, "/*"))
 			cleaned = strings.TrimSpace(strings.TrimSuffix(cleaned, "*/"))
-			if len(cleaned) > 100 {
-				cleaned = cleaned[:97] + "..."
+			if len(cleaned) > 200 {
+				cleaned = cleaned[:197] + "..."
 			}
 			fmt.Fprintf(&content, "- **%s** (%s): %s\n", exp.Name, exp.Kind, cleaned)
 		} else {
@@ -175,8 +184,8 @@ func buildPackageContent(pkg *PackageInfo) string {
 
 	if len(pkg.Keywords) > 0 {
 		pkg.Keywords = dedupeAndSortStrings(pkg.Keywords)
-		if len(pkg.Keywords) > 20 {
-			pkg.Keywords = pkg.Keywords[:20]
+		if len(pkg.Keywords) > maxKeywordsPerPackage {
+			pkg.Keywords = pkg.Keywords[:maxKeywordsPerPackage]
 		}
 		fmt.Fprintf(&content, "\n## Keywords & Concepts\n\n")
 		fmt.Fprintf(&content, "%s\n", strings.Join(pkg.Keywords, ", "))
@@ -245,6 +254,9 @@ func buildRelations(fileSymbols map[string]map[string]struct{}, exportMap map[st
 		}
 
 		for targetFile, symbols := range targetFiles {
+			if len(symbols) > maxSymbolsPerRelation {
+				symbols = symbols[:maxSymbolsPerRelation]
+			}
 			relations = append(relations, CrossFileRelation{
 				SourceFile:   sourceFile,
 				TargetFile:   targetFile,
@@ -287,14 +299,14 @@ func buildRelationContent(sourceFile string, rels []CrossFileRelation) string {
 	fmt.Fprintf(&content, "# Cross-File Dependencies: %s\n\n", sourceFile)
 
 	for _, rel := range rels {
-		symbolList := rel.Symbols
-		if len(symbolList) > 5 {
-			symbolList = symbolList[:5]
+		displaySymbols := rel.Symbols
+		if len(displaySymbols) > 5 {
+			displaySymbols = displaySymbols[:5]
 		}
 		fmt.Fprintf(&content, "[%s]: %s (%s)\n",
 			rel.RelationType,
 			rel.TargetFile,
-			strings.Join(symbolList, ", "),
+			strings.Join(displaySymbols, ", "),
 		)
 		if len(rel.Symbols) > 5 {
 			fmt.Fprintf(&content, "  ... and %d more symbols\n", len(rel.Symbols)-5)

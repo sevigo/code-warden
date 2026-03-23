@@ -712,7 +712,7 @@ func (b *builderImpl) GeneratePackageSummaries(ctx context.Context, collectionNa
 		}
 	}
 
-	packageChunks := indexpkg.BuildPackageChunks(ctx, "", fileDocs, b.cfg.ParserRegistry, b.cfg.Logger)
+	packageChunks := indexpkg.BuildPackageChunks(ctx, fileDocs, b.cfg.Logger)
 	if len(packageChunks) > 0 {
 		if _, err := scopedStore.AddDocuments(ctx, packageChunks); err != nil {
 			b.cfg.Logger.Warn("failed to store package summaries", "error", err)
