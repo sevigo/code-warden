@@ -684,6 +684,13 @@ func (b *builderImpl) GeneratePackageSummaries(ctx context.Context, collectionNa
 
 	scopedStore := b.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
 
+	// Delete old package and relation chunks before regenerating
+	if err := b.cfg.VectorStore.DeleteDocumentsFromCollectionByFilter(ctx, collectionName, embedderModelName, map[string]any{
+		"chunk_type": map[string]any{"$in": []string{"package", "relations"}},
+	}); err != nil {
+		b.cfg.Logger.Warn("failed to delete old package/relation chunks", "error", err)
+	}
+
 	tocDocs, err := scopedStore.SimilaritySearch(ctx, "package exports definitions", 500,
 		vectorstores.WithFilters(map[string]any{"chunk_type": "toc"}),
 	)

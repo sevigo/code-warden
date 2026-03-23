@@ -452,6 +452,13 @@ func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.Rep
 	if err := r.GenerateArchSummaries(ctx, repo.QdrantCollectionName, r.cfg.AI.EmbedderModel, repoPath, append(filesToProcess, filesToDelete...)); err != nil {
 		r.logger.Warn("failed to update architectural summaries after sync", "error", err)
 	}
+
+	// Regenerate package summaries after incremental update
+	// This fetches all TOC/definition chunks and rebuilds package-level summaries
+	if err := r.contextBuilder.GeneratePackageSummaries(ctx, repo.QdrantCollectionName, r.cfg.AI.EmbedderModel); err != nil {
+		r.logger.Warn("failed to regenerate package summaries after sync", "error", err)
+	}
+
 	return nil
 }
 
