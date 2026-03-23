@@ -382,6 +382,106 @@ func (b *builderImpl) gatherArchContextSafe(ctx context.Context, store storage.S
 	return ac, nil
 }
 
+// gatherPackageContextSafe retrieves package-level summaries for directories containing changed files.
+//
+//nolint:unparam // error always nil but signature required for errgroup
+func (b *builderImpl) gatherPackageContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) (string, error) {
+	b.cfg.Logger.Info("stage started", "name", "PackageContext")
+	pc := b.getPackageContext(ctx, store, files)
+	b.cfg.Logger.Info("stage completed", "name", "PackageContext")
+	return pc, nil
+}
+
+func (b *builderImpl) getPackageContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+	dirs := make(map[string]struct{})
+	for _, f := range files {
+		dir := path.Dir(strings.ReplaceAll(f.Filename, "\\", "/"))
+		if dir == "." {
+			dir = rootDir
+		}
+		dirs[dir] = struct{}{}
+	}
+
+	if len(dirs) == 0 {
+		return ""
+	}
+
+	var pkgContext strings.Builder
+	seenDirs := make(map[string]struct{})
+
+	for dir := range dirs {
+		if _, seen := seenDirs[dir]; seen {
+			continue
+		}
+
+		pkgSearchOpts := []vectorstores.Option{
+			vectorstores.WithFilters(map[string]any{
+				"chunk_type": "package",
+				"source":     dir,
+			}),
+		}
+		docs, err := scopedStore.SimilaritySearch(ctx, dir, 1, pkgSearchOpts...)
+		if err != nil {
+			b.cfg.Logger.Debug("failed to search package summaries", "dir", dir, "error", err)
+			continue
+		}
+
+		if len(docs) > 0 {
+			fmt.Fprintf(&pkgContext, "## Package: %s\n%s\n\n", dir, docs[0].PageContent)
+			seenDirs[dir] = struct{}{}
+		}
+	}
+
+	b.cfg.Logger.Debug("package context assembled", "dirs_found", len(seenDirs), "dirs_queried", len(dirs))
+	return pkgContext.String()
+}
+
+// gatherRelationsContextSafe retrieves cross-file relationship summaries for changed files.
+//
+//nolint:unparam // error always nil but signature required for errgroup
+func (b *builderImpl) gatherRelationsContextSafe(ctx context.Context, store storage.ScopedVectorStore, files []internalgithub.ChangedFile) (string, error) {
+	b.cfg.Logger.Info("stage started", "name", "RelationsContext")
+	rc := b.getRelationsContext(ctx, store, files)
+	b.cfg.Logger.Info("stage completed", "name", "RelationsContext")
+	return rc, nil
+}
+
+func (b *builderImpl) getRelationsContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
+	if len(files) == 0 {
+		return ""
+	}
+
+	var relContext strings.Builder
+	seenFiles := make(map[string]struct{})
+
+	for _, f := range files {
+		file := strings.ReplaceAll(f.Filename, "\\", "/")
+		if _, seen := seenFiles[file]; seen {
+			continue
+		}
+
+		relSearchOpts := []vectorstores.Option{
+			vectorstores.WithFilters(map[string]any{
+				"chunk_type": "relations",
+				"source":     file,
+			}),
+		}
+		docs, err := scopedStore.SimilaritySearch(ctx, file, 1, relSearchOpts...)
+		if err != nil {
+			b.cfg.Logger.Debug("failed to search relation summaries", "file", file, "error", err)
+			continue
+		}
+
+		if len(docs) > 0 {
+			fmt.Fprintf(&relContext, "## %s\n%s\n\n", file, docs[0].PageContent)
+			seenFiles[file] = struct{}{}
+		}
+	}
+
+	b.cfg.Logger.Debug("relations context assembled", "files_found", len(seenFiles), "files_queried", len(files))
+	return relContext.String()
+}
+
 func (b *builderImpl) getArchContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
 	filePaths := make([]string, len(files))
 	for i, f := range files {

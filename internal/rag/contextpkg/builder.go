@@ -2,6 +2,7 @@ package contextpkg
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/sevigo/goframe/schema"
@@ -67,7 +68,7 @@ func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, 
 	}
 
 	testCoverageContext := b.formatTestCoverageContext(results.testCoverageDocs)
-	fullContext := b.assembleContext(ctx, results.archContext, results.tocContext, results.fileSummaryContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.hydeResults, results.hydeIndices, changedFiles)
+	fullContext := b.assembleContext(ctx, results.archContext, results.tocContext, results.fileSummaryContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.packageContext, results.relationContext, results.hydeResults, results.hydeIndices, changedFiles)
 	return fullContext, results.definitionsContext
 }
 
@@ -81,8 +82,11 @@ type contextResults struct {
 	hydeResults        [][]schema.Document
 	hydeIndices        []int
 	testCoverageDocs   []schema.Document
+	packageContext     string
+	relationContext    string
 }
 
+//nolint:gocognit // concurrent context building requires multiple goroutines with error handling
 func (b *builderImpl) buildContextConcurrently(
 	ctx context.Context, collectionName, embedderModelName, repoPath, prDescription string,
 	changedFiles []internalgithub.ChangedFile, scopedStore storage.ScopedVectorStore,
@@ -151,6 +155,22 @@ func (b *builderImpl) buildContextConcurrently(
 			b.cfg.Logger.Warn("definitions context stage failed", "error", err)
 		}
 		results.definitionsContext = defs
+	})
+
+	wg.Go(func() {
+		pkg, err := b.gatherPackageContextSafe(ctx, scopedStore, changedFiles)
+		if err != nil {
+			b.cfg.Logger.Warn("package context stage failed", "error", err)
+		}
+		results.packageContext = pkg
+	})
+
+	wg.Go(func() {
+		rel, err := b.gatherRelationsContextSafe(ctx, scopedStore, changedFiles)
+		if err != nil {
+			b.cfg.Logger.Warn("relations context stage failed", "error", err)
+		}
+		results.relationContext = rel
 	})
 
 	wg.Wait()
@@ -230,8 +250,24 @@ func (b *builderImpl) gatherDescriptionDocs(ctx context.Context, collection, emb
 	return allDocs, nil
 }
 
-func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, fileSummary, impact, description, definitions, testCoverage string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
+func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, fileSummary, impact, description, definitions, testCoverage, pkgContext, relContext string, hyde [][]schema.Document, indices []int, files []internalgithub.ChangedFile) string {
 	docs := b.buildContextDocuments(arch, toc, fileSummary, impact, description, definitions, testCoverage, hyde, indices, files)
+
+	// Prepend package and relations context to the docs
+	if pkgContext != "" || relContext != "" {
+		var contextSections []string
+		if pkgContext != "" {
+			contextSections = append(contextSections, "## Package Summary\n\n"+pkgContext)
+		}
+		if relContext != "" {
+			contextSections = append(contextSections, "## Cross-File Dependencies\n\n"+relContext)
+		}
+		prependDoc := schema.NewDocument(strings.Join(contextSections, "\n"), map[string]any{
+			"chunk_type": "context_summary",
+			"source":     "__generated__",
+		})
+		docs = append([]schema.Document{prependDoc}, docs...)
+	}
 
 	if b.cfg.ContextPacker == nil {
 		b.cfg.Logger.Error("context packer not initialized, using limited fallback")
@@ -251,6 +287,8 @@ func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, fileSummar
 		"impact_len", len(impact),
 		"definitions_len", len(definitions),
 		"hyde_results_count", len(hyde),
+		"package_len", len(pkgContext),
+		"relations_len", len(relContext),
 		"total_tokens", result.TokenStats.TotalTokens,
 		"documents_packed", result.TokenStats.DocumentsPacked,
 		"documents_considered", result.TokenStats.DocumentsConsidered,
