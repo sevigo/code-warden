@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sevigo/goframe/parsers"
@@ -141,6 +142,63 @@ func TestSetupRepoContext_Pruning(t *testing.T) {
 
 	err := indexer.SetupRepoContext(context.Background(), nil, repo, repoDir, nil)
 	assert.NoError(t, err)
+}
+
+func TestProcessFile_NoExtension(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockStore := mocks.NewMockStore(ctrl)
+	mockVS := mocks.NewMockVectorStore(ctrl)
+
+	repoDir := t.TempDir()
+	files := []string{"Makefile", "Dockerfile", "main.go"}
+	for _, f := range files {
+		fullPath := filepath.Join(repoDir, f)
+		content := []byte("test content\n")
+		require.NoError(t, os.WriteFile(fullPath, content, 0644))
+	}
+
+	cfg := Config{
+		Store:          mockStore,
+		VectorStore:    mockVS,
+		Splitter:       &mockSplitter{},
+		ParserRegistry: parsers.NewRegistry(slog.Default()),
+		Logger:         slog.Default(),
+		EmbedderModel:  "test_model",
+	}
+	indexer := New(cfg)
+
+	for _, f := range files {
+		docs := indexer.ProcessFile(context.Background(), repoDir, f)
+		assert.NotNil(t, docs)
+		for _, doc := range docs {
+			language, ok := doc.Metadata["language"].(string)
+			assert.True(t, ok)
+			if f == "Makefile" || f == "Dockerfile" {
+				assert.Equal(t, "", language, "file %s should have empty language", f)
+			}
+			if f == "main.go" {
+				assert.Equal(t, "go", language)
+			}
+		}
+	}
+}
+
+func TestGenerateFileSummary_NoExtension(t *testing.T) {
+	ext := strings.ToLower(filepath.Ext("Makefile"))
+	language := ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
+	assert.Equal(t, "", language)
+
+	ext = strings.ToLower(filepath.Ext("main.go"))
+	language = ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
+	assert.Equal(t, "go", language)
 }
 
 func TestUpdateRepoContext(t *testing.T) {

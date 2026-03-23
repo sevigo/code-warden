@@ -513,8 +513,11 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 	}
 
 	ext := strings.ToLower(filepath.Ext(file))
+	language := ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
 
-	// Check if this is a README or documentation file
 	isReadme := strings.EqualFold(filepath.Base(file), "readme.md") ||
 		strings.EqualFold(filepath.Base(file), "readme.markdown") ||
 		strings.EqualFold(filepath.Base(file), "readme")
@@ -578,7 +581,7 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 
 		// Code file metadata
 		splitDocs[idx].Metadata["chunk_type"] = "code"
-		splitDocs[idx].Metadata["language"] = ext
+		splitDocs[idx].Metadata["language"] = language
 
 		// Compute line numbers
 		if line, endLine, ok := findLineNumbers(validContent, splitDocs[idx].PageContent, lineOffsets); ok {
@@ -856,10 +859,14 @@ func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content str
 	}
 
 	ext := strings.ToLower(filepath.Ext(filePath))
+	language := ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
 
 	promptData := map[string]string{
 		"Path":     filePath,
-		"Language": ext[1:], // Remove leading dot
+		"Language": language,
 		"Content":  content,
 	}
 
