@@ -147,7 +147,7 @@ func (b *builderImpl) discoverDirectories(repoPath string, targetPaths []string,
 			if relPath == "." {
 				relPath = rootDir
 			}
-			relPath = strings.ReplaceAll(relPath, "\\", "/")
+			relPath = normalizePath(relPath)
 
 			return b.processSingleDir(repoPath, path, relPath, summaryCache, dirsToProcess, &cachedCount)
 		})
@@ -194,7 +194,7 @@ func (b *builderImpl) discoverDirectories(repoPath string, targetPaths []string,
 		if displayRelPath == "." {
 			displayRelPath = rootDir
 		}
-		displayRelPath = strings.ReplaceAll(displayRelPath, "\\", "/")
+		displayRelPath = normalizePath(displayRelPath)
 
 		if err := b.processSingleDir(repoPath, fullPath, displayRelPath, summaryCache, dirsToProcess, &cachedCount); err != nil {
 			b.cfg.Logger.Warn("targeted scan failed for directory", "path", relDir, "error", err)
@@ -326,7 +326,7 @@ func (b *builderImpl) GetArchContextForPaths(ctx context.Context, scopedStore st
 	// Extract unique directories from paths
 	dirs := make(map[string]struct{})
 	for _, p := range paths {
-		dir := path.Dir(strings.ReplaceAll(p, "\\", "/"))
+		dir := path.Dir(normalizePath(p))
 		if dir == "." {
 			dir = rootDir
 		}
@@ -395,7 +395,7 @@ func (b *builderImpl) gatherPackageContextSafe(ctx context.Context, store storag
 func (b *builderImpl) getPackageContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
 	dirs := make(map[string]struct{})
 	for _, f := range files {
-		dir := path.Dir(strings.ReplaceAll(f.Filename, "\\", "/"))
+		dir := path.Dir(normalizePath(f.Filename))
 		if dir == "." {
 			dir = rootDir
 		}
@@ -408,6 +408,7 @@ func (b *builderImpl) getPackageContext(ctx context.Context, scopedStore storage
 
 	var pkgContext strings.Builder
 	seenDirs := make(map[string]struct{})
+	foundCount := 0
 
 	for dir := range dirs {
 		if _, seen := seenDirs[dir]; seen {
@@ -422,17 +423,22 @@ func (b *builderImpl) getPackageContext(ctx context.Context, scopedStore storage
 		}
 		docs, err := scopedStore.SimilaritySearch(ctx, dir, 1, pkgSearchOpts...)
 		if err != nil {
-			b.cfg.Logger.Debug("failed to search package summaries", "dir", dir, "error", err)
+			b.cfg.Logger.Warn("failed to search package summaries", "dir", dir, "error", err)
 			continue
 		}
 
 		if len(docs) > 0 {
 			fmt.Fprintf(&pkgContext, "## Package: %s\n%s\n\n", dir, docs[0].PageContent)
 			seenDirs[dir] = struct{}{}
+			foundCount++
 		}
 	}
 
-	b.cfg.Logger.Debug("package context assembled", "dirs_found", len(seenDirs), "dirs_queried", len(dirs))
+	if foundCount == 0 && len(dirs) > 0 {
+		b.cfg.Logger.Warn("package context not found for any directories", "dirs_queried", len(dirs))
+	} else {
+		b.cfg.Logger.Debug("package context assembled", "dirs_found", foundCount, "dirs_queried", len(dirs))
+	}
 	return pkgContext.String()
 }
 
@@ -453,9 +459,10 @@ func (b *builderImpl) getRelationsContext(ctx context.Context, scopedStore stora
 
 	var relContext strings.Builder
 	seenFiles := make(map[string]struct{})
+	foundCount := 0
 
 	for _, f := range files {
-		file := strings.ReplaceAll(f.Filename, "\\", "/")
+		file := normalizePath(f.Filename)
 		if _, seen := seenFiles[file]; seen {
 			continue
 		}
@@ -468,18 +475,28 @@ func (b *builderImpl) getRelationsContext(ctx context.Context, scopedStore stora
 		}
 		docs, err := scopedStore.SimilaritySearch(ctx, file, 1, relSearchOpts...)
 		if err != nil {
-			b.cfg.Logger.Debug("failed to search relation summaries", "file", file, "error", err)
+			b.cfg.Logger.Warn("failed to search relation summaries", "file", file, "error", err)
 			continue
 		}
 
 		if len(docs) > 0 {
 			fmt.Fprintf(&relContext, "## %s\n%s\n\n", file, docs[0].PageContent)
 			seenFiles[file] = struct{}{}
+			foundCount++
 		}
 	}
 
-	b.cfg.Logger.Debug("relations context assembled", "files_found", len(seenFiles), "files_queried", len(files))
+	if foundCount == 0 && len(files) > 0 {
+		b.cfg.Logger.Warn("relations context not found for any files", "files_queried", len(files))
+	} else {
+		b.cfg.Logger.Debug("relations context assembled", "files_found", foundCount, "files_queried", len(files))
+	}
 	return relContext.String()
+}
+
+// normalizePath converts Windows-style backslashes to forward slashes.
+func normalizePath(p string) string {
+	return strings.ReplaceAll(p, "\\", "/")
 }
 
 func (b *builderImpl) getArchContext(ctx context.Context, scopedStore storage.ScopedVectorStore, files []internalgithub.ChangedFile) string {
