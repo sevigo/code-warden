@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sevigo/goframe/parsers"
@@ -141,6 +142,127 @@ func TestSetupRepoContext_Pruning(t *testing.T) {
 
 	err := indexer.SetupRepoContext(context.Background(), nil, repo, repoDir, nil)
 	assert.NoError(t, err)
+}
+
+func TestProcessFile_NoExtension(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockStore := mocks.NewMockStore(ctrl)
+	mockVS := mocks.NewMockVectorStore(ctrl)
+
+	repoDir := t.TempDir()
+	files := []string{"Makefile", "Dockerfile", "main.go"}
+	for _, f := range files {
+		fullPath := filepath.Join(repoDir, f)
+		content := []byte("test content\n")
+		require.NoError(t, os.WriteFile(fullPath, content, 0644))
+	}
+
+	cfg := Config{
+		Store:          mockStore,
+		VectorStore:    mockVS,
+		Splitter:       &mockSplitter{},
+		ParserRegistry: parsers.NewRegistry(slog.Default()),
+		Logger:         slog.Default(),
+		EmbedderModel:  "test_model",
+	}
+	indexer := New(cfg)
+
+	for _, f := range files {
+		docs := indexer.ProcessFile(context.Background(), repoDir, f)
+		assert.NotNil(t, docs)
+		for _, doc := range docs {
+			language, ok := doc.Metadata["language"].(string)
+			assert.True(t, ok)
+			if f == "Makefile" || f == "Dockerfile" {
+				assert.Equal(t, "", language, "file %s should have empty language", f)
+			}
+			if f == "main.go" {
+				assert.Equal(t, "go", language)
+			}
+		}
+	}
+}
+
+func TestGenerateFileSummary_NoExtension(t *testing.T) {
+	ext := strings.ToLower(filepath.Ext("Makefile"))
+	language := ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
+	assert.Equal(t, "", language)
+
+	ext = strings.ToLower(filepath.Ext("main.go"))
+	language = ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
+	assert.Equal(t, "go", language)
+}
+
+func TestParseFileSummaryResponse(t *testing.T) {
+	tests := []struct {
+		name         string
+		response     string
+		wantSummary  string
+		wantKeywords []string
+		wantExports  []string
+	}{
+		{
+			name:         "full response",
+			response:     "PURPOSE: Handles webhook events from GitHub\nEXPORTS: WebhookHandler, ProcessEvent, ValidatePayload\nKEYWORDS: webhook, github, event, handler, payload",
+			wantSummary:  "Handles webhook events from GitHub",
+			wantKeywords: []string{"webhook", "github", "event", "handler", "payload"},
+			wantExports:  []string{"WebhookHandler", "ProcessEvent", "ValidatePayload"},
+		},
+		{
+			name:         "purpose and keywords only",
+			response:     "PURPOSE: Main entry point for the application\nKEYWORDS: main, entry, bootstrap",
+			wantSummary:  "Main entry point for the application",
+			wantKeywords: []string{"main", "entry", "bootstrap"},
+			wantExports:  nil,
+		},
+		{
+			name:         "exports only",
+			response:     "EXPORTS: Run, Stop, Status",
+			wantSummary:  "",
+			wantKeywords: nil,
+			wantExports:  []string{"Run", "Stop", "Status"},
+		},
+		{
+			name: "multi-line response",
+			response: `PURPOSE: Database connection pool manager
+EXPORTS: Pool, Connection, Query
+KEYWORDS: database, pool, connection, sql, postgres`,
+			wantSummary:  "Database connection pool manager",
+			wantKeywords: []string{"database", "pool", "connection", "sql", "postgres"},
+			wantExports:  []string{"Pool", "Connection", "Query"},
+		},
+		{
+			name:         "empty response",
+			response:     "",
+			wantSummary:  "",
+			wantKeywords: nil,
+			wantExports:  nil,
+		},
+		{
+			name:         "whitespace in values",
+			response:     "PURPOSE:   Some purpose with spaces  \nKEYWORDS:  tag1 ,  tag2 , tag3 ",
+			wantSummary:  "Some purpose with spaces",
+			wantKeywords: []string{"tag1", "tag2", "tag3"},
+			wantExports:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary, keywords, exports := parseFileSummaryResponse(tt.response)
+			assert.Equal(t, tt.wantSummary, summary)
+			assert.Equal(t, tt.wantKeywords, keywords)
+			assert.Equal(t, tt.wantExports, exports)
+		})
+	}
 }
 
 func TestUpdateRepoContext(t *testing.T) {

@@ -19,6 +19,8 @@ import (
 	"github.com/sevigo/goframe/vectorstores"
 	"golang.org/x/sync/errgroup"
 
+	indexpkg "github.com/sevigo/code-warden/internal/rag/index"
+
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -673,4 +675,60 @@ func (b *builderImpl) generateSingleSummary(ctx context.Context, info *Directory
 		return fmt.Sprintf("Generation Error: %v", err)
 	}
 	return summary
+}
+
+// GeneratePackageSummaries creates package-level summaries and cross-file relation chunks
+// by analyzing all indexed documents in the vector store.
+func (b *builderImpl) GeneratePackageSummaries(ctx context.Context, collectionName, embedderModelName string) error {
+	b.cfg.Logger.Info("generating package-level summaries", "collection", collectionName)
+
+	scopedStore := b.cfg.VectorStore.ForRepo(collectionName, embedderModelName)
+
+	tocDocs, err := scopedStore.SimilaritySearch(ctx, "package exports definitions", 500,
+		vectorstores.WithFilters(map[string]any{"chunk_type": "toc"}),
+	)
+	if err != nil {
+		b.cfg.Logger.Warn("failed to fetch TOC documents for package summaries", "error", err)
+		return nil
+	}
+
+	defDocs, err := scopedStore.SimilaritySearch(ctx, "definitions", 500,
+		vectorstores.WithFilters(map[string]any{"chunk_type": "definition"}),
+	)
+	if err != nil {
+		b.cfg.Logger.Warn("failed to fetch definition documents", "error", err)
+		return nil
+	}
+
+	fileDocs := make(map[string][]schema.Document)
+	for _, doc := range tocDocs {
+		if source, ok := doc.Metadata["source"].(string); ok {
+			fileDocs[source] = append(fileDocs[source], doc)
+		}
+	}
+	for _, doc := range defDocs {
+		if source, ok := doc.Metadata["source"].(string); ok {
+			fileDocs[source] = append(fileDocs[source], doc)
+		}
+	}
+
+	packageChunks := indexpkg.BuildPackageChunks(ctx, fileDocs, b.cfg.Logger)
+	if len(packageChunks) > 0 {
+		if _, err := scopedStore.AddDocuments(ctx, packageChunks); err != nil {
+			b.cfg.Logger.Warn("failed to store package summaries", "error", err)
+		} else {
+			b.cfg.Logger.Info("stored package-level summaries", "count", len(packageChunks))
+		}
+	}
+
+	relationChunks := indexpkg.BuildCrossFileRelationChunks(ctx, fileDocs)
+	if len(relationChunks) > 0 {
+		if _, err := scopedStore.AddDocuments(ctx, relationChunks); err != nil {
+			b.cfg.Logger.Warn("failed to store cross-file relations", "error", err)
+		} else {
+			b.cfg.Logger.Info("stored cross-file relation summaries", "count", len(relationChunks))
+		}
+	}
+
+	return nil
 }

@@ -513,8 +513,11 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 	}
 
 	ext := strings.ToLower(filepath.Ext(file))
+	language := ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
 
-	// Check if this is a README or documentation file
 	isReadme := strings.EqualFold(filepath.Base(file), "readme.md") ||
 		strings.EqualFold(filepath.Base(file), "readme.markdown") ||
 		strings.EqualFold(filepath.Base(file), "readme")
@@ -535,8 +538,11 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 
 	// Generate file-level summary for better retrieval (LLM call, cached by content hash)
 	var fileSummary string
+	var fileKeywords []string
 	if i.cfg.LLM != nil && i.cfg.PromptMgr != nil {
-		fileSummary = i.generateFileSummary(ctx, file, validContent)
+		result := i.generateFileSummary(ctx, file, validContent)
+		fileSummary = result.summary
+		fileKeywords = result.keywords
 	}
 
 	// Build line offset map for computing line numbers
@@ -561,6 +567,9 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 			splitDocs[idx].PageContent = splitDocs[idx].PageContent + "\n\n[File Summary: " + fileSummary + "]"
 			splitDocs[idx].Metadata["file_summary"] = fileSummary
 		}
+		if len(fileKeywords) > 0 {
+			splitDocs[idx].Metadata["keywords"] = strings.Join(fileKeywords, ",")
+		}
 
 		sparseVec, err := sparse.GenerateSparseVector(ctx, splitDocs[idx].PageContent)
 		if err == nil {
@@ -578,7 +587,7 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 
 		// Code file metadata
 		splitDocs[idx].Metadata["chunk_type"] = "code"
-		splitDocs[idx].Metadata["language"] = ext
+		splitDocs[idx].Metadata["language"] = language
 
 		// Compute line numbers
 		if line, endLine, ok := findLineNumbers(validContent, splitDocs[idx].PageContent, lineOffsets); ok {
@@ -643,6 +652,9 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 				defDocs[idx].PageContent = defDocs[idx].PageContent + "\n\n[File Summary: " + fileSummary + "]"
 				defDocs[idx].Metadata["file_summary"] = fileSummary
 			}
+			if len(fileKeywords) > 0 {
+				defDocs[idx].Metadata["keywords"] = strings.Join(fileKeywords, ",")
+			}
 			sparseVec, err := sparse.GenerateSparseVector(ctx, defDocs[idx].PageContent)
 			if err == nil {
 				defDocs[idx].Sparse = sparseVec
@@ -653,7 +665,7 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 		}
 
 		allDocs = append(allDocs, defDocs...)
-		allDocs = append(allDocs, i.buildTOCDocs(ctx, file, defDocs, fileSummary)...)
+		allDocs = append(allDocs, i.buildTOCDocs(ctx, file, defDocs, fileSummary, fileKeywords)...)
 	}
 
 	return allDocs
@@ -662,7 +674,7 @@ func (i *Indexer) ProcessFile(ctx context.Context, repoPath, file string) []sche
 // buildTOCDocs creates a file-level TOC chunk from definition docs and returns
 // it as a slice (empty if no definitions). Extracted to keep ProcessFile's
 // nesting depth within linter limits.
-func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schema.Document, fileSummary string) []schema.Document {
+func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schema.Document, fileSummary string, fileKeywords []string) []schema.Document {
 	if len(defDocs) == 0 {
 		return nil
 	}
@@ -674,6 +686,9 @@ func (i *Indexer) buildTOCDocs(ctx context.Context, file string, defDocs []schem
 	if fileSummary != "" {
 		toc.PageContent = toc.PageContent + "\n\n[File Summary: " + fileSummary + "]"
 		toc.Metadata["file_summary"] = fileSummary
+	}
+	if len(fileKeywords) > 0 {
+		toc.Metadata["keywords"] = strings.Join(fileKeywords, ",")
 	}
 	if sparseVec, err := sparse.GenerateSparseVector(ctx, toc.PageContent); err == nil {
 		toc.Sparse = sparseVec
@@ -826,67 +841,107 @@ func isCodeKeyword(sym string) bool {
 // fileSummaryCache stores file summaries to avoid regenerating for the same content.
 type fileSummaryCache struct {
 	mu    sync.RWMutex
-	cache map[string]string // contentHash -> summary
+	cache map[string]fileSummaryResult
+}
+
+type fileSummaryResult struct {
+	summary  string
+	keywords []string
+	exports  []string
 }
 
 var globalFileSummaryCache = &fileSummaryCache{
-	cache: make(map[string]string),
+	cache: make(map[string]fileSummaryResult),
+}
+
+func parseFileSummaryResponse(response string) (summary string, keywords, exports []string) {
+	lines := strings.Split(response, "\n")
+	var purpose string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "PURPOSE:"):
+			purpose = strings.TrimSpace(strings.TrimPrefix(line, "PURPOSE:"))
+		case strings.HasPrefix(line, "EXPORTS:"):
+			exportsStr := strings.TrimSpace(strings.TrimPrefix(line, "EXPORTS:"))
+			for _, e := range strings.Split(exportsStr, ",") {
+				if e = strings.TrimSpace(e); e != "" {
+					exports = append(exports, e)
+				}
+			}
+		case strings.HasPrefix(line, "KEYWORDS:"):
+			keywordsStr := strings.TrimSpace(strings.TrimPrefix(line, "KEYWORDS:"))
+			for _, k := range strings.Split(keywordsStr, ",") {
+				if k = strings.TrimSpace(k); k != "" {
+					keywords = append(keywords, k)
+				}
+			}
+		}
+	}
+	summary = purpose
+	return summary, keywords, exports
 }
 
 // generateFileSummary generates an LLM-based summary for a file.
 // Results are cached by content hash to avoid redundant LLM calls.
-func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content string) string {
+func (i *Indexer) generateFileSummary(ctx context.Context, filePath, content string) fileSummaryResult {
 	if i.cfg.LLM == nil || i.cfg.PromptMgr == nil {
-		return ""
+		return fileSummaryResult{}
 	}
 
-	// Check cache first
 	contentHash := hashContent(content)
 	globalFileSummaryCache.mu.RLock()
-	if summary, ok := globalFileSummaryCache.cache[contentHash]; ok {
+	if result, ok := globalFileSummaryCache.cache[contentHash]; ok {
 		globalFileSummaryCache.mu.RUnlock()
-		return summary
+		return result
 	}
 	globalFileSummaryCache.mu.RUnlock()
 
-	// Truncate content if too long (LLMs have context limits)
 	maxContent := 8000
 	if len(content) > maxContent {
 		content = content[:maxContent]
 	}
 
 	ext := strings.ToLower(filepath.Ext(filePath))
+	language := ""
+	if len(ext) > 1 {
+		language = ext[1:]
+	}
 
 	promptData := map[string]string{
 		"Path":     filePath,
-		"Language": ext[1:], // Remove leading dot
+		"Language": language,
 		"Content":  content,
 	}
 
 	prompt, err := i.cfg.PromptMgr.Render(llm.FileSummaryPrompt, promptData)
 	if err != nil {
 		i.cfg.Logger.Debug("failed to render file summary prompt", "file", filePath, "error", err)
-		return ""
+		return fileSummaryResult{}
 	}
 
-	summary, err := llms.GenerateFromSinglePrompt(ctx, i.cfg.LLM, prompt)
+	response, err := llms.GenerateFromSinglePrompt(ctx, i.cfg.LLM, prompt)
 	if err != nil {
 		i.cfg.Logger.Debug("failed to generate file summary", "file", filePath, "error", err)
-		return ""
+		return fileSummaryResult{}
 	}
 
-	// Cache result
-	globalFileSummaryCache.mu.Lock()
-	if len(globalFileSummaryCache.cache) > 5000 { // Prevent unbounded memory growth
-		// Simple clear-all eviction. For a more robust solution, an LRU cache could be used.
-		globalFileSummaryCache.cache = make(map[string]string)
+	summary, keywords, exports := parseFileSummaryResponse(response)
+	result := fileSummaryResult{
+		summary:  summary,
+		keywords: keywords,
+		exports:  exports,
 	}
-	globalFileSummaryCache.cache[contentHash] = summary
+
+	globalFileSummaryCache.mu.Lock()
+	if len(globalFileSummaryCache.cache) > 5000 {
+		globalFileSummaryCache.cache = make(map[string]fileSummaryResult)
+	}
+	globalFileSummaryCache.cache[contentHash] = result
 	globalFileSummaryCache.mu.Unlock()
 
-	i.cfg.Logger.Info("generated file summary", "file", filePath, "summary", summary)
-
-	return summary
+	i.cfg.Logger.Info("generated file summary", "file", filePath, "summary", summary, "keywords", keywords)
+	return result
 }
 
 // hashContent generates a simple hash for content caching.
