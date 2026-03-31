@@ -267,7 +267,7 @@ func (h *WebUIHandler) TriggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	initialProgress, _ := json.Marshal(ProgressInfo{Stage: "scanning"})
+	initialProgress, _ := json.Marshal(ProgressInfo{Stage: "scanning", FilesDone: 0, FilesTotal: 0})
 	if err := h.store.UpsertScanState(ctx, &storage.ScanState{
 		RepositoryID: repoID,
 		Status:       "scanning",

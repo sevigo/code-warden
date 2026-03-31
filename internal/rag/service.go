@@ -37,7 +37,7 @@ import (
 // Service is the main RAG pipeline interface for indexing, review, and Q&A.
 type Service interface {
 	SetupRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, progressFn indexpkg.ProgressFunc) error
-	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error
+	UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string, progressFn indexpkg.ProgressFunc) error
 	SyncRepoIndex(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, updateResult *core.UpdateResult, progressFn indexpkg.ProgressFunc) error
 	GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
 	GenerateReReview(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, originalReview *core.Review, ghClient internalgithub.Client, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error)
@@ -443,8 +443,8 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 	return nil
 }
 
-func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error {
-	err := r.indexer.UpdateRepoContext(ctx, repoConfig, repo, repoPath, filesToProcess, filesToDelete)
+func (r *ragService) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string, progressFn indexpkg.ProgressFunc) error {
+	err := r.indexer.UpdateRepoContext(ctx, repoConfig, repo, repoPath, filesToProcess, filesToDelete, progressFn)
 	if err != nil {
 		return err
 	}
@@ -475,7 +475,7 @@ func (r *ragService) SyncRepoIndex(ctx context.Context, repoConfig *core.RepoCon
 			"added_or_updated", len(updateResult.FilesToAddOrUpdate),
 			"deleted", len(updateResult.FilesToDelete),
 		)
-		return r.UpdateRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete)
+		return r.UpdateRepoContext(ctx, repoConfig, repo, updateResult.RepoPath, updateResult.FilesToAddOrUpdate, updateResult.FilesToDelete, progressFn)
 	default:
 		r.logger.Info("no changes detected, skipping indexing", "repo", repo.FullName)
 		return nil

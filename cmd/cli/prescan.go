@@ -37,7 +37,7 @@ var prescanCmd = &cobra.Command{
 
 		// Initialize Prescan Components
 		// We could wire this in wire.go, but for now construct manually using app dependencies
-		prescanMgr := prescan.NewManager(app.Cfg, app.Store, app.GitClient, slog.Default())
+		prescanMgr := prescan.NewManager(app.Cfg, app.Store, app.RepoMgr, app.GitClient, slog.Default())
 		scanner := prescan.NewScanner(prescanMgr, app.RAGService)
 
 		if err := scanner.Scan(ctx, input, prescanForce, prescanVerbose, prescanGenerateContextOnly); err != nil {

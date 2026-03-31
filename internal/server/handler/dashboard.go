@@ -59,6 +59,10 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	qdrantStatus, qdrantLatency := "error", int64(0)
 	{
 		host := h.cfg.Storage.QdrantHost
+		// Switch to HTTP port for health check if configured for gRPC
+		if strings.HasSuffix(host, ":6334") {
+			host = strings.TrimSuffix(host, ":6334") + ":6333"
+		}
 		if !strings.HasPrefix(host, "http") {
 			host = "http://" + host
 		}

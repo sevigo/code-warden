@@ -269,7 +269,7 @@ export default function RepoDetail() {
           <div className="h-1.5 rounded-full bg-blue-500/10 overflow-hidden">
             <div
               className="h-full rounded-full bg-blue-400 transition-all duration-500"
-              style={{ width: progressPercent > 0 ? `${progressPercent}%` : '15%' }}
+              style={{ width: `${progressPercent}%` }}
             />
           </div>
           {scanState.progress && scanState.progress.files_total > 0 && (

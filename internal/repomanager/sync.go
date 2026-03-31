@@ -55,8 +55,15 @@ func (m *manager) cloneAndIndex(
 	// The PR diff is fetched separately via the GitHub API and passed in-memory to the LLM.
 	_, err := m.gitClient.Clone(cloneCtx, ev.RepoCloneURL, clonePath, token)
 	if err != nil {
-		m.cleanupRepoDir(clonePath)
-		return nil, err
+		// If we have a token and clone failed, try without token (public repo fallback)
+		if token != "" {
+			m.logger.Warn("clone with token failed, trying without token (public repo fallback)", "repo", ev.RepoFullName, "error", err)
+			_, err = m.gitClient.Clone(cloneCtx, ev.RepoCloneURL, clonePath, "")
+		}
+		if err != nil {
+			m.cleanupRepoDir(clonePath)
+			return nil, err
+		}
 	}
 
 	// Read what HEAD resolved to (the default branch tip).

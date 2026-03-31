@@ -307,7 +307,7 @@ func (s *Scanner) runScanLoop(ctx context.Context, stateMgr *StateManager, repoR
 
 func (s *Scanner) processBatch(ctx context.Context, stateMgr *StateManager, repoRecord *storage.Repository, localPath string, batch *[]string, progress *Progress, repoConfig *core.RepoConfig) error {
 	batchStartTime := time.Now()
-	err := s.RAGService.UpdateRepoContext(ctx, repoConfig, repoRecord, localPath, *batch, nil)
+	err := s.RAGService.UpdateRepoContext(ctx, repoConfig, repoRecord, localPath, *batch, nil, nil)
 	if err != nil {
 		s.Manager.logger.Error("Failed to process batch", "error", err)
 		return err

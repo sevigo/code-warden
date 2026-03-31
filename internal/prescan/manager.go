@@ -9,21 +9,25 @@ import (
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/gitutil"
+	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
 type Manager struct {
 	cfg       *config.Config
 	store     storage.Store
+	repoMgr   repomanager.RepoManager
 	gitClient *gitutil.Client
 	logger    *slog.Logger
 }
 
-func NewManager(cfg *config.Config, store storage.Store, gitClient *gitutil.Client, logger *slog.Logger) *Manager {
+func NewManager(cfg *config.Config, store storage.Store, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *Manager {
 	return &Manager{
 		cfg:       cfg,
 		store:     store,
+		repoMgr:   repoMgr,
 		gitClient: gitClient,
 		logger:    logger,
 	}
@@ -66,40 +70,21 @@ func (m *Manager) prepareRemoteRepo(ctx context.Context, input string) (string, 
 		return "", "", "", fmt.Errorf("invalid owner or repo name")
 	}
 
-	// Target Path
-	targetPath := filepath.Join(m.cfg.Storage.RepoPath, owner, repo)
-
-	// Ensure path is within storage directory
-	targetPath = filepath.Clean(targetPath)
-	if !strings.HasPrefix(targetPath, filepath.Clean(m.cfg.Storage.RepoPath)) {
-		return "", "", "", fmt.Errorf("invalid target path: traverses outside storage directory")
+	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	ev := &core.GitHubEvent{
+		RepoFullName: fmt.Sprintf("%s/%s", owner, repo),
+		RepoOwner:    owner,
+		RepoName:     repo,
+		RepoCloneURL: cloneURL,
 	}
 
-	// Check if exists
-	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-		m.logger.Info("Cloning repository", "url", input, "path", targetPath)
-		// Ensure parent dir exists (0750 per gosec)
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0750); err != nil {
-			return "", "", "", fmt.Errorf("failed to create parent dir: %w", err)
-		}
-
-		// Reconstruct clean clone URL
-		cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-
-		repoObj, err := m.gitClient.Clone(ctx, cloneURL, targetPath, m.cfg.GitHub.Token)
-		if err != nil {
-			return "", "", "", fmt.Errorf("failed to clone: %w", err)
-		}
-		_ = repoObj // might use later?
-	} else {
-		m.logger.Info("Repository already exists, fetching latest", "path", targetPath)
-		// Assuming master/main. We should probably just fetch.
-		if err := m.gitClient.Fetch(ctx, targetPath, m.cfg.GitHub.Token); err != nil {
-			m.logger.Warn("Fetch failed (continuing anyway)", "error", err)
-		}
+	m.logger.Info("Syncing repository via RepoManager", "url", cloneURL)
+	updateResult, err := m.repoMgr.SyncRepo(ctx, ev, m.cfg.GitHub.Token)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to sync repo: %w", err)
 	}
 
-	return targetPath, owner, repo, nil
+	return updateResult.RepoPath, owner, repo, nil
 }
 
 func (m *Manager) prepareLocalRepo(input string) (string, string, string, error) {

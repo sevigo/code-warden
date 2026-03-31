@@ -200,6 +200,7 @@ func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) 
 			last_indexed_sha = :last_indexed_sha,
 			generated_context = :generated_context,
 			context_updated_at = :context_updated_at,
+			installation_id = :installation_id,
 			updated_at = NOW() 
 		WHERE id = :id`
 

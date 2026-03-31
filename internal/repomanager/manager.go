@@ -60,6 +60,13 @@ func (m *manager) SyncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 	mu.Lock()
 	defer mu.Unlock()
 
+	// Token resolution order:
+	// 1. Caller-provided token (if not placeholder)
+	// 2. Config token (if not placeholder)
+	// 3. Installation token (if we have InstallationID)
+	// 4. Config token fallback (for CLI-added repos)
+	// 5. Empty token (will work for public repos)
+
 	// 1. If token is missing/placeholder, try to use config token
 	if isPlaceholderToken(token) {
 		token = m.cfg.GitHub.Token
@@ -74,13 +81,42 @@ func (m *manager) SyncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 	if token == "" && ev.InstallationID > 0 {
 		_, instToken, err := github.CreateInstallationClient(ctx, m.cfg, ev.InstallationID, m.logger)
 		if err != nil {
-			m.logger.Warn("failed to create installation client for sync, falling back to empty token",
+			m.logger.Warn("failed to create installation token, falling back to config token",
 				"repo", ev.RepoFullName,
 				"installation_id", ev.InstallationID,
 				"error", err)
 		} else {
 			token = instToken
 		}
+	}
+
+	// 4. If still no token, try to find installation ID for this repo via GitHub App
+	if token == "" && m.cfg.GitHub.AppID > 0 && m.cfg.GitHub.PrivateKeyPath != "" {
+		installationID, err := github.GetInstallationIDForRepo(ctx, m.cfg, ev.RepoFullName, m.logger)
+		if err != nil {
+			m.logger.Debug("could not find GitHub App installation for repo", "repo", ev.RepoFullName, "error", err)
+		} else {
+			// Found installation ID - save it for future use and get token
+			ev.InstallationID = installationID
+			_, instToken, err := github.CreateInstallationClient(ctx, m.cfg, installationID, m.logger)
+			if err != nil {
+				m.logger.Warn("failed to create installation token after lookup", "repo", ev.RepoFullName, "error", err)
+			} else {
+				token = instToken
+				m.logger.Info("obtained installation token via GitHub App lookup", "repo", ev.RepoFullName, "installation_id", installationID)
+			}
+		}
+	}
+
+	// 5. If still no token (GitHub App not installed), use config token
+	if token == "" && m.cfg.GitHub.Token != "" && !isPlaceholderToken(m.cfg.GitHub.Token) {
+		token = m.cfg.GitHub.Token
+	}
+
+	// 6. If still no token, proceed anyway - public repos don't need authentication
+	// Private repos will fail at clone time with a clear error message
+	if token == "" {
+		m.logger.Info("no token available, proceeding with public clone attempt", "repo", ev.RepoFullName)
 	}
 
 	return m.syncRepo(ctx, ev, token)
