@@ -25,12 +25,19 @@ type ComplexityScore struct {
 	ProfileReason string        `json:"profile_reason"`
 }
 
-// High-risk path patterns that always trigger thorough review.
+// High-risk path segments that always trigger thorough review.
+// These are matched as whole path segments, not substrings.
 var highRiskPaths = []string{
-	"auth", "crypto", "payment", "token", "secret",
-	"middleware", "permission", "sql", "migration",
-	"credential", "password", "key", "jwt", "session",
+	"auth", "authentication", "authorization",
+	"crypto", "cryptography",
+	"payment", "checkout", "billing",
+	"credential", "credentials",
+	"password", "passwd",
+	"secret", "secrets",
+	"jwt", "session",
 	"security", "acl", "rbac", "admin",
+	"privkey", "apikey", "privatekey",
+	"migration", "migrations",
 }
 
 // CalculateProfile computes the review profile based on PR complexity and risk.
@@ -111,12 +118,19 @@ func (p ReviewProfile) MinConfidence() int {
 	return 40 // Uniform threshold - let prompt control intensity
 }
 
+// hasHighRiskPath checks if any path segment matches high-risk keywords.
+// Uses path segment matching, not substring matching, to avoid false positives.
 func hasHighRiskPath(paths []string) bool {
 	for _, path := range paths {
-		lower := strings.ToLower(path)
-		for _, risk := range highRiskPaths {
-			if strings.Contains(lower, risk) {
-				return true
+		// Split path into segments by common separators
+		parts := strings.FieldsFunc(strings.ToLower(path), func(r rune) bool {
+			return r == '/' || r == '\\' || r == '_' || r == '.' || r == '-'
+		})
+		for _, part := range parts {
+			for _, risk := range highRiskPaths {
+				if part == risk {
+					return true
+				}
 			}
 		}
 	}

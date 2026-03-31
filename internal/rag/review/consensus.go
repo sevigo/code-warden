@@ -96,7 +96,6 @@ func (s *Service) consensusReduceFunc(repoConfig *core.RepoConfig, event *core.G
 	}
 }
 
-// GenerateConsensusReview generates reviews from multiple models and synthesizes a consensus.
 // GenerateConsensusReview generates a consensus review from multiple LLM models.
 //
 //nolint:funlen // Complex consensus workflow requiring multiple stages

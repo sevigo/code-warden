@@ -24,8 +24,11 @@ type ContextResult struct {
 
 // Builder defines the interface for building context.
 type Builder interface {
-	BuildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string)
+	// BuildRelevantContextWithImpact is the primary method for building context.
+	// It returns context strings plus impact radius for review profile calculation.
 	BuildRelevantContextWithImpact(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) *ContextResult
+	// BuildRelevantContext is kept for backward compatibility. Prefer BuildRelevantContextWithImpact.
+	BuildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string)
 	BuildContextForPrompt(docs []schema.Document) string
 	GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error
 	GenerateComparisonSummaries(ctx context.Context, models []string, repoPath string, relPaths []string) (map[string]map[string]string, error)

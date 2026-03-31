@@ -275,8 +275,16 @@ func TestHasHighRiskPath(t *testing.T) {
 		{"crypto path", []string{"pkg/crypto/encrypt.go"}, true},
 		{"payment path", []string{"services/payment/handler.go"}, true},
 		{"sql migration", []string{"migrations/001.sql"}, true},
-		{"security middleware", []string{"middleware/security.go"}, true},
+		{"security middleware", []string{"middleware/security.go"}, true}, // "security" is a segment
+		{"security dir", []string{"security/acl.go"}, true},
 		{"mixed paths", []string{"foo.go", "internal/auth/handler.go"}, true},
+		{"tokenizer false positive", []string{"internal/llm/tokenizer.go"}, false}, // "tokenizer" != "token"
+		{"monkey false positive", []string{"utils/monkey.go"}, false},              // "monkey" != "key"
+		{"nosql false positive", []string{"nosql/client.go"}, false},               // "nosql" != "sql"
+		{"apikey true positive", []string{"config/apikey.go"}, true},
+		{"privkey true positive", []string{"keys/privkey.pem"}, true},
+		{"migration dir", []string{"db/migration/users.sql"}, true},
+		{"credential file", []string{"auth/credential.go"}, true},
 	}
 
 	for _, tt := range tests {
