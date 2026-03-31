@@ -96,7 +96,7 @@ function Section({ icon: Icon, title, children }: {
   children: React.ReactNode
 }) {
   return (
-    <motion.div variants={fadeUp} className="rounded-2xl bg-card overflow-hidden">
+    <motion.div variants={fadeUp} className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
       <div className="flex items-center gap-2.5 px-5 py-4 border-b border-border/20">
         <div className="h-7 w-7 rounded-lg bg-accent/50 flex items-center justify-center shrink-0">
           <Icon className="h-3.5 w-3.5 text-muted-foreground" />
@@ -129,7 +129,7 @@ export default function SettingsPage() {
       {/* Header */}
       <motion.div variants={fadeUp} className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-foreground">Settings</h1>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">Settings</h1>
           <p className="text-sm text-muted-foreground mt-0.5">Current configuration — read-only</p>
         </div>
         <div className="flex items-center gap-2">
@@ -196,7 +196,7 @@ export default function SettingsPage() {
           </Section>
 
           {/* Config file hint */}
-          <motion.div variants={fadeUp} className="rounded-2xl bg-card/50 border border-border/30 px-5 py-4">
+          <motion.div variants={fadeUp} className="rounded-2xl bg-card/50 border border-border dark:border-border/30 shadow-sm dark:shadow-none px-5 py-4">
             <p className="text-xs text-muted-foreground">
               Configuration is loaded from <code className="font-mono bg-accent/50 px-1.5 py-0.5 rounded">config.yaml</code> in the working directory.
               Environment variables override file settings using the format{' '}

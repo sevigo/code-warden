@@ -66,7 +66,7 @@ function BentoStat({ icon: Icon, label, value, accent }: {
   icon: React.ElementType; label: string; value: string; accent: string
 }) {
   return (
-    <motion.div variants={fadeUp} className="rounded-2xl bg-card p-5 flex flex-col justify-between">
+    <motion.div variants={fadeUp} className="rounded-2xl bg-card p-5 flex flex-col justify-between border border-border shadow-sm dark:border-transparent dark:shadow-none">
       <div className={`h-8 w-8 rounded-xl flex items-center justify-center mb-4 ${accent}`}>
         <Icon className="h-4 w-4" />
       </div>
@@ -81,21 +81,24 @@ function BentoStat({ icon: Icon, label, value, accent }: {
 // ── Severity chips ────────────────────────────────────────────────────────────
 
 function SeverityChips({ counts }: { counts: { critical: number; warning: number; suggestion: number } }) {
+  const crit = counts.critical
+  const warn = counts.warning
+  const sugg = counts.suggestion
   return (
-    <div className="flex items-center gap-1.5">
-      {counts.critical > 0 && (
-        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-500/15 text-red-400">
-          {counts.critical} critical
+    <div className="flex items-center gap-2 mt-4 flex-wrap">
+      {crit > 0 && (
+        <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-red-50 border border-red-200 text-red-700 dark:bg-red-500/15 dark:border-red-500/20 dark:text-red-400">
+          {crit} CRITICAL
         </span>
       )}
-      {counts.warning > 0 && (
-        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-400">
-          {counts.warning} warning{counts.warning !== 1 ? 's' : ''}
+      {warn > 0 && (
+        <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-orange-50 border border-orange-200 text-orange-700 dark:bg-orange-500/15 dark:border-orange-500/20 dark:text-orange-400">
+          {warn} WARNINGS
         </span>
       )}
-      {counts.suggestion > 0 && (
-        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-500">
-          {counts.suggestion} suggestion{counts.suggestion !== 1 ? 's' : ''}
+      {sugg > 0 && (
+        <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-yellow-50 border border-yellow-200 text-yellow-700 dark:bg-yellow-500/15 dark:border-yellow-500/20 dark:text-yellow-500">
+          {sugg} SUGGESTIONS
         </span>
       )}
     </div>
@@ -213,7 +216,7 @@ export default function RepoDetail() {
         </Link>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-xl font-bold text-foreground">
+            <h1 className="text-2xl font-bold text-foreground tracking-tight">
               <span className="text-muted-foreground font-normal">{org}/</span>{repoName}
             </h1>
             <StatusBadge status={scanState?.status} />
@@ -280,7 +283,7 @@ export default function RepoDetail() {
 
       {/* Not indexed CTA */}
       {!scanState && !isScanning && (
-        <motion.div variants={fadeUp} className="rounded-2xl bg-card p-10 text-center">
+        <motion.div variants={fadeUp} className="rounded-2xl bg-card p-10 text-center border border-border shadow-sm dark:border-transparent dark:shadow-none">
           <div className="relative mx-auto mb-5 w-fit">
             <div className="absolute inset-0 rounded-2xl bg-primary/15 blur-xl scale-150" />
             <div className="relative h-16 w-16 rounded-2xl bg-primary/10 flex items-center justify-center">
@@ -302,7 +305,7 @@ export default function RepoDetail() {
       {/* Stats */}
       {isCompleted && statsLoading && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[1, 2, 3, 4].map(i => <div key={i} className="rounded-2xl bg-card p-5 h-28 animate-shimmer" />)}
+          {[1, 2, 3, 4].map(i => <div key={i} className="rounded-2xl bg-card p-5 h-28 animate-shimmer border border-border shadow-sm dark:border-transparent dark:shadow-none" />)}
         </div>
       )}
       {isCompleted && hasStats && (
@@ -331,7 +334,7 @@ export default function RepoDetail() {
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recent Reviews</h2>
             <Link to={`/repos/${repoId}/reviews`} className="text-xs text-primary hover:underline">View all →</Link>
           </div>
-          <div className="rounded-2xl bg-card overflow-hidden">
+          <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
             {reviews && reviews.length > 0 ? (
               <motion.div variants={stagger} className="divide-y divide-border/20">
                 {reviews.slice(0, 3).map(r => (
@@ -355,7 +358,7 @@ export default function RepoDetail() {
           <motion.div variants={fadeUp}>
             <Link
               to={`/repos/${repoId}/chat`}
-              className="block rounded-2xl bg-card p-6 hover:shadow-lg hover:shadow-primary/5 transition-all duration-200 group h-full"
+              className="block rounded-2xl bg-card p-6 border border-border shadow-sm hover:shadow-lg dark:border-transparent dark:shadow-none dark:hover:shadow-primary/5 transition-all duration-200 group h-full"
             >
               <div className="flex items-center gap-3 mb-3">
                 <div className="h-9 w-9 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
@@ -380,7 +383,7 @@ export default function RepoDetail() {
           <motion.div variants={fadeUp}>
             <Link
               to={`/repos/${repoId}/reviews`}
-              className="block rounded-2xl bg-card p-6 hover:shadow-lg hover:shadow-primary/5 transition-all duration-200 group h-full"
+              className="block rounded-2xl bg-card p-6 border border-border shadow-sm hover:shadow-lg dark:border-transparent dark:shadow-none dark:hover:shadow-primary/5 transition-all duration-200 group h-full"
             >
               <div className="flex items-center gap-3 mb-3">
                 <div className="h-9 w-9 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0 group-hover:bg-blue-500/15 transition-colors">

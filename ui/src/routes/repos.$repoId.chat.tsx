@@ -285,7 +285,7 @@ export default function ChatPage() {
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={() => submit(text)}
-                    className="flex items-start gap-3 text-left px-4 py-3 rounded-xl bg-card hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-colors group"
+                    className="flex items-start gap-3 text-left px-4 py-3 rounded-xl bg-card border border-border shadow-sm hover:shadow-md dark:border-transparent dark:shadow-none hover:bg-muted/50 dark:hover:bg-accent/40 text-muted-foreground hover:text-foreground transition-all group"
                   >
                     <Icon className="h-4 w-4 text-primary/50 group-hover:text-primary shrink-0 mt-0.5 transition-colors" />
                     <span>{text}</span>
@@ -369,8 +369,8 @@ export default function ChatPage() {
             </button>
           </div>
           <p className="text-[11px] text-muted-foreground/40 mt-2 text-center">
-            <kbd className="font-mono bg-accent/30 px-1 py-0.5 rounded text-[10px]">Enter</kbd> to send ·{' '}
-            <kbd className="font-mono bg-accent/30 px-1 py-0.5 rounded text-[10px]">Shift+Enter</kbd> new line ·{' '}
+            <kbd className="font-mono bg-accent/30 px-1.5 py-0.5 rounded-md text-xs">Enter</kbd> to send ·{' '}
+            <kbd className="font-mono bg-accent/30 px-1.5 py-0.5 rounded-md text-xs">Shift+Enter</kbd> new line ·{' '}
             <code className="font-mono text-muted-foreground/50">/explain &lt;path&gt;</code>
           </p>
         </form>

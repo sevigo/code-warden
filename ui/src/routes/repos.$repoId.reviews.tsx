@@ -74,7 +74,7 @@ export default function ReviewsPage() {
           <div className="flex items-center gap-2 text-sm text-muted-foreground mb-0.5">
             <span>{repoName}</span>
           </div>
-          <h1 className="text-xl font-bold text-foreground">Code Reviews</h1>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">Code Reviews</h1>
         </div>
       </motion.div>
 
@@ -117,17 +117,16 @@ export default function ReviewsPage() {
           </p>
         </motion.div>
       ) : (
-        <motion.div variants={fadeUp} className="rounded-2xl bg-card overflow-hidden">
+        <motion.div variants={fadeUp} className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-border/30">
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 pl-4">PR</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 px-4">Title</th>
-                <th className="text-center text-[10px] font-semibold text-red-400/70 uppercase tracking-wider py-3 px-3">Crit</th>
-                <th className="text-center text-[10px] font-semibold text-orange-400/70 uppercase tracking-wider py-3 px-3">Warn</th>
-                <th className="text-center text-[10px] font-semibold text-yellow-500/70 uppercase tracking-wider py-3 px-3">Sugg</th>
-                <th className="text-right text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 px-4">Date</th>
-                <th className="py-3 pr-4" />
+              <tr className="border-b border-border dark:border-border/20">
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 pl-4 lg:pl-6">PR</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Title</th>
+                <th className="text-center text-xs font-semibold text-red-600 dark:text-red-400/70 uppercase tracking-wider py-4 px-3">Crit</th>
+                <th className="text-center text-xs font-semibold text-orange-600 dark:text-orange-400/70 uppercase tracking-wider py-4 px-3">Warn</th>
+                <th className="text-center text-xs font-semibold text-yellow-600 dark:text-yellow-500/70 uppercase tracking-wider py-4 px-3">Sugg</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 pr-4 lg:pr-6">Date</th>
               </tr>
             </thead>
             <motion.tbody variants={stagger}>

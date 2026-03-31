@@ -90,7 +90,7 @@ function FindingCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-sm font-semibold text-foreground">{finding.title}</span>
-            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide ${s.badge}`}>
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-md uppercase tracking-wide ${s.badge}`}>
               {finding.category}
             </span>
           </div>
@@ -173,7 +173,7 @@ function FindingGroup({
       <div className={`flex items-center gap-2 text-sm font-semibold ${s.header}`}>
         <span>{s.icon}</span>
         <span>{s.label}</span>
-        <span className={`ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded ${s.badge}`}>
+        <span className={`ml-2 text-xs font-bold px-2 py-0.5 rounded-md ${s.badge}`}>
           {findings.length}
         </span>
       </div>
@@ -242,7 +242,7 @@ export default function ReviewDetailPage() {
                 {new Date(review.reviewed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
               </span>
             </div>
-            <h1 className="text-xl font-bold text-foreground">{review.pr_title}</h1>
+            <h1 className="text-2xl font-bold text-foreground tracking-tight">{review.pr_title}</h1>
           </div>
         </div>
 

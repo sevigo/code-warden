@@ -130,7 +130,7 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
             </div>
             <div>
               <span className="font-semibold text-foreground text-sm leading-none block">Code Warden</span>
-              <span className="text-[10px] text-muted-foreground leading-none mt-0.5 block">AI Code Reviews</span>
+              <span className="text-xs text-muted-foreground leading-none mt-1 block">AI Code Reviews</span>
             </div>
           </div>
         </div>
@@ -158,7 +158,7 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
         {/* Repos section */}
         <div className="flex-1 flex flex-col min-h-0 px-3">
           <div className="flex items-center justify-between px-1 mb-2">
-            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Repositories
             </p>
             <button
@@ -180,7 +180,7 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search..."
                 aria-label="Search repositories"
-                className="w-full pl-8 pr-3 py-1.5 rounded-md bg-accent/30 text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-primary/30 placeholder:text-muted-foreground/50 transition-all"
+                className="w-full pl-8 pr-3 py-1.5 rounded-md bg-accent/30 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 placeholder:text-muted-foreground/50 transition-all"
               />
             </div>
           )}

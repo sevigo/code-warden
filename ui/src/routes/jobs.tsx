@@ -39,10 +39,10 @@ function formatDuration(ms: number): string {
 }
 
 const TYPE_STYLE: Record<string, string> = {
-  review:    'bg-blue-500/15 text-blue-400',
-  scan:      'bg-violet-500/15 text-violet-400',
-  implement: 'bg-amber-500/15 text-amber-400',
-  rereview:  'bg-sky-500/15 text-sky-400',
+  review:    'bg-blue-50 border border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/20 dark:text-blue-400',
+  scan:      'bg-violet-50 border border-violet-200 text-violet-700 dark:bg-violet-500/15 dark:border-violet-500/20 dark:text-violet-400',
+  implement: 'bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-500/15 dark:border-amber-500/20 dark:text-amber-400',
+  rereview:  'bg-sky-50 border border-sky-200 text-sky-700 dark:bg-sky-500/15 dark:border-sky-500/20 dark:text-sky-400',
 }
 
 // ── Job Row ───────────────────────────────────────────────────────────────────
@@ -56,17 +56,17 @@ function JobRow({ job }: { job: JobRun }) {
     case 'completed':
       statusIcon = <CheckCircle2 className="h-4 w-4" />
       statusText = 'Completed'
-      statusColor = 'text-emerald-400'
+      statusColor = 'text-emerald-600 dark:text-emerald-400'
       break
     case 'failed':
       statusIcon = <XCircle className="h-4 w-4" />
       statusText = 'Failed'
-      statusColor = 'text-red-400'
+      statusColor = 'text-red-600 dark:text-red-400'
       break
     case 'running':
       statusIcon = <Loader2 className="h-4 w-4 animate-spin" />
       statusText = 'Running'
-      statusColor = 'text-blue-400'
+      statusColor = 'text-blue-600 dark:text-blue-400'
       break
     default:
       statusIcon = <Clock className="h-4 w-4" />
@@ -77,48 +77,48 @@ function JobRow({ job }: { job: JobRun }) {
   return (
     <motion.tr
       variants={fadeUp}
-      className="border-b border-border/20 last:border-0 hover:bg-accent/20 transition-colors group"
+      className="border-b border-border last:border-0 hover:bg-muted/50 dark:border-border/20 dark:hover:bg-accent/20 transition-colors group"
     >
       {/* Type */}
-      <td className="py-3 pl-4">
-        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${TYPE_STYLE[job.type] ?? 'bg-zinc-500/15 text-zinc-400'}`}>
+      <td className="py-4 pl-4 lg:pl-6">
+        <span className={`text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-md ${TYPE_STYLE[job.type] ?? 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-400'}`}>
           {job.type}
         </span>
       </td>
 
       {/* Repo */}
-      <td className="py-3 px-4">
-        <div className="text-sm text-foreground font-medium truncate max-w-[180px]">
+      <td className="py-4 px-4">
+        <div className="text-sm text-foreground font-semibold truncate max-w-[180px]">
           {job.repo_full_name.split('/')[1]}
         </div>
-        <div className="text-[10px] text-muted-foreground/50 font-mono">{job.repo_full_name}</div>
+        <div className="text-xs text-muted-foreground font-mono mt-0.5">{job.repo_full_name}</div>
       </td>
 
       {/* PR */}
-      <td className="py-3 px-4 text-sm font-mono text-muted-foreground">
-        {job.pr_number > 0 ? `#${job.pr_number}` : <span className="text-muted-foreground/30">—</span>}
+      <td className="py-4 px-4 text-sm font-mono text-muted-foreground">
+        {job.pr_number > 0 ? `#${job.pr_number}` : <span className="text-muted-foreground/50">—</span>}
       </td>
 
       {/* Status */}
-      <td className="py-3 px-4">
-        <div className={`flex items-center gap-1.5 text-xs font-medium ${statusColor}`}>
+      <td className="py-4 px-4">
+        <div className={`flex items-center gap-1.5 text-sm font-medium ${statusColor}`}>
           {statusIcon}
           {statusText}
         </div>
       </td>
 
       {/* Triggered by */}
-      <td className="py-3 px-4 text-xs text-muted-foreground/60 font-mono truncate max-w-[140px]">
+      <td className="py-4 px-4 text-sm text-muted-foreground font-mono truncate max-w-[140px]">
         {job.triggered_by}
       </td>
 
       {/* Duration */}
-      <td className="py-3 px-4 text-xs text-muted-foreground tabular-nums">
+      <td className="py-4 px-4 text-sm text-foreground tabular-nums">
         {formatDuration(job.duration_ms)}
       </td>
 
       {/* Time */}
-      <td className="py-3 pr-4 text-xs text-muted-foreground/60 text-right tabular-nums">
+      <td className="py-4 pr-4 lg:pr-6 text-sm text-muted-foreground text-right tabular-nums">
         {relativeTime(job.triggered_at)}
       </td>
     </motion.tr>
@@ -158,8 +158,8 @@ export default function JobsPage() {
       {/* Header */}
       <motion.div variants={fadeUp} className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-foreground">Activity</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">All pipeline jobs across repositories</p>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">Activity</h1>
+          <p className="text-sm text-muted-foreground mt-1">All pipeline jobs across repositories</p>
         </div>
         {stats.running > 0 && (
           <div className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-1.5 rounded-xl">
@@ -177,15 +177,15 @@ export default function JobsPage() {
       </motion.div>
 
       {/* Filter tabs */}
-      <motion.div variants={fadeUp} className="flex items-center gap-1 bg-card rounded-xl p-1 w-fit">
+      <motion.div variants={fadeUp} className="flex items-center gap-1 bg-muted/50 dark:bg-card border border-border/50 rounded-xl p-1 w-fit">
         {FILTERS.map(f => (
           <button
             key={f.key}
             onClick={() => setFilter(f.key)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all border ${
               filter === f.key
-                ? 'bg-primary/10 text-primary'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+                ? 'bg-white border-border shadow-sm text-foreground dark:bg-primary/10 dark:text-primary dark:border-transparent'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-accent/70'
             }`}
           >
             {f.label}
@@ -209,17 +209,17 @@ export default function JobsPage() {
           <p className="text-sm text-muted-foreground">No jobs yet.</p>
         </div>
       ) : (
-        <motion.div variants={fadeUp} className="rounded-2xl bg-card overflow-hidden">
+        <motion.div variants={fadeUp} className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-border/30">
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 pl-4">Type</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 px-4">Repository</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 px-4">PR</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 px-4">Status</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 px-4">Triggered by</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 px-4">Duration</th>
-                <th className="text-right text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-3 pr-4">When</th>
+              <tr className="border-b border-border dark:border-border/40">
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 pl-4 lg:pl-6">Type</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Repository</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">PR</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Status</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Triggered by</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Duration</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 pr-4 lg:pr-6">When</th>
               </tr>
             </thead>
             <motion.tbody variants={stagger}>

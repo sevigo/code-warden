@@ -51,10 +51,10 @@ function formatDuration(ms: number): string {
 }
 
 const JOB_TYPE_STYLE: Record<string, string> = {
-  review:    'bg-blue-500/15 text-blue-400',
-  scan:      'bg-violet-500/15 text-violet-400',
-  implement: 'bg-amber-500/15 text-amber-400',
-  rereview:  'bg-sky-500/15 text-sky-400',
+  review:    'bg-blue-50 border border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/20 dark:text-blue-400',
+  scan:      'bg-violet-50 border border-violet-200 text-violet-700 dark:bg-violet-500/15 dark:border-violet-500/20 dark:text-violet-400',
+  implement: 'bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-500/15 dark:border-amber-500/20 dark:text-amber-400',
+  rereview:  'bg-sky-50 border border-sky-200 text-sky-700 dark:bg-sky-500/15 dark:border-sky-500/20 dark:text-sky-400',
 }
 
 // ── KPI Card ─────────────────────────────────────────────────────────────────
@@ -88,11 +88,11 @@ function JobRow({ job, repos }: { job: JobRun; repos: Repository[] | undefined }
 
   let statusIcon: React.ReactNode
   if (job.status === 'completed') {
-    statusIcon = <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+    statusIcon = <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
   } else if (job.status === 'failed') {
-    statusIcon = <XCircle className="h-4 w-4 text-red-400 shrink-0" />
+    statusIcon = <XCircle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
   } else if (job.status === 'running') {
-    statusIcon = <Loader2 className="h-4 w-4 text-blue-400 shrink-0 animate-spin" />
+    statusIcon = <Loader2 className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 animate-spin" />
   } else {
     statusIcon = <Clock className="h-4 w-4 text-zinc-500 shrink-0" />
   }
@@ -102,9 +102,9 @@ function JobRow({ job, repos }: { job: JobRun; repos: Repository[] | undefined }
     : null
 
   const inner = (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-accent/30 transition-colors group">
+    <div className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-muted/50 dark:hover:bg-accent/30 transition-colors group">
       {statusIcon}
-      <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md shrink-0 ${JOB_TYPE_STYLE[job.type] ?? 'bg-zinc-500/15 text-zinc-400'}`}>
+      <span className={`text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-md shrink-0 ${JOB_TYPE_STYLE[job.type] ?? 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-400'}`}>
         {job.type}
       </span>
       <div className="flex-1 min-w-0">
@@ -145,22 +145,22 @@ function RepoTableRow({ repo }: { repo: Repository }) {
   return (
     <motion.tr
       variants={fadeUp}
-      className="border-b border-border/20 hover:bg-accent/20 transition-colors group"
+      className="border-b border-border last:border-0 hover:bg-muted/50 dark:border-border/20 dark:hover:bg-accent/20 transition-colors group"
     >
-      <td className="py-3 pl-4">
+      <td className="py-4 pl-4 lg:pl-6">
         <Link to={`/repos/${repo.id}`} className="flex items-center gap-2.5 min-w-0">
-          <div className="h-7 w-7 rounded-lg bg-accent flex items-center justify-center shrink-0 text-muted-foreground">
-            <span className="text-[10px] font-bold uppercase">
+          <div className="h-8 w-8 rounded-lg bg-accent flex items-center justify-center shrink-0 text-muted-foreground border border-border/50">
+            <span className="text-xs font-bold uppercase">
               {repo.full_name.split('/')[1]?.[0] ?? '?'}
             </span>
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground truncate">{repo.full_name.split('/')[1]}</p>
-            <p className="text-[10px] text-muted-foreground/50 font-mono truncate">{repo.full_name}</p>
+            <p className="text-sm font-semibold text-foreground truncate">{repo.full_name.split('/')[1]}</p>
+            <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{repo.full_name}</p>
           </div>
         </Link>
       </td>
-      <td className="py-3 px-4">
+      <td className="py-4 px-4">
         <StatusBadge status={scanState?.status} size="sm" />
       </td>
       <td className="py-3 px-4 text-xs text-muted-foreground">—</td>
@@ -287,8 +287,8 @@ export default function Dashboard() {
       {/* Header */}
       <motion.div variants={fadeUp} className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-foreground">Dashboard</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">AI code review pipeline overview</p>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground mt-1">AI code review pipeline overview</p>
         </div>
       </motion.div>
 
@@ -299,26 +299,26 @@ export default function Dashboard() {
           label="Repositories"
           value={`${indexedCount}/${totalCount}`}
           sub="indexed / total"
-          accent="bg-violet-500/10 text-violet-400"
+          accent="bg-violet-500/10 border border-violet-500/20 text-violet-600 dark:text-violet-400"
         />
         <KpiCard
           icon={GitPullRequest}
           label="Reviews this week"
           value={globalStats?.reviews_this_week ?? '—'}
-          accent="bg-blue-500/10 text-blue-400"
+          accent="bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400"
         />
         <KpiCard
           icon={AlertTriangle}
           label="Total findings"
           value={globalStats?.total_findings ?? '—'}
           sub={globalStats ? `${globalStats.findings_by_severity.critical} critical` : undefined}
-          accent="bg-orange-500/10 text-orange-400"
+          accent="bg-orange-500/10 border border-orange-500/20 text-orange-600 dark:text-orange-400"
         />
         <KpiCard
           icon={TrendingDown}
           label="Avg findings / review"
           value={globalStats?.avg_findings_per_review?.toFixed(1) ?? '—'}
-          accent="bg-emerald-500/10 text-emerald-400"
+          accent="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
         />
       </motion.div>
 
@@ -328,14 +328,14 @@ export default function Dashboard() {
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recent Activity</h2>
           <Link to="/jobs" className="text-xs text-primary hover:underline">View all →</Link>
         </div>
-        <div className="rounded-2xl bg-card overflow-hidden">
+        <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
           {jobsLoading ? (
             <div className="flex items-center justify-center py-10 gap-2 text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span className="text-sm">Loading activity...</span>
             </div>
           ) : jobs && jobs.length > 0 ? (
-            <motion.div variants={stagger} className="divide-y divide-border/20">
+            <motion.div variants={stagger} className="divide-y divide-border dark:divide-border/20">
               {jobs.slice(0, 8).map(job => (
                 <JobRow key={job.id} job={job} repos={repos} />
               ))}
@@ -351,15 +351,15 @@ export default function Dashboard() {
       {/* Repositories Table */}
       <motion.div variants={fadeUp} className="space-y-3">
         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Repositories</h2>
-        <div className="rounded-2xl bg-card overflow-hidden">
+        <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-border/30">
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-2.5 pl-4">Repository</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-2.5 px-4">Status</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-2.5 px-4">Reviews</th>
-                <th className="text-left text-[10px] font-semibold text-muted-foreground uppercase tracking-wider py-2.5 px-4">Last Scan</th>
-                <th className="py-2.5 pr-4" />
+              <tr className="border-b border-border dark:border-border/40">
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 pl-4 lg:pl-6">Repository</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Status</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Reviews</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Last Scan</th>
+                <th className="py-4 pr-4 lg:pr-6" />
               </tr>
             </thead>
             <motion.tbody variants={stagger}>
