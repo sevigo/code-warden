@@ -231,15 +231,15 @@ func NewService(
 	r.contextBuilder = contextpkg.NewBuilder(contextCfg)
 
 	reviewCfg := reviewpkg.Config{
-		VectorStore:      vs,
-		PromptMgr:        promptMgr,
-		GeneratorLLM:     gen,
-		GetLLM:           r.getOrCreateLLM,
-		Logger:           logger,
-		ConsensusTimeout: cfg.AI.ConsensusTimeout,
-		ConsensusQuorum:  cfg.AI.ConsensusQuorum,
-		BuildContext:     r.contextBuilder.BuildRelevantContext,
-		EmbedderModel:    cfg.AI.EmbedderModel,
+		VectorStore:            vs,
+		PromptMgr:              promptMgr,
+		GeneratorLLM:           gen,
+		GetLLM:                 r.getOrCreateLLM,
+		Logger:                 logger,
+		ConsensusTimeout:       cfg.AI.ConsensusTimeout,
+		ConsensusQuorum:        cfg.AI.ConsensusQuorum,
+		BuildContextWithImpact: r.contextBuilder.BuildRelevantContextWithImpact,
+		EmbedderModel:          cfg.AI.EmbedderModel,
 	}
 
 	// Wire Phase 2 investigator when a fast model is configured.

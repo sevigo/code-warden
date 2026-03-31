@@ -8,14 +8,26 @@ import (
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/cryptoutil"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/rag/detect"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+// ContextResult holds the output from BuildRelevantContext.
+type ContextResult struct {
+	FullContext        string
+	DefinitionsContext string
+	ImpactRadius       int // number of dependent files (non-test)
+}
+
 // Builder defines the interface for building context.
 type Builder interface {
+	// BuildRelevantContextWithImpact is the primary method for building context.
+	// It returns context strings plus impact radius for review profile calculation.
+	BuildRelevantContextWithImpact(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) *ContextResult
+	// BuildRelevantContext is kept for backward compatibility. Prefer BuildRelevantContextWithImpact.
 	BuildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string)
 	BuildContextForPrompt(docs []schema.Document) string
 	GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error
@@ -38,8 +50,14 @@ func NewBuilder(cfg Config) Builder {
 
 // BuildRelevantContext performs similarity searches to gather context for a review.
 func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) (string, string) {
+	result := b.BuildRelevantContextWithImpact(ctx, collectionName, embedderModelName, repoPath, changedFiles, prDescription)
+	return result.FullContext, result.DefinitionsContext
+}
+
+// BuildRelevantContextWithImpact performs similarity searches and returns impact radius for review profile calculation.
+func (b *builderImpl) BuildRelevantContextWithImpact(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prDescription string) *ContextResult {
 	if len(changedFiles) == 0 {
-		return "", ""
+		return &ContextResult{}
 	}
 
 	const defaultMaxContextFiles = 50
@@ -59,6 +77,8 @@ func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, 
 		"hyde_results_count", len(results.hydeResults),
 	)
 
+	impactRadius := countNonTestFileSources(results.impactDocs)
+
 	allDocs := mergeAndDedup(append(results.impactDocs, results.descriptionDocs...), b.getDocKey)
 
 	var impactContext, descriptionContext string
@@ -69,7 +89,12 @@ func (b *builderImpl) BuildRelevantContext(ctx context.Context, collectionName, 
 
 	testCoverageContext := b.formatTestCoverageContext(results.testCoverageDocs)
 	fullContext := b.assembleContext(ctx, results.archContext, results.tocContext, results.fileSummaryContext, impactContext, descriptionContext, results.definitionsContext, testCoverageContext, results.packageContext, results.relationContext, results.hydeResults, results.hydeIndices, changedFiles)
-	return fullContext, results.definitionsContext
+
+	return &ContextResult{
+		FullContext:        fullContext,
+		DefinitionsContext: results.definitionsContext,
+		ImpactRadius:       impactRadius,
+	}
 }
 
 type contextResults struct {
@@ -296,6 +321,22 @@ func (b *builderImpl) assembleContext(ctx context.Context, arch, toc, fileSummar
 	)
 
 	return result.Content
+}
+
+// countNonTestFileSources counts unique non-test file sources from documents.
+func countNonTestFileSources(docs []schema.Document) int {
+	seen := make(map[string]struct{})
+	for _, doc := range docs {
+		source, ok := doc.Metadata["source"].(string)
+		if !ok || source == "" {
+			continue
+		}
+		if core.IsTestFile(source) {
+			continue
+		}
+		seen[source] = struct{}{}
+	}
+	return len(seen)
 }
 
 // hashPatch returns a 128-bit hex hash of the patch content for cache keying.

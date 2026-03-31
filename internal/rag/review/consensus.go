@@ -96,7 +96,9 @@ func (s *Service) consensusReduceFunc(repoConfig *core.RepoConfig, event *core.G
 	}
 }
 
-// GenerateConsensusReview generates reviews from multiple models and synthesizes a consensus.
+// GenerateConsensusReview generates a consensus review from multiple LLM models.
+//
+//nolint:funlen // Complex consensus workflow requiring multiple stages
 func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	startTime := time.Now()
 	if repoConfig == nil {
@@ -110,7 +112,11 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
 
-	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	// Use context builder with impact tracking for profile calculation
+	contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
+	contextString := contextResult.FullContext
+	definitionsContext := contextResult.DefinitionsContext
+	impactRadius := contextResult.ImpactRadius
 
 	// Detect duplications by generating embeddings for the exact added lines
 	if dupCtx := s.checkCodeDuplication(ctx, repo.QdrantCollectionName, changedFiles); dupCtx != "" {
@@ -124,6 +130,7 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 	s.cfg.Logger.Debug("consensus context gathered",
 		"context_len", len(contextString),
 		"definitions_len", len(definitionsContext),
+		"impact_radius", impactRadius,
 	)
 
 	// Warn if no context was retrieved
@@ -138,6 +145,21 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 		definitionsContext = "**WARNING: No type definitions resolved.**"
 	}
 
+	// Calculate review profile for consensus
+	linesAdded, linesDeleted := calculateLinesChanged(changedFiles)
+	changedFilePaths := extractFilenames(changedFiles)
+	testCoverage := core.HasTestCoverage(changedFilePaths)
+	docsOnly := core.IsDocsOnly(changedFilePaths)
+	complexity := core.CalculateProfile(linesAdded, linesDeleted, len(changedFiles), impactRadius, testCoverage, docsOnly, changedFilePaths)
+
+	s.cfg.Logger.Info("consensus review profile calculated",
+		"profile", complexity.Profile,
+		"score", complexity.Score,
+		"impact_radius", complexity.ImpactRadius,
+		"high_impact", complexity.HighImpact,
+		"high_risk", complexity.HighRisk,
+	)
+
 	// Prepare for artifact saving
 	timestamp := time.Now().Format("20060102_150405_000000000")
 	reviewsDir := filepath.Join(filepath.Dir(repo.ClonePath), "reviews")
@@ -145,7 +167,14 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 		s.cfg.Logger.Warn("failed to ensure reviews directory, artifacts might not be saved", "error", err)
 	}
 
-	promptData := s.buildReviewPromptData(event, repoConfig, contextString, definitionsContext, diff, changedFiles)
+	// Render profile instruction for consensus
+	profileInstruction, err := s.cfg.PromptMgr.Render("review_profile", complexity)
+	if err != nil {
+		s.cfg.Logger.Warn("failed to render review profile for consensus, using default", "error", err)
+		profileInstruction = ""
+	}
+
+	promptData := s.buildReviewPromptDataWithProfile(event, repoConfig, contextString, definitionsContext, diff, changedFiles, profileInstruction)
 
 	// Track model results for fallback
 	var modelResults []ComparisonResult
@@ -204,6 +233,11 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 	// Update summary and raw output
 	structuredReview.Summary += disclaimer
 	rawConsensus += disclaimer
+
+	// Add profile metadata to consensus result
+	structuredReview.ReviewProfile = string(complexity.Profile)
+	structuredReview.ComplexityScore = complexity.Score
+	structuredReview.ImpactRadius = complexity.ImpactRadius
 
 	return structuredReview, rawConsensus, nil
 }
