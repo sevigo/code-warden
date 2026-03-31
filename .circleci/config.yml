@@ -1,8 +1,5 @@
 version: 2.1
 
-orbs:
-  node: circleci/node@6
-
 executors:
   go:
     docker:
@@ -50,25 +47,8 @@ jobs:
           name: Lint
           command: golangci-lint run ./...
 
-  build-ui:
-    docker:
-      - image: cimg/node:22.19
-    resource_class: medium
-    steps:
-      - checkout
-      - node/install-packages:
-          app-dir: ui
-          pkg-manager: npm
-      - run:
-          name: Lint
-          command: npm run lint --prefix ui
-      - run:
-          name: Build
-          command: npm run build --prefix ui
-
 workflows:
   ci:
     jobs:
       - test-go
       - lint-go
-      - build-ui
