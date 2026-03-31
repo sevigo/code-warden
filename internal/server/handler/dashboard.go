@@ -16,6 +16,15 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+const (
+	severityCritical   = "critical"
+	severityHigh       = "high"
+	severityMedium     = "medium"
+	severityLow        = "low"
+	severitySuggestion = "suggestion"
+	statusError        = "error"
+)
+
 // DashboardHandler serves dashboard, stats, reviews, jobs, and config endpoints.
 type DashboardHandler struct {
 	cfg    *config.Config
@@ -45,18 +54,22 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Ping DB via a lightweight store call
-	dbStatus, dbLatency := "error", int64(0)
+	var dbStatus string
+	var dbLatency int64
 	{
 		start := time.Now()
 		_, err := h.store.GetReviewStats(ctx)
 		dbLatency = time.Since(start).Milliseconds()
 		if err == nil {
 			dbStatus = "ok"
+		} else {
+			dbStatus = statusError
 		}
 	}
 
 	// Ping Qdrant HTTP health endpoint
-	qdrantStatus, qdrantLatency := "error", int64(0)
+	var qdrantStatus string
+	var qdrantLatency int64
 	{
 		host := h.cfg.Storage.QdrantHost
 		// Switch to HTTP port for health check if configured for gRPC
@@ -67,14 +80,18 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 			host = "http://" + host
 		}
 		start := time.Now()
-		resp, err := http.Get(host + "/healthz") //nolint:noctx
+		resp, err := http.Get(host + "/healthz") //nolint:noctx // short health check request
 		qdrantLatency = time.Since(start).Milliseconds()
 		if err == nil {
-			io.Copy(io.Discard, resp.Body) //nolint:errcheck
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			if resp.StatusCode < 300 {
 				qdrantStatus = "ok"
+			} else {
+				qdrantStatus = statusError
 			}
+		} else {
+			qdrantStatus = statusError
 		}
 	}
 
@@ -246,7 +263,7 @@ func (h *DashboardHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
 	out := make([]reviewDTO, 0, len(reviews))
 	for _, rev := range reviews {
 		counts := parseSeverityCounts(rev.ReviewContent)
-		total := counts["critical"].(int) + counts["warning"].(int) + counts["suggestion"].(int)
+		total := getTotalFromCounts(counts)
 		out = append(out, reviewDTO{
 			ID:             rev.ID,
 			PRNumber:       rev.PRNumber,
@@ -260,6 +277,13 @@ func (h *DashboardHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	h.writeJSON(w, out)
+}
+
+func getTotalFromCounts(counts map[string]any) int {
+	critical, _ := counts["critical"].(int)
+	warning, _ := counts["warning"].(int)
+	suggestion, _ := counts["suggestion"].(int)
+	return critical + warning + suggestion
 }
 
 func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +314,7 @@ func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 
 	counts := parseSeverityCounts(rev.ReviewContent)
 	findings := parseFindings(rev.ReviewContent)
-	total := counts["critical"].(int) + counts["warning"].(int) + counts["suggestion"].(int)
+	total := getTotalFromCounts(counts)
 
 	h.writeJSON(w, map[string]any{
 		"id":              rev.ID,
@@ -345,12 +369,12 @@ func parseSeverityCounts(content string) map[string]any {
 		end += start
 		sev := strings.TrimSpace(lower[start+len("<severity>") : end])
 		switch sev {
-		case "critical", "high":
-			counts["critical"]++
-		case "medium":
+		case severityCritical, severityHigh:
+			counts[severityCritical]++
+		case severityMedium:
 			counts["warning"]++
-		case "low", "suggestion":
-			counts["suggestion"]++
+		case severityLow, severitySuggestion:
+			counts[severitySuggestion]++
 		}
 		pos = end + len("</severity>")
 	}
@@ -394,13 +418,13 @@ func parseSuggestionBlock(block string, idx int) map[string]any {
 
 	getTag := func(tag string) string {
 		open := "<" + tag + ">"
-		close := "</" + tag + ">"
+		closeTag := "</" + tag + ">"
 		s := strings.Index(lblock, open)
 		if s == -1 {
 			return ""
 		}
 		s += len(open)
-		e := strings.Index(lblock[s:], close)
+		e := strings.Index(lblock[s:], closeTag)
 		if e == -1 {
 			return ""
 		}
@@ -414,11 +438,11 @@ func parseSuggestionBlock(block string, idx int) map[string]any {
 	}
 
 	sev := strings.ToLower(getTag("severity"))
-	uiSev := "suggestion"
+	uiSev := severitySuggestion
 	switch sev {
-	case "critical", "high":
-		uiSev = "critical"
-	case "medium":
+	case severityCritical, severityHigh:
+		uiSev = severityCritical
+	case severityMedium:
 		uiSev = "warning"
 	}
 

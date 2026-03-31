@@ -92,19 +92,8 @@ func (m *manager) SyncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 
 	// 4. If still no token, try to find installation ID for this repo via GitHub App
 	if token == "" && m.cfg.GitHub.AppID > 0 && m.cfg.GitHub.PrivateKeyPath != "" {
-		installationID, err := github.GetInstallationIDForRepo(ctx, m.cfg, ev.RepoFullName, m.logger)
-		if err != nil {
-			m.logger.Debug("could not find GitHub App installation for repo", "repo", ev.RepoFullName, "error", err)
-		} else {
-			// Found installation ID - save it for future use and get token
-			ev.InstallationID = installationID
-			_, instToken, err := github.CreateInstallationClient(ctx, m.cfg, installationID, m.logger)
-			if err != nil {
-				m.logger.Warn("failed to create installation token after lookup", "repo", ev.RepoFullName, "error", err)
-			} else {
-				token = instToken
-				m.logger.Info("obtained installation token via GitHub App lookup", "repo", ev.RepoFullName, "installation_id", installationID)
-			}
+		if instToken := m.tryGetInstallationToken(ctx, ev); instToken != "" {
+			token = instToken
 		}
 	}
 
@@ -120,6 +109,26 @@ func (m *manager) SyncRepo(ctx context.Context, ev *core.GitHubEvent, token stri
 	}
 
 	return m.syncRepo(ctx, ev, token)
+}
+
+// tryGetInstallationToken attempts to find and create an installation token for the repo.
+// Returns empty string if not found or on error.
+func (m *manager) tryGetInstallationToken(ctx context.Context, ev *core.GitHubEvent) string {
+	installationID, err := github.GetInstallationIDForRepo(ctx, m.cfg, ev.RepoFullName, m.logger)
+	if err != nil {
+		m.logger.Debug("could not find GitHub App installation for repo", "repo", ev.RepoFullName, "error", err)
+		return ""
+	}
+
+	ev.InstallationID = installationID
+	_, instToken, err := github.CreateInstallationClient(ctx, m.cfg, installationID, m.logger)
+	if err != nil {
+		m.logger.Warn("failed to create installation token after lookup", "repo", ev.RepoFullName, "error", err)
+		return ""
+	}
+
+	m.logger.Info("obtained installation token via GitHub App lookup", "repo", ev.RepoFullName, "installation_id", installationID)
+	return instToken
 }
 
 func isPlaceholderToken(token string) bool {
