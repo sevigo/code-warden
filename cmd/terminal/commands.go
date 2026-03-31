@@ -76,6 +76,7 @@ func scanRepoCmd(app *app.App, path, repoFullName string, force bool) tea.Cmd {
 				updateResult.RepoPath,
 				updateResult.FilesToAddOrUpdate,
 				updateResult.FilesToDelete,
+				nil,
 			)
 		}
 		if err != nil {

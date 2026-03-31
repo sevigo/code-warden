@@ -74,19 +74,34 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 	finalExcludeDirs := BuildExcludeDirs(repoConfig)
 	startTime := time.Now()
 
-	// Count total files upfront for accurate progress reporting
+	// Count total files upfront for accurate progress reporting (apply same filters as loader)
 	totalFiles := 0
-	if walkErr := filepath.WalkDir(repoPath, func(_ string, d os.DirEntry, err error) error {
+	if walkErr := filepath.WalkDir(repoPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
+			// Skip excluded directories entirely
+			for _, excludeDir := range finalExcludeDirs {
+				if d.Name() == excludeDir {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
-		// Quick filter for common exclusions
-		name := d.Name()
-		if strings.HasPrefix(name, ".") && name != "." {
+		// Skip hidden files
+		if strings.HasPrefix(d.Name(), ".") {
 			return nil
+		}
+		// Skip excluded extensions and invalid extensions
+		ext := strings.ToLower(filepath.Ext(path))
+		if !core.IsValidExtension(ext) {
+			return nil
+		}
+		for _, excludeExt := range repoConfig.ExcludeExts {
+			if strings.TrimPrefix(strings.ToLower(excludeExt), ".") == strings.TrimPrefix(ext, ".") {
+				return nil
+			}
 		}
 		totalFiles++
 		return nil
@@ -249,9 +264,9 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 			done := int(atomic.LoadInt64(&processedCount) + atomic.LoadInt64(&skippedCount))
 			resultsMu.Unlock()
 
-			// Report progress periodically to avoid hammering the caller
+			// Report progress periodically using the pre-calculated totalFiles
 			if progressFn != nil && done%progressInterval == 0 {
-				progressFn(done, int(atomic.LoadInt64(&totalSeen)))
+				progressFn(done, totalFiles)
 			}
 		}
 	}()
@@ -350,7 +365,7 @@ func (i *Indexer) SetupRepoContext(ctx context.Context, repoConfig *core.RepoCon
 // UpdateRepoContext incrementally updates the vector store for changed files.
 //
 //nolint:gocognit,nestif,funlen // incremental sync has inherently complex control flow
-func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string) error {
+func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, repoPath string, filesToProcess, filesToDelete []string, progressFn ProgressFunc) error {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
 	}
@@ -376,16 +391,20 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 		"collection", repo.QdrantCollectionName,
 		"process", len(filesToProcess),
 		"delete", len(filesToDelete),
-		"exclude_dirs", finalExcludeDirs,
-		"exclude_exts", repoConfig.ExcludeExts,
-		"exclude_files", repoConfig.ExcludeFiles,
 	)
+
+	totalItems := len(filesToProcess) + len(filesToDelete)
+	processedItems := 0
 
 	// Handle deleted files first
 	if len(filesToDelete) > 0 {
 		i.cfg.Logger.Info("deleting embeddings for removed files", "count", len(filesToDelete))
 		if err := i.cfg.VectorStore.DeleteDocumentsFromCollection(ctx, repo.QdrantCollectionName, i.cfg.EmbedderModel, filesToDelete); err != nil {
 			i.cfg.Logger.Error("failed to delete some embeddings", "error", err)
+		}
+		processedItems += len(filesToDelete)
+		if progressFn != nil {
+			progressFn(processedItems, totalItems)
 		}
 	}
 
@@ -433,6 +452,10 @@ func (i *Indexer) UpdateRepoContext(ctx context.Context, repoConfig *core.RepoCo
 	allDocs := make([]schema.Document, 0, len(filesToProcess)*avgChunksPerFile)
 	for res := range resultChan {
 		allDocs = append(allDocs, res.docs...)
+		processedItems++
+		if progressFn != nil && (processedItems%10 == 0 || processedItems == totalItems) {
+			progressFn(processedItems, totalItems)
+		}
 	}
 
 	if len(allDocs) > 0 {

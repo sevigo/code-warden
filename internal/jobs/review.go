@@ -96,13 +96,49 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 // runFullReview handles the initial `/review` command.
 func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🚀 Starting Code Review", "repo", event.RepoFullName, "pr", event.PRNumber)
-	return j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
+	finish := j.startJobRun(ctx, "review", event, "webhook:/review")
+	err := j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
+	finish(ctx, err)
+	return err
 }
 
 // runReReview handles the `/rereview` command.
 func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🔄 Starting Re-Review", "repo", event.RepoFullName, "pr", event.PRNumber)
-	return j.executeReReviewWorkflow(ctx, event)
+	finish := j.startJobRun(ctx, "rereview", event, "webhook:/rereview")
+	err := j.executeReReviewWorkflow(ctx, event)
+	finish(ctx, err)
+	return err
+}
+
+// startJobRun records a job as "running" and returns a function to finalize it.
+func (j *ReviewJob) startJobRun(ctx context.Context, jobType string, event *core.GitHubEvent, triggeredBy string) func(context.Context, error) {
+	startedAt := time.Now()
+	jobID, err := j.store.InsertJobRun(ctx, &storage.JobRun{
+		Type:         jobType,
+		RepoFullName: event.RepoFullName,
+		PRNumber:     event.PRNumber,
+		Status:       "running",
+		TriggeredBy:  triggeredBy,
+		TriggeredAt:  startedAt,
+	})
+	if err != nil {
+		j.logger.Warn("failed to record job run start", "type", jobType, "error", err)
+		jobID = 0
+	}
+	return func(ctx context.Context, runErr error) {
+		if jobID == 0 {
+			return
+		}
+		status := "completed"
+		if runErr != nil {
+			status = "failed"
+		}
+		completedAt := time.Now()
+		if updateErr := j.store.UpdateJobRun(ctx, jobID, status, completedAt, completedAt.Sub(startedAt).Milliseconds()); updateErr != nil {
+			j.logger.Warn("failed to update job run", "id", jobID, "error", updateErr)
+		}
+	}
 }
 
 // runImplementIssue handles the `/implement` command on issues.

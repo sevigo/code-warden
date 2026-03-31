@@ -2,15 +2,30 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
+const (
+	severityCritical   = "critical"
+	severityHigh       = "high"
+	severityMedium     = "medium"
+	severityLow        = "low"
+	severitySuggestion = "suggestion"
+	statusError        = "error"
+)
+
 // DashboardHandler serves dashboard, stats, reviews, jobs, and config endpoints.
-// All data is currently mocked — wire to real services in a follow-up.
 type DashboardHandler struct {
 	cfg    *config.Config
 	store  storage.Store
@@ -21,7 +36,7 @@ func NewDashboardHandler(cfg *config.Config, store storage.Store, logger *slog.L
 	return &DashboardHandler{cfg: cfg, store: store, logger: logger}
 }
 
-func (h *DashboardHandler) json(w http.ResponseWriter, v any) {
+func (h *DashboardHandler) writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		h.logger.Error("failed to encode JSON response", "error", err)
@@ -30,30 +45,79 @@ func (h *DashboardHandler) json(w http.ResponseWriter, v any) {
 
 // ── Setup & Config ──────────────────────────────────────────────────────────
 
-func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, _ *http.Request) {
+func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	configured := h.cfg.GitHub.AppID != 0
 	appName := "Code Warden"
 	if !configured {
 		appName = ""
 	}
 
-	h.json(w, map[string]any{
+	// Ping DB via a lightweight store call
+	var dbStatus string
+	var dbLatency int64
+	{
+		start := time.Now()
+		_, err := h.store.GetReviewStats(ctx)
+		dbLatency = time.Since(start).Milliseconds()
+		if err == nil {
+			dbStatus = "ok"
+		} else {
+			dbStatus = statusError
+		}
+	}
+
+	// Ping Qdrant HTTP health endpoint
+	var qdrantStatus string
+	var qdrantLatency int64
+	{
+		host := h.cfg.Storage.QdrantHost
+		// Switch to HTTP port for health check if configured for gRPC
+		if strings.HasSuffix(host, ":6334") {
+			host = strings.TrimSuffix(host, ":6334") + ":6333"
+		}
+		if !strings.HasPrefix(host, "http") {
+			host = "http://" + host
+		}
+		start := time.Now()
+		resp, err := http.Get(host + "/healthz") //nolint:noctx // short health check request
+		qdrantLatency = time.Since(start).Milliseconds()
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode < 300 {
+				qdrantStatus = "ok"
+			} else {
+				qdrantStatus = statusError
+			}
+		} else {
+			qdrantStatus = statusError
+		}
+	}
+
+	installURL := ""
+	if configured && appName != "" {
+		installURL = fmt.Sprintf("https://github.com/apps/%s/installations/new",
+			strings.ToLower(strings.ReplaceAll(appName, " ", "-")))
+	}
+
+	h.writeJSON(w, map[string]any{
 		"github_app": map[string]any{
 			"configured":  configured,
 			"app_id":      h.cfg.GitHub.AppID,
 			"app_name":    appName,
-			"install_url": "https://github.com/apps/code-warden/installations/new",
+			"install_url": installURL,
 		},
 		"services": map[string]any{
-			"database": map[string]any{"status": "ok", "latency_ms": 2},
-			"qdrant":   map[string]any{"status": "ok", "latency_ms": 5},
+			"database": map[string]any{"status": dbStatus, "latency_ms": dbLatency},
+			"qdrant":   map[string]any{"status": qdrantStatus, "latency_ms": qdrantLatency},
 		},
-		"ready": configured,
+		"ready": configured && dbStatus == "ok" && qdrantStatus == "ok",
 	})
 }
 
 func (h *DashboardHandler) GetConfig(w http.ResponseWriter, _ *http.Request) {
-	h.json(w, map[string]any{
+	h.writeJSON(w, map[string]any{
 		"ai": map[string]any{
 			"llm_provider":    h.cfg.AI.LLMProvider,
 			"generator_model": h.cfg.AI.GeneratorModel,
@@ -71,19 +135,40 @@ func (h *DashboardHandler) GetConfig(w http.ResponseWriter, _ *http.Request) {
 
 // ── Global Stats ────────────────────────────────────────────────────────────
 
-func (h *DashboardHandler) GlobalStats(w http.ResponseWriter, _ *http.Request) {
-	h.json(w, map[string]any{
-		"total_repos":       3,
-		"indexed_repos":     2,
-		"total_reviews":     12,
-		"reviews_this_week": 3,
-		"total_findings":    47,
+func (h *DashboardHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	repos, err := h.store.GetAllRepositories(ctx)
+	if err != nil {
+		h.logger.Error("failed to get repositories for stats", "error", err)
+	}
+
+	totalRepos := len(repos)
+	indexedRepos := 0
+	for _, repo := range repos {
+		if repo.LastIndexedSHA != "" {
+			indexedRepos++
+		}
+	}
+
+	reviewStats, err := h.store.GetReviewStats(ctx)
+	if err != nil {
+		h.logger.Error("failed to get review stats", "error", err)
+		reviewStats = &storage.ReviewStats{}
+	}
+
+	h.writeJSON(w, map[string]any{
+		"total_repos":       totalRepos,
+		"indexed_repos":     indexedRepos,
+		"total_reviews":     reviewStats.TotalReviews,
+		"reviews_this_week": reviewStats.ReviewsThisWeek,
+		"total_findings":    0,
 		"findings_by_severity": map[string]int{
-			"critical":   2,
-			"warning":    18,
-			"suggestion": 27,
+			"critical":   0,
+			"warning":    0,
+			"suggestion": 0,
 		},
-		"avg_findings_per_review": 3.9,
+		"avg_findings_per_review": 0.0,
 		"jobs_running":            0,
 		"jobs_queued":             0,
 	})
@@ -91,244 +176,157 @@ func (h *DashboardHandler) GlobalStats(w http.ResponseWriter, _ *http.Request) {
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
 
-func (h *DashboardHandler) ListJobs(w http.ResponseWriter, _ *http.Request) {
-	h.json(w, []map[string]any{
-		{
-			"id":             "job_001",
-			"type":           "review",
-			"repo_full_name": "sevigo/code-warden",
-			"pr_number":      42,
-			"status":         "completed",
-			"triggered_by":   "webhook:/review",
-			"triggered_at":   "2026-03-29T14:20:00Z",
-			"completed_at":   "2026-03-29T14:23:00Z",
-			"duration_ms":    180000,
-		},
-		{
-			"id":             "job_002",
-			"type":           "scan",
-			"repo_full_name": "sevigo/code-warden",
-			"pr_number":      0,
-			"status":         "completed",
-			"triggered_by":   "ui:manual",
-			"triggered_at":   "2026-03-29T10:05:00Z",
-			"completed_at":   "2026-03-29T10:18:00Z",
-			"duration_ms":    780000,
-		},
-		{
-			"id":             "job_003",
-			"type":           "review",
-			"repo_full_name": "sevigo/code-warden",
-			"pr_number":      41,
-			"status":         "completed",
-			"triggered_by":   "webhook:/review",
-			"triggered_at":   "2026-03-28T09:08:00Z",
-			"completed_at":   "2026-03-28T09:11:00Z",
-			"duration_ms":    162000,
-		},
-		{
-			"id":             "job_004",
-			"type":           "review",
-			"repo_full_name": "sevigo/code-warden",
-			"pr_number":      39,
-			"status":         "completed",
-			"triggered_by":   "webhook:/review",
-			"triggered_at":   "2026-03-25T16:43:00Z",
-			"completed_at":   "2026-03-25T16:45:00Z",
-			"duration_ms":    130000,
-		},
-		{
-			"id":             "job_005",
-			"type":           "implement",
-			"repo_full_name": "sevigo/code-warden",
-			"pr_number":      0,
-			"status":         "failed",
-			"triggered_by":   "webhook:/implement",
-			"triggered_at":   "2026-03-24T11:30:00Z",
-			"completed_at":   "2026-03-24T11:35:00Z",
-			"duration_ms":    300000,
-		},
-		{
-			"id":             "job_006",
-			"type":           "scan",
-			"repo_full_name": "sevigo/karakuri-os",
-			"pr_number":      0,
-			"status":         "completed",
-			"triggered_by":   "ui:manual",
-			"triggered_at":   "2026-03-22T08:00:00Z",
-			"completed_at":   "2026-03-22T08:22:00Z",
-			"duration_ms":    1320000,
-		},
-		{
-			"id":             "job_007",
-			"type":           "rereview",
-			"repo_full_name": "sevigo/karakuri-os",
-			"pr_number":      17,
-			"status":         "completed",
-			"triggered_by":   "webhook:/rereview",
-			"triggered_at":   "2026-03-21T13:10:00Z",
-			"completed_at":   "2026-03-21T13:13:00Z",
-			"duration_ms":    190000,
-		},
-		{
-			"id":             "job_008",
-			"type":           "review",
-			"repo_full_name": "sevigo/karakuri-os",
-			"pr_number":      16,
-			"status":         "completed",
-			"triggered_by":   "webhook:/review",
-			"triggered_at":   "2026-03-20T09:55:00Z",
-			"completed_at":   "2026-03-20T09:58:00Z",
-			"duration_ms":    145000,
-		},
-	})
+func (h *DashboardHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	limit := 50
+	offset := 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+
+	jobs, err := h.store.ListJobRuns(ctx, limit, offset)
+	if err != nil {
+		h.logger.Error("failed to list job runs", "error", err)
+		h.writeJSON(w, []any{})
+		return
+	}
+
+	type jobDTO struct {
+		ID           int64      `json:"id"`
+		Type         string     `json:"type"`
+		RepoFullName string     `json:"repo_full_name"`
+		PRNumber     int        `json:"pr_number"`
+		Status       string     `json:"status"`
+		TriggeredBy  string     `json:"triggered_by"`
+		TriggeredAt  time.Time  `json:"triggered_at"`
+		CompletedAt  *time.Time `json:"completed_at"`
+		DurationMs   *int64     `json:"duration_ms"`
+	}
+
+	out := make([]jobDTO, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, jobDTO{
+			ID:           j.ID,
+			Type:         j.Type,
+			RepoFullName: j.RepoFullName,
+			PRNumber:     j.PRNumber,
+			Status:       j.Status,
+			TriggeredBy:  j.TriggeredBy,
+			TriggeredAt:  j.TriggeredAt,
+			CompletedAt:  j.CompletedAt,
+			DurationMs:   j.DurationMs,
+		})
+	}
+	h.writeJSON(w, out)
 }
 
 // ── Reviews ─────────────────────────────────────────────────────────────────
 
-func (h *DashboardHandler) ListReviews(w http.ResponseWriter, _ *http.Request) {
-	h.json(w, []map[string]any{
-		{
-			"id":        1,
-			"pr_number": 42,
-			"pr_title":  "feat: add multi-level summary enhancements for vector indexing",
-			"head_sha":  "a3f1c9d",
-			"status":    "reviewed",
-			"severity_counts": map[string]int{
-				"critical":   0,
-				"warning":    2,
-				"suggestion": 5,
-			},
-			"total_findings": 7,
-			"reviewed_at":    "2026-03-29T14:23:00Z",
-			"created_at":     "2026-03-29T14:20:00Z",
-		},
-		{
-			"id":        2,
-			"pr_number": 41,
-			"pr_title":  "fix: regenerate package summaries on incremental updates",
-			"head_sha":  "b8e2f4a",
-			"status":    "reviewed",
-			"severity_counts": map[string]int{
-				"critical":   1,
-				"warning":    3,
-				"suggestion": 2,
-			},
-			"total_findings": 6,
-			"reviewed_at":    "2026-03-28T09:11:00Z",
-			"created_at":     "2026-03-28T09:08:00Z",
-		},
-		{
-			"id":        3,
-			"pr_number": 39,
-			"pr_title":  "chore: update goframe to v0.36.5 for new metadata indexes",
-			"head_sha":  "c7d3a1b",
-			"status":    "reviewed",
-			"severity_counts": map[string]int{
-				"critical":   0,
-				"warning":    0,
-				"suggestion": 3,
-			},
-			"total_findings": 3,
-			"reviewed_at":    "2026-03-25T16:45:00Z",
-			"created_at":     "2026-03-25T16:43:00Z",
-		},
-	})
+func (h *DashboardHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	repoID, err := strconv.ParseInt(chi.URLParam(r, "repoId"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+
+	repo, err := h.store.GetRepositoryByID(ctx, repoID)
+	if err != nil {
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+
+	reviews, err := h.store.GetReviewsForRepo(ctx, repo.FullName)
+	if err != nil {
+		h.logger.Error("failed to get reviews for repo", "repo", repo.FullName, "error", err)
+		h.writeJSON(w, []any{})
+		return
+	}
+
+	type reviewDTO struct {
+		ID             int64     `json:"id"`
+		PRNumber       int       `json:"pr_number"`
+		PRTitle        string    `json:"pr_title"`
+		HeadSHA        string    `json:"head_sha"`
+		Status         string    `json:"status"`
+		SeverityCounts any       `json:"severity_counts"`
+		TotalFindings  int       `json:"total_findings"`
+		ReviewedAt     time.Time `json:"reviewed_at"`
+		CreatedAt      time.Time `json:"created_at"`
+	}
+
+	out := make([]reviewDTO, 0, len(reviews))
+	for _, rev := range reviews {
+		counts := parseSeverityCounts(rev.ReviewContent)
+		total := getTotalFromCounts(counts)
+		out = append(out, reviewDTO{
+			ID:             rev.ID,
+			PRNumber:       rev.PRNumber,
+			PRTitle:        fmt.Sprintf("PR #%d", rev.PRNumber),
+			HeadSHA:        rev.HeadSHA,
+			Status:         "reviewed",
+			SeverityCounts: counts,
+			TotalFindings:  total,
+			ReviewedAt:     rev.CreatedAt,
+			CreatedAt:      rev.CreatedAt,
+		})
+	}
+	h.writeJSON(w, out)
 }
 
-func (h *DashboardHandler) GetReview(w http.ResponseWriter, _ *http.Request) {
-	h.json(w, map[string]any{
-		"id":        1,
-		"pr_number": 42,
-		"pr_title":  "feat: add multi-level summary enhancements for vector indexing",
-		"head_sha":  "a3f1c9d8e5b2",
-		"status":    "reviewed",
-		"severity_counts": map[string]int{
-			"critical":   0,
-			"warning":    2,
-			"suggestion": 5,
-		},
-		"findings": []map[string]any{
-			{
-				"id":          "f1",
-				"severity":    "warning",
-				"category":    "Logic",
-				"file":        "internal/rag/index/summarizer.go",
-				"line_start":  142,
-				"line_end":    158,
-				"title":       "Missing nil check before dereferencing pointer",
-				"description": "The `parent` pointer is dereferenced without checking if it's nil first. If the parent node doesn't exist in the tree, this will cause a nil pointer dereference panic at runtime.",
-				"suggestion":  "Add `if parent == nil { return }` before the dereference.",
-			},
-			{
-				"id":          "f2",
-				"severity":    "warning",
-				"category":    "Performance",
-				"file":        "internal/rag/contextpkg/builder.go",
-				"line_start":  87,
-				"line_end":    92,
-				"title":       "Redundant DB query inside loop",
-				"description": "GetRepositoryByID is called inside a loop over chunks, causing N+1 queries. The repository data is constant within the loop and should be fetched once before it.",
-				"suggestion":  "Move the GetRepositoryByID call outside the loop.",
-			},
-			{
-				"id":          "f3",
-				"severity":    "suggestion",
-				"category":    "Style",
-				"file":        "internal/rag/index/toc.go",
-				"line_start":  34,
-				"line_end":    34,
-				"title":       "Consider using a named constant",
-				"description": "The magic number 1024 appears without explanation. A named constant improves readability and makes future changes safer.",
-				"suggestion":  "Define `const maxTOCEntries = 1024` near the top of the file.",
-			},
-			{
-				"id":          "f4",
-				"severity":    "suggestion",
-				"category":    "Documentation",
-				"file":        "internal/rag/service.go",
-				"line_start":  201,
-				"line_end":    210,
-				"title":       "Exported function missing doc comment",
-				"description": "UpdateRepoContext is exported but has no doc comment. Adding one improves discoverability with `go doc`.",
-				"suggestion":  "Add: `// UpdateRepoContext incrementally updates the vector index for the given repository.`",
-			},
-			{
-				"id":          "f5",
-				"severity":    "suggestion",
-				"category":    "Testing",
-				"file":        "internal/rag/index/summarizer.go",
-				"line_start":  0,
-				"line_end":    0,
-				"title":       "No unit tests for new summarizer logic",
-				"description": "The multi-level summary logic added in this PR has no corresponding unit tests. Edge cases like empty trees and single-child nodes are unverified.",
-				"suggestion":  "Add tests in internal/rag/index/summarizer_test.go covering at least empty input, single file, and deep nesting.",
-			},
-			{
-				"id":          "f6",
-				"severity":    "suggestion",
-				"category":    "Style",
-				"file":        "internal/rag/contextpkg/builder.go",
-				"line_start":  115,
-				"line_end":    118,
-				"title":       "Unnecessary type assertion",
-				"description": "The type assertion `.(string)` on line 116 is redundant — the variable is already typed as string by the surrounding code.",
-				"suggestion":  "Remove the type assertion.",
-			},
-			{
-				"id":          "f7",
-				"severity":    "suggestion",
-				"category":    "Style",
-				"file":        "internal/rag/index/toc.go",
-				"line_start":  67,
-				"line_end":    71,
-				"title":       "Extract repeated transformation into helper",
-				"description": "Lines 67-71 perform the same string transformation in 3 separate places. Extracting this into a helper reduces duplication and makes future changes easier.",
-				"suggestion":  "Extract a `formatEntry(e Entry) string` helper function.",
-			},
-		},
-		"reviewed_at": "2026-03-29T14:23:00Z",
-		"created_at":  "2026-03-29T14:20:00Z",
+func getTotalFromCounts(counts map[string]any) int {
+	critical, _ := counts["critical"].(int)
+	warning, _ := counts["warning"].(int)
+	suggestion, _ := counts["suggestion"].(int)
+	return critical + warning + suggestion
+}
+
+func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	repoID, err := strconv.ParseInt(chi.URLParam(r, "repoId"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid repo id", http.StatusBadRequest)
+		return
+	}
+	prNum, err := strconv.Atoi(chi.URLParam(r, "prNum"))
+	if err != nil {
+		http.Error(w, "invalid pr number", http.StatusBadRequest)
+		return
+	}
+
+	repo, err := h.store.GetRepositoryByID(ctx, repoID)
+	if err != nil {
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+
+	rev, err := h.store.GetLatestReviewForPR(ctx, repo.FullName, prNum)
+	if err != nil {
+		http.Error(w, "review not found", http.StatusNotFound)
+		return
+	}
+
+	counts := parseSeverityCounts(rev.ReviewContent)
+	findings := parseFindings(rev.ReviewContent)
+	total := getTotalFromCounts(counts)
+
+	h.writeJSON(w, map[string]any{
+		"id":              rev.ID,
+		"pr_number":       rev.PRNumber,
+		"pr_title":        fmt.Sprintf("PR #%d", rev.PRNumber),
+		"head_sha":        rev.HeadSHA,
+		"status":          "reviewed",
+		"severity_counts": counts,
+		"total_findings":  total,
+		"findings":        findings,
+		"reviewed_at":     rev.CreatedAt,
+		"created_at":      rev.CreatedAt,
 	})
 }
 
@@ -345,5 +343,145 @@ func (h *DashboardHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request
 		"verdict", body["verdict"],
 		"note", body["note"],
 	)
-	h.json(w, map[string]bool{"ok": true})
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// ── Content Parsers ──────────────────────────────────────────────────────────
+
+// parseSeverityCounts scans review_content XML for <severity> tags.
+// Severity values from prompts: Critical, High, Medium, Low.
+// Maps to UI categories: critical, warning, suggestion.
+func parseSeverityCounts(content string) map[string]any {
+	counts := map[string]int{"critical": 0, "warning": 0, "suggestion": 0}
+
+	lower := strings.ToLower(content)
+	pos := 0
+	for {
+		start := strings.Index(lower[pos:], "<severity>")
+		if start == -1 {
+			break
+		}
+		start += pos
+		end := strings.Index(lower[start:], "</severity>")
+		if end == -1 {
+			break
+		}
+		end += start
+		sev := strings.TrimSpace(lower[start+len("<severity>") : end])
+		switch sev {
+		case severityCritical, severityHigh:
+			counts[severityCritical]++
+		case severityMedium:
+			counts["warning"]++
+		case severityLow, severitySuggestion:
+			counts[severitySuggestion]++
+		}
+		pos = end + len("</severity>")
+	}
+
+	return map[string]any{
+		"critical":   counts["critical"],
+		"warning":    counts["warning"],
+		"suggestion": counts["suggestion"],
+	}
+}
+
+// parseFindings extracts structured findings from review XML content.
+func parseFindings(content string) []map[string]any {
+	var findings []map[string]any
+	pos := 0
+	idx := 0
+
+	for {
+		start := strings.Index(content[pos:], "<suggestion>")
+		if start == -1 {
+			break
+		}
+		start += pos
+		endTag := strings.Index(content[start:], "</suggestion>")
+		if endTag == -1 {
+			break
+		}
+		endTag += start + len("</suggestion>")
+		block := content[start:endTag]
+		if f := parseSuggestionBlock(block, idx); f != nil {
+			findings = append(findings, f)
+			idx++
+		}
+		pos = endTag
+	}
+	return findings
+}
+
+func parseSuggestionBlock(block string, idx int) map[string]any {
+	lblock := strings.ToLower(block)
+
+	getTag := func(tag string) string {
+		open := "<" + tag + ">"
+		closeTag := "</" + tag + ">"
+		s := strings.Index(lblock, open)
+		if s == -1 {
+			return ""
+		}
+		s += len(open)
+		e := strings.Index(lblock[s:], closeTag)
+		if e == -1 {
+			return ""
+		}
+		// Return from original (non-lowercased) block to preserve content
+		return strings.TrimSpace(block[s : s+e])
+	}
+
+	file := getTag("file")
+	if file == "" {
+		return nil
+	}
+
+	sev := strings.ToLower(getTag("severity"))
+	uiSev := severitySuggestion
+	switch sev {
+	case severityCritical, severityHigh:
+		uiSev = severityCritical
+	case severityMedium:
+		uiSev = "warning"
+	}
+
+	lineStr := getTag("line")
+	startLineStr := getTag("start_line")
+	lineEnd, _ := strconv.Atoi(lineStr)
+	lineStart, _ := strconv.Atoi(startLineStr)
+	if lineStart == 0 {
+		lineStart = lineEnd
+	}
+
+	comment := getTag("comment")
+	title := buildTitle(comment, idx)
+
+	codeSuggestion := getTag("code_suggestion")
+
+	return map[string]any{
+		"id":          fmt.Sprintf("f%d", idx+1),
+		"severity":    uiSev,
+		"category":    getTag("category"),
+		"file":        file,
+		"line_start":  lineStart,
+		"line_end":    lineEnd,
+		"title":       title,
+		"description": comment,
+		"suggestion":  codeSuggestion,
+	}
+}
+
+func buildTitle(comment string, idx int) string {
+	// Use first sentence as title, capped at 80 chars
+	if i := strings.IndexAny(comment, ".!?\n"); i > 0 && i < 80 {
+		return strings.TrimSpace(comment[:i])
+	}
+	if len(comment) > 80 {
+		return comment[:77] + "..."
+	}
+	if comment != "" {
+		return comment
+	}
+	return fmt.Sprintf("Finding %d", idx+1)
 }

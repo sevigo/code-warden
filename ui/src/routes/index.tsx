@@ -263,18 +263,10 @@ export default function Dashboard() {
         <p className="text-muted-foreground text-sm max-w-sm mb-10">
           Add a repository and trigger a review by commenting <code className="font-mono text-xs bg-accent/50 px-1.5 py-0.5 rounded">/review</code> on any GitHub PR.
         </p>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => {
-              // Trigger the Layout add-repo dialog via a custom event
-              window.dispatchEvent(new CustomEvent('open-add-repo'))
-            }}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            Add Repository
-          </button>
-        </div>
+        <p className="flex items-center gap-2 text-sm text-muted-foreground bg-accent/30 px-4 py-2.5 rounded-xl">
+          <Plus className="h-4 w-4 text-primary shrink-0" />
+          Click the <span className="font-medium text-foreground">+</span> button in the sidebar to add a repository.
+        </p>
       </div>
     )
   }

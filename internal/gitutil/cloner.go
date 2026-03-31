@@ -47,10 +47,12 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 	}
 
 	c.Logger.InfoContext(ctx, "cloning repository", "url", repoURL, "path", path)
-	// Use git CLI to clone with longpaths enabled
-	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "clone", authURL, path)
+	// Use git CLI to clone with longpaths enabled and credential helper disabled to avoid Keychain prompts/conflicts
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "-c", "credential.helper=", "clone", authURL, path)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("git clone failed: %s: %w", string(out), err)
+		return nil, fmt.Errorf("git clone failed: %s: %w", c.maskToken(string(out), token), err)
 	}
 
 	// Make sure we can open it with go-git for Diff operations later
@@ -62,18 +64,27 @@ func (c *Client) Clone(ctx context.Context, repoURL, path, token string) (*git.R
 }
 
 // Fetch fetches updates from the 'origin' remote using git CLI.
-func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...string) error {
+func (c *Client) Fetch(ctx context.Context, path string, token string, refSpecs ...string) error {
 	c.Logger.InfoContext(ctx, "fetching latest changes from origin")
 
-	// Inject global config for longpaths
-	args := []string{"-c", "core.longpaths=true", "fetch", "origin", "--force"}
+	repoURL, err := c.getRemoteURL(ctx, path, "origin")
+	if err != nil {
+		c.Logger.WarnContext(ctx, "failed to get remote URL for authenticated fetch, trying as-is", "error", err)
+	}
+
+	authURL, err := c.getAuthenticatedURL(repoURL, token)
+	if err != nil {
+		return err
+	}
+
+	// args for fetch: use origin then the authURL if provided
+	args := []string{"-c", "core.longpaths=true", "-c", "credential.helper=", "fetch", authURL, "--force"}
 	args = append(args, refSpecs...)
 
 	// Retry logic for transient errors (e.g. 500 Internal Server Error)
 	const maxRetries = 3
 	const baseDelay = 2 * time.Second
 
-	var err error
 	for i := 0; i <= maxRetries; i++ {
 		// Check context cancellation
 		if ctx.Err() != nil {
@@ -81,6 +92,7 @@ func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...s
 		}
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = path
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 		// If this is not the first attempt, log a warning and wait
 		if i > 0 {
@@ -99,7 +111,7 @@ func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...s
 		}
 
 		if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
-			err = fmt.Errorf("git fetch failed: %s: %w", string(out), cmdErr)
+			err = fmt.Errorf("git fetch failed: %s: %w", c.maskToken(string(out), token), cmdErr)
 			continue
 		}
 
@@ -111,6 +123,23 @@ func (c *Client) Fetch(ctx context.Context, path string, _ string, refSpecs ...s
 	return err
 }
 
+func (c *Client) maskToken(input, token string) string {
+	if token == "" {
+		return input
+	}
+	return strings.ReplaceAll(input, token, "[MASKED]")
+}
+
+func (c *Client) getRemoteURL(ctx context.Context, path, remoteName string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", remoteName)
+	cmd.Dir = path
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // Checkout switches the repository's worktree to a specific commit using git CLI.
 func (c *Client) Checkout(ctx context.Context, path string, sha string) error {
 	c.Logger.Info("checking out commit", "sha", sha)
@@ -118,6 +147,7 @@ func (c *Client) Checkout(ctx context.Context, path string, sha string) error {
 	// Ensure we don't have lingering locks by using force, and enable longpaths
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "checkout", "--force", sha)
 	cmd.Dir = path
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git checkout failed: %s: %w", string(out), err)
@@ -133,6 +163,7 @@ func (c *Client) ResetToUpstream(ctx context.Context, path string) error {
 
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "reset", "--hard", "@{u}")
 	cmd.Dir = path
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git reset --hard @{u} failed: %s: %w", string(out), err)
@@ -240,6 +271,8 @@ func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
 
 	// Only add authentication if token is provided
 	if token != "" {
+		// Use x-access-token for all types of GitHub tokens.
+		// This explicitly tells GitHub the "password" is a token, which is the most reliable way.
 		parsedURL.User = url.UserPassword("x-access-token", token)
 	}
 	return parsedURL.String(), nil
@@ -249,6 +282,7 @@ func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
 func (c *Client) GetHeadSHA(ctx context.Context, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-c", "core.longpaths=true", "rev-parse", "HEAD")
 	cmd.Dir = path
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse failed: %w", err)

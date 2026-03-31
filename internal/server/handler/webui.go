@@ -267,7 +267,7 @@ func (h *WebUIHandler) TriggerScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	initialProgress, _ := json.Marshal(ProgressInfo{Stage: "scanning"})
+	initialProgress, _ := json.Marshal(ProgressInfo{Stage: "scanning", FilesDone: 0, FilesTotal: 0})
 	if err := h.store.UpsertScanState(ctx, &storage.ScanState{
 		RepositoryID: repoID,
 		Status:       "scanning",
@@ -292,9 +292,32 @@ func (h *WebUIHandler) runScan(repoID int64, repo *storage.Repository) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	if err := h.doScan(ctx, repoID, repo); err != nil {
-		h.logger.Error("scan failed", "repo", repo.FullName, "error", err)
+	startedAt := time.Now()
+	jobID, err := h.store.InsertJobRun(ctx, &storage.JobRun{
+		Type:         "scan",
+		RepoFullName: repo.FullName,
+		Status:       "running",
+		TriggeredBy:  "ui:manual",
+		TriggeredAt:  startedAt,
+	})
+	if err != nil {
+		h.logger.Warn("failed to record scan job run", "error", err)
+	}
+
+	scanErr := h.doScan(ctx, repoID, repo)
+
+	status := "completed"
+	if scanErr != nil {
+		status = "failed"
+		h.logger.Error("scan failed", "repo", repo.FullName, "error", scanErr)
 		h.setScanFailed(ctx, repoID)
+	}
+
+	if jobID > 0 {
+		completedAt := time.Now()
+		if updateErr := h.store.UpdateJobRun(ctx, jobID, status, completedAt, completedAt.Sub(startedAt).Milliseconds()); updateErr != nil {
+			h.logger.Warn("failed to update scan job run", "error", updateErr)
+		}
 	}
 }
 

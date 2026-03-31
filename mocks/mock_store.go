@@ -12,6 +12,7 @@ package mocks
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	core "github.com/sevigo/code-warden/internal/core"
 	storage "github.com/sevigo/code-warden/internal/storage"
@@ -244,4 +245,68 @@ func (m *MockStore) UpsertScanState(ctx context.Context, state *storage.ScanStat
 func (mr *MockStoreMockRecorder) UpsertScanState(ctx, state any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertScanState", reflect.TypeOf((*MockStore)(nil).UpsertScanState), ctx, state)
+}
+
+func (m *MockStore) GetReviewsForRepo(ctx context.Context, repoFullName string) ([]*core.Review, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetReviewsForRepo", ctx, repoFullName)
+	ret0, _ := ret[0].([]*core.Review)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+func (mr *MockStoreMockRecorder) GetReviewsForRepo(ctx, repoFullName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetReviewsForRepo", reflect.TypeOf((*MockStore)(nil).GetReviewsForRepo), ctx, repoFullName)
+}
+
+func (m *MockStore) GetReviewStats(ctx context.Context) (*storage.ReviewStats, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetReviewStats", ctx)
+	ret0, _ := ret[0].(*storage.ReviewStats)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+func (mr *MockStoreMockRecorder) GetReviewStats(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetReviewStats", reflect.TypeOf((*MockStore)(nil).GetReviewStats), ctx)
+}
+
+func (m *MockStore) InsertJobRun(ctx context.Context, job *storage.JobRun) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InsertJobRun", ctx, job)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+func (mr *MockStoreMockRecorder) InsertJobRun(ctx, job any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertJobRun", reflect.TypeOf((*MockStore)(nil).InsertJobRun), ctx, job)
+}
+
+func (m *MockStore) UpdateJobRun(ctx context.Context, id int64, status string, completedAt time.Time, durationMs int64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateJobRun", ctx, id, status, completedAt, durationMs)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+func (mr *MockStoreMockRecorder) UpdateJobRun(ctx, id, status, completedAt, durationMs any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateJobRun", reflect.TypeOf((*MockStore)(nil).UpdateJobRun), ctx, id, status, completedAt, durationMs)
+}
+
+func (m *MockStore) ListJobRuns(ctx context.Context, limit, offset int) ([]*storage.JobRun, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListJobRuns", ctx, limit, offset)
+	ret0, _ := ret[0].([]*storage.JobRun)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+func (mr *MockStoreMockRecorder) ListJobRuns(ctx, limit, offset any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListJobRuns", reflect.TypeOf((*MockStore)(nil).ListJobRuns), ctx, limit, offset)
 }

@@ -59,6 +59,25 @@ type ScanState struct {
 	UpdatedAt    time.Time        `db:"updated_at"`
 }
 
+// JobRun represents a single job execution record.
+type JobRun struct {
+	ID           int64      `db:"id"`
+	Type         string     `db:"type"`
+	RepoFullName string     `db:"repo_full_name"`
+	PRNumber     int        `db:"pr_number"`
+	Status       string     `db:"status"`
+	TriggeredBy  string     `db:"triggered_by"`
+	TriggeredAt  time.Time  `db:"triggered_at"`
+	CompletedAt  *time.Time `db:"completed_at"`
+	DurationMs   *int64     `db:"duration_ms"`
+}
+
+// ReviewStats holds aggregate counts for the global stats endpoint.
+type ReviewStats struct {
+	TotalReviews    int
+	ReviewsThisWeek int
+}
+
 // Store defines the interface for all database operations.
 //
 //go:generate mockgen -destination=../../mocks/mock_store.go -package=mocks github.com/sevigo/code-warden/internal/storage Store
@@ -66,6 +85,8 @@ type Store interface {
 	SaveReview(ctx context.Context, review *core.Review) error
 	GetLatestReviewForPR(ctx context.Context, repoFullName string, prNumber int) (*core.Review, error)
 	GetAllReviewsForPR(ctx context.Context, repoFullName string, prNumber int) ([]*core.Review, error)
+	GetReviewsForRepo(ctx context.Context, repoFullName string) ([]*core.Review, error)
+	GetReviewStats(ctx context.Context) (*ReviewStats, error)
 	CreateRepository(ctx context.Context, repo *Repository) error
 	GetRepositoryByFullName(ctx context.Context, fullName string) (*Repository, error)
 	GetRepositoryByClonePath(ctx context.Context, clonePath string) (*Repository, error)
@@ -82,6 +103,11 @@ type Store interface {
 	// Scan State
 	GetScanState(ctx context.Context, repoID int64) (*ScanState, error)
 	UpsertScanState(ctx context.Context, state *ScanState) error
+
+	// Job runs
+	InsertJobRun(ctx context.Context, job *JobRun) (int64, error)
+	UpdateJobRun(ctx context.Context, id int64, status string, completedAt time.Time, durationMs int64) error
+	ListJobRuns(ctx context.Context, limit, offset int) ([]*JobRun, error)
 }
 
 type postgresStore struct {
@@ -174,6 +200,7 @@ func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) 
 			last_indexed_sha = :last_indexed_sha,
 			generated_context = :generated_context,
 			context_updated_at = :context_updated_at,
+			installation_id = :installation_id,
 			updated_at = NOW() 
 		WHERE id = :id`
 
@@ -406,4 +433,83 @@ func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) e
 	}
 
 	return nil
+}
+
+// GetReviewsForRepo retrieves all reviews for a repository ordered by most recent first.
+func (s *postgresStore) GetReviewsForRepo(ctx context.Context, repoFullName string) ([]*core.Review, error) {
+	query := `
+		SELECT id, repo_full_name, pr_number, head_sha, review_content, created_at
+		FROM reviews
+		WHERE repo_full_name = $1
+		ORDER BY created_at DESC`
+
+	var reviews []*core.Review
+	err := s.db.SelectContext(ctx, &reviews, query, repoFullName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get reviews for repo %q: %w", repoFullName, err)
+	}
+	return reviews, nil
+}
+
+// GetReviewStats returns aggregate review counts for the global stats endpoint.
+func (s *postgresStore) GetReviewStats(ctx context.Context) (*ReviewStats, error) {
+	query := `
+		SELECT
+			COUNT(*) AS total_reviews,
+			COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS reviews_this_week
+		FROM reviews`
+
+	var stats ReviewStats
+	row := s.db.QueryRowContext(ctx, query)
+	if err := row.Scan(&stats.TotalReviews, &stats.ReviewsThisWeek); err != nil {
+		return nil, fmt.Errorf("failed to get review stats: %w", err)
+	}
+	return &stats, nil
+}
+
+// InsertJobRun inserts a new job run record and returns its ID.
+func (s *postgresStore) InsertJobRun(ctx context.Context, job *JobRun) (int64, error) {
+	query := `
+		INSERT INTO job_runs (type, repo_full_name, pr_number, status, triggered_by, triggered_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id`
+
+	var id int64
+	err := s.db.QueryRowContext(ctx, query,
+		job.Type, job.RepoFullName, job.PRNumber, job.Status, job.TriggeredBy, job.TriggeredAt,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert job run: %w", err)
+	}
+	return id, nil
+}
+
+// UpdateJobRun updates the status, completion time, and duration of a job run.
+func (s *postgresStore) UpdateJobRun(ctx context.Context, id int64, status string, completedAt time.Time, durationMs int64) error {
+	query := `
+		UPDATE job_runs
+		SET status = $1, completed_at = $2, duration_ms = $3
+		WHERE id = $4`
+
+	_, err := s.db.ExecContext(ctx, query, status, completedAt, durationMs, id)
+	if err != nil {
+		return fmt.Errorf("failed to update job run %d: %w", id, err)
+	}
+	return nil
+}
+
+// ListJobRuns retrieves job runs ordered by most recent first.
+func (s *postgresStore) ListJobRuns(ctx context.Context, limit, offset int) ([]*JobRun, error) {
+	query := `
+		SELECT id, type, repo_full_name, pr_number, status, triggered_by, triggered_at, completed_at, duration_ms
+		FROM job_runs
+		ORDER BY triggered_at DESC
+		LIMIT $1 OFFSET $2`
+
+	var jobs []*JobRun
+	err := s.db.SelectContext(ctx, &jobs, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list job runs: %w", err)
+	}
+	return jobs, nil
 }

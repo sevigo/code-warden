@@ -298,6 +298,6 @@ func TestUpdateRepoContext(t *testing.T) {
 	}
 	indexer := New(cfg)
 
-	err := indexer.UpdateRepoContext(context.Background(), nil, repo, repoDir, filesToProcess, filesToDelete)
+	err := indexer.UpdateRepoContext(context.Background(), nil, repo, repoDir, filesToProcess, filesToDelete, nil)
 	assert.NoError(t, err)
 }
