@@ -65,7 +65,9 @@ func (d *dispatcher) startWorker(workerID int) {
 }
 
 // processEvent logs and runs a review job for a GitHub event.
-func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core.GitHubEvent) {
+// Uses the main context (not the HTTP request context) to avoid cancellation
+// when the HTTP request completes.
+func (d *dispatcher) processEvent(_ context.Context, workerID int, event *core.GitHubEvent) {
 	d.logger.Info("worker processing job",
 		"worker_id", workerID,
 		"repo", event.RepoFullName,
@@ -77,7 +79,9 @@ func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core
 		}
 	}()
 
-	if err := d.reviewJob.Run(ctx, event); err != nil {
+	// Use main context (server lifecycle), not the HTTP request context
+	// which gets canceled when the webhook response is sent.
+	if err := d.reviewJob.Run(d.mainCtx, event); err != nil {
 		d.logger.Error("code review job failed",
 			"repo", event.RepoFullName,
 			"pr", event.PRNumber,
@@ -87,13 +91,14 @@ func (d *dispatcher) processEvent(ctx context.Context, workerID int, event *core
 }
 
 // Dispatch queues a GitHub event for processing by a worker.
-// The provided context carries the HTTP request deadline and should be used
-// for any blocking operations during queue submission.
-func (d *dispatcher) Dispatch(ctx context.Context, event *core.GitHubEvent) error {
+// The HTTP request context is not used for the actual job execution -
+// instead the server's main context is used to avoid cancellation
+// after the webhook response is sent.
+func (d *dispatcher) Dispatch(_ context.Context, event *core.GitHubEvent) error {
 	d.logger.Info("queuing code review job", "repo", event.RepoFullName, "pr", event.PRNumber)
 
 	select {
-	case d.jobQueue <- &jobPayload{ctx: ctx, event: event}:
+	case d.jobQueue <- &jobPayload{ctx: d.mainCtx, event: event}:
 		return nil
 	default:
 		d.logger.Warn("ALERT: Job queue is full, dropping review job",
