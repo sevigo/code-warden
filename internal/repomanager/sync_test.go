@@ -74,6 +74,19 @@ func (s *mockStore) GetScanState(_ context.Context, _ int64) (*storage.ScanState
 	return nil, nil
 }
 func (s *mockStore) UpsertScanState(_ context.Context, _ *storage.ScanState) error { return nil }
+func (s *mockStore) GetReviewsForRepo(_ context.Context, _ string) ([]*core.Review, error) {
+	return nil, nil
+}
+func (s *mockStore) GetReviewStats(_ context.Context) (*storage.ReviewStats, error) {
+	return &storage.ReviewStats{}, nil
+}
+func (s *mockStore) InsertJobRun(_ context.Context, _ *storage.JobRun) (int64, error) { return 0, nil }
+func (s *mockStore) UpdateJobRun(_ context.Context, _ int64, _ string, _ time.Time, _ int64) error {
+	return nil
+}
+func (s *mockStore) ListJobRuns(_ context.Context, _, _ int) ([]*storage.JobRun, error) {
+	return nil, nil
+}
 
 // Mock VectorStore
 type mockVectorStore struct{}

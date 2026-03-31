@@ -41,7 +41,7 @@ jobs:
             - node-deps-v1-{{ checksum "ui/package-lock.json" }}
       - run:
           name: Install dependencies
-          command: cd ui && npm ci --legacy-peer-deps
+          command: cd ui && npm ci
       - save_cache:
           key: node-deps-v1-{{ checksum "ui/package-lock.json" }}
           paths:
@@ -50,8 +50,27 @@ jobs:
           name: Run frontend lint
           command: cd ui && npm run lint
 
+  build-ui:
+    executor: node
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - node-deps-v1-{{ checksum "ui/package-lock.json" }}
+      - run:
+          name: Install dependencies
+          command: cd ui && npm ci
+      - save_cache:
+          key: node-deps-v1-{{ checksum "ui/package-lock.json" }}
+          paths:
+            - ui/node_modules
+      - run:
+          name: Build UI
+          command: cd ui && npm run build
+
 workflows:
   ci:
     jobs:
       - test-and-vet-go
       - lint-ui
+      - build-ui

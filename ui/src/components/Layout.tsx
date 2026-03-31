@@ -5,6 +5,7 @@ import {
   Shield, Search, Plus, Loader2, MessageSquare,
   LayoutDashboard, Activity, Settings, Sun, Moon,
 } from 'lucide-react'
+import { Toaster } from 'sonner'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import type { Repository, ScanState, SetupStatus } from '@/lib/api'
@@ -119,6 +120,7 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
 
   return (
     <div className="flex h-screen bg-background">
+      <Toaster position="bottom-right" richColors />
       {/* ── Sidebar ─────────────────────────────────────── */}
       <aside className="w-72 shrink-0 flex flex-col bg-surface border-r border-border/50">
         {/* Branding */}

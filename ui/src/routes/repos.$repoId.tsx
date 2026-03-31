@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import StatusBadge from '@/components/StatusBadge'
 import { api } from '@/lib/api'
 import type { Repository, ScanState, RepoStats, ReviewSummary } from '@/lib/api'
+import { useScanProgress } from '@/lib/useScanProgress'
 
 const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.05 } } }
 const fadeUp = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0, transition: { duration: 0.3 } } }
@@ -147,13 +148,12 @@ export default function RepoDetail() {
   const { data: scanState } = useQuery<ScanState | null>({
     queryKey: ['scanState', id],
     queryFn: () => api.repos.status(id),
-    refetchInterval: (query) => {
-      const data = query.state.data
-      if (data && (data.status === 'scanning' || data.status === 'in_progress' || data.status === 'pending')) return 2000
-      return false
-    },
     enabled: !!repoId,
   })
+
+  // Open SSE connection when a scan is active — updates query cache and fires toasts
+  const isActivelyScanning = scanState?.status === 'scanning' || scanState?.status === 'in_progress' || scanState?.status === 'pending'
+  useScanProgress(isActivelyScanning ? id : undefined)
 
   const { data: stats, isLoading: statsLoading } = useQuery<RepoStats>({
     queryKey: ['stats', repoId],
@@ -164,7 +164,7 @@ export default function RepoDetail() {
   const { data: reviews } = useQuery<ReviewSummary[]>({
     queryKey: ['reviews', id],
     queryFn: () => api.reviews.list(id),
-    enabled: !!repoId,
+    enabled: scanState?.status === 'completed',
   })
 
   const triggerScan = useMutation({

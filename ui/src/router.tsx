@@ -7,6 +7,7 @@ import ReviewsPage from './routes/repos.$repoId.reviews'
 import ReviewDetailPage from './routes/repos.$repoId.reviews.$prNum'
 import JobsPage from './routes/jobs'
 import SettingsPage from './routes/settings'
+import SetupPage from './routes/setup'
 
 export const router = createBrowserRouter([
   {
@@ -36,5 +37,9 @@ export const router = createBrowserRouter([
   {
     path: '/settings',
     element: <Layout><SettingsPage /></Layout>,
+  },
+  {
+    path: '/setup',
+    element: <Layout><SetupPage /></Layout>,
   },
 ])
