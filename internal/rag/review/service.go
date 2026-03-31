@@ -12,11 +12,15 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/rag/contextpkg"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // ContextBuilderFunc generates the context needed for code reviews.
 type ContextBuilderFunc func(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prContext string) (string, string)
+
+// ContextBuilderWithImpactFunc generates the context and returns impact information.
+type ContextBuilderWithImpactFunc func(ctx context.Context, collectionName, embedderModelName, repoPath string, changedFiles []internalgithub.ChangedFile, prContext string) *contextpkg.ContextResult
 
 // LLMFactory returns an LLM instance for a given model name.
 type LLMFactory func(ctx context.Context, modelName string) (llms.Model, error)
@@ -28,15 +32,16 @@ type InvestigateFunc func(ctx context.Context, collectionName, diff, mainContext
 
 // Config holds dependencies for the Service.
 type Config struct {
-	VectorStore      storage.VectorStore
-	PromptMgr        *llm.PromptManager
-	GeneratorLLM     llms.Model
-	GetLLM           LLMFactory
-	Logger           *slog.Logger
-	ConsensusTimeout string
-	ConsensusQuorum  float64
-	BuildContext     ContextBuilderFunc
-	EmbedderModel    string
+	VectorStore            storage.VectorStore
+	PromptMgr              *llm.PromptManager
+	GeneratorLLM           llms.Model
+	GetLLM                 LLMFactory
+	Logger                 *slog.Logger
+	ConsensusTimeout       string
+	ConsensusQuorum        float64
+	BuildContext           ContextBuilderFunc
+	BuildContextWithImpact ContextBuilderWithImpactFunc
+	EmbedderModel          string
 	// Investigate is called after BuildContext to fill context gaps (Phase 2 agentic review).
 	// If nil, Phase 2 is skipped.
 	Investigate InvestigateFunc
@@ -93,6 +98,21 @@ func (s *Service) buildReviewPromptData(event *core.GitHubEvent, repoConfig *cor
 		"Context":            contextString,
 		"Definitions":        definitionsContext,
 		"Diff":               diff,
+	}
+}
+
+// buildReviewPromptDataWithProfile populates template variables including the review profile instruction.
+func (s *Service) buildReviewPromptDataWithProfile(event *core.GitHubEvent, repoConfig *core.RepoConfig, contextString, definitionsContext, diff string, changedFiles []internalgithub.ChangedFile, profileInstruction string) map[string]string {
+	return map[string]string{
+		"Title":                    event.PRTitle,
+		"Description":              event.PRBody,
+		"Language":                 event.Language,
+		"CustomInstructions":       strings.Join(repoConfig.CustomInstructions, "\n"),
+		"ChangedFiles":             formatChangedFiles(changedFiles),
+		"Context":                  contextString,
+		"Definitions":              definitionsContext,
+		"Diff":                     diff,
+		"ReviewProfileInstruction": profileInstruction,
 	}
 }
 

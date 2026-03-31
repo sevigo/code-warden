@@ -137,6 +137,17 @@ func DefaultFilter() *SuggestionFilter {
 	}
 }
 
+// NewFilterForProfile returns a filter with confidence threshold based on review profile.
+func NewFilterForProfile(profile core.ReviewProfile) *SuggestionFilter {
+	threshold := profile.MinConfidence()
+	return &SuggestionFilter{
+		MinConfidence:    threshold,
+		ValidateSources:  true,
+		ValidateLineNums: true,
+		Deduplicate:      true,
+	}
+}
+
 func (f *SuggestionFilter) FilterAndRank(
 	review *core.StructuredReview,
 	validator *SuggestionValidator,

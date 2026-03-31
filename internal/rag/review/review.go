@@ -134,7 +134,27 @@ func (s *Service) checkCodeDuplication(ctx context.Context, collectionName strin
 		duplicates.String()
 }
 
+// calculateLinesChanged counts added and deleted lines from changed files.
+func calculateLinesChanged(changedFiles []internalgithub.ChangedFile) (added, deleted int) {
+	for _, cf := range changedFiles {
+		if cf.Patch == "" {
+			continue
+		}
+		lines := strings.Split(cf.Patch, "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+				added++
+			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+				deleted++
+			}
+		}
+	}
+	return added, deleted
+}
+
 // GenerateReview generates a structured code review using the RAG pipeline.
+//
+//nolint:funlen // Complex function that orchestrates the review pipeline
 func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	if repoConfig == nil {
 		repoConfig = core.DefaultRepoConfig()
@@ -156,8 +176,19 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 		s.cfg.Logger.Info("extracted changed files from diff for internal review", "count", len(changedFiles))
 	}
 
-	// Phase 1: fixed parallel RAG stages
-	contextString, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+	// Use context builder with impact tracking
+	var contextString, definitionsContext string
+	var impactRadius int
+
+	if s.cfg.BuildContextWithImpact != nil {
+		contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+		contextString = contextResult.FullContext
+		definitionsContext = contextResult.DefinitionsContext
+		impactRadius = contextResult.ImpactRadius
+	} else {
+		// Fallback to old method
+		contextString, definitionsContext = s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+	}
 
 	// Phase 2: LLM-directed gap filling (only when Phase 1 returned meaningful context)
 	if s.cfg.Investigate != nil && !contextIsEmpty(contextString, definitionsContext) {
@@ -186,7 +217,30 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 		definitionsContext = "**WARNING: No type definitions resolved. Verify types are defined outside this diff.**"
 	}
 
-	promptData := s.buildReviewPromptData(event, repoConfig, contextString, definitionsContext, diff, changedFiles)
+	// Calculate review profile
+	linesAdded, linesDeleted := calculateLinesChanged(changedFiles)
+	testCoverage := core.HasTestCoverage(extractFilenames(changedFiles))
+	docsOnly := core.IsDocsOnly(extractFilenames(changedFiles))
+	complexity := core.CalculateProfile(linesAdded, linesDeleted, len(changedFiles), impactRadius, testCoverage, docsOnly)
+
+	s.cfg.Logger.Info("review profile calculated",
+		"profile", complexity.Profile,
+		"score", complexity.Score,
+		"impact_radius", complexity.ImpactRadius,
+		"high_impact", complexity.HighImpact,
+		"lines_added", linesAdded,
+		"lines_deleted", linesDeleted,
+		"files_changed", len(changedFiles),
+	)
+
+	// Render profile instruction
+	profileInstruction, err := s.cfg.PromptMgr.Render("review_profile", complexity)
+	if err != nil {
+		s.cfg.Logger.Warn("failed to render review profile, using default", "error", err)
+		profileInstruction = "" // Will use default thorough profile
+	}
+
+	promptData := s.buildReviewPromptDataWithProfile(event, repoConfig, contextString, definitionsContext, diff, changedFiles, profileInstruction)
 
 	promptStr, err := s.cfg.PromptMgr.Render(llm.CodeReviewPrompt, promptData)
 	if err != nil {
@@ -212,10 +266,15 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 		structuredReview.Verdict = core.VerdictComment // Default if missing
 	}
 
-	// Filter and validate suggestions
+	// Filter and validate suggestions with profile-specific threshold
 	validator := NewSuggestionValidator(diff, changedFiles)
-	filter := DefaultFilter()
+	filter := NewFilterForProfile(complexity.Profile)
 	structuredReview = filter.FilterAndRank(structuredReview, validator, s.cfg.Logger.Info)
+
+	// Add complexity score to result for UI display
+	structuredReview.ReviewProfile = string(complexity.Profile)
+	structuredReview.ComplexityScore = complexity.Score
+	structuredReview.ImpactRadius = complexity.ImpactRadius
 
 	// Add disclaimer to summary if context was empty
 	if contextEmpty {
@@ -223,4 +282,13 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 	}
 
 	return structuredReview, parser.Raw, nil
+}
+
+// extractFilenames returns just the filenames from changed files.
+func extractFilenames(changedFiles []internalgithub.ChangedFile) []string {
+	filenames := make([]string, len(changedFiles))
+	for i, cf := range changedFiles {
+		filenames[i] = cf.Filename
+	}
+	return filenames
 }

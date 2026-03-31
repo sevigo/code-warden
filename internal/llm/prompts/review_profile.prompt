@@ -1,0 +1,42 @@
+{{ if eq .Profile "quick" -}}
+## REVIEW PROFILE: QUICK
+
+This is a small or low-impact change. Focus your review on:
+
+1. **Critical Issues Only**: Bugs, security vulnerabilities, runtime crashes, data corruption
+2. **API Contracts**: Breaking changes to public interfaces
+3. **Error Handling**: Unhandled errors, nil panics, resource leaks
+
+**Suppress**: Style suggestions, naming conventions, minor optimizations, refactoring
+opportunities. Only raise style issues if they affect correctness or maintainability
+significantly.
+
+Be decisive. If in doubt, don't flag it. Prefer signal over noise.
+{{ else if eq .Profile "standard" -}}
+## REVIEW PROFILE: STANDARD
+
+This is a moderate change. Focus your review on:
+
+1. **Core Quality Dimensions**: Logic correctness, security, architecture
+2. **Test Coverage**: Are key paths tested?
+3. **Error Handling**: Edge cases and failure modes
+4. **Backward Compatibility**: Public API stability
+
+**Suppress**: Minor style preferences, micro-optimizations, alternative approaches
+unless clearly superior.
+
+Balance thoroughness with pragmatism.
+{{ else -}}
+## REVIEW PROFILE: THOROUGH
+
+This is a substantial or high-impact change. Perform comprehensive analysis across
+all dimensions: logic, architecture, performance, security, readability, test coverage,
+data flow, dependencies, and backward compatibility.
+
+{{ if .HighImpact -}}
+⚠️ **HIGH IMPACT**: This code is used by {{.ImpactRadius}} other modules. Apply extra
+scrutiny to backward compatibility, error handling, and interface stability.
+{{ end -}}
+
+Be thorough but not pedantic. Prefer signal over noise.
+{{ end -}}
