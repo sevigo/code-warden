@@ -47,11 +47,14 @@ type StructuredReview struct {
 	// Suggestions is a list of specific code review feedback items.
 	Suggestions []Suggestion `json:"suggestions" xml:"suggestions>suggestion"`
 	// ReviewProfile is the computed profile for this review (quick/standard/thorough).
-	ReviewProfile string `json:"review_profile,omitempty" xml:"review_profile,omitempty"`
+	// This is Go-computed metadata, not LLM output.
+	ReviewProfile string `json:"review_profile,omitempty"`
 	// ComplexityScore is the computed complexity score for this review.
-	ComplexityScore int `json:"complexity_score,omitempty" xml:"complexity_score,omitempty"`
+	// This is Go-computed metadata, not LLM output.
+	ComplexityScore int `json:"complexity_score,omitempty"`
 	// ImpactRadius is the number of dependent files affected by this change.
-	ImpactRadius int `json:"impact_radius,omitempty" xml:"impact_radius,omitempty"`
+	// This is Go-computed metadata, not LLM output.
+	ImpactRadius int `json:"impact_radius,omitempty"`
 }
 
 // ReReviewResult represents the expected structured output from the LLM

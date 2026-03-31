@@ -21,25 +21,35 @@ type ComplexityScore struct {
 	Score         int           `json:"score"`
 	Profile       ReviewProfile `json:"profile"`
 	HighImpact    bool          `json:"high_impact"`
+	HighRisk      bool          `json:"high_risk"`
 	ProfileReason string        `json:"profile_reason"`
 }
 
-var ProfileThresholds = map[ReviewProfile]int{
-	ProfileQuick:    50,
-	ProfileStandard: 40,
-	ProfileThorough: 35,
+// High-risk path patterns that always trigger thorough review.
+var highRiskPaths = []string{
+	"auth", "crypto", "payment", "token", "secret",
+	"middleware", "permission", "sql", "migration",
+	"credential", "password", "key", "jwt", "session",
+	"security", "acl", "rbac", "admin",
 }
 
+// CalculateProfile computes the review profile based on PR complexity and risk.
+// The profile determines review thoroughness and confidence thresholds.
 func CalculateProfile(
 	linesAdded, linesDeleted int,
 	filesChanged int,
 	impactRadius int,
 	testCoverage bool,
 	docsOnly bool,
+	changedFilePaths []string,
 ) ComplexityScore {
-	linesScore := (linesAdded + linesDeleted) / 50
+	// Check for high-risk paths first - these always get thorough review
+	highRisk := hasHighRiskPath(changedFilePaths)
+
+	// Calculate magnitude score (round up so 49 lines = 1, not 0)
+	linesScore := (linesAdded + linesDeleted + 49) / 50
 	fileScore := filesChanged * 2
-	impactScore := minInt(impactRadius*2, 30)
+	impactScore := min(impactRadius*3, 45) // Increased weight, higher cap
 
 	score := linesScore + fileScore + impactScore
 
@@ -53,10 +63,19 @@ func CalculateProfile(
 		}
 	}
 
+	highImpact := impactRadius > 20
+
 	var profile ReviewProfile
 	var reason string
 
+	// High-risk or high-impact always forces thorough review
 	switch {
+	case highRisk:
+		profile = ProfileThorough
+		reason = "high-risk path detected (auth/crypto/payment/etc)"
+	case highImpact:
+		profile = ProfileThorough
+		reason = "high-impact change affecting many dependents"
 	case score <= 15:
 		profile = ProfileQuick
 		reason = "small or low-impact change"
@@ -65,10 +84,8 @@ func CalculateProfile(
 		reason = "moderate change"
 	default:
 		profile = ProfileThorough
-		reason = "substantial or high-impact change"
+		reason = "substantial change"
 	}
-
-	highImpact := impactRadius > 20
 
 	return ComplexityScore{
 		LinesChanged:  linesAdded + linesDeleted,
@@ -79,6 +96,7 @@ func CalculateProfile(
 		Score:         score,
 		Profile:       profile,
 		HighImpact:    highImpact,
+		HighRisk:      highRisk,
 		ProfileReason: reason,
 	}
 }
@@ -87,23 +105,36 @@ func (p ReviewProfile) String() string {
 	return string(p)
 }
 
+// MinConfidence returns the minimum confidence threshold for this profile.
+// All profiles use the same threshold - the prompt instructions control scope.
 func (p ReviewProfile) MinConfidence() int {
-	if threshold, ok := ProfileThresholds[p]; ok {
-		return threshold
+	return 40 // Uniform threshold - let prompt control intensity
+}
+
+func hasHighRiskPath(paths []string) bool {
+	for _, path := range paths {
+		lower := strings.ToLower(path)
+		for _, risk := range highRiskPaths {
+			if strings.Contains(lower, risk) {
+				return true
+			}
+		}
 	}
-	return 35
+	return false
 }
 
 func IsTestFile(path string) bool {
 	lower := strings.ToLower(path)
 	return strings.Contains(lower, "_test.") ||
 		strings.Contains(lower, "_test.go") ||
+		strings.Contains(lower, ".test.go") ||
+		strings.Contains(lower, "_spec.go") ||
 		strings.Contains(lower, "/tests/") ||
 		strings.Contains(lower, "\\tests\\") ||
+		strings.HasPrefix(lower, "tests/") ||
 		strings.Contains(lower, "/__tests__/") ||
 		strings.Contains(lower, "\\__tests__\\") ||
-		strings.HasSuffix(lower, ".test.go") ||
-		strings.HasSuffix(lower, "_spec.go")
+		strings.HasPrefix(lower, "__tests__/")
 }
 
 func IsDocsFile(path string) bool {
@@ -144,12 +175,4 @@ func IsDocsOnly(changedFiles []string) bool {
 		}
 	}
 	return true
-}
-
-// minInt returns the smaller of two integers.
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

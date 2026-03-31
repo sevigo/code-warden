@@ -8,6 +8,7 @@ import (
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/vectorstores"
 
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/cryptoutil"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/rag/detect"
@@ -327,25 +328,12 @@ func countNonTestFileSources(docs []schema.Document) int {
 		if !ok || source == "" {
 			continue
 		}
-		if isTestFile(source) {
+		if core.IsTestFile(source) {
 			continue
 		}
 		seen[source] = struct{}{}
 	}
 	return len(seen)
-}
-
-// isTestFile checks if a file path is a test file.
-func isTestFile(path string) bool {
-	lower := strings.ToLower(path)
-	return strings.Contains(lower, "_test.") ||
-		strings.Contains(lower, "_test.go") ||
-		strings.Contains(lower, ".test.go") ||
-		strings.Contains(lower, "/tests/") ||
-		strings.Contains(lower, "\\tests\\") ||
-		strings.Contains(lower, "/__tests__/") ||
-		strings.Contains(lower, "\\__tests__\\") ||
-		strings.Contains(lower, "_spec.go")
 }
 
 // hashPatch returns a 128-bit hex hash of the patch content for cache keying.

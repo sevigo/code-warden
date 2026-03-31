@@ -238,7 +238,6 @@ func NewService(
 		Logger:                 logger,
 		ConsensusTimeout:       cfg.AI.ConsensusTimeout,
 		ConsensusQuorum:        cfg.AI.ConsensusQuorum,
-		BuildContext:           r.contextBuilder.BuildRelevantContext,
 		BuildContextWithImpact: r.contextBuilder.BuildRelevantContextWithImpact,
 		EmbedderModel:          cfg.AI.EmbedderModel,
 	}

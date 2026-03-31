@@ -177,18 +177,10 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 	}
 
 	// Use context builder with impact tracking
-	var contextString, definitionsContext string
-	var impactRadius int
-
-	if s.cfg.BuildContextWithImpact != nil {
-		contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
-		contextString = contextResult.FullContext
-		definitionsContext = contextResult.DefinitionsContext
-		impactRadius = contextResult.ImpactRadius
-	} else {
-		// Fallback to old method
-		contextString, definitionsContext = s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
-	}
+	contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+	contextString := contextResult.FullContext
+	definitionsContext := contextResult.DefinitionsContext
+	impactRadius := contextResult.ImpactRadius
 
 	// Phase 2: LLM-directed gap filling (only when Phase 1 returned meaningful context)
 	if s.cfg.Investigate != nil && !contextIsEmpty(contextString, definitionsContext) {
@@ -219,15 +211,17 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 
 	// Calculate review profile
 	linesAdded, linesDeleted := calculateLinesChanged(changedFiles)
-	testCoverage := core.HasTestCoverage(extractFilenames(changedFiles))
-	docsOnly := core.IsDocsOnly(extractFilenames(changedFiles))
-	complexity := core.CalculateProfile(linesAdded, linesDeleted, len(changedFiles), impactRadius, testCoverage, docsOnly)
+	changedFilePaths := extractFilenames(changedFiles)
+	testCoverage := core.HasTestCoverage(changedFilePaths)
+	docsOnly := core.IsDocsOnly(changedFilePaths)
+	complexity := core.CalculateProfile(linesAdded, linesDeleted, len(changedFiles), impactRadius, testCoverage, docsOnly, changedFilePaths)
 
 	s.cfg.Logger.Info("review profile calculated",
 		"profile", complexity.Profile,
 		"score", complexity.Score,
 		"impact_radius", complexity.ImpactRadius,
 		"high_impact", complexity.HighImpact,
+		"high_risk", complexity.HighRisk,
 		"lines_added", linesAdded,
 		"lines_deleted", linesDeleted,
 		"files_changed", len(changedFiles),

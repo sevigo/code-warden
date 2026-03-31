@@ -59,7 +59,9 @@ func (s *Service) GenerateReReview(ctx context.Context, repo *storage.Repository
 	}
 
 	// Build standard context
-	standardContext, definitionsContext := s.cfg.BuildContext(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+	contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+	standardContext := contextResult.FullContext
+	definitionsContext := contextResult.DefinitionsContext
 
 	// Extract search queries from original review
 	feedbackQueries := s.extractCommentsFromReview(ctx, originalReview.ReviewContent)
