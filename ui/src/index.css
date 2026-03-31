@@ -2,6 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Scale the entire UI ~12% larger by bumping the rem baseline.
+   All Tailwind rem-based classes (text-*, p-*, gap-*, rounded-*, etc.)
+   will scale proportionally — no per-component changes needed. */
+html {
+  font-size: 112%;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -28,26 +35,26 @@
   }
 
   .dark {
-    --background: 230 25% 5%;
-    --foreground: 210 40% 98%;
-    --card: 228 20% 8%;
-    --card-foreground: 210 40% 98%;
-    --popover: 228 20% 8%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
+    --background: 230 22% 6%;
+    --foreground: 210 30% 96%;
+    --card: 228 18% 10%;
+    --card-foreground: 210 30% 96%;
+    --popover: 228 18% 10%;
+    --popover-foreground: 210 30% 96%;
+    --primary: 217 91% 62%;
     --primary-foreground: 222 47% 11%;
-    --secondary: 220 16% 13%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 220 16% 13%;
-    --muted-foreground: 218 15% 50%;
-    --accent: 224 18% 15%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 224 12% 14%;
-    --input: 224 12% 14%;
-    --ring: 224 76% 48%;
-    --surface: 226 20% 7%;
+    --secondary: 220 14% 16%;
+    --secondary-foreground: 210 30% 96%;
+    --muted: 220 14% 16%;
+    --muted-foreground: 218 18% 68%;   /* was 50% — now readable on dark bg */
+    --accent: 224 16% 18%;
+    --accent-foreground: 210 30% 96%;
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 210 30% 96%;
+    --border: 224 12% 20%;             /* was 14% — more visible dividers */
+    --input: 224 12% 20%;
+    --ring: 224 76% 52%;
+    --surface: 226 20% 8%;
   }
 }
 

@@ -55,6 +55,95 @@ export interface RegisterRepoRequest {
   full_name: string
 }
 
+export interface SetupStatus {
+  github_app: {
+    configured: boolean
+    app_id: number
+    app_name: string
+    install_url: string
+  }
+  services: {
+    database: { status: string; latency_ms: number }
+    qdrant: { status: string; latency_ms: number }
+  }
+  ready: boolean
+}
+
+export interface AppConfig {
+  ai: {
+    llm_provider: string
+    generator_model: string
+    embedder_model: string
+  }
+  github: {
+    app_id: number
+    webhook_configured: boolean
+  }
+  storage: {
+    qdrant_host: string
+  }
+}
+
+export interface ReviewSummary {
+  id: number
+  pr_number: number
+  pr_title: string
+  head_sha: string
+  status: string
+  severity_counts: {
+    critical: number
+    warning: number
+    suggestion: number
+  }
+  total_findings: number
+  reviewed_at: string
+  created_at: string
+}
+
+export interface ReviewFinding {
+  id: string
+  severity: 'critical' | 'warning' | 'suggestion'
+  category: string
+  file: string
+  line_start: number
+  line_end: number
+  title: string
+  description: string
+  suggestion: string
+}
+
+export interface ReviewDetail extends ReviewSummary {
+  findings: ReviewFinding[]
+}
+
+export interface GlobalStats {
+  total_repos: number
+  indexed_repos: number
+  total_reviews: number
+  reviews_this_week: number
+  total_findings: number
+  findings_by_severity: {
+    critical: number
+    warning: number
+    suggestion: number
+  }
+  avg_findings_per_review: number
+  jobs_running: number
+  jobs_queued: number
+}
+
+export interface JobRun {
+  id: string
+  type: 'review' | 'scan' | 'implement' | 'rereview'
+  repo_full_name: string
+  pr_number: number
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  triggered_by: string
+  triggered_at: string
+  completed_at: string
+  duration_ms: number
+}
+
 const API_BASE = '/api/v1'
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -113,5 +202,38 @@ export const api = {
     scanProgress: (repoId: number): EventSource => {
       return new EventSource(`${API_BASE}/events?repo_id=${repoId}`)
     },
+  },
+
+  setup: {
+    status: () => fetchApi<SetupStatus>('/setup/status'),
+  },
+
+  config: {
+    get: () => fetchApi<AppConfig>('/config'),
+  },
+
+  stats: {
+    global: () => fetchApi<GlobalStats>('/stats/global'),
+  },
+
+  jobs: {
+    list: (limit = 50, offset = 0) =>
+      fetchApi<JobRun[]>(`/jobs?limit=${limit}&offset=${offset}`),
+  },
+
+  reviews: {
+    list: (repoId: number) =>
+      fetchApi<ReviewSummary[]>(`/repos/${repoId}/reviews`),
+    get: (repoId: number, prNumber: number) =>
+      fetchApi<ReviewDetail>(`/repos/${repoId}/reviews/${prNumber}`),
+    feedback: (
+      repoId: number,
+      prNumber: number,
+      data: { finding_id: string; verdict: string; note?: string }
+    ) =>
+      fetchApi<{ ok: boolean }>(`/repos/${repoId}/reviews/${prNumber}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
   },
 }
