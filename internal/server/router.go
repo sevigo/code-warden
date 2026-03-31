@@ -47,6 +47,7 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store
 		// Web UI API routes
 		if store != nil {
 			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, gitClient, cfg, logger)
+			dashboardHandler := handler.NewDashboardHandler(cfg, store, logger)
 
 			// Fast endpoints — short timeout is fine
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos", webUIHandler.ListRepos)
@@ -62,6 +63,15 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store
 
 			// SSE — no timeout, long-lived connection
 			r.Get("/events", webUIHandler.SSEEvents)
+
+			// Dashboard endpoints (mock data — wire to real services later)
+			r.With(middleware.Timeout(30*time.Second)).Get("/setup/status", dashboardHandler.SetupStatus)
+			r.With(middleware.Timeout(30*time.Second)).Get("/config", dashboardHandler.GetConfig)
+			r.With(middleware.Timeout(30*time.Second)).Get("/stats/global", dashboardHandler.GlobalStats)
+			r.With(middleware.Timeout(30*time.Second)).Get("/jobs", dashboardHandler.ListJobs)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/reviews", dashboardHandler.ListReviews)
+			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/reviews/{prNumber}", dashboardHandler.GetReview)
+			r.With(middleware.Timeout(30*time.Second)).Post("/repos/{repoId}/reviews/{prNumber}/feedback", dashboardHandler.SubmitFeedback)
 		}
 	})
 

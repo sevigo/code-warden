@@ -1,10 +1,14 @@
-import { NavLink, useNavigate, Link } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
-import { Shield, Search, Settings, Plus, Loader2, GitBranch, MessageSquare } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import {
+  Shield, Search, Plus, Loader2, MessageSquare,
+  LayoutDashboard, Activity, Settings, Sun, Moon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
-import type { Repository, ScanState } from '@/lib/api'
+import type { Repository, ScanState, SetupStatus } from '@/lib/api'
+import { useTheme } from '@/lib/useTheme'
 import {
   Dialog,
   DialogContent,
@@ -31,13 +35,37 @@ function RepoStatusDot({ repoId }: { repoId: number }) {
   return <div className="h-2 w-2 rounded-full bg-blue-400 animate-subtle-pulse" title="Indexing" />
 }
 
+const navClass = ({ isActive }: { isActive: boolean }) =>
+  cn(
+    'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all duration-200',
+    isActive
+      ? 'bg-primary/10 text-primary font-medium'
+      : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+  )
+
 export default function Layout({ children, fluid }: { children: React.ReactNode; fluid?: boolean }) {
   const [search, setSearch] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [name, setName] = useState('')
   const [formError, setFormError] = useState('')
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
+  const { theme, toggle } = useTheme()
+
+  // Setup status — redirect to /setup if GitHub App not configured
+  const { data: setupStatus } = useQuery<SetupStatus>({
+    queryKey: ['setup-status'],
+    queryFn: api.setup.status,
+    retry: false,
+    staleTime: 60_000,
+  })
+
+  useEffect(() => {
+    if (setupStatus && !setupStatus.ready && location.pathname !== '/setup') {
+      navigate('/setup', { replace: true })
+    }
+  }, [setupStatus, location.pathname, navigate])
 
   const { data: repos, isLoading } = useQuery<Repository[]>({
     queryKey: ['repos'],
@@ -46,13 +74,10 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
 
   const addRepo = useMutation({
     mutationFn: () => {
-      // Extract owner/repo from GitHub URL if needed
       let repoName = name.trim()
       if (repoName.startsWith('http') || repoName.startsWith('github.com')) {
         const match = repoName.match(/github\.com\/([^/]+\/[^/]+)/)
-        if (match) {
-          repoName = match[1]
-        }
+        if (match) repoName = match[1]
       }
       return api.repos.register({ full_name: repoName })
     },
@@ -72,20 +97,14 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
     e.preventDefault()
     setFormError('')
     if (!name.trim()) { setFormError('Repository name is required'); return }
-    
-    // Check if it's a GitHub URL and extract owner/repo
     const trimmed = name.trim()
     if (trimmed.startsWith('http') || trimmed.startsWith('github.com')) {
       const match = trimmed.match(/github\.com\/([^/]+\/[^/]+)/)
-      if (!match) {
-        setFormError('Invalid GitHub URL format')
-        return
-      }
+      if (!match) { setFormError('Invalid GitHub URL format'); return }
     } else if (!trimmed.includes('/') || trimmed.split('/').length !== 2) {
       setFormError('Use "owner/repo" format (e.g., sevigo/karakuri-os)')
       return
     }
-    
     addRepo.mutate()
   }
 
@@ -106,37 +125,40 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
         <div className="relative px-5 py-5 overflow-hidden">
           <div className="absolute -top-10 -left-10 h-32 w-32 rounded-full bg-primary/8 blur-3xl pointer-events-none" />
           <div className="relative flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-primary flex items-center justify-center shrink-0 shadow-lg shadow-primary/25">
-              <Shield className="h-5 w-5 text-primary-foreground" />
+            <div className="h-8 w-8 rounded-xl bg-primary flex items-center justify-center shrink-0 shadow-lg shadow-primary/25">
+              <Shield className="h-4 w-4 text-primary-foreground" />
             </div>
             <div>
               <span className="font-semibold text-foreground text-sm leading-none block">Code Warden</span>
-              <span className="text-[11px] text-muted-foreground leading-none mt-0.5 block">AI Code Intelligence</span>
+              <span className="text-xs text-muted-foreground leading-none mt-1 block">AI Code Reviews</span>
             </div>
           </div>
         </div>
 
-        {/* Overview Nav */}
-        <div className="px-3 pb-2">
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) => cn(
-              'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all duration-200',
-              isActive
-                ? 'bg-primary/10 text-primary font-medium'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
-            )}
-          >
-            <GitBranch className="h-4 w-4 shrink-0" />
-            Overview
+        {/* Main Nav */}
+        <div className="px-3 pb-2 space-y-0.5">
+          <NavLink to="/" end className={navClass}>
+            <LayoutDashboard className="h-4 w-4 shrink-0" />
+            Dashboard
           </NavLink>
+          <NavLink to="/jobs" className={navClass}>
+            <Activity className="h-4 w-4 shrink-0" />
+            Activity
+          </NavLink>
+          <NavLink to="/settings" className={navClass}>
+            <Settings className="h-4 w-4 shrink-0" />
+            Settings
+          </NavLink>
+        </div>
+
+        <div className="px-4 py-2">
+          <div className="h-px bg-border/30" />
         </div>
 
         {/* Repos section */}
         <div className="flex-1 flex flex-col min-h-0 px-3">
           <div className="flex items-center justify-between px-1 mb-2">
-            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Repositories
             </p>
             <button
@@ -158,7 +180,7 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search..."
                 aria-label="Search repositories"
-                className="w-full pl-8 pr-3 py-1.5 rounded-md bg-accent/30 text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-primary/30 placeholder:text-muted-foreground/50 transition-all"
+                className="w-full pl-8 pr-3 py-1.5 rounded-md bg-accent/30 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary/30 placeholder:text-muted-foreground/50 transition-all"
               />
             </div>
           )}
@@ -213,15 +235,19 @@ export default function Layout({ children, fluid }: { children: React.ReactNode;
           </nav>
         </div>
 
-        {/* Footer */}
-        <div className="px-3 py-3 border-t border-border/30">
+        {/* Sidebar footer — theme toggle */}
+        <div className="px-4 py-3 border-t border-border/30 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {theme === 'dark' ? 'Dark mode' : 'Light mode'}
+          </span>
           <button
-            disabled
-            title="Coming soon"
-            className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-muted-foreground/50 w-full cursor-not-allowed"
+            onClick={toggle}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="p-2 rounded-lg hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors"
           >
-            <Settings className="h-4 w-4 shrink-0" />
-            Settings
+            {theme === 'dark'
+              ? <Sun className="h-4 w-4" />
+              : <Moon className="h-4 w-4" />}
           </button>
         </div>
       </aside>

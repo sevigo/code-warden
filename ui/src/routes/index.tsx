@@ -2,90 +2,136 @@ import { useQuery, useQueries } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
-  Shield,
+  GitPullRequest,
   Layers,
-  Hash,
-  Activity,
-  RefreshCw,
+  AlertTriangle,
+  TrendingDown,
   CheckCircle2,
-  ArrowRight,
+  XCircle,
   Loader2,
+  Clock,
   MessageSquare,
-  Terminal,
+  ChevronRight,
+  Shield,
+  Plus,
 } from 'lucide-react'
 import StatusBadge from '@/components/StatusBadge'
 import { api } from '@/lib/api'
-import type { Repository, ScanState } from '@/lib/api'
+import type { Repository, ScanState, GlobalStats, JobRun } from '@/lib/api'
 
 const stagger = {
   hidden: {},
-  show: { transition: { staggerChildren: 0.06 } },
+  show: { transition: { staggerChildren: 0.05 } },
 }
 
 const fadeUp = {
-  hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.35 } },
+  hidden: { opacity: 0, y: 10 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 }
 
-function SummaryTile({ icon: Icon, label, value, accent }: {
-  icon: React.ElementType; label: string; value: string; accent: string
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const m = Math.floor(diff / 60000)
+  if (m < 1) return 'just now'
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return '<1s'
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const rem = s % 60
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`
+}
+
+const JOB_TYPE_STYLE: Record<string, string> = {
+  review:    'bg-blue-50 border border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/20 dark:text-blue-400',
+  scan:      'bg-violet-50 border border-violet-200 text-violet-700 dark:bg-violet-500/15 dark:border-violet-500/20 dark:text-violet-400',
+  implement: 'bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-500/15 dark:border-amber-500/20 dark:text-amber-400',
+  rereview:  'bg-sky-50 border border-sky-200 text-sky-700 dark:bg-sky-500/15 dark:border-sky-500/20 dark:text-sky-400',
+}
+
+// ── KPI Card ─────────────────────────────────────────────────────────────────
+
+function KpiCard({ icon: Icon, label, value, sub, accent }: {
+  icon: React.ElementType
+  label: string
+  value: string | number
+  sub?: string
+  accent: string
 }) {
   return (
     <motion.div variants={fadeUp} className="rounded-2xl bg-card p-5 flex flex-col gap-3">
-      <div className={`h-9 w-9 rounded-xl flex items-center justify-center ${accent}`}>
-        <Icon className="h-4.5 w-4.5" />
+      <div className={`h-8 w-8 rounded-xl flex items-center justify-center ${accent}`}>
+        <Icon className="h-4 w-4" />
       </div>
       <div>
         <p className="text-2xl font-bold text-foreground font-mono">{value}</p>
         <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+        {sub && <p className="text-xs text-muted-foreground/50 mt-0.5">{sub}</p>}
       </div>
     </motion.div>
   )
 }
 
-function ActiveScanCard({ repo, scanState }: { repo: Repository; scanState: ScanState }) {
-  const progress = scanState.progress
-  const pct = progress && progress.files_total > 0
-    ? Math.round((progress.files_done / progress.files_total) * 100)
-    : 0
+// ── Job Row (pipeline feed) ───────────────────────────────────────────────────
+
+function JobRow({ job, repos }: { job: JobRun; repos: Repository[] | undefined }) {
+  const repo = repos?.find(r => r.full_name === job.repo_full_name)
+  const repoName = job.repo_full_name.split('/')[1]
+
+  let statusIcon: React.ReactNode
+  if (job.status === 'completed') {
+    statusIcon = <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+  } else if (job.status === 'failed') {
+    statusIcon = <XCircle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
+  } else if (job.status === 'running') {
+    statusIcon = <Loader2 className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 animate-spin" />
+  } else {
+    statusIcon = <Clock className="h-4 w-4 text-zinc-500 shrink-0" />
+  }
+
+  const reviewLink = repo && job.pr_number
+    ? `/repos/${repo.id}/reviews/${job.pr_number}`
+    : null
+
+  const inner = (
+    <div className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-muted/50 dark:hover:bg-accent/30 transition-colors group">
+      {statusIcon}
+      <span className={`text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-md shrink-0 ${JOB_TYPE_STYLE[job.type] ?? 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-400'}`}>
+        {job.type}
+      </span>
+      <div className="flex-1 min-w-0">
+        <span className="text-sm text-foreground font-medium truncate">{repoName}</span>
+        {job.pr_number > 0 && (
+          <span className="ml-2 text-xs text-muted-foreground">#{job.pr_number}</span>
+        )}
+        <span className="ml-2 text-xs text-muted-foreground/50">{job.triggered_by}</span>
+      </div>
+      <span className="text-xs text-muted-foreground shrink-0">{formatDuration(job.duration_ms)}</span>
+      <span className="text-xs text-muted-foreground/60 shrink-0 w-16 text-right">{relativeTime(job.triggered_at)}</span>
+      {reviewLink && (
+        <ChevronRight className="h-4 w-4 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors shrink-0" />
+      )}
+    </div>
+  )
 
   return (
     <motion.div variants={fadeUp}>
-      <Link
-        to={`/repos/${repo.id}`}
-        className="block rounded-2xl bg-blue-500/5 p-5 hover:bg-blue-500/8 transition-colors group"
-      >
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="h-8 w-8 rounded-lg bg-blue-500/15 flex items-center justify-center">
-              <RefreshCw className="h-4 w-4 text-blue-400 animate-spin" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-foreground">{repo.full_name}</p>
-              <p className="text-xs text-muted-foreground">{progress?.stage || 'Scanning...'}</p>
-            </div>
-          </div>
-          <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-foreground transition-colors" />
-        </div>
-        {/* progress bar */}
-        <div className="h-1.5 rounded-full bg-blue-500/10 overflow-hidden">
-          <div
-            className="h-full rounded-full bg-blue-400 transition-all duration-500"
-            style={{ width: pct > 0 ? `${pct}%` : '15%' }}
-          />
-        </div>
-        {progress && progress.files_total > 0 && (
-          <p className="text-xs text-blue-400/70 mt-2">
-            {progress.files_done.toLocaleString()} / {progress.files_total.toLocaleString()} files
-            {pct > 0 && <span className="ml-2 font-medium text-blue-400">{pct}%</span>}
-          </p>
-        )}
-      </Link>
+      {reviewLink ? <Link to={reviewLink}>{inner}</Link> : inner}
     </motion.div>
   )
 }
 
-function RepoRow({ repo }: { repo: Repository }) {
+// ── Repo Table Row ────────────────────────────────────────────────────────────
+
+function RepoTableRow({ repo }: { repo: Repository }) {
   const { data: scanState } = useQuery<ScanState | null>({
     queryKey: ['scanState', repo.id],
     queryFn: () => api.repos.status(repo.id),
@@ -94,67 +140,96 @@ function RepoRow({ repo }: { repo: Repository }) {
       return s === 'scanning' || s === 'in_progress' || s === 'pending' ? 2000 : false
     },
   })
-
   const isCompleted = scanState?.status === 'completed'
 
   return (
-    <motion.div variants={fadeUp}>
-      <Link
-        to={`/repos/${repo.id}`}
-        className="flex items-center gap-4 px-5 py-4 rounded-xl hover:bg-accent/40 transition-colors group"
-      >
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-foreground truncate">{repo.full_name}</p>
-          <p className="text-xs text-muted-foreground/60 font-mono truncate mt-0.5">{repo.clone_path}</p>
-        </div>
+    <motion.tr
+      variants={fadeUp}
+      className="border-b border-border last:border-0 hover:bg-muted/50 dark:border-border/20 dark:hover:bg-accent/20 transition-colors group"
+    >
+      <td className="py-4 pl-4 lg:pl-6">
+        <Link to={`/repos/${repo.id}`} className="flex items-center gap-2.5 min-w-0">
+          <div className="h-8 w-8 rounded-lg bg-accent flex items-center justify-center shrink-0 text-muted-foreground border border-border/50">
+            <span className="text-xs font-bold uppercase">
+              {repo.full_name.split('/')[1]?.[0] ?? '?'}
+            </span>
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-foreground truncate">{repo.full_name.split('/')[1]}</p>
+            <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{repo.full_name}</p>
+          </div>
+        </Link>
+      </td>
+      <td className="py-4 px-4">
         <StatusBadge status={scanState?.status} size="sm" />
-        {isCompleted && (
+      </td>
+      <td className="py-3 px-4 text-xs text-muted-foreground">—</td>
+      <td className="py-3 px-4 text-xs text-muted-foreground">
+        {scanState?.artifacts?.indexed_at
+          ? new Date(scanState.artifacts.indexed_at).toLocaleDateString()
+          : '—'}
+      </td>
+      <td className="py-3 pr-4">
+        <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+          {isCompleted && (
+            <Link
+              to={`/repos/${repo.id}/chat`}
+              className="p-1.5 rounded-lg hover:bg-primary/10 text-muted-foreground hover:text-primary transition-colors"
+              title="Chat"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+            </Link>
+          )}
           <Link
-            to={`/repos/${repo.id}/chat`}
-            onClick={(e) => e.stopPropagation()}
-            className="p-2 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all"
-            title="Chat"
+            to={`/repos/${repo.id}/reviews`}
+            className="px-2.5 py-1 rounded-lg text-xs hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
           >
-            <MessageSquare className="h-4 w-4" />
+            Reviews
           </Link>
-        )}
-        <ArrowRight className="h-4 w-4 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
-      </Link>
-    </motion.div>
+          <Link
+            to={`/repos/${repo.id}`}
+            className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      </td>
+    </motion.tr>
   )
 }
 
+// ── Dashboard ────────────────────────────────────────────────────────────────
+
 export default function Dashboard() {
-  const { data: repos, isLoading, isError } = useQuery<Repository[]>({
+  const { data: repos, isLoading: reposLoading, isError } = useQuery<Repository[]>({
     queryKey: ['repos'],
     queryFn: api.repos.list,
   })
 
-  // Gather scan states for summary stats using useQueries (correct way for dynamic lists)
-  const scanResults = useQueries({
+  const { data: globalStats } = useQuery<GlobalStats>({
+    queryKey: ['global-stats'],
+    queryFn: api.stats.global,
+  })
+
+  const { data: jobs, isLoading: jobsLoading } = useQuery<JobRun[]>({
+    queryKey: ['jobs'],
+    queryFn: () => api.jobs.list(8),
+    refetchInterval: 15_000,
+  })
+
+  // Scan states for status dots
+  useQueries({
     queries: (repos || []).map(repo => ({
       queryKey: ['scanState', repo.id],
       queryFn: () => api.repos.status(repo.id),
-      refetchInterval: (query: any) => {
+      refetchInterval: (query: { state: { data?: ScanState | null } }) => {
         const s = query.state.data?.status
         return s === 'scanning' || s === 'in_progress' || s === 'pending' ? 2000 : false
       },
     }))
   })
 
-  const scanQueries = (repos || []).map((repo, i) => ({
-    repo,
-    ...scanResults[i]
-  }))
-
-  const readyCount = scanQueries.filter(q => q.data?.status === 'completed').length
-  const activeScans = scanQueries.filter(q =>
-    q.data?.status === 'scanning' || q.data?.status === 'in_progress' || q.data?.status === 'pending'
-  )
-  const totalRepos = repos?.length ?? 0
-  const totalChunks = scanQueries.reduce((acc, q) => acc + (q.data?.artifacts?.chunks_count ?? 0), 0)
-
-  if (isLoading) {
+  if (reposLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-32 gap-3">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -185,83 +260,115 @@ export default function Dashboard() {
           </div>
         </div>
         <h1 className="text-2xl font-bold text-foreground mb-2">Welcome to Code Warden</h1>
-        <p className="text-muted-foreground text-sm max-w-md mb-10">
-          Add a local repository to get started with AI-powered code intelligence.
+        <p className="text-muted-foreground text-sm max-w-sm mb-10">
+          Add a repository and trigger a review by commenting <code className="font-mono text-xs bg-accent/50 px-1.5 py-0.5 rounded">/review</code> on any GitHub PR.
         </p>
-
-        {/* Getting started */}
-        <div className="w-full max-w-sm space-y-6 text-left">
-          <div className="space-y-3">
-            {[
-              { step: '1', text: 'Click the + button in the sidebar to add a repository' },
-              { step: '2', text: 'Run the initial scan to index the codebase' },
-              { step: '3', text: 'Start chatting with your code' },
-            ].map(({ step, text }) => (
-              <div key={step} className="flex items-start gap-3">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
-                  {step}
-                </span>
-                <span className="text-sm text-muted-foreground pt-0.5">{text}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* CLI hint */}
-          <div className="rounded-xl bg-card p-4">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
-              <Terminal className="h-3.5 w-3.5" />
-              Or use the CLI
-            </div>
-            <code className="text-xs text-foreground font-mono block bg-accent/30 rounded-lg px-3 py-2">
-              warden-cli prescan --path /your/repo
-            </code>
-          </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              // Trigger the Layout add-repo dialog via a custom event
+              window.dispatchEvent(new CustomEvent('open-add-repo'))
+            }}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            Add Repository
+          </button>
         </div>
       </div>
     )
   }
 
+  const indexedCount = globalStats?.indexed_repos ?? 0
+  const totalCount = globalStats?.total_repos ?? repos.length
+
   return (
-    <motion.div
-      className="space-y-8"
-      initial="hidden"
-      animate="show"
-      variants={stagger}
-    >
+    <motion.div className="space-y-8" initial="hidden" animate="show" variants={stagger}>
       {/* Header */}
-      <motion.div variants={fadeUp}>
-        <h1 className="text-2xl font-bold text-foreground">Overview</h1>
-        <p className="text-sm text-muted-foreground mt-1">Your code intelligence workspace</p>
+      <motion.div variants={fadeUp} className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground mt-1">AI code review pipeline overview</p>
+        </div>
       </motion.div>
 
-      {/* Summary tiles */}
-      <motion.div variants={stagger} className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <SummaryTile icon={Layers} label="Repositories" value={totalRepos.toLocaleString()} accent="bg-violet-500/10 text-violet-400" />
-        <SummaryTile icon={CheckCircle2} label="Indexed" value={readyCount.toLocaleString()} accent="bg-emerald-500/10 text-emerald-400" />
-        <SummaryTile icon={Activity} label="Active scans" value={activeScans.length.toString()} accent="bg-blue-500/10 text-blue-400" />
-        <SummaryTile icon={Hash} label="Total chunks" value={totalChunks.toLocaleString()} accent="bg-amber-500/10 text-amber-400" />
+      {/* KPI row */}
+      <motion.div variants={stagger} className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KpiCard
+          icon={Layers}
+          label="Repositories"
+          value={`${indexedCount}/${totalCount}`}
+          sub="indexed / total"
+          accent="bg-violet-500/10 border border-violet-500/20 text-violet-600 dark:text-violet-400"
+        />
+        <KpiCard
+          icon={GitPullRequest}
+          label="Reviews this week"
+          value={globalStats?.reviews_this_week ?? '—'}
+          accent="bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400"
+        />
+        <KpiCard
+          icon={AlertTriangle}
+          label="Total findings"
+          value={globalStats?.total_findings ?? '—'}
+          sub={globalStats ? `${globalStats.findings_by_severity.critical} critical` : undefined}
+          accent="bg-orange-500/10 border border-orange-500/20 text-orange-600 dark:text-orange-400"
+        />
+        <KpiCard
+          icon={TrendingDown}
+          label="Avg findings / review"
+          value={globalStats?.avg_findings_per_review?.toFixed(1) ?? '—'}
+          accent="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+        />
       </motion.div>
 
-      {/* Active scans spotlight */}
-      {activeScans.length > 0 && (
-        <motion.div variants={fadeUp} className="space-y-3">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Active Scans</h2>
-          <div className="space-y-2">
-            {activeScans.map(({ repo, data }) => (
-              <ActiveScanCard key={repo.id} repo={repo} scanState={data!} />
-            ))}
-          </div>
-        </motion.div>
-      )}
-
-      {/* Repository list */}
+      {/* Recent Activity */}
       <motion.div variants={fadeUp} className="space-y-3">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">All Repositories</h2>
-        <motion.div variants={stagger} className="divide-y divide-border/30">
-          {repos.map((repo) => (
-            <RepoRow key={repo.id} repo={repo} />
-          ))}
-        </motion.div>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recent Activity</h2>
+          <Link to="/jobs" className="text-xs text-primary hover:underline">View all →</Link>
+        </div>
+        <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
+          {jobsLoading ? (
+            <div className="flex items-center justify-center py-10 gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm">Loading activity...</span>
+            </div>
+          ) : jobs && jobs.length > 0 ? (
+            <motion.div variants={stagger} className="divide-y divide-border dark:divide-border/20">
+              {jobs.slice(0, 8).map(job => (
+                <JobRow key={job.id} job={job} repos={repos} />
+              ))}
+            </motion.div>
+          ) : (
+            <div className="py-10 text-center text-sm text-muted-foreground">
+              No activity yet — comment <code className="font-mono text-xs bg-accent/50 px-1.5 py-0.5 rounded">/review</code> on a GitHub PR to get started.
+            </div>
+          )}
+        </div>
+      </motion.div>
+
+      {/* Repositories Table */}
+      <motion.div variants={fadeUp} className="space-y-3">
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Repositories</h2>
+        <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border dark:border-border/40">
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 pl-4 lg:pl-6">Repository</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Status</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Reviews</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Last Scan</th>
+                <th className="py-4 pr-4 lg:pr-6" />
+              </tr>
+            </thead>
+            <motion.tbody variants={stagger}>
+              {repos.map(repo => (
+                <RepoTableRow key={repo.id} repo={repo} />
+              ))}
+            </motion.tbody>
+          </table>
+        </div>
       </motion.div>
     </motion.div>
   )
