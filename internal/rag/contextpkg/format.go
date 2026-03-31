@@ -283,14 +283,30 @@ func (b *builderImpl) formatSplitDocs(allDocs []schema.Document, descKeys map[st
 	return impactBuilder.String(), descCtx
 }
 
-// generateSparseVectorFunc returns a function mapping a list of queries to sparse vectors, handling errors silently.
+// generateSparseVectorFunc returns a function mapping a list of queries to sparse vectors.
+// Queries that fail validation are filtered out before generation to avoid nil pointer crashes.
 func (b *builderImpl) generateSparseVectorFunc(stageName string) func(ctx context.Context, queries []string) ([]*schema.SparseVector, error) {
 	return func(ctx context.Context, queries []string) ([]*schema.SparseVector, error) {
-		vecs := make([]*schema.SparseVector, len(queries))
-		for i, q := range queries {
+		// Filter out invalid queries that would fail sparse vector generation
+		validQueries := make([]string, 0, len(queries))
+		for _, q := range queries {
+			if isValidQueryForSparse(q) {
+				validQueries = append(validQueries, q)
+			} else {
+				b.cfg.Logger.Debug("skipping invalid query for sparse vector generation", "stage", stageName, "query", truncateForLog(q, 50))
+			}
+		}
+
+		if len(validQueries) == 0 {
+			b.cfg.Logger.Warn("all queries invalid for sparse vector generation, returning empty slice", "stage", stageName)
+			return nil, nil
+		}
+
+		vecs := make([]*schema.SparseVector, len(validQueries))
+		for i, q := range validQueries {
 			v, err := sparse.GenerateSparseVector(ctx, q)
 			if err != nil {
-				b.cfg.Logger.Warn(fmt.Sprintf("Failed to generate sparse vector for MultiQuery fallback in %s, using dense only", stageName), "query", q, "error", err)
+				b.cfg.Logger.Warn("failed to generate sparse vector, using dense only", "stage", stageName, "query", truncateForLog(q, 50), "error", err)
 				vecs[i] = nil
 				continue
 			}
@@ -298,4 +314,39 @@ func (b *builderImpl) generateSparseVectorFunc(stageName string) func(ctx contex
 		}
 		return vecs, nil
 	}
+}
+
+// isValidQueryForSparse checks if a query is valid for sparse vector generation.
+// Invalid queries: too short, code fragments, format strings, etc.
+func isValidQueryForSparse(query string) bool {
+	if query == "" {
+		return false
+	}
+	// Minimum length for meaningful sparse vector
+	if len(strings.TrimSpace(query)) < 5 {
+		return false
+	}
+	// Reject code fragments that often fail tokenization
+	lower := strings.ToLower(query)
+	// Single tokens or fragments
+	if strings.HasPrefix(lower, "return ") && len(query) < 20 {
+		return false
+	}
+	// Format string artifacts
+	if strings.Contains(query, "%s") || strings.Contains(query, "%d") {
+		return false
+	}
+	// Single symbols or tokens
+	if len(strings.Fields(query)) < 2 {
+		return false
+	}
+	return true
+}
+
+// truncateForLog truncates a string for safe logging.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
