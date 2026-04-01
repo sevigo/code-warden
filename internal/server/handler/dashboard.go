@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	severityCritical   = "critical"
-	severityHigh       = "high"
-	severityMedium     = "medium"
-	severityLow        = "low"
-	statusError        = "error"
+	severityCritical = "critical"
+	severityHigh     = "high"
+	severityMedium   = "medium"
+	severityLow      = "low"
+	statusError      = "error"
 )
 
 // DashboardHandler serves dashboard, stats, reviews, jobs, and config endpoints.
@@ -363,24 +363,25 @@ func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 	total := getTotalFromCounts(counts)
 
 	type historyDTO struct {
-		ID         int64     `json:"id"`
-		HeadSHA    string    `json:"head_sha"`
-		CreatedAt  time.Time `json:"created_at"`
-		Revision   int       `json:"revision"`
-		IsLatest   bool      `json:"is_latest"`
-		TotalCrit  int       `json:"total_critical"`
+		ID        int64     `json:"id"`
+		HeadSHA   string    `json:"head_sha"`
+		CreatedAt time.Time `json:"created_at"`
+		Revision  int       `json:"revision"`
+		IsLatest  bool      `json:"is_latest"`
+		TotalCrit int       `json:"total_critical"`
 	}
 
 	history := make([]historyDTO, 0, len(allReviews))
 	for i, r := range allReviews {
 		c := parseSeverityCounts(r.ReviewContent)
+		crit, _ := c["critical"].(int)
 		history = append(history, historyDTO{
 			ID:        r.ID,
 			HeadSHA:   r.HeadSHA,
 			CreatedAt: r.CreatedAt,
 			Revision:  i + 1,
 			IsLatest:  i == len(allReviews)-1,
-			TotalCrit: c["critical"].(int),
+			TotalCrit: crit,
 		})
 	}
 
@@ -549,7 +550,7 @@ func parseSuggestionBlock(block string, idx int) map[string]any {
 
 func buildTitle(comment string, idx int) string {
 	comment = strings.TrimSpace(comment)
-	
+
 	// Strip markdown bold markers if present at start: "**Observation:** info" -> "Observation: info"
 	if strings.HasPrefix(comment, "**") {
 		if end := strings.Index(comment[2:], "**"); end != -1 {
