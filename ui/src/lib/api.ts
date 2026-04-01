@@ -92,17 +92,20 @@ export interface ReviewSummary {
   status: string
   severity_counts: {
     critical: number
-    warning: number
-    suggestion: number
+    high: number
+    medium: number
+    low: number
   }
   total_findings: number
   reviewed_at: string
   created_at: string
+  revision: number
+  is_re_review: boolean
 }
 
 export interface ReviewFinding {
   id: string
-  severity: 'critical' | 'warning' | 'suggestion'
+  severity: 'critical' | 'high' | 'medium' | 'low'
   category: string
   file: string
   line_start: number
@@ -114,6 +117,16 @@ export interface ReviewFinding {
 
 export interface ReviewDetail extends ReviewSummary {
   findings: ReviewFinding[]
+  history: ReviewHistoryItem[]
+}
+
+export interface ReviewHistoryItem {
+  id: number
+  head_sha: string
+  created_at: string
+  revision: number
+  is_latest: boolean
+  total_critical: number
 }
 
 export interface GlobalStats {
@@ -124,8 +137,9 @@ export interface GlobalStats {
   total_findings: number
   findings_by_severity: {
     critical: number
-    warning: number
-    suggestion: number
+    high: number
+    medium: number
+    low: number
   }
   avg_findings_per_review: number
   jobs_running: number
@@ -224,8 +238,8 @@ export const api = {
   reviews: {
     list: (repoId: number) =>
       fetchApi<ReviewSummary[]>(`/repos/${repoId}/reviews`),
-    get: (repoId: number, prNumber: number) =>
-      fetchApi<ReviewDetail>(`/repos/${repoId}/reviews/${prNumber}`),
+    get: (repoId: number, prNumber: number, id?: number) =>
+      fetchApi<ReviewDetail>(`/repos/${repoId}/reviews/${prNumber}${id ? `?id=${id}` : ''}`),
     feedback: (
       repoId: number,
       prNumber: number,

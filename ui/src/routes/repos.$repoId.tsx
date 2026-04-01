@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
@@ -20,6 +21,8 @@ import StatusBadge from '@/components/StatusBadge'
 import { api } from '@/lib/api'
 import type { Repository, ScanState, RepoStats, ReviewSummary } from '@/lib/api'
 import { useScanProgress } from '@/lib/useScanProgress'
+import { groupReviews } from '@/lib/review-utils'
+import type { GroupedReview } from '@/lib/review-utils'
 
 const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.05 } } }
 const fadeUp = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0, transition: { duration: 0.3 } } }
@@ -81,25 +84,28 @@ function BentoStat({ icon: Icon, label, value, accent }: {
 
 // ── Severity chips ────────────────────────────────────────────────────────────
 
-function SeverityChips({ counts }: { counts: { critical: number; warning: number; suggestion: number } }) {
-  const crit = counts.critical
-  const warn = counts.warning
-  const sugg = counts.suggestion
+function SeverityChips({ counts }: { counts: { critical: number; high: number; medium: number; low: number } }) {
+  const { critical: crit, high, medium, low } = counts
   return (
     <div className="flex items-center gap-2 mt-4 flex-wrap">
       {crit > 0 && (
-        <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-red-50 border border-red-200 text-red-700 dark:bg-red-500/15 dark:border-red-500/20 dark:text-red-400">
-          {crit} CRITICAL
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400">
+          {crit} CRIT
         </span>
       )}
-      {warn > 0 && (
-        <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-orange-50 border border-orange-200 text-orange-700 dark:bg-orange-500/15 dark:border-orange-500/20 dark:text-orange-400">
-          {warn} WARNINGS
+      {high > 0 && (
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-500/10 border border-orange-500/20 text-orange-400">
+          {high} HIGH
         </span>
       )}
-      {sugg > 0 && (
-        <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-yellow-50 border border-yellow-200 text-yellow-700 dark:bg-yellow-500/15 dark:border-yellow-500/20 dark:text-yellow-500">
-          {sugg} SUGGESTIONS
+      {medium > 0 && (
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400">
+          {medium} MED
+        </span>
+      )}
+      {low > 0 && (
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+          {low} LOW
         </span>
       )}
     </div>
@@ -108,26 +114,88 @@ function SeverityChips({ counts }: { counts: { critical: number; warning: number
 
 // ── Review Row ────────────────────────────────────────────────────────────────
 
-function ReviewRow({ review, repoId }: { review: ReviewSummary; repoId: string }) {
+
+function GroupedReviewRow({ group, repoId }: { group: GroupedReview; repoId: string }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const { original_review, latest_review, revisions, pr_number, pr_title } = group
+  const hasRevisions = revisions.length > 0
+  // Show latest severity state prominently, but link the parent row to the original
+  const displayCounts = latest_review.severity_counts
+
   return (
-    <motion.div variants={fadeUp}>
-      <Link
-        to={`/repos/${repoId}/reviews/${review.pr_number}`}
-        className="flex items-center gap-3 px-4 py-3 hover:bg-accent/30 transition-colors rounded-xl group"
+    <motion.div variants={fadeUp} className="flex flex-col">
+      <div
+        className="flex items-center gap-3 px-4 py-3 hover:bg-accent/30 transition-colors rounded-xl group cursor-pointer"
+        onClick={() => hasRevisions && setIsExpanded(!isExpanded)}
       >
         <div className="h-7 w-7 rounded-lg bg-accent/50 flex items-center justify-center shrink-0">
           <GitPullRequest className="h-3.5 w-3.5 text-muted-foreground" />
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs font-mono text-muted-foreground">#{review.pr_number}</span>
+          <span className="text-xs font-mono text-muted-foreground">#{pr_number}</span>
         </div>
-        <p className="text-sm text-foreground flex-1 truncate">{review.pr_title}</p>
-        <SeverityChips counts={review.severity_counts} />
-        <span className="text-xs text-muted-foreground/50 shrink-0">
-          {new Date(review.reviewed_at).toLocaleDateString()}
-        </span>
-        <ChevronRight className="h-4 w-4 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors shrink-0" />
-      </Link>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="text-sm text-foreground truncate">{pr_title}</p>
+            {hasRevisions && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 uppercase tracking-tighter">
+                {revisions.length} re-review{revisions.length > 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+          {/* Show latest severity so users see current state */}
+          <SeverityChips counts={displayCounts} />
+        </div>
+        <div className="flex items-center gap-4 shrink-0">
+          <span className="text-xs text-muted-foreground/50">
+            {new Date(original_review.reviewed_at).toLocaleDateString()}
+          </span>
+          <Link
+            to={`/repos/${repoId}/reviews/${pr_number}?id=${original_review.id}`}
+            onClick={(e) => e.stopPropagation()}
+            className="p-1 hover:bg-accent rounded-md transition-colors"
+          >
+            <ChevronRight className="h-4 w-4 text-muted-foreground/30 group-hover:text-muted-foreground" />
+          </Link>
+        </div>
+      </div>
+
+      {hasRevisions && isExpanded && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          className="ml-12 border-l border-blue-500/20 pl-4 space-y-1 mb-3 mt-1"
+        >
+          {revisions.map((rev, idx) => (
+            <Link
+              key={rev.id}
+              to={`/repos/${repoId}/reviews/${pr_number}?id=${rev.id}`}
+              className="flex items-center justify-between py-2 px-3 hover:bg-accent/20 rounded-lg group/rev transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 uppercase tracking-tighter">
+                  V{rev.revision}
+                </span>
+                <span className="text-xs text-muted-foreground">Re-review</span>
+                {idx === revisions.length - 1 && (
+                  <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase tracking-tighter">
+                    Latest
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1 opacity-70 scale-90 origin-right">
+                  <SeverityChips counts={rev.severity_counts} />
+                </div>
+                <span className="text-[10px] text-muted-foreground/40 font-mono">
+                  {new Date(rev.reviewed_at).toLocaleDateString()}
+                </span>
+                <ChevronRight className="h-3 w-3 text-muted-foreground/20 group-hover/rev:text-muted-foreground/50" />
+              </div>
+            </Link>
+          ))}
+        </motion.div>
+      )}
     </motion.div>
   )
 }
@@ -337,8 +405,8 @@ export default function RepoDetail() {
           <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
             {reviews && reviews.length > 0 ? (
               <motion.div variants={stagger} className="divide-y divide-border/20">
-                {reviews.slice(0, 3).map(r => (
-                  <ReviewRow key={r.id} review={r} repoId={repoId!} />
+                {groupReviews(reviews).slice(0, 5).map(g => (
+                  <GroupedReviewRow key={g.pr_number} group={g} repoId={repoId!} />
                 ))}
               </motion.div>
             ) : (
