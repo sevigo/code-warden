@@ -288,7 +288,7 @@ func (h *DashboardHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
 		out = append(out, reviewDTO{
 			ID:             rev.ID,
 			PRNumber:       rev.PRNumber,
-			PRTitle:        fmt.Sprintf("PR #%d", rev.PRNumber),
+			PRTitle:        formatPRTitle(rev.PRNumber),
 			HeadSHA:        rev.HeadSHA,
 			Status:         "reviewed",
 			SeverityCounts: counts,
@@ -308,6 +308,10 @@ func getTotalFromCounts(counts map[string]any) int {
 	medium, _ := counts["medium"].(int)
 	low, _ := counts["low"].(int)
 	return critical + high + medium + low
+}
+
+func formatPRTitle(prNum int) string {
+	return fmt.Sprintf("PR #%d", prNum)
 }
 
 func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
@@ -388,7 +392,7 @@ func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, map[string]any{
 		"id":              rev.ID,
 		"pr_number":       rev.PRNumber,
-		"pr_title":        fmt.Sprintf("PR #%d", rev.PRNumber),
+		"pr_title":        formatPRTitle(rev.PRNumber),
 		"head_sha":        rev.HeadSHA,
 		"status":          "reviewed",
 		"severity_counts": counts,

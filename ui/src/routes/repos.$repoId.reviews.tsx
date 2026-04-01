@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
@@ -55,6 +55,8 @@ export default function ReviewsPage() {
     if (filter === 'all') return true
     return r.severity_counts[filter] > 0
   }) ?? []
+
+  const grouped = useMemo(() => groupReviews(filtered), [filtered])
 
   const repoName = repo?.full_name.split('/')[1] ?? '…'
 
@@ -134,7 +136,7 @@ export default function ReviewsPage() {
               </tr>
             </thead>
             <motion.tbody variants={stagger}>
-              {groupReviews(filtered).map(group => (
+              {grouped.map(group => (
                 <ReviewGroupRows key={group.pr_number} group={group} repoId={repoId!} />
               ))}
             </motion.tbody>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
@@ -235,6 +235,8 @@ export default function RepoDetail() {
     enabled: scanState?.status === 'completed',
   })
 
+  const groupedReviews = useMemo(() => (reviews ? groupReviews(reviews) : []), [reviews])
+
   const triggerScan = useMutation({
     mutationFn: () => api.repos.scan(id),
     onSuccess: () => {
@@ -403,9 +405,9 @@ export default function RepoDetail() {
             <Link to={`/repos/${repoId}/reviews`} className="text-xs text-primary hover:underline">View all →</Link>
           </div>
           <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
-            {reviews && reviews.length > 0 ? (
+            {groupedReviews.length > 0 ? (
               <motion.div variants={stagger} className="divide-y divide-border/20">
-                {groupReviews(reviews).slice(0, 5).map(g => (
+                {groupedReviews.slice(0, 5).map(g => (
                   <GroupedReviewRow key={g.pr_number} group={g} repoId={repoId!} />
                 ))}
               </motion.div>
