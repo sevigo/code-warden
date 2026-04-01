@@ -13,16 +13,16 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
 const (
-	severityCritical   = "critical"
-	severityHigh       = "high"
-	severityMedium     = "medium"
-	severityLow        = "low"
-	severitySuggestion = "suggestion"
-	statusError        = "error"
+	severityCritical = "critical"
+	severityHigh     = "high"
+	severityMedium   = "medium"
+	severityLow      = "low"
+	statusError      = "error"
 )
 
 // DashboardHandler serves dashboard, stats, reviews, jobs, and config endpoints.
@@ -164,9 +164,10 @@ func (h *DashboardHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
 		"reviews_this_week": reviewStats.ReviewsThisWeek,
 		"total_findings":    0,
 		"findings_by_severity": map[string]int{
-			"critical":   0,
-			"warning":    0,
-			"suggestion": 0,
+			"critical": 0,
+			"high":     0,
+			"medium":   0,
+			"low":      0,
 		},
 		"avg_findings_per_review": 0.0,
 		"jobs_running":            0,
@@ -258,22 +259,44 @@ func (h *DashboardHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
 		TotalFindings  int       `json:"total_findings"`
 		ReviewedAt     time.Time `json:"reviewed_at"`
 		CreatedAt      time.Time `json:"created_at"`
+		Revision       int       `json:"revision"`
+		IsReReview     bool      `json:"is_re_review"`
+	}
+
+	// Map PR number to list of reviews to compute revision numbers
+	prReviews := make(map[int][]*core.Review)
+	for i := len(reviews) - 1; i >= 0; i-- {
+		rev := reviews[i]
+		prReviews[rev.PRNumber] = append(prReviews[rev.PRNumber], rev)
 	}
 
 	out := make([]reviewDTO, 0, len(reviews))
 	for _, rev := range reviews {
 		counts := parseSeverityCounts(rev.ReviewContent)
 		total := getTotalFromCounts(counts)
+
+		// Find revision number (1-based index)
+		revList := prReviews[rev.PRNumber]
+		revision := 1
+		for i, r := range revList {
+			if r.ID == rev.ID {
+				revision = i + 1
+				break
+			}
+		}
+
 		out = append(out, reviewDTO{
 			ID:             rev.ID,
 			PRNumber:       rev.PRNumber,
-			PRTitle:        fmt.Sprintf("PR #%d", rev.PRNumber),
+			PRTitle:        formatPRTitle(rev.PRNumber),
 			HeadSHA:        rev.HeadSHA,
 			Status:         "reviewed",
 			SeverityCounts: counts,
 			TotalFindings:  total,
 			ReviewedAt:     rev.CreatedAt,
 			CreatedAt:      rev.CreatedAt,
+			Revision:       revision,
+			IsReReview:     revision > 1,
 		})
 	}
 	h.writeJSON(w, out)
@@ -281,9 +304,14 @@ func (h *DashboardHandler) ListReviews(w http.ResponseWriter, r *http.Request) {
 
 func getTotalFromCounts(counts map[string]any) int {
 	critical, _ := counts["critical"].(int)
-	warning, _ := counts["warning"].(int)
-	suggestion, _ := counts["suggestion"].(int)
-	return critical + warning + suggestion
+	high, _ := counts["high"].(int)
+	medium, _ := counts["medium"].(int)
+	low, _ := counts["low"].(int)
+	return critical + high + medium + low
+}
+
+func formatPRTitle(prNum int) string {
+	return fmt.Sprintf("PR #%d", prNum)
 }
 
 func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +322,7 @@ func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid repo id", http.StatusBadRequest)
 		return
 	}
-	prNum, err := strconv.Atoi(chi.URLParam(r, "prNum"))
+	prNum, err := strconv.Atoi(chi.URLParam(r, "prNumber"))
 	if err != nil {
 		http.Error(w, "invalid pr number", http.StatusBadRequest)
 		return
@@ -306,8 +334,30 @@ func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rev, err := h.store.GetLatestReviewForPR(ctx, repo.FullName, prNum)
+	// Fetch ALL reviews for this PR to show history
+	allReviews, err := h.store.GetAllReviewsForPR(ctx, repo.FullName, prNum)
 	if err != nil {
+		http.Error(w, "review not found", http.StatusNotFound)
+		return
+	}
+
+	// Determine which review to show
+	var rev *core.Review
+	specificID, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if specificID > 0 {
+		for _, r := range allReviews {
+			if r.ID == specificID {
+				rev = r
+				break
+			}
+		}
+	}
+	if rev == nil && len(allReviews) > 0 {
+		// Default to latest
+		rev = allReviews[len(allReviews)-1]
+	}
+
+	if rev == nil {
 		http.Error(w, "review not found", http.StatusNotFound)
 		return
 	}
@@ -316,10 +366,33 @@ func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 	findings := parseFindings(rev.ReviewContent)
 	total := getTotalFromCounts(counts)
 
+	type historyDTO struct {
+		ID        int64     `json:"id"`
+		HeadSHA   string    `json:"head_sha"`
+		CreatedAt time.Time `json:"created_at"`
+		Revision  int       `json:"revision"`
+		IsLatest  bool      `json:"is_latest"`
+		TotalCrit int       `json:"total_critical"`
+	}
+
+	history := make([]historyDTO, 0, len(allReviews))
+	for i, r := range allReviews {
+		c := parseSeverityCounts(r.ReviewContent)
+		crit, _ := c["critical"].(int)
+		history = append(history, historyDTO{
+			ID:        r.ID,
+			HeadSHA:   r.HeadSHA,
+			CreatedAt: r.CreatedAt,
+			Revision:  i + 1,
+			IsLatest:  i == len(allReviews)-1,
+			TotalCrit: crit,
+		})
+	}
+
 	h.writeJSON(w, map[string]any{
 		"id":              rev.ID,
 		"pr_number":       rev.PRNumber,
-		"pr_title":        fmt.Sprintf("PR #%d", rev.PRNumber),
+		"pr_title":        formatPRTitle(rev.PRNumber),
 		"head_sha":        rev.HeadSHA,
 		"status":          "reviewed",
 		"severity_counts": counts,
@@ -327,6 +400,8 @@ func (h *DashboardHandler) GetReview(w http.ResponseWriter, r *http.Request) {
 		"findings":        findings,
 		"reviewed_at":     rev.CreatedAt,
 		"created_at":      rev.CreatedAt,
+		"history":         history,
+		"revision":        len(history), // Actually we should find current revision index
 	})
 }
 
@@ -352,7 +427,7 @@ func (h *DashboardHandler) SubmitFeedback(w http.ResponseWriter, r *http.Request
 // Severity values from prompts: Critical, High, Medium, Low.
 // Maps to UI categories: critical, warning, suggestion.
 func parseSeverityCounts(content string) map[string]any {
-	counts := map[string]int{"critical": 0, "warning": 0, "suggestion": 0}
+	counts := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0}
 
 	lower := strings.ToLower(content)
 	pos := 0
@@ -369,20 +444,23 @@ func parseSeverityCounts(content string) map[string]any {
 		end += start
 		sev := strings.TrimSpace(lower[start+len("<severity>") : end])
 		switch sev {
-		case severityCritical, severityHigh:
+		case severityCritical:
 			counts[severityCritical]++
+		case severityHigh:
+			counts[severityHigh]++
 		case severityMedium:
-			counts["warning"]++
-		case severityLow, severitySuggestion:
-			counts[severitySuggestion]++
+			counts[severityMedium]++
+		case severityLow, "suggestion":
+			counts[severityLow]++
 		}
 		pos = end + len("</severity>")
 	}
 
 	return map[string]any{
-		"critical":   counts["critical"],
-		"warning":    counts["warning"],
-		"suggestion": counts["suggestion"],
+		"critical": counts["critical"],
+		"high":     counts["high"],
+		"medium":   counts["medium"],
+		"low":      counts["low"],
 	}
 }
 
@@ -438,12 +516,14 @@ func parseSuggestionBlock(block string, idx int) map[string]any {
 	}
 
 	sev := strings.ToLower(getTag("severity"))
-	uiSev := severitySuggestion
+	uiSev := severityLow
 	switch sev {
-	case severityCritical, severityHigh:
+	case severityCritical:
 		uiSev = severityCritical
+	case severityHigh:
+		uiSev = severityHigh
 	case severityMedium:
-		uiSev = "warning"
+		uiSev = severityMedium
 	}
 
 	lineStr := getTag("line")
@@ -473,6 +553,35 @@ func parseSuggestionBlock(block string, idx int) map[string]any {
 }
 
 func buildTitle(comment string, idx int) string {
+	comment = strings.TrimSpace(comment)
+
+	// Strip markdown bold markers if present at start: "**Observation:** info" -> "Observation: info"
+	if strings.HasPrefix(comment, "**") {
+		if end := strings.Index(comment[2:], "**"); end != -1 {
+			// +4 to skip the two leading and two trailing asterisks
+			content := comment[2 : end+2]
+			rest := strings.TrimSpace(comment[end+4:])
+			if rest != "" {
+				comment = content + ": " + rest
+			} else {
+				comment = content
+			}
+		}
+	}
+
+	// Strip leading emoji if present: "🔍 **Observation:**" -> "**Observation:**"
+	// (Simple check for common review emojis)
+	emojis := []string{"🔍", "💡", "📖", "🔴", "🟠", "🟡", "🟢", "✅", "🚫", "💬"}
+	for _, e := range emojis {
+		if strings.HasPrefix(comment, e) {
+			comment = strings.TrimSpace(strings.TrimPrefix(comment, e))
+			break
+		}
+	}
+
+	// Final cleanup - if it still has markdown markers in the title (like logic above missed something)
+	comment = strings.ReplaceAll(comment, "**", "")
+
 	// Use first sentence as title, capped at 80 chars
 	if i := strings.IndexAny(comment, ".!?\n"); i > 0 && i < 80 {
 		return strings.TrimSpace(comment[:i])
