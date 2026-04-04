@@ -4,8 +4,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/llms"
+
+	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // SearchCodeFunc is a callback for searching code in the RAG service.

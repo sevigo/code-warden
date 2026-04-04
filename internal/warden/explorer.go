@@ -81,12 +81,6 @@ type GetStructureParams struct {
 	EmbedderModel  string `json:"embedder_model"`
 }
 
-// exploreLoopContext holds context for tools during exploration.
-type exploreLoopContext struct {
-	collectionName string
-	embedderModel  string
-}
-
 // ExploreCodebase analyzes the codebase and generates design documents.
 func (e *Explorer) ExploreCodebase(ctx context.Context, collectionName, repoOwner, repoName, repoPath string) (*DesignDocuments, error) {
 	e.cfg.Logger.Info("starting codebase exploration",
@@ -141,59 +135,68 @@ func (e *Explorer) parseExplorationResult(response string, repoOwner, repoName s
 
 	blocks := extractDocumentBlocks(response)
 	for _, block := range blocks {
-		docTypeStr, ok := block["type"].(string)
-		if !ok {
-			continue
+		doc := parseDocumentBlock(block, docTypeMap, repoOwner, repoName)
+		if doc != nil {
+			docs.Documents = append(docs.Documents, doc)
 		}
-
-		docType, valid := docTypeMap[docTypeStr]
-		if !valid {
-			continue
-		}
-
-		title, _ := block["title"].(string)
-		content, _ := block["content"].(string)
-		summary, _ := block["summary"].(string)
-		confidence, _ := block["confidence"].(float64)
-		generatedBy, _ := block["generated_by"].(string)
-
-		var symbols []string
-		if s, ok := block["symbols"].([]any); ok {
-			for _, v := range s {
-				if sym, ok := v.(string); ok {
-					symbols = append(symbols, sym)
-				}
-			}
-		}
-
-		var directories []string
-		if d, ok := block["directories"].([]any); ok {
-			for _, v := range d {
-				if dir, ok := v.(string); ok {
-					directories = append(directories, dir)
-				}
-			}
-		}
-
-		doc := &DesignDocument{
-			ID:          fmt.Sprintf("%s-%s-%d", docType, repoOwner, time.Now().UnixNano()),
-			Type:        docType,
-			Title:       title,
-			Content:     content,
-			Summary:     summary,
-			Symbols:     symbols,
-			Directories: directories,
-			Confidence:  confidence,
-			GeneratedAt: time.Now(),
-			GeneratedBy: generatedBy,
-			RepoOwner:   repoOwner,
-			RepoName:    repoName,
-		}
-
-		docs.Documents = append(docs.Documents, doc)
 	}
 
 	return docs
+}
+
+// parseDocumentBlock parses a single document block into a DesignDocument.
+func parseDocumentBlock(block map[string]any, docTypeMap map[string]DesignDocumentType, repoOwner, repoName string) *DesignDocument {
+	docTypeStr, ok := block["type"].(string)
+	if !ok {
+		return nil
+	}
+
+	docType, valid := docTypeMap[docTypeStr]
+	if !valid {
+		return nil
+	}
+
+	title, _ := block["title"].(string)
+	content, _ := block["content"].(string)
+	summary, _ := block["summary"].(string)
+	confidence, _ := block["confidence"].(float64)
+	generatedBy, _ := block["generated_by"].(string)
+
+	symbols := parseStringSlice(block["symbols"])
+	directories := parseStringSlice(block["directories"])
+
+	return &DesignDocument{
+		ID:          fmt.Sprintf("%s-%s-%d", docType, repoOwner, time.Now().UnixNano()),
+		Type:        docType,
+		Title:       title,
+		Content:     content,
+		Summary:     summary,
+		Symbols:     symbols,
+		Directories: directories,
+		Confidence:  confidence,
+		GeneratedAt: time.Now(),
+		GeneratedBy: generatedBy,
+		RepoOwner:   repoOwner,
+		RepoName:    repoName,
+	}
+}
+
+// parseStringSlice extracts a string slice from an interface slice.
+func parseStringSlice(v any) []string {
+	if v == nil {
+		return nil
+	}
+	slice, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var result []string
+	for _, item := range slice {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // extractDocumentBlocks parses document blocks from agent response.
@@ -202,42 +205,50 @@ func extractDocumentBlocks(response string) []map[string]any {
 
 	patterns := []string{"<document", "<design_doc"}
 	for _, pattern := range patterns {
-		startIdx := 0
-		for {
-			idx := strings.Index(response[startIdx:], pattern)
-			if idx == -1 {
-				break
-			}
+		blocks = append(blocks, extractBlocksForPattern(response, pattern)...)
+	}
 
-			docStart := startIdx + idx
-			endTag := ">"
-			endIdx := strings.Index(response[docStart:], endTag)
-			if endIdx == -1 {
-				break
-			}
+	return blocks
+}
 
-			closeTag := "</document>"
-			closeIdx := strings.Index(response[docStart:], closeTag)
-			if closeIdx == -1 {
-				closeTag = "</design_doc>"
-				closeIdx = strings.Index(response[docStart:], closeTag)
-				if closeIdx == -1 {
-					break
-				}
-			}
+// extractBlocksForPattern extracts JSON blocks for a given tag pattern.
+func extractBlocksForPattern(response, pattern string) []map[string]any {
+	var blocks []map[string]any
+	startIdx := 0
 
-			jsonContent := response[docStart+endIdx+1 : docStart+closeIdx]
-			jsonContent = strings.TrimSpace(jsonContent)
-
-			if strings.HasPrefix(jsonContent, "{") {
-				var block map[string]any
-				if err := json.Unmarshal([]byte(jsonContent), &block); err == nil {
-					blocks = append(blocks, block)
-				}
-			}
-
-			startIdx = docStart + closeIdx + len(closeTag)
+	for {
+		idx := strings.Index(response[startIdx:], pattern)
+		if idx == -1 {
+			break
 		}
+
+		docStart := startIdx + idx
+		endIdx := strings.Index(response[docStart:], ">")
+		if endIdx == -1 {
+			break
+		}
+
+		closeTag := "</document>"
+		closeIdx := strings.Index(response[docStart:], closeTag)
+		if closeIdx == -1 {
+			closeTag = "</design_doc>"
+			closeIdx = strings.Index(response[docStart:], closeTag)
+			if closeIdx == -1 {
+				break
+			}
+		}
+
+		jsonContent := response[docStart+endIdx+1 : docStart+closeIdx]
+		jsonContent = strings.TrimSpace(jsonContent)
+
+		if strings.HasPrefix(jsonContent, "{") {
+			var block map[string]any
+			if err := json.Unmarshal([]byte(jsonContent), &block); err == nil {
+				blocks = append(blocks, block)
+			}
+		}
+
+		startIdx = docStart + closeIdx + len(closeTag)
 	}
 
 	return blocks
