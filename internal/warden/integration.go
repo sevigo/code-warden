@@ -25,8 +25,8 @@ type Integration struct {
 type IntegrationConfig struct {
 	LLM           llms.Model
 	VectorStore   storage.VectorStore
-	Store         storage.Store
 	EmbedderModel string
+	MaxIterations int
 	Logger        *slog.Logger
 	SearchCode    SearchCodeFunc
 	GetStructure  GetStructureFunc
@@ -42,11 +42,11 @@ func NewIntegration(cfg IntegrationConfig) (*Integration, error) {
 	explorerCfg := ExplorerConfig{
 		LLM:           cfg.LLM,
 		VectorStore:   cfg.VectorStore,
-		Store:         cfg.Store,
 		Logger:        cfg.Logger,
 		EmbedderModel: cfg.EmbedderModel,
 		SearchCode:    cfg.SearchCode,
 		GetStructure:  cfg.GetStructure,
+		MaxIterations: cfg.MaxIterations,
 	}
 
 	explorer, err := NewExplorer(explorerCfg)

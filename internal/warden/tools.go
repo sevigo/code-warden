@@ -45,6 +45,10 @@ func (t *SearchCodeTool) ParametersSchema() map[string]any {
 				"type":        "string",
 				"description": "The search query describing what code to find",
 			},
+			"collection_name": map[string]any{
+				"type":        "string",
+				"description": "The vector store collection name for the repository",
+			},
 			"limit": map[string]any{
 				"type":        "integer",
 				"description": "Maximum number of results to return (default 5)",
@@ -56,7 +60,7 @@ func (t *SearchCodeTool) ParametersSchema() map[string]any {
 				"enum":        []string{"code", "definition", "arch", "docs"},
 			},
 		},
-		"required": []string{"query"},
+		"required": []string{"query", "collection_name"},
 	}
 }
 
@@ -151,11 +155,16 @@ func (t *GetStructureTool) ParametersSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"collection_name": map[string]any{
+				"type":        "string",
+				"description": "The vector store collection name for the repository",
+			},
 			"root": map[string]any{
 				"type":        "string",
 				"description": "Root directory to start from (optional, defaults to project root)",
 			},
 		},
+		"required": []string{"collection_name"},
 	}
 }
 

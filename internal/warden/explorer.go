@@ -19,18 +19,19 @@ import (
 type ExplorerConfig struct {
 	LLM           llms.Model
 	VectorStore   storage.VectorStore
-	Store         storage.Store
 	Logger        *slog.Logger
 	EmbedderModel string
 	SearchCode    SearchCodeFunc
 	GetStructure  GetStructureFunc
+	MaxIterations int
 }
 
 // Explorer uses an embedded agent to analyze codebase patterns and generate design documents.
 type Explorer struct {
-	cfg        ExplorerConfig
-	registry   *agent.Registry
-	governance *agent.Governance
+	cfg           ExplorerConfig
+	registry      *agent.Registry
+	governance    *agent.Governance
+	maxIterations int
 }
 
 // NewExplorer creates a new codebase explorer.
@@ -41,6 +42,19 @@ func NewExplorer(cfg ExplorerConfig) (*Explorer, error) {
 
 	if cfg.LLM == nil {
 		return nil, fmt.Errorf("LLM is required for explorer")
+	}
+
+	if cfg.SearchCode == nil {
+		return nil, fmt.Errorf("SearchCode callback is required")
+	}
+
+	if cfg.GetStructure == nil {
+		return nil, fmt.Errorf("GetStructure callback is required")
+	}
+
+	maxIter := cfg.MaxIterations
+	if maxIter <= 0 {
+		maxIter = 20
 	}
 
 	registry := agent.NewRegistry()
@@ -61,9 +75,10 @@ func NewExplorer(cfg ExplorerConfig) (*Explorer, error) {
 	governance := agent.NewGovernance(permissionCheck)
 
 	return &Explorer{
-		cfg:        cfg,
-		registry:   registry,
-		governance: governance,
+		cfg:           cfg,
+		registry:      registry,
+		governance:    governance,
+		maxIterations: maxIter,
 	}, nil
 }
 
@@ -77,7 +92,7 @@ func (e *Explorer) ExploreCodebase(ctx context.Context, collectionName, repoOwne
 
 	loop, err := agent.NewAgentLoop(e.cfg.LLM, e.registry,
 		agent.WithLoopSystemPrompt(systemPrompt),
-		agent.WithLoopMaxIterations(20),
+		agent.WithLoopMaxIterations(e.maxIterations),
 		agent.WithLoopGovernance(e.governance),
 	)
 	if err != nil {
@@ -242,8 +257,12 @@ func extractBlocksForPattern(response, pattern string) []map[string]any {
 
 // IndexDesignDocuments indexes the design documents in the vector store.
 func (e *Explorer) IndexDesignDocuments(ctx context.Context, collectionName string, docs *DesignDocuments) error {
-	if len(docs.Documents) == 0 {
+	if docs == nil || len(docs.Documents) == 0 {
 		return nil
+	}
+
+	if e.cfg.VectorStore == nil {
+		return fmt.Errorf("vector store is not configured")
 	}
 
 	scopedStore := e.cfg.VectorStore.ForRepo(collectionName, e.cfg.EmbedderModel)

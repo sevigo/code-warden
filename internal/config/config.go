@@ -424,6 +424,31 @@ func (c *WardenConfig) GetDesignDocTypes() []string {
 	return result
 }
 
+// Validate validates the warden configuration.
+func (c *WardenConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+
+	if c.MaxIterations < 0 {
+		return fmt.Errorf("warden.max_iterations must be >= 0, got: %d", c.MaxIterations)
+	}
+
+	for _, t := range c.DesignDocsTypes {
+		validTypes := map[string]bool{
+			"testing_patterns": true,
+			"dependencies":     true,
+			"conventions":      true,
+			"api_patterns":     true,
+		}
+		if !validTypes[t] {
+			return fmt.Errorf("warden.design_docs_types contains invalid type: %s", t)
+		}
+	}
+
+	return nil
+}
+
 type DBConfig struct {
 	Driver          string        `mapstructure:"driver"`
 	Host            string        `mapstructure:"host"`
@@ -572,6 +597,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, err.Error())
 	}
 	if err := c.validateStorage(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := c.Warden.Validate(); err != nil {
 		errs = append(errs, err.Error())
 	}
 

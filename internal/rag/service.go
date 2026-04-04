@@ -569,11 +569,16 @@ func (r *ragService) generateDesignDocuments(ctx context.Context, repo *storage.
 	}
 
 	// Create warden integration
+	maxIterations := r.cfg.Warden.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 20
+	}
+
 	integration, err := warden.NewIntegration(warden.IntegrationConfig{
 		LLM:           r.generatorLLM,
 		VectorStore:   r.vectorStore,
-		Store:         r.store,
 		EmbedderModel: r.cfg.AI.EmbedderModel,
+		MaxIterations: maxIterations,
 		Logger:        r.logger.With("component", "warden"),
 		SearchCode:    searchCallback,
 		GetStructure:  structureCallback,
