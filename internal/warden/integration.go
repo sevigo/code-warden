@@ -17,12 +17,8 @@ type GetStructureFunc func(ctx context.Context, collectionName, root string) (st
 
 // Integration provides a high-level interface for agent-enhanced indexing.
 type Integration struct {
-	explorer      *Explorer
-	vectorStore   storage.VectorStore
-	store         storage.Store
-	llm           llms.Model
-	embedderModel string
-	logger        *slog.Logger
+	explorer *Explorer
+	logger   *slog.Logger
 }
 
 // IntegrationConfig holds configuration for the warden integration.
@@ -59,12 +55,8 @@ func NewIntegration(cfg IntegrationConfig) (*Integration, error) {
 	}
 
 	return &Integration{
-		explorer:      explorer,
-		vectorStore:   cfg.VectorStore,
-		store:         cfg.Store,
-		llm:           cfg.LLM,
-		embedderModel: cfg.EmbedderModel,
-		logger:        cfg.Logger,
+		explorer: explorer,
+		logger:   cfg.Logger,
 	}, nil
 }
 

@@ -39,6 +39,10 @@ func NewExplorer(cfg ExplorerConfig) (*Explorer, error) {
 		cfg.Logger = slog.Default()
 	}
 
+	if cfg.LLM == nil {
+		return nil, fmt.Errorf("LLM is required for explorer")
+	}
+
 	registry := agent.NewRegistry()
 	toolList := buildExplorerTools(cfg)
 	for _, t := range toolList {
@@ -48,10 +52,8 @@ func NewExplorer(cfg ExplorerConfig) (*Explorer, error) {
 	}
 
 	allowedTools := map[string]bool{
-		"search_code":      true,
-		"get_structure":    true,
-		"get_symbol":       true,
-		"get_arch_context": true,
+		"search_code":   true,
+		"get_structure": true,
 	}
 	permissionCheck := &agent.PermissionCheck{
 		Allowed: allowedTools,
@@ -63,22 +65,6 @@ func NewExplorer(cfg ExplorerConfig) (*Explorer, error) {
 		registry:   registry,
 		governance: governance,
 	}, nil
-}
-
-// SearchCodeParams holds parameters for search_code tool.
-type SearchCodeParams struct {
-	Query          string `json:"query"`
-	Limit          int    `json:"limit,omitempty"`
-	ChunkType      string `json:"chunk_type,omitempty"`
-	CollectionName string `json:"collection_name"`
-	EmbedderModel  string `json:"embedder_model"`
-}
-
-// GetStructureParams holds parameters for get_structure tool.
-type GetStructureParams struct {
-	Root           string `json:"root,omitempty"`
-	CollectionName string `json:"collection_name"`
-	EmbedderModel  string `json:"embedder_model"`
 }
 
 // ExploreCodebase analyzes the codebase and generates design documents.
@@ -101,8 +87,8 @@ func (e *Explorer) ExploreCodebase(ctx context.Context, collectionName, repoOwne
 	task := agent.Task{
 		ID:          fmt.Sprintf("explore-%s-%s", repoOwner, repoName),
 		Description: "Explore codebase patterns and generate design documents",
-		Context: fmt.Sprintf("Repository: %s/%s\nCollection: %s\nPath: %s",
-			repoOwner, repoName, collectionName, repoPath),
+		Context: fmt.Sprintf("Repository: %s/%s\nCollection: %s\nPath: %s\n\nIMPORTANT: Always pass collection_name=\"%s\" to all tool calls.",
+			repoOwner, repoName, collectionName, repoPath, collectionName),
 		Priority: 5,
 	}
 
@@ -318,9 +304,9 @@ func buildExplorationPrompt(repoPath, collectionName string) string {
 
 ## Available Tools
 - search_code(query, limit, chunk_type): Search code semantically
-- get_structure(): Get project structure
-- get_symbol(name): Get definition of a symbol
-- get_arch_context(directory): Get architectural summary
+  IMPORTANT: Always include collection_name parameter
+- get_structure(root): Get project structure
+  IMPORTANT: Always include collection_name parameter
 
 ## Documents to Generate
 
@@ -371,12 +357,14 @@ For each document you discover, output a JSON block:
 
 ## Instructions
 1. Use search_code to find patterns (e.g., "assert", "mock", "test")
-2. Read relevant code sections
+   Example: search_code(query="assert.Equal", collection_name="%s", limit=10)
+2. Use get_structure to understand project layout
+   Example: get_structure(collection_name="%s")
 3. Analyze patterns across multiple files
 4. Generate comprehensive documents
 5. Be specific - cite actual libraries and patterns found
 
-Start exploring now.`, repoPath, collectionName)
+Start exploring now.`, repoPath, collectionName, collectionName, collectionName)
 }
 
 func (d *DesignDocuments) String() string {
