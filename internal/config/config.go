@@ -29,6 +29,7 @@ type Config struct {
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Logging  logger.Config  `mapstructure:"logging"`
 	Features FeaturesConfig `mapstructure:"features"`
+	Warden   WardenConfig   `mapstructure:"warden"`
 }
 
 // AgentConfig holds configuration for the autonomous agent system.
@@ -379,6 +380,75 @@ type FeaturesConfig struct {
 	EnableGraphAnalysis      bool `mapstructure:"enable_graph_analysis"`
 }
 
+// WardenConfig holds configuration for warden agent integration.
+type WardenConfig struct {
+	// Enabled determines if warden agent functionality is active.
+	Enabled bool `mapstructure:"enabled"`
+
+	// DesignDocs enables design document generation during indexing.
+	DesignDocs bool `mapstructure:"design_docs"`
+
+	// DesignDocsTypes specifies which design document types to generate.
+	// Valid types: testing_patterns, dependencies, conventions, api_patterns
+	// Default: all types
+	DesignDocsTypes []string `mapstructure:"design_docs_types"`
+
+	// MaxIterations limits agent exploration iterations.
+	MaxIterations int `mapstructure:"max_iterations"`
+}
+
+// GetDesignDocTypes returns validated design document types.
+func (c *WardenConfig) GetDesignDocTypes() []string {
+	validTypes := map[string]bool{
+		"testing_patterns": true,
+		"dependencies":     true,
+		"conventions":      true,
+		"api_patterns":     true,
+	}
+
+	if len(c.DesignDocsTypes) == 0 {
+		return []string{"testing_patterns", "dependencies", "conventions", "api_patterns"}
+	}
+
+	var result []string
+	for _, t := range c.DesignDocsTypes {
+		if validTypes[t] {
+			result = append(result, t)
+		}
+	}
+
+	if len(result) == 0 {
+		return []string{"testing_patterns", "dependencies", "conventions", "api_patterns"}
+	}
+
+	return result
+}
+
+// Validate validates the warden configuration.
+func (c *WardenConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+
+	if c.MaxIterations < 0 {
+		return fmt.Errorf("warden.max_iterations must be >= 0, got: %d", c.MaxIterations)
+	}
+
+	for _, t := range c.DesignDocsTypes {
+		validTypes := map[string]bool{
+			"testing_patterns": true,
+			"dependencies":     true,
+			"conventions":      true,
+			"api_patterns":     true,
+		}
+		if !validTypes[t] {
+			return fmt.Errorf("warden.design_docs_types contains invalid type: %s", t)
+		}
+	}
+
+	return nil
+}
+
 type DBConfig struct {
 	Driver          string        `mapstructure:"driver"`
 	Host            string        `mapstructure:"host"`
@@ -495,6 +565,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("features.enable_binary_quantization", true)
 	v.SetDefault("features.enable_graph_analysis", true)
 
+	// Warden
+	v.SetDefault("warden.enabled", false)
+	v.SetDefault("warden.design_docs", true)
+	v.SetDefault("warden.max_iterations", 20)
+
 	// Agent
 	v.SetDefault("agent.enabled", false)
 	v.SetDefault("agent.provider", "opencode")
@@ -522,6 +597,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, err.Error())
 	}
 	if err := c.validateStorage(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if err := c.Warden.Validate(); err != nil {
 		errs = append(errs, err.Error())
 	}
 

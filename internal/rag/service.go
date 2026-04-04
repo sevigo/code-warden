@@ -32,6 +32,7 @@ import (
 	questionpkg "github.com/sevigo/code-warden/internal/rag/question"
 	reviewpkg "github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/storage"
+	"github.com/sevigo/code-warden/internal/warden"
 )
 
 // Service is the main RAG pipeline interface for indexing, review, and Q&A.
@@ -440,6 +441,14 @@ func (r *ragService) SetupRepoContext(ctx context.Context, repoConfig *core.Repo
 			r.logger.Info("✅ Global Project Context document saved to database", "length", len(projectContext))
 		}
 	}
+
+	// Generate design documents using warden agent (if enabled)
+	if r.cfg.Warden.Enabled && r.cfg.Warden.DesignDocs {
+		if err := r.generateDesignDocuments(ctx, repo); err != nil {
+			r.logger.Warn("failed to generate design documents, continuing without them", "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -511,4 +520,84 @@ func (r *ragService) GenerateArchSummaries(ctx context.Context, collectionName, 
 // GenerateProjectContext synthesizes all architectural summaries into a global project context.
 func (r *ragService) GenerateProjectContext(ctx context.Context, collectionName, embedderModelName string) (string, error) {
 	return r.contextBuilder.GenerateProjectContext(ctx, collectionName, embedderModelName)
+}
+
+// generateDesignDocuments uses warden agent to generate design documents.
+func (r *ragService) generateDesignDocuments(ctx context.Context, repo *storage.Repository) error {
+	parts := strings.Split(repo.FullName, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid repo full name: %s", repo.FullName)
+	}
+	repoOwner := parts[0]
+	repoName := parts[1]
+
+	r.logger.Info("🔍 Starting design document generation", "repo", repo.FullName)
+
+	// Create search callback
+	searchCallback := func(ctx context.Context, collectionName, query string, limit int, chunkType string) ([]map[string]any, error) {
+		scopedStore := r.vectorStore.ForRepo(collectionName, r.cfg.AI.EmbedderModel)
+
+		var opts []vectorstores.Option
+		if chunkType != "" {
+			opts = append(opts, vectorstores.WithFilters(map[string]any{
+				"chunk_type": chunkType,
+			}))
+		}
+
+		docs, err := scopedStore.SimilaritySearch(ctx, query, limit, opts...)
+		if err != nil {
+			return nil, err
+		}
+
+		results := make([]map[string]any, len(docs))
+		for i, doc := range docs {
+			result := map[string]any{
+				"content":  doc.PageContent,
+				"metadata": doc.Metadata,
+			}
+			if source, ok := doc.Metadata["source"].(string); ok {
+				result["source"] = source
+			}
+			results[i] = result
+		}
+		return results, nil
+	}
+
+	// Create structure callback
+	structureCallback := func(ctx context.Context, collectionName, root string) (string, error) {
+		return r.ExplainPath(ctx, collectionName, r.cfg.AI.EmbedderModel, root)
+	}
+
+	// Create warden integration
+	maxIterations := r.cfg.Warden.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 20
+	}
+
+	integration, err := warden.NewIntegration(warden.IntegrationConfig{
+		LLM:           r.generatorLLM,
+		VectorStore:   r.vectorStore,
+		EmbedderModel: r.cfg.AI.EmbedderModel,
+		MaxIterations: maxIterations,
+		Logger:        r.logger.With("component", "warden"),
+		SearchCode:    searchCallback,
+		GetStructure:  structureCallback,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create warden integration: %w", err)
+	}
+
+	// Run design document generation
+	docs, err := integration.RunDesignDocumentGeneration(ctx, repo.QdrantCollectionName, repoOwner, repoName, repo.ClonePath)
+	if err != nil {
+		return err
+	}
+
+	if docs != nil {
+		r.logger.Info("✅ Design documents generated",
+			"repo", repo.FullName,
+			"count", len(docs.Documents))
+	}
+
+	return nil
 }
