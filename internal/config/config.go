@@ -29,6 +29,7 @@ type Config struct {
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Logging  logger.Config  `mapstructure:"logging"`
 	Features FeaturesConfig `mapstructure:"features"`
+	Warden   WardenConfig   `mapstructure:"warden"`
 }
 
 // AgentConfig holds configuration for the autonomous agent system.
@@ -379,6 +380,50 @@ type FeaturesConfig struct {
 	EnableGraphAnalysis      bool `mapstructure:"enable_graph_analysis"`
 }
 
+// WardenConfig holds configuration for warden agent integration.
+type WardenConfig struct {
+	// Enabled determines if warden agent functionality is active.
+	Enabled bool `mapstructure:"enabled"`
+
+	// DesignDocs enables design document generation during indexing.
+	DesignDocs bool `mapstructure:"design_docs"`
+
+	// DesignDocsTypes specifies which design document types to generate.
+	// Valid types: testing_patterns, dependencies, conventions, api_patterns
+	// Default: all types
+	DesignDocsTypes []string `mapstructure:"design_docs_types"`
+
+	// MaxIterations limits agent exploration iterations.
+	MaxIterations int `mapstructure:"max_iterations"`
+}
+
+// GetDesignDocTypes returns validated design document types.
+func (c *WardenConfig) GetDesignDocTypes() []string {
+	validTypes := map[string]bool{
+		"testing_patterns": true,
+		"dependencies":     true,
+		"conventions":      true,
+		"api_patterns":     true,
+	}
+
+	if len(c.DesignDocsTypes) == 0 {
+		return []string{"testing_patterns", "dependencies", "conventions", "api_patterns"}
+	}
+
+	var result []string
+	for _, t := range c.DesignDocsTypes {
+		if validTypes[t] {
+			result = append(result, t)
+		}
+	}
+
+	if len(result) == 0 {
+		return []string{"testing_patterns", "dependencies", "conventions", "api_patterns"}
+	}
+
+	return result
+}
+
 type DBConfig struct {
 	Driver          string        `mapstructure:"driver"`
 	Host            string        `mapstructure:"host"`
@@ -494,6 +539,11 @@ func setDefaults(v *viper.Viper) {
 	// Features
 	v.SetDefault("features.enable_binary_quantization", true)
 	v.SetDefault("features.enable_graph_analysis", true)
+
+	// Warden
+	v.SetDefault("warden.enabled", false)
+	v.SetDefault("warden.design_docs", true)
+	v.SetDefault("warden.max_iterations", 20)
 
 	// Agent
 	v.SetDefault("agent.enabled", false)
