@@ -195,37 +195,29 @@ CODEOWNERS and README files are the highest-value additions — low effort, imme
 
 ## 🤖 Agent Integration (`/implement`)
 
-The `/implement` command works end-to-end but has several gaps that significantly affect usability and reliability. These are ordered by impact.
+The `/implement` command works end-to-end. These are the remaining gaps, ordered by impact.
 
-### 1. Post GitHub Comments During Session (Highest Impact)
+### ~~1. Post GitHub Comments During Session~~ ✅ Fixed
 
-Currently the user triggers `/implement` on an issue, the server acknowledges with nothing, and the agent works silently for up to 30 minutes. The user has no way to know whether the session started, what it's doing, or whether it failed — without reading server logs.
+GitHub progress comments are now posted at every lifecycle event:
+- **On trigger**: "Started implementation session `<session-id>`."
+- **Each review iteration**: "Review iteration N — verdict: `REQUEST_CHANGES`."
+- **On completion**: "PR created: <url> — branch, files changed, verdict."
+- **On failure/timeout**: "Session failed. Last error: <message>"
 
-What should happen:
-- **On trigger**: Post a comment on the issue: "Started implementation session `<session-id>`. I'll update you here."
-- **Each iteration**: Post an update: "Iteration 2/3 — review returned `REQUEST_CHANGES`, addressing feedback..."
-- **On completion**: Post: "PR created: <url> — <one-line summary>"
-- **On failure/timeout**: Post: "Session failed after N iterations. Last error: <message>"
+See `internal/agent/comments.go`.
 
-This is the single highest-leverage UX improvement. Without it, the feature feels broken even when it works correctly.
+### ~~2. Add `run_command` MCP Tool~~ ✅ Fixed
 
-### 2. Add `run_command` MCP Tool
+`run_command` is now a registered MCP tool (`internal/mcp/tools/run_command.go`):
+- Executes commands whitelisted via `verify_commands` in `.code-warden.yml` (defaults: `make lint`, `make test`)
+- Returns `stdout`, `stderr`, `exit_code`, `success`
+- Hard timeout of 5 minutes per command
+- Both session and CLI modes can use it
 
-The agent system prompt instructs the agent to run `make lint && make test` to verify its changes before calling `review_code`. But Code-Warden has no MCP tool to actually execute commands in the workspace — so the agent can either skip this step or hallucinate a success.
+### ~~3. Fix `GetLastReview()` Race Condition~~ ✅ Fixed
 
-Required: a `run_command` tool that:
-- Executes a whitelisted command (e.g. `make lint`, `make test`, `go build ./...`) inside the session workspace
-- Returns stdout/stderr and exit code
-- Whitelist is configurable via `verify_commands` in `.code-warden.yml` or global config
-- Has a timeout (e.g. 5 minutes) to avoid blocking the session
-
-Without this, "Verify" step 5 in the system prompt is fiction.
-
-### 3. Fix `GetLastReview()` Race Condition
-
-In `internal/agent/orchestrator.go`, the `createReviewHandler` reads the review verdict via `o.mcpServer.GetLastReview()` — a method that returns the **last review stored on the global MCP server**, not the current session's review. With two or more concurrent agent sessions, each session can accidentally pick up the verdict from the other session's `review_code` call.
-
-Fix: scope review results to session ID. `review_code` should store its result keyed by session ID, and the orchestrator should retrieve it by that same key.
+Review results are now stored per-session (keyed by MCP session ID) in `Server.reviewsBySession`. The orchestrator retrieves the verdict via `GetReviewBySession(sessionID)` — concurrent sessions can no longer cross-pollinate. See `internal/mcp/server.go` and `internal/mcp/tools/review_tracker.go`.
 
 ### 4. Persist Session State to PostgreSQL
 
@@ -249,6 +241,15 @@ After `create_pull_request` succeeds, enqueue a standard review job on the new P
 `extractFilesFromImplementation` and `extractPRInfo` use string matching and regex on free-text output from the agent to determine which files changed and what the PR title/body should be. This breaks if the agent formats its output slightly differently.
 
 Better approach: after `push_branch` succeeds, query the GitHub API for the branch's diff relative to base to get the actual changed file list. After `create_pull_request` succeeds, use the returned PR number/URL rather than parsing agent output.
+
+### 7. Validate and Tune Native Agent Mode
+
+The `mode: native` in-process agent (`internal/agent/inprocess.go`) uses the goframe `AgentLoop` with the same LLM as the reviewer — no external process needed. It's wired but not battle-tested. Outstanding work:
+
+- Tune system prompt for the native loop (the LLM may behave differently in a tight ReAct loop vs. a long-running subprocess)
+- Decide a sensible default for `max_iterations` in native mode (currently `MaxIterations * 10`, floor 30)
+- Verify that all MCP tools work correctly when context-injected rather than HTTP-transported
+- Add integration test: mock LLM and tools, verify session completes with correct verdict
 
 ---
 

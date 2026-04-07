@@ -1,46 +1,37 @@
 package tools
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ReviewTracker tracks code review results for PR enforcement.
 // This interface is implemented by the MCP Server to enforce review approval
 // before allowing PR creation.
 //
-// Security Model:
-// The review workflow is designed for a trusted agent context where the agent
-// follows the prescribed workflow (review_code -> APPROVE -> create_pull_request).
-// There is a theoretical race condition between CheckApproval() returning and
-// the actual PR creation - a determined actor could potentially modify code
-// between these steps. The diff_hash parameter helps detect if code changed
-// after review, but this is not a complete security boundary.
+// Session-scoped methods (RecordReviewBySession, CheckApprovalBySession) use the
+// session ID from context to scope results per agent session, preventing race
+// conditions when multiple sessions run concurrently. The session ID is injected
+// into the tool context by the MCP server's handleMessage before tool execution.
 //
-// Hash Usage:
-// The diffHash is a SHA-256 hash (64 hex characters) stored in full but logged
-// with only the first 8 characters for readability. The full hash is used for
-// comparison to detect any changes to the reviewed code. Note that hash-based
-// detection is whitespace-sensitive - even minor formatting changes will
-// invalidate the hash.
+// The legacy non-session methods (RecordReview, CheckApproval, GetLastReview)
+// are kept for backward compatibility and fall back to global state when no
+// session ID is present in the context.
 type ReviewTracker interface {
-	// RecordReview stores the review result for enforcement.
-	// The diffHash is the SHA-256 hash of the reviewed diff.
-	RecordReview(verdict, diffHash string)
+	// RecordReviewBySession stores the review result scoped to the session in ctx.
+	// Falls back to global state when no session ID is present.
+	RecordReviewBySession(ctx context.Context, verdict, diffHash string)
 
-	// GetLastReview returns the last review result.
-	// Returns empty strings if no review has been recorded.
-	// This method is useful for diagnostics and debugging.
+	// CheckApprovalBySession verifies there is a recent approved review for the
+	// session in ctx. Falls back to global state when no session ID is present.
+	CheckApprovalBySession(ctx context.Context, diffHash string) error
+
+	// GetLastReview returns the last review result (global, for diagnostics).
 	GetLastReview() (verdict string, timestamp time.Time, diffHash string)
 
-	// CheckApproval verifies if there's a recent approved review.
-	// Returns error if no review found, review is not approved, or review is stale.
-	// The diffHash parameter should match the hash of the current diff to detect changes.
-	CheckApproval(diffHash string) error
-
-	// RecordReviewFiles stores the list of files that were changed in the reviewed diff.
-	// This is used to ensure only reviewed files are committed, preventing accidental
-	// commits of build artifacts or other unreviewed changes.
+	// RecordReviewFiles stores the list of files reviewed in the current session.
 	RecordReviewFiles(files []string)
 
-	// GetLastReviewFiles returns the files from the last review.
-	// Returns nil if no review has been recorded.
+	// GetLastReviewFiles returns the files from the last review (global).
 	GetLastReviewFiles() []string
 }

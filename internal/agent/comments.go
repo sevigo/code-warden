@@ -1,0 +1,79 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+)
+
+// postIssueComment posts a comment to the GitHub issue linked to this session.
+// Errors are logged but not returned — comment failures must never block agent execution.
+func (o *Orchestrator) postIssueComment(ctx context.Context, issue Issue, body string) {
+	if o.ghClient == nil {
+		return
+	}
+	if err := o.ghClient.CreateComment(ctx, issue.RepoOwner, issue.RepoName, issue.Number, body); err != nil {
+		o.logger.Warn("failed to post issue comment",
+			"issue", issue.Number,
+			"repo", issue.RepoOwner+"/"+issue.RepoName,
+			"error", err)
+	}
+}
+
+func (o *Orchestrator) postSessionStarted(ctx context.Context, session *Session) {
+	body := fmt.Sprintf(
+		"🤖 **Implementation started** — session `%s`\n\n"+
+			"Working on issue #%d. I'll post updates here as I progress.\n\n"+
+			"> You can cancel by commenting `/cancel %s`",
+		session.ID, session.Issue.Number, session.ID,
+	)
+	o.postIssueComment(ctx, session.Issue, body)
+}
+
+func (o *Orchestrator) postSessionCompleted(ctx context.Context, session *Session, result *Result) {
+	var body string
+	if result.PRURL != "" {
+		filesNote := ""
+		if len(result.FilesChanged) > 0 {
+			filesNote = fmt.Sprintf("\n- **Files changed:** %d", len(result.FilesChanged))
+		}
+		body = fmt.Sprintf(
+			"✅ **Implementation complete** — session `%s`\n\n"+
+				"**Pull request:** %s\n"+
+				"- **Branch:** `%s`%s\n"+
+				"- **Review verdict:** `%s`\n"+
+				"- **Review iterations:** %d",
+			session.ID, result.PRURL, result.Branch, filesNote,
+			result.Verdict, result.Iterations,
+		)
+	} else {
+		body = fmt.Sprintf(
+			"✅ **Implementation complete** — session `%s`\n\n"+
+				"Branch `%s` is ready (%d files changed). No PR was created — push the branch and open one manually if needed.",
+			session.ID, result.Branch, len(result.FilesChanged),
+		)
+	}
+	o.postIssueComment(ctx, session.Issue, body)
+}
+
+func (o *Orchestrator) postSessionFailed(ctx context.Context, session *Session, errMsg string) {
+	body := fmt.Sprintf(
+		"❌ **Implementation failed** — session `%s`\n\n"+
+			"The agent could not complete the implementation.\n\n"+
+			"<details><summary>Error detail</summary>\n\n```\n%s\n```\n</details>\n\n"+
+			"You can retry by commenting `/implement` again.",
+		session.ID, truncateString(errMsg, 800),
+	)
+	o.postIssueComment(ctx, session.Issue, body)
+}
+
+func (o *Orchestrator) postReviewIteration(ctx context.Context, session *Session, iteration int, verdict string) {
+	icon := "🔄"
+	if verdict == "APPROVE" || verdict == "COMMENT" {
+		icon = "✔️"
+	}
+	body := fmt.Sprintf(
+		"%s **Review iteration %d** — session `%s` — verdict: `%s`",
+		icon, iteration, session.ID, verdict,
+	)
+	o.postIssueComment(ctx, session.Issue, body)
+}

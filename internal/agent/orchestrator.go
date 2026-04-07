@@ -21,6 +21,7 @@ import (
 	"time"
 
 	goframeagent "github.com/sevigo/goframe/agent"
+	"github.com/sevigo/goframe/llms"
 
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
@@ -42,6 +43,8 @@ type Orchestrator struct {
 	projectRoot       string
 	repoConfig        *core.RepoConfig
 	repo              *storage.Repository
+	ragService        rag.Service
+	llm               llms.Model // used by native in-process agent mode
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
@@ -57,9 +60,11 @@ type Config struct {
 	// Provider is the agent provider (e.g., "opencode", "goose", "claude").
 	Provider string `yaml:"provider"`
 
-	// Mode is how to connect to the agent: "server" (HTTP API) or "cli" (subprocess).
-	// "server" uses goframe/agent SDK to connect to the provider's server.
-	// "cli" spawns the provider's binary as a subprocess.
+	// Mode is how to connect to the agent:
+	//   "server"  — goframe/agent SDK connects to the provider's HTTP server (e.g., OpenCode).
+	//   "cli"     — spawns the provider's binary as a subprocess.
+	//   "native"  — in-process ReAct loop using goframe AgentLoop; no external process needed.
+	//               Uses the same LLM configured for code reviews.
 	Mode string `yaml:"mode"`
 
 	// Model is the LLM model to use.
@@ -172,6 +177,8 @@ func NewOrchestrator(
 		projectRoot:       absRoot,
 		repoConfig:        repoConfig,
 		repo:              repo,
+		ragService:        ragService,
+		llm:               ragService.GeneratorLLM(),
 		sessions:          make(map[string]*Session),
 		sessionsMu:        sync.RWMutex{},
 		done:              make(chan struct{}),
@@ -452,6 +459,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"mode", o.config.Mode)
 
 	session.SetStatus(StatusRunning)
+	o.postSessionStarted(ctx, session)
 
 	// Create branch name (sanitize for git safety)
 	branch := gitutil.SanitizeBranch(fmt.Sprintf("agent/%s", session.ID))
@@ -459,10 +467,13 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"session_id", session.ID,
 		"branch", branch)
 
-	if o.config.Mode == "server" {
+	switch o.config.Mode {
+	case "server":
 		o.runAgentSDK(ctx, session, branch)
-	} else {
-		// Build the system prompt (only for CLI mode)
+	case "native":
+		o.runInProcessAgent(ctx, session, branch)
+	default:
+		// CLI mode: spawn external binary
 		o.logger.Info("🧭 EXPLORATION: Building agent context", "session_id", session.ID)
 		systemPrompt := o.buildSystemPrompt(session.Issue, branch)
 		o.logger.Debug("runAgent: system prompt built",
@@ -522,16 +533,16 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	session.mu.Unlock()
 
 	if runErr != nil {
+		errMsg := fmt.Sprintf("Agent failed: %v\nTail of output:\n%s", runErr, truncateTail(output, 2000))
 		session.SetStatus(StatusFailed)
-		// truncateTail captures the most recent (failure-related) output for the error message.
-		// truncateString captures the start of output for the log preview.
-		session.SetError(fmt.Sprintf("Agent failed: %v\nTail of output:\n%s", runErr, truncateTail(output, 2000)))
+		session.SetError(errMsg)
 		o.logger.Error("runAgentCLI: agent process failed",
 			"session_id", session.ID,
 			"error", runErr,
 			"log_file", ws.logPath,
 			"output_length", len(output),
 			"output_preview", truncateString(output, 500))
+		o.postSessionFailed(ctx, session, errMsg)
 		return
 	}
 
@@ -543,6 +554,7 @@ func (o *Orchestrator) runAgentCLI(ctx context.Context, session *Session, system
 	result := o.parseAgentOutput(output, branch)
 	session.SetResult(result)
 	session.SetStatus(StatusCompleted)
+	o.postSessionCompleted(ctx, session, result)
 
 	o.logger.Info("runAgentCLI: agent session completed successfully",
 		"session_id", session.ID,
@@ -865,16 +877,19 @@ func (o *Orchestrator) runAgentSDK(ctx context.Context, session *Session, branch
 	session.mu.Unlock()
 
 	if err != nil {
+		errMsg := fmt.Sprintf("Agent implementation failed: %v", err)
 		session.SetStatus(StatusFailed)
-		session.SetError(fmt.Sprintf("Agent implementation failed: %v", err))
+		session.SetError(errMsg)
 		o.logger.Error("runAgentSDK: implementation failed",
 			"session_id", session.ID,
 			"error", err)
+		o.postSessionFailed(ctx, session, errMsg)
 		return
 	}
 
 	session.SetResult(result)
 	session.SetStatus(StatusCompleted)
+	o.postSessionCompleted(ctx, session, result)
 
 	o.logger.Info("runAgentSDK: agent session completed successfully",
 		"session_id", session.ID,
@@ -937,7 +952,7 @@ func (o *Orchestrator) runSDKFeedbackLoop(ctx context.Context, session *Session,
 	reviewTracker := &reviewTracker{}
 	fl := goframeagent.NewFeedbackLoop(ag, agSession,
 		goframeagent.WithMaxRetries(o.config.MaxIterations),
-		goframeagent.WithReviewHandler(o.createReviewHandler(session.ID, reviewTracker)),
+		goframeagent.WithReviewHandler(o.createReviewHandler(session, reviewTracker)),
 		goframeagent.WithPRHandler(o.createPRHandler(session.Issue, branch)),
 	)
 
@@ -972,12 +987,12 @@ func (o *Orchestrator) runSDKFeedbackLoop(ctx context.Context, session *Session,
 }
 
 // createReviewHandler creates a review handler that prompts the agent to use MCP tools.
-func (o *Orchestrator) createReviewHandler(sessionID string, tracker *reviewTracker) goframeagent.ReviewHandler {
+func (o *Orchestrator) createReviewHandler(agentSession *Session, tracker *reviewTracker) goframeagent.ReviewHandler {
 	return func(ctx context.Context, session *goframeagent.Session, implementation string) (*goframeagent.ReviewResult, error) {
 		tracker.IncrementIterations()
 
 		o.logger.Info("createReviewHandler: requesting code review",
-			"session_id", sessionID,
+			"session_id", agentSession.ID,
 			"implementation_length", len(implementation),
 			"iteration", tracker.GetIterations())
 
@@ -994,19 +1009,21 @@ Remember:
 
 		response, err := session.Prompt(ctx, reviewPrompt)
 		if err != nil {
-			o.logger.Error("createReviewHandler: review request failed", "session_id", sessionID, "error", err)
+			o.logger.Error("createReviewHandler: review request failed", "session_id", agentSession.ID, "error", err)
 			return nil, fmt.Errorf("review request failed: %w", err)
 		}
 
-		// Get the actual verdict from the MCP Server after the agent calls review_code
-		verdict, _, _ := o.mcpServer.GetLastReview()
+		// Get the verdict scoped to this agent session, not global state.
+		// This prevents race conditions when multiple sessions run concurrently.
+		verdict, _, _ := o.mcpServer.GetReviewBySession(agentSession.ID)
 		tracker.SetVerdict(verdict)
+		o.postReviewIteration(ctx, agentSession, tracker.GetIterations(), verdict)
 
 		// Determine if approved based on the actual verdict
 		approved := verdict == core.VerdictApprove || verdict == core.VerdictComment
 
 		o.logger.Info("createReviewHandler: review completed",
-			"session_id", sessionID,
+			"session_id", agentSession.ID,
 			"verdict", verdict,
 			"approved", approved,
 			"response_length", len(response.Content))

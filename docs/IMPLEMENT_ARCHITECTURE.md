@@ -122,23 +122,39 @@ Manages the agent lifecycle:
 | Method | Purpose |
 |--------|---------|
 | `SpawnAgent()` | Creates a new agent session |
-| `runAgent()` | Main agent execution loop |
-| `runAgentCLI()` | Execute via OpenCode CLI binary |
-| `buildSystemPrompt()` | Constructs instructions for the agent |
+| `runAgent()` | Dispatches to CLI, SDK, or native mode |
+| `runAgentCLI()` | Execute via OpenCode CLI subprocess |
+| `runAgentSDK()` | Execute via goframe/agent OpenCode SDK |
+| `runInProcessAgent()` | Native in-process goframe `AgentLoop` |
+| `buildSystemPrompt()` | Constructs instructions for CLI/SDK modes |
+| `buildNativeSystemPrompt()` | Constructs instructions for native mode |
 | `prepareWorkspace()` | Clones repo to isolated directory |
+| `postSessionStarted()` | Posts GitHub comment when session starts |
+| `postReviewIteration()` | Posts GitHub comment after each review |
+| `postSessionCompleted()` | Posts GitHub comment with PR link |
+| `postSessionFailed()` | Posts GitHub comment with error detail |
 
 **Configuration (`internal/config/config.go`)**:
 
 ```yaml
 agent:
   enabled: true
-  provider: opencode
+  provider: opencode         # "opencode", "goose", "claude"
+  mode: native               # "server" | "cli" | "native"
   model: llama3.1:70b
   timeout: 30m
   max_iterations: 3
   mcp_addr: "127.0.0.1:8081"
   working_dir: "/tmp/code-warden-agents"
 ```
+
+**Mode selection:**
+
+| Mode | How it works | When to use |
+|------|-------------|-------------|
+| `native` | In-process goframe `AgentLoop` using the RAG LLM | No external services needed; lightweight |
+| `server` | goframe/agent SDK connects to provider HTTP server | OpenCode server running separately |
+| `cli` | Spawns provider binary as subprocess | External binary available on PATH |
 
 ### 2. MCP Server (`internal/mcp/server.go`)
 
@@ -156,7 +172,7 @@ Provides JSON-RPC 2.0 interface over HTTP/SSE:
 - `tools/call` - Execute a tool
 - `ping` - Health check
 
-### 3. MCP Tools (`internal/mcp/tools.go`, `internal/mcp/github_tools.go`)
+### 3. MCP Tools (`internal/mcp/tools/`)
 
 | Tool | Input | Output | Description |
 |------|-------|--------|-------------|
@@ -164,9 +180,13 @@ Provides JSON-RPC 2.0 interface over HTTP/SSE:
 | `get_arch_context` | `{directory}` | `{found, summaries[]}` | Get architectural summary for directory |
 | `get_symbol` | `{name}` | `{found, definitions[]}` | Get type/function definition |
 | `get_structure` | `{}` | `{projectRoot, directories[]}` | Get project structure |
-| `review_code` | `{diff, title?, description?}` | `{verdict, confidence, summary, suggestions}` | **Single-model RAG review** (not consensus) |
-| `push_branch` | `{branch, force?}` | `{status, message}` | Push local branch to remote |
-| `create_pull_request` | `{title, body, head, base?, draft?}` | `{number, url, state}` | Create GitHub PR |
+| `find_usages` | `{symbol}` | `{found, usages[]}` | Find call sites for a symbol |
+| `get_callers` | `{symbol}` | `{found, callers[]}` | Get functions calling a symbol |
+| `get_callees` | `{symbol}` | `{found, callees[]}` | Get functions called by a symbol |
+| `run_command` | `{command}` | `{stdout, stderr, exit_code, success}` | Run whitelisted command in workspace |
+| `review_code` | `{diff, title?, description?}` | `{verdict, confidence, summary, suggestions, diff_hash}` | **Single-model RAG review** (not consensus) |
+| `push_branch` | `{branch, force?}` | `{status, message}` | Commit pending changes and push branch |
+| `create_pull_request` | `{title, body, head, base?, draft?}` | `{number, url, state}` | Create GitHub PR (requires prior APPROVE) |
 | `list_issues` | `{state?, labels?, limit?}` | `{count, issues[]}` | List repository issues |
 | `get_issue` | `{number}` | `{number, title, body, ...}` | Get issue details |
 
@@ -334,11 +354,11 @@ func (o *Orchestrator) cleanupOldSessions() {
 
 ### Current Limitations
 
-1. **No GitHub feedback during session** — The user triggers `/implement` and hears nothing for up to 30 minutes. No acknowledgment comment is posted when the session starts, no progress updates during iterations, and no notification on completion or failure. The user must watch server logs to know what is happening. This makes the feature feel broken even when it works.
+1. **~~No GitHub feedback during session~~** ✅ Fixed — Progress comments are posted at start, each review iteration, completion, and failure. See `internal/agent/comments.go`.
 
-2. **No `run_command` MCP tool** — The agent system prompt instructs the agent to run `make lint && make test` at step 5 (Verify). There is no MCP tool to actually execute these commands in the session workspace. The agent either skips the step or claims success without verifying. Until this tool is added, the Verify step in the agent loop is unreliable.
+2. **~~No `run_command` MCP tool~~** ✅ Fixed — `run_command` tool added (`internal/mcp/tools/run_command.go`), whitelisted via `verify_commands` in `.code-warden.yml`, 5-minute timeout.
 
-3. **`GetLastReview()` race condition** — `createReviewHandler` reads the review verdict via `o.mcpServer.GetLastReview()`, which returns the last review stored on the global MCP server state. With two concurrent sessions, each session can read the verdict produced by the other session's `review_code` call, causing the wrong iteration decision. Fix: key review results by session ID.
+3. **~~`GetLastReview()` race condition~~** ✅ Fixed — Review results are now stored per-session in `Server.reviewsBySession` and retrieved via `GetReviewBySession(sessionID)`.
 
 4. **In-memory sessions** — Session state (`sessions map[string]*Session`) is lost on server restart. Any active session becomes orphaned: no status, no GitHub notification, workspace left on disk. Needs a `agent_sessions` PostgreSQL table with restart recovery.
 
@@ -367,18 +387,59 @@ func (o *Orchestrator) cleanupOldSessions() {
 
 4. **MCP Server Binding**: Server binds to `127.0.0.1` only (localhost), not externally accessible.
 
+## Native In-Process Agent (`mode: native`)
+
+`runInProcessAgent` (`internal/agent/inprocess.go`) is a third execution mode that runs the entire ReAct loop in-process using the goframe `AgentLoop` — no external process or server needed.
+
+### How it works
+
+```
+Orchestrator.runAgent()
+    └── case "native": runInProcessAgent()
+            │
+            ├── prepareAgentWorkspace()   — clone repo to /tmp/code-warden-agents/<id>
+            │
+            ├── goframeagent.NewRegistry()
+            │   └── for each mcp.Server.Tools():
+            │         contextInjectingTool{inner: tool, projectRoot: ws.dir, sessionID: id}
+            │         // injects project root + session ID into every tool call context
+            │
+            ├── goframeagent.NewAgentLoop(o.llm, registry, ...)
+            │   // same LLM as reviews, max iterations = MaxIterations * 10 (floor 30)
+            │
+            └── loop.Run(ctx, task, nil)
+                    └── Think → tool calls → Observe → repeat
+                            all MCP tools available: search_code, run_command,
+                            review_code, push_branch, create_pull_request, …
+```
+
+### Key differences from CLI/SDK modes
+
+| Aspect | CLI / SDK | Native |
+|--------|-----------|--------|
+| External process | Yes (OpenCode binary or server) | No |
+| LLM | Provider's model | Code-Warden's RAG LLM |
+| Tool transport | HTTP/SSE JSON-RPC | Direct Go function calls |
+| Context injection | HTTP workspace token | Go context values |
+| Session isolation | MCP workspace token | `contextInjectingTool` wrapper |
+
+### contextInjectingTool
+
+Every MCP tool is wrapped in `contextInjectingTool` which adds `projectRoot` and `sessionID` to the context before delegating to the inner tool's `Execute`. This mirrors what the MCP HTTP server does in `handleMessage` for remote sessions.
+
 ## Configuration Reference
 
 ```yaml
 # config.yaml
 agent:
   enabled: true                    # Enable /implement functionality
-  provider: opencode               # Agent provider (currently only opencode)
-  model: llama3.1:70b              # Model for implementation
+  provider: opencode               # "opencode" | "goose" | "claude" (cli/server modes)
+  mode: native                     # "native" | "server" | "cli"
+  model: llama3.1:70b              # Model for implementation (cli/server modes)
   timeout: 30m                     # Maximum session duration
-  max_iterations: 3                # Max review iterations before failure
+  max_iterations: 3                # Max review iterations (native: * 10 = loop steps)
   max_concurrent_sessions: 3       # Max parallel agent sessions (default: 3)
-  mcp_addr: "127.0.0.1:8081"       # MCP server bind address
+  mcp_addr: "127.0.0.1:8081"       # MCP server bind address (cli/server modes)
   working_dir: "/tmp/code-warden-agents"  # Workspace directory
 
 ai:
