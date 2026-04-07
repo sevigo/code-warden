@@ -36,6 +36,8 @@ func (o *Orchestrator) runInProcessAgent(ctx context.Context, session *Session, 
 		return
 	}
 	defer ws.logFile.Close()
+	// Unregister from the per-session MCP workspace registry (different from
+	// globalMCPRegistry, which is handled in cleanupNativeSession).
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
 	o.logger.Info("🛠️ IMPLEMENTATION: Starting native in-process agent",
@@ -84,7 +86,8 @@ func (o *Orchestrator) runInProcessAgent(ctx context.Context, session *Session, 
 		result.PRNumber = prInfo.PRNumber
 		result.PRURL = prInfo.PRURL
 	}
-	if files := o.mcpServer.GetLastReviewFiles(); files != nil {
+	// Use session-scoped file list to avoid reading another concurrent session's files.
+	if files := o.mcpServer.GetReviewFilesBySession(session.ID); files != nil {
 		result.FilesChanged = files
 	}
 

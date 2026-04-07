@@ -329,6 +329,9 @@ const (
 	// This is a policy decision: 30 minutes provides reasonable security while
 	// allowing time for agent iteration. Tests should mock time or use short durations.
 	maxReviewAge = 30 * time.Minute
+
+	// reviewHashDisplayLen is the number of diff-hash characters shown in log lines.
+	reviewHashDisplayLen = 8
 )
 
 // RecordReviewBySession stores the review result scoped to the session in ctx.
@@ -336,7 +339,7 @@ const (
 func (s *Server) RecordReviewBySession(ctx context.Context, verdict, diffHash string) {
 	sessionID := tools.SessionIDFromContext(ctx)
 
-	hashLen := 8
+	hashLen := reviewHashDisplayLen
 	if len(diffHash) < hashLen {
 		hashLen = len(diffHash)
 	}
@@ -429,19 +432,34 @@ func (s *Server) CheckApprovalBySession(ctx context.Context, diffHash string) er
 }
 
 // RecordReviewFiles stores the list of files that were changed in the reviewed diff.
-// A copy of the slice is stored to prevent aliasing issues.
-func (s *Server) RecordReviewFiles(files []string) {
+// Files are stored both in the per-session result (keyed by session ID from ctx)
+// and in the global fallback, preventing concurrent sessions from overwriting
+// each other's file lists.
+func (s *Server) RecordReviewFiles(ctx context.Context, files []string) {
+	sessionID := tools.SessionIDFromContext(ctx)
+	filesCopy := append([]string(nil), files...)
+
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
+
+	// Update global fallback.
 	if s.lastReviewResult == nil {
 		s.lastReviewResult = &reviewResult{}
 	}
-	// Copy the slice to prevent aliasing issues
-	s.lastReviewResult.Files = append([]string(nil), files...)
-	s.logger.Info("review files recorded", "file_count", len(files))
+	s.lastReviewResult.Files = filesCopy
+
+	// Also update per-session result when a session ID is available.
+	if sessionID != "" {
+		if s.reviewsBySession[sessionID] == nil {
+			s.reviewsBySession[sessionID] = &reviewResult{}
+		}
+		s.reviewsBySession[sessionID].Files = filesCopy
+	}
+
+	s.logger.Info("review files recorded", "session_id", sessionID, "file_count", len(files))
 }
 
-// GetLastReviewFiles returns a copy of the files from the last review.
+// GetLastReviewFiles returns a copy of the files from the last review (global).
 // Returns nil if no review has been recorded.
 func (s *Server) GetLastReviewFiles() []string {
 	s.reviewMu.RLock()
@@ -449,7 +467,21 @@ func (s *Server) GetLastReviewFiles() []string {
 	if s.lastReviewResult == nil {
 		return nil
 	}
-	// Return a copy to prevent aliasing issues
+	return append([]string(nil), s.lastReviewResult.Files...)
+}
+
+// GetReviewFilesBySession returns a copy of the files from the review for a specific
+// session ID. Falls back to global state if the session has no record.
+func (s *Server) GetReviewFilesBySession(sessionID string) []string {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
+	if r, ok := s.reviewsBySession[sessionID]; ok && r != nil {
+		return append([]string(nil), r.Files...)
+	}
+	// Fallback to global.
+	if s.lastReviewResult == nil {
+		return nil
+	}
 	return append([]string(nil), s.lastReviewResult.Files...)
 }
 

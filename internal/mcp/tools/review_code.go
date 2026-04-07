@@ -140,7 +140,7 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		for i, f := range changedFiles {
 			fileNames[i] = f.Filename
 		}
-		t.ReviewTracker.RecordReviewFiles(fileNames)
+		t.ReviewTracker.RecordReviewFiles(ctx, fileNames)
 	}
 
 	response := ReviewCodeResponse{

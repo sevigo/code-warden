@@ -168,7 +168,7 @@ func NewOrchestrator(
 		absRoot = projectRoot
 	}
 
-	return &Orchestrator{
+	o := &Orchestrator{
 		ghClient:          ghClient,
 		mcpServer:         mcpServer,
 		globalMCPRegistry: globalMCPRegistry,
@@ -178,11 +178,16 @@ func NewOrchestrator(
 		repoConfig:        repoConfig,
 		repo:              repo,
 		ragService:        ragService,
-		llm:               ragService.GeneratorLLM(),
 		sessions:          make(map[string]*Session),
 		sessionsMu:        sync.RWMutex{},
 		done:              make(chan struct{}),
 	}
+	// Pre-populate the review LLM when available; nil-safe — ragService may be
+	// absent in tests or when the RAG pipeline is disabled.
+	if ragService != nil {
+		o.llm = ragService.GeneratorLLM()
+	}
+	return o
 }
 
 // Start begins the MCP HTTP server. Must be called before agents can use tools.

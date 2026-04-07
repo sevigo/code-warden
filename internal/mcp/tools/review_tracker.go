@@ -30,8 +30,10 @@ type ReviewTracker interface {
 	GetLastReview() (verdict string, timestamp time.Time, diffHash string)
 
 	// RecordReviewFiles stores the list of files reviewed in the current session.
-	RecordReviewFiles(files []string)
+	// The session ID is read from ctx to scope the files per session, preventing
+	// concurrent sessions from overwriting each other's file lists.
+	RecordReviewFiles(ctx context.Context, files []string)
 
-	// GetLastReviewFiles returns the files from the last review (global).
+	// GetLastReviewFiles returns the files from the last review (global fallback).
 	GetLastReviewFiles() []string
 }
