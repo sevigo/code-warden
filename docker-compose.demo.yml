@@ -1,0 +1,153 @@
+# docker-compose.demo.yml — Code-Warden all-in-one demo stack
+#
+# Includes: PostgreSQL + Qdrant + Ollama + Code-Warden server
+#
+# Usage:
+#   make quickstart           — guided first-time setup
+#   make demo-up              — start all services
+#   make demo-down            — stop all services
+#   make demo-logs            — tail server logs
+#
+# GPU overrides (optional):
+#   NVIDIA:  docker-compose -f docker-compose.demo.yml -f docker-compose.gpu.yml up -d
+#   AMD ROCm: docker-compose -f docker-compose.demo.yml -f docker-compose.amd.yml up -d
+#
+# Models pulled on first start (~1.6 GB total):
+#   qwen3-embedding:0.6b   ~639 MB  (embedder — local, called per indexed chunk)
+#   qwen2.5-coder:1.5b     ~1.0 GB  (fast model — local, used for HyDE and quick passes)
+#
+# The generator (kimi-k2.5 by default) is an Ollama cloud model — no local download.
+#
+# Reranking is disabled in config.demo.yaml — no reranker model needed.
+# Sparse vectors are generated in-process (no Ollama call required).
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: cw-db
+    environment:
+      POSTGRES_DB: codewarden
+      POSTGRES_USER: warden
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+    networks:
+      - cw-demo-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warden -d codewarden"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Qdrant Vector Database ──────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: cw-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - demo_qdrant_data:/var/lib/qdrant/storage
+    networks:
+      - cw-demo-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Ollama LLM Runtime ──────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cw-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - demo_ollama_data:/root/.ollama
+    networks:
+      - cw-demo-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    # GPU is optional — generator (kimi-k2.5) is a cloud model; no local GPU needed.
+    # A GPU only speeds up the local embedder (qwen3-embedding:0.6b).
+    # NVIDIA: add docker-compose.gpu.yml override
+    # AMD ROCm: add docker-compose.amd.yml override
+    # Apple Silicon: Metal acceleration works automatically via this image.
+
+  # ── Model Initialiser (one-shot) ────────────────────────────────────────────
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: cw-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: >
+      sh -c "
+        echo '>> Pulling qwen3-embedding:0.6b (~639 MB)...' &&
+        ollama pull qwen3-embedding:0.6b &&
+        echo '>> Pulling qwen2.5-coder:1.5b (~1 GB, fast/HyDE model)...' &&
+        ollama pull qwen2.5-coder:1.5b &&
+        echo '>> Local models ready. Generator (kimi-k2.5) is a cloud model — no download needed.'
+      "
+    networks:
+      - cw-demo-net
+    restart: "no"
+
+  # ── Code-Warden Server ──────────────────────────────────────────────────────
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cw-server
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Point to docker-compose service names — override any values in .env
+      AI_OLLAMA_HOST: http://ollama:11434
+      DATABASE_HOST: db
+      STORAGE_QDRANT_HOST: qdrant:6334
+    volumes:
+      - ./config.demo.yaml:/app/config.yaml:ro
+      - ./keys:/app/keys:ro
+      - demo_server_data:/app/data
+    networks:
+      - cw-demo-net
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  cw-demo-net:
+    driver: bridge
+
+volumes:
+  demo_postgres_data:
+  demo_qdrant_data:
+  demo_ollama_data:
+  demo_server_data:

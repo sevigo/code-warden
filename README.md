@@ -82,52 +82,72 @@ The `/implement` command goes further: an autonomous agent reads the issue, expl
 
 ## Quick Start
 
-### Prerequisites
+### Demo mode — 5 minutes, no GitHub App needed
 
-- Go 1.22+
-- Docker & Docker Compose
-- A GitHub App (see [GitHub App Setup](#github-app-setup))
-
-### 1. Clone and configure
+Review a real pull request with just a GitHub personal access token:
 
 ```sh
 git clone https://github.com/sevigo/code-warden
 cd code-warden
-cp config.yaml.example config.yaml
-# Edit config.yaml with your GitHub App credentials and model settings
+cp .env.example .env        # add your GitHub PAT to GITHUB_TOKEN
+make demo PR=https://github.com/owner/repo/pull/42
 ```
 
-### 2. Start services
+The CLI clones the repo, indexes it into a local Qdrant instance, and prints findings to the terminal. No webhook, no GitHub App, no public URL required.
+
+### Full server — 15 minutes, includes web UI
+
+Everything running in Docker with a web dashboard at `localhost:8080`:
 
 ```sh
-docker-compose up -d                                    # Qdrant + PostgreSQL
-docker-compose -f docker-compose.setup.yml up --build  # Pull Ollama models
+git clone https://github.com/sevigo/code-warden
+cd code-warden
+make quickstart             # guided interactive setup
 ```
 
-### 3. Run
+The wizard checks prerequisites, configures `.env`, detects your GPU, and starts all services. On first run it pulls two local models (~1.6 GB): the embedder and fast model. The code review generator (`kimi-k2.5`) is an Ollama cloud model — no GPU or large download needed. Open `http://localhost:8080` when it finishes.
 
+**GPU support** (optional — CPU works fine for demos):
 ```sh
-make build && ./bin/code-warden
-# or for development:
-go run ./cmd/server/main.go
+# NVIDIA
+docker compose -f docker-compose.demo.yml -f docker-compose.gpu.yml up -d
+
+# AMD ROCm
+docker compose -f docker-compose.demo.yml -f docker-compose.amd.yml up -d
 ```
 
-### 4. Trigger a review
+**Useful commands:**
+```sh
+make demo-logs    # tail server logs
+make demo-down    # stop all services
+make demo-up      # restart services
+make pull-models  # pull models to host Ollama (outside Docker)
+```
 
-Comment `/review` on any open pull request in a repository where the GitHub App is installed. Code-Warden will clone the repo (first time), index it, and post findings.
+**Prerequisites:** Docker, Go 1.22+
 
 ---
 
 ## GitHub App Setup
 
+Required for full server mode (webhook-triggered reviews on PRs).
+
 1. Create a new GitHub App in your organization settings
-2. Set the webhook URL to `https://your-host/webhook`
+2. Set the webhook URL to `https://your-host/api/v1/webhook/github`
 3. Request permissions: `Pull requests: Read & Write`, `Issues: Read & Write`, `Contents: Read`
 4. Subscribe to events: `Pull request`, `Issue comment`, `Push`
-5. Generate and download a private key
+5. Generate and download a private key → save to `keys/`
 6. Install the app on the repositories you want reviewed
 
-Set the credentials in `config.yaml`:
+Add credentials to `.env`:
+
+```sh
+GITHUB_APP_ID=12345
+GITHUB_WEBHOOK_SECRET=your-secret
+GITHUB_PRIVATE_KEY_PATH=keys/app.private-key.pem
+```
+
+Or set them in `config.yaml`:
 
 ```yaml
 github:
