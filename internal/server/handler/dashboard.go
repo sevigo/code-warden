@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,79 +54,9 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		appName = ""
 	}
 
-	// Ping DB via a lightweight store call
-	var dbStatus string
-	var dbLatency int64
-	{
-		start := time.Now()
-		_, err := h.store.GetReviewStats(ctx)
-		dbLatency = time.Since(start).Milliseconds()
-		if err == nil {
-			dbStatus = "ok"
-		} else {
-			dbStatus = statusError
-		}
-	}
-
-	// Ping Qdrant HTTP health endpoint
-	var qdrantStatus string
-	var qdrantLatency int64
-	{
-		host := h.cfg.Storage.QdrantHost
-		// Switch to HTTP port for health check if configured for gRPC
-		if rest, ok := strings.CutSuffix(host, ":6334"); ok {
-			host = rest + ":6333"
-		}
-		if !strings.HasPrefix(host, "http") {
-			host = "http://" + host
-		}
-		start := time.Now()
-		resp, err := http.Get(host + "/healthz") //nolint:noctx // short health check request
-		qdrantLatency = time.Since(start).Milliseconds()
-		if err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			if resp.StatusCode < 300 {
-				qdrantStatus = "ok"
-			} else {
-				qdrantStatus = statusError
-			}
-		} else {
-			qdrantStatus = statusError
-		}
-	}
-
-	// Ping LLM endpoint (Ollama or Gemini)
-	var llmStatus string
-	var llmLatency int64
-	{
-		var llmURL string
-		switch h.cfg.AI.LLMProvider {
-		case "gemini":
-			llmURL = "https://generativelanguage.googleapis.com/v1beta/models"
-		default: // ollama
-			host := h.cfg.AI.OllamaHost
-			if host == "" {
-				host = "http://localhost:11434"
-			}
-			llmURL = host + "/api/tags"
-		}
-		start := time.Now()
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get(llmURL) //nolint:noctx // short health check
-		llmLatency = time.Since(start).Milliseconds()
-		if err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			if resp.StatusCode < 300 {
-				llmStatus = "ok"
-			} else {
-				llmStatus = statusError
-			}
-		} else {
-			llmStatus = statusError
-		}
-	}
+	dbStatus, dbLatency := h.pingDatabase(ctx)
+	qdrantStatus, qdrantLatency := pingURL(h.cfg.Storage.QdrantHost, "/healthz", true)
+	llmStatus, llmLatency := h.pingLLM()
 
 	installURL := ""
 	if configured && appName != "" {
@@ -147,6 +78,59 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		},
 		"ready": configured && dbStatus == "ok" && qdrantStatus == "ok" && llmStatus == "ok",
 	})
+}
+
+// pingDatabase pings the store and returns (status, latency_ms).
+func (h *DashboardHandler) pingDatabase(ctx context.Context) (string, int64) {
+	start := time.Now()
+	_, err := h.store.GetReviewStats(ctx)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return statusError, latency
+	}
+	return "ok", latency
+}
+
+// pingURL performs a GET health check against a service URL.
+// When grpcPort is true, ":6334" is converted to ":6333" (Qdrant gRPC→HTTP).
+func pingURL(host, path string, grpcPort bool) (string, int64) {
+	if grpcPort {
+		if rest, ok := strings.CutSuffix(host, ":6334"); ok {
+			host = rest + ":6333"
+		}
+	}
+	if !strings.HasPrefix(host, "http") {
+		host = "http://" + host
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(host + path) //nolint:noctx // short health check
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return statusError, latency
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode < 300 {
+		return "ok", latency
+	}
+	return statusError, latency
+}
+
+// pingLLM checks reachability of the configured LLM provider.
+func (h *DashboardHandler) pingLLM() (string, int64) {
+	var url string
+	switch h.cfg.AI.LLMProvider {
+	case "gemini":
+		url = "https://generativelanguage.googleapis.com/v1beta/models"
+	default: // ollama
+		host := h.cfg.AI.OllamaHost
+		if host == "" {
+			host = "http://localhost:11434"
+		}
+		url = host + "/api/tags"
+	}
+	return pingURL(url, "", false)
 }
 
 func (h *DashboardHandler) GetConfig(w http.ResponseWriter, _ *http.Request) {
