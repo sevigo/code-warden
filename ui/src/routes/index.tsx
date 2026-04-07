@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery, useQueries } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
@@ -14,10 +15,26 @@ import {
   ChevronRight,
   Shield,
   Plus,
+  Activity,
+  Zap,
+  GitBranch,
 } from 'lucide-react'
 import StatusBadge from '@/components/StatusBadge'
 import { api } from '@/lib/api'
 import type { Repository, ScanState, GlobalStats, JobRun } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import { KPICard, ActionCard } from '@/components/ui/card'
+
+/**
+ * CircleCI-Inspired Dashboard
+ * 
+ * Design patterns from CircleCI:
+ * - Pipeline visualization with clear status indicators
+ * - Recent builds activity feed
+ * - Project list with quick actions
+ * - Organized layout with visual hierarchy
+ * - Status-based color coding
+ */
 
 const stagger = {
   hidden: {},
@@ -29,16 +46,16 @@ const fadeUp = {
   show: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Helper Functions ────────────────────────────────────────────────────────
 
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
   const m = Math.floor(diff / 60000)
   if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
+  if (m < 60) return `${m}m`
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
+  if (h < 24) return `${h}h`
+  return `${Math.floor(h / 24)}d`
 }
 
 function formatDuration(ms: number): string {
@@ -50,88 +67,98 @@ function formatDuration(ms: number): string {
   return rem > 0 ? `${m}m ${rem}s` : `${m}m`
 }
 
-const JOB_TYPE_STYLE: Record<string, string> = {
-  review:    'bg-blue-50 border border-blue-200 text-blue-700 dark:bg-blue-500/15 dark:border-blue-500/20 dark:text-blue-400',
-  scan:      'bg-violet-50 border border-violet-200 text-violet-700 dark:bg-violet-500/15 dark:border-violet-500/20 dark:text-violet-400',
-  implement: 'bg-amber-50 border border-amber-200 text-amber-700 dark:bg-amber-500/15 dark:border-amber-500/20 dark:text-amber-400',
-  rereview:  'bg-sky-50 border border-sky-200 text-sky-700 dark:bg-sky-500/15 dark:border-sky-500/20 dark:text-sky-400',
-}
+// ── Components ─────────────────────────────────────────────────────────────
 
-// ── KPI Card ─────────────────────────────────────────────────────────────────
-
-function KpiCard({ icon: Icon, label, value, sub, accent }: {
-  icon: React.ElementType
-  label: string
-  value: string | number
-  sub?: string
-  accent: string
-}) {
-  return (
-    <motion.div variants={fadeUp} className="rounded-2xl bg-card p-5 flex flex-col gap-3">
-      <div className={`h-8 w-8 rounded-xl flex items-center justify-center ${accent}`}>
-        <Icon className="h-4 w-4" />
-      </div>
-      <div>
-        <p className="text-2xl font-bold text-foreground font-mono">{value}</p>
-        <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
-        {sub && <p className="text-xs text-muted-foreground/50 mt-0.5">{sub}</p>}
-      </div>
-    </motion.div>
-  )
-}
-
-// ── Job Row (pipeline feed) ───────────────────────────────────────────────────
-
-function JobRow({ job, repos }: { job: JobRun; repos: Repository[] | undefined }) {
+/**
+ * Pipeline Activity Row - CircleCI-style job feed
+ */
+function PipelineRow({ job, repos }: { job: JobRun; repos: Repository[] | undefined }) {
   const repo = repos?.find(r => r.full_name === job.repo_full_name)
   const repoName = job.repo_full_name.split('/')[1]
-
-  let statusIcon: React.ReactNode
-  if (job.status === 'completed') {
-    statusIcon = <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-  } else if (job.status === 'failed') {
-    statusIcon = <XCircle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
-  } else if (job.status === 'running') {
-    statusIcon = <Loader2 className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 animate-spin" />
-  } else {
-    statusIcon = <Clock className="h-4 w-4 text-zinc-500 shrink-0" />
+  
+  const getStatusIcon = () => {
+    switch (job.status) {
+      case 'completed':
+        return <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+      case 'failed':
+        return <XCircle className="h-4 w-4 text-rose-500" />
+      case 'running':
+        return <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />
+      default:
+        return <Clock className="h-4 w-4 text-[#8c919b]" />
+    }
+  }
+  
+  const getTypeColor = () => {
+    switch (job.type) {
+      case 'review': return 'text-blue-500'
+      case 'scan': return 'text-violet-500'
+      case 'implement': return 'text-amber-500'
+      case 'rereview': return 'text-sky-500'
+      default: return 'text-[#8c919b]'
+    }
   }
 
   const reviewLink = repo && job.pr_number
     ? `/repos/${repo.id}/reviews/${job.pr_number}`
     : null
 
-  const inner = (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-muted/50 dark:hover:bg-accent/30 transition-colors group">
-      {statusIcon}
-      <span className={`text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-md shrink-0 ${JOB_TYPE_STYLE[job.type] ?? 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-400'}`}>
-        {job.type}
-      </span>
-      <div className="flex-1 min-w-0">
-        <span className="text-sm text-foreground font-medium truncate">{repoName}</span>
-        {job.pr_number > 0 && (
-          <span className="ml-2 text-xs text-muted-foreground">#{job.pr_number}</span>
-        )}
-        <span className="ml-2 text-xs text-muted-foreground/50">{job.triggered_by}</span>
-      </div>
-      <span className="text-xs text-muted-foreground shrink-0">{formatDuration(job.duration_ms)}</span>
-      <span className="text-xs text-muted-foreground/60 shrink-0 w-16 text-right">{relativeTime(job.triggered_at)}</span>
-      {reviewLink && (
-        <ChevronRight className="h-4 w-4 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors shrink-0" />
-      )}
-    </div>
-  )
-
   return (
-    <motion.div variants={fadeUp}>
-      {reviewLink ? <Link to={reviewLink}>{inner}</Link> : inner}
+    <motion.div 
+      variants={fadeUp}
+      className="group"
+    >
+      <Link to={reviewLink || '#'} className="block">
+        <div className="flex items-center gap-3 px-4 py-3 hover:bg-[#f1f2f3] dark:hover:bg-[#1e2025] rounded-[6px] transition-colors">
+          {/* Status Icon */}
+          <div className="shrink-0">
+            {getStatusIcon()}
+          </div>
+          
+          {/* Type Badge */}
+          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-[4px] bg-[#f1f2f3] dark:bg-[#1e2025] ${getTypeColor()}`}>
+            {job.type}
+          </span>
+          
+          {/* Repository */}
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium text-foreground truncate">{repoName}</span>
+            {job.pr_number > 0 && (
+              <span className="text-xs text-[#8c919b] ml-2">
+                #{job.pr_number}
+              </span>
+            )}
+          </div>
+          
+          {/* Trigger */}
+          <span className="text-xs text-[#8c919b] truncate max-w-[120px] hidden sm:block">
+            {job.triggered_by}
+          </span>
+          
+          {/* Duration */}
+          <span className="text-xs text-foreground tabular-nums shrink-0">
+            {formatDuration(job.duration_ms)}
+          </span>
+          
+          {/* Time */}
+          <span className="text-xs text-[#8c919b] tabular-nums shrink-0 w-12 text-right">
+            {relativeTime(job.triggered_at)}
+          </span>
+          
+          {/* Arrow */}
+          {reviewLink && (
+            <ChevronRight className="h-4 w-4 text-[#d5d7db] opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+          )}
+        </div>
+      </Link>
     </motion.div>
   )
 }
 
-// ── Repo Table Row ────────────────────────────────────────────────────────────
-
-function RepoTableRow({ repo }: { repo: Repository }) {
+/**
+ * Repository Row - Enhanced table row with actions
+ */
+function RepoRow({ repo }: { repo: Repository }) {
   const { data: scanState } = useQuery<ScanState | null>({
     queryKey: ['scanState', repo.id],
     queryFn: () => api.repos.status(repo.id),
@@ -140,41 +167,62 @@ function RepoTableRow({ repo }: { repo: Repository }) {
       return s === 'scanning' || s === 'in_progress' || s === 'pending' ? 2000 : false
     },
   })
+  
   const isCompleted = scanState?.status === 'completed'
 
   return (
     <motion.tr
       variants={fadeUp}
-      className="border-b border-border last:border-0 hover:bg-muted/50 dark:border-border/20 dark:hover:bg-accent/20 transition-colors group"
+      className="group border-b border-[#e1e3e6] last:border-0 dark:border-[#2d2f36] hover:bg-[#f1f2f3]/50 dark:hover:bg-[#1e2025]/50 transition-colors"
     >
-      <td className="py-4 pl-4 lg:pl-6">
-        <Link to={`/repos/${repo.id}`} className="flex items-center gap-2.5 min-w-0">
-          <div className="h-8 w-8 rounded-lg bg-accent flex items-center justify-center shrink-0 text-muted-foreground border border-border/50">
-            <span className="text-xs font-bold uppercase">
+      {/* Repo Name */}
+      <td className="py-3 pl-4 lg:pl-5">
+        <Link to={`/repos/${repo.id}`} className="flex items-center gap-3">
+          <div className="h-8 w-8 rounded-[6px] bg-[#f1f2f3] dark:bg-[#1e2025] flex items-center justify-center shrink-0">
+            <span className="text-xs font-bold text-[#656a76] uppercase">
               {repo.full_name.split('/')[1]?.[0] ?? '?'}
             </span>
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-foreground truncate">{repo.full_name.split('/')[1]}</p>
-            <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">{repo.full_name}</p>
+            <p className="text-sm font-medium text-foreground truncate">
+              {repo.full_name.split('/')[1]}
+            </p>
+            <p className="text-xs text-[#8c919b] font-mono truncate">
+              {repo.full_name}
+            </p>
           </div>
         </Link>
       </td>
-      <td className="py-4 px-4">
+      
+      {/* Status */}
+      <td className="py-3 px-3">
         <StatusBadge status={scanState?.status} size="sm" />
       </td>
-      <td className="py-3 px-4 text-xs text-muted-foreground">—</td>
-      <td className="py-3 px-4 text-xs text-muted-foreground">
-        {scanState?.artifacts?.indexed_at
-          ? new Date(scanState.artifacts.indexed_at).toLocaleDateString()
-          : '—'}
+      
+      {/* Reviews */}
+      <td className="py-3 px-3">
+        <span className="text-xs text-[#8c919b]">—</span>
       </td>
-      <td className="py-3 pr-4">
-        <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+      
+      {/* Last Scan */}
+      <td className="py-3 px-3">
+        <span className="text-xs text-[#8c919b]">
+          {scanState?.artifacts?.indexed_at
+            ? new Date(scanState.artifacts.indexed_at).toLocaleDateString(undefined, { 
+                month: 'short', 
+                day: 'numeric' 
+              })
+            : '—'}
+        </span>
+      </td>
+      
+      {/* Actions */}
+      <td className="py-3 pr-4 lg:pr-5">
+        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           {isCompleted && (
             <Link
               to={`/repos/${repo.id}/chat`}
-              className="p-1.5 rounded-lg hover:bg-primary/10 text-muted-foreground hover:text-primary transition-colors"
+              className="p-1.5 rounded-[4px] hover:bg-[#2264d6]/10 text-[#8c919b] hover:text-[#2264d6] transition-colors"
               title="Chat"
             >
               <MessageSquare className="h-3.5 w-3.5" />
@@ -182,13 +230,14 @@ function RepoTableRow({ repo }: { repo: Repository }) {
           )}
           <Link
             to={`/repos/${repo.id}/reviews`}
-            className="px-2.5 py-1 rounded-lg text-xs hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+            className="px-2.5 py-1.5 rounded-[4px] text-xs font-medium text-[#656a76] hover:text-foreground hover:bg-[#e1e3e6]/50 dark:text-[#b2b6bd] dark:hover:bg-[#2d2f36] transition-colors"
           >
             Reviews
           </Link>
+          
           <Link
             to={`/repos/${repo.id}`}
-            className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground transition-colors"
+            className="p-1.5 rounded-[4px] hover:bg-[#e1e3e6]/50 dark:hover:bg-[#2d2f36] text-[#8c919b] transition-colors"
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </Link>
@@ -198,9 +247,52 @@ function RepoTableRow({ repo }: { repo: Repository }) {
   )
 }
 
-// ── Dashboard ────────────────────────────────────────────────────────────────
+/**
+ * Empty State - When no repositories exist
+ */
+function EmptyState({ onAdd }: { onAdd: () => void }) {
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex flex-col items-center justify-center py-20 text-center"
+    >
+      <div className="relative mb-6">
+        <div className="absolute inset-0 rounded-3xl bg-[#2264d6]/10 blur-2xl scale-150" />
+        <div className="relative h-20 w-20 rounded-2xl bg-[#2264d6]/10 flex items-center justify-center">
+          <Shield className="h-10 w-10 text-[#2264d6]" />
+        </div>
+      </div>
+      
+      <h1 className="text-2xl font-bold text-foreground mb-2">
+        Welcome to Code Warden
+      </h1>
+      
+      <p className="text-[#656a76] text-sm max-w-sm mb-8">
+        Add a repository and trigger a review by commenting{' '}
+        <code className="font-mono text-xs bg-[#f1f2f3] px-1.5 py-0.5 rounded dark:bg-[#1e2025]">
+          /review
+        </code>
+        {' '}on any GitHub PR.
+      </p>
+      
+      <Button onClick={onAdd} size="lg">
+        <Plus className="h-4 w-4 mr-2" />
+        Add Your First Repository
+      </Button>
+      
+      <p className="mt-4 text-xs text-[#8c919b]">
+        or click the + button in the sidebar
+      </p>
+    </motion.div>
+  )
+}
+
+// ── Main Dashboard Component ────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const [, setShowAddDialog] = useState(false)
+  
   const { data: repos, isLoading: reposLoading, isError } = useQuery<Repository[]>({
     queryKey: ['repos'],
     queryFn: api.repos.list,
@@ -217,7 +309,7 @@ export default function Dashboard() {
     refetchInterval: 15_000,
   })
 
-  // Scan states for status dots
+  // Prefetch scan states
   useQueries({
     queries: (repos || []).map(repo => ({
       queryKey: ['scanState', repo.id],
@@ -232,8 +324,8 @@ export default function Dashboard() {
   if (reposLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-32 gap-3">
-        <Loader2 className="h-6 w-6 animate-spin text-primary" />
-        <p className="text-sm text-muted-foreground">Loading workspace...</p>
+        <Loader2 className="h-6 w-6 animate-spin text-[#2264d6]" />
+        <p className="text-sm text-[#656a76]">Loading workspace...</p>
       </div>
     )
   }
@@ -241,127 +333,196 @@ export default function Dashboard() {
   if (isError) {
     return (
       <div className="flex flex-col items-center justify-center py-32 text-center gap-4">
-        <div className="h-12 w-12 rounded-2xl bg-red-500/10 flex items-center justify-center">
-          <Shield className="h-6 w-6 text-red-400" />
+        <div className="h-12 w-12 rounded-2xl bg-rose-500/10 flex items-center justify-center">
+          <Shield className="h-6 w-6 text-rose-500" />
         </div>
-        <p className="text-sm text-muted-foreground">Failed to load repositories.</p>
+        <p className="text-sm text-[#656a76]">Failed to load repositories.</p>
       </div>
     )
   }
 
-  // Empty state
+  // Empty state when no repos
   if (!repos || repos.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-24 text-center animate-fade-in">
-        <div className="relative mb-6">
-          <div className="absolute inset-0 rounded-3xl bg-primary/15 blur-2xl scale-150" />
-          <div className="relative h-20 w-20 rounded-3xl bg-primary/10 flex items-center justify-center">
-            <Shield className="h-10 w-10 text-primary" />
-          </div>
-        </div>
-        <h1 className="text-2xl font-bold text-foreground mb-2">Welcome to Code Warden</h1>
-        <p className="text-muted-foreground text-sm max-w-sm mb-10">
-          Add a repository and trigger a review by commenting <code className="font-mono text-xs bg-accent/50 px-1.5 py-0.5 rounded">/review</code> on any GitHub PR.
-        </p>
-        <p className="flex items-center gap-2 text-sm text-muted-foreground bg-accent/30 px-4 py-2.5 rounded-xl">
-          <Plus className="h-4 w-4 text-primary shrink-0" />
-          Click the <span className="font-medium text-foreground">+</span> button in the sidebar to add a repository.
-        </p>
-      </div>
-    )
+    return <EmptyState onAdd={() => setShowAddDialog(true)} />
   }
 
   const indexedCount = globalStats?.indexed_repos ?? 0
   const totalCount = globalStats?.total_repos ?? repos.length
 
   return (
-    <motion.div className="space-y-8" initial="hidden" animate="show" variants={stagger}>
+    <motion.div 
+      className="space-y-6" 
+      initial="hidden" 
+      animate="show" 
+      variants={stagger}
+    >
       {/* Header */}
       <motion.div variants={fadeUp} className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted-foreground mt-1">AI code review pipeline overview</p>
+          <h1 className="text-xl font-bold text-foreground">Dashboard</h1>
+          <p className="text-sm text-[#656a76] mt-0.5">AI code review pipeline overview</p>
+        </div>
+        
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setShowAddDialog(true)} variant="secondary">
+            <Plus className="h-4 w-4 mr-1.5" />
+            Add Repository
+          </Button>
         </div>
       </motion.div>
 
-      {/* KPI row */}
+      {/* KPI Cards */}
       <motion.div variants={stagger} className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KpiCard
+        <KPICard
           icon={Layers}
           label="Repositories"
           value={`${indexedCount}/${totalCount}`}
           sub="indexed / total"
-          accent="bg-violet-500/10 border border-violet-500/20 text-violet-600 dark:text-violet-400"
+          color="text-violet-500"
         />
-        <KpiCard
+
+        <KPICard
           icon={GitPullRequest}
           label="Reviews this week"
           value={globalStats?.reviews_this_week ?? '—'}
-          accent="bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400"
+          color="text-blue-500"
         />
-        <KpiCard
+
+        <KPICard
           icon={AlertTriangle}
           label="Total findings"
           value={globalStats?.total_findings ?? '—'}
           sub={globalStats ? `${globalStats.findings_by_severity.critical} critical` : undefined}
-          accent="bg-orange-500/10 border border-orange-500/20 text-orange-600 dark:text-orange-400"
+          color="text-amber-500"
         />
-        <KpiCard
+
+        <KPICard
           icon={TrendingDown}
           label="Avg findings / review"
           value={globalStats?.avg_findings_per_review?.toFixed(1) ?? '—'}
-          accent="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+          color="text-emerald-500"
         />
       </motion.div>
 
-      {/* Recent Activity */}
-      <motion.div variants={fadeUp} className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recent Activity</h2>
-          <Link to="/jobs" className="text-xs text-primary hover:underline">View all →</Link>
-        </div>
-        <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
-          {jobsLoading ? (
-            <div className="flex items-center justify-center py-10 gap-2 text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-sm">Loading activity...</span>
+      {/* Content Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-6">
+          {/* Recent Activity */}
+          <motion.div variants={fadeUp} className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-[#656a76] uppercase tracking-wider">
+                Recent Activity
+              </h2>
+              <Link to="/jobs" className="text-xs text-[#2264d6] hover:underline dark:text-[#2b89ff]">
+                View all →
+              </Link>
             </div>
-          ) : jobs && jobs.length > 0 ? (
-            <motion.div variants={stagger} className="divide-y divide-border dark:divide-border/20">
-              {jobs.slice(0, 8).map(job => (
-                <JobRow key={job.id} job={job} repos={repos} />
-              ))}
-            </motion.div>
-          ) : (
-            <div className="py-10 text-center text-sm text-muted-foreground">
-              No activity yet — comment <code className="font-mono text-xs bg-accent/50 px-1.5 py-0.5 rounded">/review</code> on a GitHub PR to get started.
+            
+            <div className="bg-white dark:bg-[#15181e] rounded-[8px] border border-[#e1e3e6] dark:border-[#2d2f36] shadow-[0_1px_1px_rgba(97,104,117,0.05)] overflow-hidden">
+              {jobsLoading ? (
+                <div className="flex items-center justify-center py-10 gap-2 text-[#8c919b]">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="text-sm">Loading activity...</span>
+                </div>
+              ) : jobs && jobs.length > 0 ? (
+                <motion.div variants={stagger}>
+                  {jobs.slice(0, 8).map(job => (
+                    <PipelineRow key={job.id} job={job} repos={repos} />
+                  ))}
+                </motion.div>
+              ) : (
+                <div className="py-10 text-center text-sm text-[#8c919b]">
+                  No activity yet — comment{' '}
+                  <code className="font-mono text-xs bg-[#f1f2f3] px-1.5 py-0.5 rounded dark:bg-[#1e2025]">
+                    /review
+                  </code>
+                  {' '}on a GitHub PR to get started.
+                </div>
+              )}
             </div>
-          )}
+          </motion.div>
+          
+          {/* Repositories Table */}
+          <motion.div variants={fadeUp} className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-[#656a76] uppercase tracking-wider">
+                Repositories
+              </h2>
+              <span className="text-xs text-[#8c919b]">
+                {repos.length} total
+              </span>
+            </div>
+            
+            <div className="bg-white dark:bg-[#15181e] rounded-[8px] border border-[#e1e3e6] dark:border-[#2d2f36] shadow-[0_1px_1px_rgba(97,104,117,0.05)] overflow-hidden">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-[#e1e3e6] dark:border-[#2d2f36]">
+                    <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 pl-4 lg:pl-5">Repository</th>
+                    <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 px-3">Status</th>
+                    <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 px-3">Reviews</th>
+                    <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 px-3">Last Scan</th>
+                    <th className="py-3 pr-4 lg:pr-5" />
+                  </tr>
+                </thead>
+                <motion.tbody variants={stagger}>
+                  {repos.map(repo => (
+                    <RepoRow key={repo.id} repo={repo} />
+                  ))}
+                </motion.tbody>
+              </table>
+            </div>
+          </motion.div>
         </div>
-      </motion.div>
-
-      {/* Repositories Table */}
-      <motion.div variants={fadeUp} className="space-y-3">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Repositories</h2>
-        <div className="rounded-2xl bg-card overflow-hidden border border-border shadow-sm dark:border-transparent dark:shadow-none">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border dark:border-border/40">
-                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 pl-4 lg:pl-6">Repository</th>
-                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Status</th>
-                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Reviews</th>
-                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-4 px-4">Last Scan</th>
-                <th className="py-4 pr-4 lg:pr-6" />
-              </tr>
-            </thead>
-            <motion.tbody variants={stagger}>
-              {repos.map(repo => (
-                <RepoTableRow key={repo.id} repo={repo} />
-              ))}
-            </motion.tbody>
-          </table>
+        
+        {/* Quick Actions */}
+        <div className="space-y-4">
+          <motion.div variants={fadeUp}>
+            <ActionCard
+              icon={Zap}
+              title="Quick Start"
+              description="Set up your first repository and trigger an initial scan to begin AI-powered code reviews."
+              actionLabel="Get Started"
+              href="/setup"
+            />
+          </motion.div>
+          
+          <motion.div variants={fadeUp}>
+            <ActionCard
+              icon={GitBranch}
+              title="Review Workflow"
+              description="Learn how to trigger reviews with /review and /rereview commands on GitHub PRs."
+              actionLabel="Learn More"
+              href="#"
+            />
+          </motion.div>
+          
+          <motion.div variants={fadeUp} className="bg-[#2264d6]/5 rounded-[8px] border border-[#2264d6]/20 p-5">
+            <div className="flex items-start gap-3">
+              <div className="h-8 w-8 rounded-[6px] bg-[#2264d6]/10 flex items-center justify-center shrink-0">
+                <Activity className="h-4 w-4 text-[#2264d6]" />
+              </div>
+              
+              <div>
+                <h3 className="font-semibold text-foreground text-sm mb-1">System Status</h3>
+                <div className="space-y-2 mt-3">
+                  <div className="flex items-center gap-2 text-xs">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                    <span className="text-[#656a76]">API Server</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                    <span className="text-[#656a76]">Database</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                    <span className="text-[#656a76]">Vector Store</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
         </div>
-      </motion.div>
+      </div>
     </motion.div>
   )
 }
