@@ -86,7 +86,7 @@ func (t *CreatePullRequest) Execute(ctx context.Context, args map[string]any) (a
 	}
 
 	diffHash, _ := args["diff_hash"].(string)
-	if err := t.ReviewTracker.CheckApproval(diffHash); err != nil {
+	if err := t.ReviewTracker.CheckApprovalBySession(ctx, diffHash); err != nil {
 		t.Logger.Error("PR creation blocked: no approved review", "error", err)
 		return nil, fmt.Errorf("PR creation blocked: %w", err)
 	}

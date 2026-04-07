@@ -133,15 +133,14 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 	}
 	t.Logger.Info("✅ Code review completed", "verdict", result.Review.Verdict, "confidence", result.Review.Confidence)
 
-	// Record the review result for PR enforcement (MCP-specific)
+	// Record the review result for PR enforcement (scoped to this agent session).
 	if t.ReviewTracker != nil {
-		t.ReviewTracker.RecordReview(result.Review.Verdict, result.DiffHash)
-		// Record the changed files for controlled commits
+		t.ReviewTracker.RecordReviewBySession(ctx, result.Review.Verdict, result.DiffHash)
 		fileNames := make([]string, len(changedFiles))
 		for i, f := range changedFiles {
 			fileNames[i] = f.Filename
 		}
-		t.ReviewTracker.RecordReviewFiles(fileNames)
+		t.ReviewTracker.RecordReviewFiles(ctx, fileNames)
 	}
 
 	response := ReviewCodeResponse{

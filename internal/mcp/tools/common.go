@@ -19,7 +19,10 @@ const (
 // contextKey is an unexported type for context keys in this package.
 type contextKey string
 
-const projectRootKey contextKey = "projectRoot"
+const (
+	projectRootKey contextKey = "projectRoot"
+	sessionIDKey   contextKey = "sessionID"
+)
 
 // ProjectRootFromContext returns the per-session project root from context,
 // or empty string if not set.
@@ -33,6 +36,20 @@ func ProjectRootFromContext(ctx context.Context) string {
 // WithProjectRoot returns a context with the given project root.
 func WithProjectRoot(ctx context.Context, root string) context.Context {
 	return context.WithValue(ctx, projectRootKey, root)
+}
+
+// SessionIDFromContext returns the per-session MCP session ID from context,
+// or empty string if not set.
+func SessionIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(sessionIDKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// WithSessionID returns a context with the given MCP session ID.
+func WithSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionIDKey, id)
 }
 
 // GetRequiredString extracts a required string parameter from args.

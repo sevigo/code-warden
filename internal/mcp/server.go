@@ -51,9 +51,13 @@ type Server struct {
 	workspacesMu sync.RWMutex
 	workspaces   map[string]string
 
-	// Review tracking for PR enforcement
+	// Review tracking for PR enforcement.
+	// reviewsBySession stores results keyed by MCP session ID, preventing race
+	// conditions when multiple agent sessions run concurrently.
+	// lastReviewResult is the global fallback for backward compatibility.
 	reviewMu         sync.RWMutex
 	lastReviewResult *reviewResult
+	reviewsBySession map[string]*reviewResult
 }
 
 // reviewResult tracks the last code review result for enforcement.
@@ -125,6 +129,7 @@ func NewServer(
 		registry:         goframeagent.NewRegistry(),
 		sessions:         make(map[string]*sseSession),
 		workspaces:       make(map[string]string),
+		reviewsBySession: make(map[string]*reviewResult),
 		comparisonModels: config.ComparisonModels,
 		reviewsDir:       config.ReviewsDir,
 	}
@@ -176,6 +181,11 @@ func (s *Server) registerTools() {
 		ReviewTracker:    s,
 		Logger:           s.logger,
 	})
+	s.registry.MustRegisterTool(&tools.RunCommand{
+		RepoConfig:  s.repoConfig,
+		ProjectRoot: s.projectRoot,
+		Logger:      s.logger,
+	})
 
 	// Register GitHub tools if ghClient is available
 	if s.ghClient != nil && s.repo != nil {
@@ -225,11 +235,16 @@ func (s *Server) RegisterWorkspace(token, projectRoot string) {
 	s.logger.Info("workspace registered", "token", token, "project_root", projectRoot)
 }
 
-// UnregisterWorkspace removes a workspace association.
+// UnregisterWorkspace removes a workspace association and its session review data.
+// Cleaning review data here prevents the reviewsBySession map from growing
+// without bound in long-running servers (one entry per agent session).
 func (s *Server) UnregisterWorkspace(token string) {
 	s.workspacesMu.Lock()
 	delete(s.workspaces, token)
 	s.workspacesMu.Unlock()
+
+	s.ClearReviewBySession(token)
+	s.cleanupStaleSessionReviews()
 	s.logger.Debug("workspace unregistered", "token", token)
 }
 
@@ -277,6 +292,18 @@ func (s *Server) SetupGovernance(config GovernanceConfig) {
 	s.logger.Info("governance layer enabled", "checks", len(checks))
 }
 
+// Tools returns all registered tool objects (used by the native in-process agent).
+func (s *Server) Tools() []Tool {
+	raw := s.registry.List()
+	result := make([]Tool, 0, len(raw))
+	for _, t := range raw {
+		if mct, ok := t.(Tool); ok {
+			result = append(result, mct)
+		}
+	}
+	return result
+}
+
 // ListTools returns all available tools in deterministic order.
 func (s *Server) ListTools() []ToolInfo {
 	defs := s.registry.Definitions()
@@ -307,28 +334,49 @@ const (
 	// This is a policy decision: 30 minutes provides reasonable security while
 	// allowing time for agent iteration. Tests should mock time or use short durations.
 	maxReviewAge = 30 * time.Minute
+
+	// reviewHashDisplayLen is the number of diff-hash characters shown in log lines.
+	reviewHashDisplayLen = 8
 )
 
-// RecordReview stores the review result for enforcement.
-func (s *Server) RecordReview(verdict, diffHash string) {
-	s.reviewMu.Lock()
-	defer s.reviewMu.Unlock()
-	s.lastReviewResult = &reviewResult{
+// RecordReviewBySession stores the review result scoped to the session in ctx.
+// Falls back to global state when no session ID is present in ctx.
+func (s *Server) RecordReviewBySession(ctx context.Context, verdict, diffHash string) {
+	sessionID := tools.SessionIDFromContext(ctx)
+
+	hashLen := reviewHashDisplayLen
+	if len(diffHash) < hashLen {
+		hashLen = len(diffHash)
+	}
+
+	result := &reviewResult{
 		Verdict:   verdict,
 		Timestamp: time.Now(),
 		DiffHash:  diffHash,
 	}
-	// Truncate diff hash for logging
-	hashLen := 8
-	if len(diffHash) < hashLen {
-		hashLen = len(diffHash)
+
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+
+	// Always update global fallback.
+	s.lastReviewResult = result
+
+	// Also store per-session when a session ID is available.
+	if sessionID != "" {
+		s.reviewsBySession[sessionID] = result
+		s.logger.Info("review recorded for session",
+			"session_id", sessionID,
+			"verdict", verdict,
+			"diff_hash", diffHash[:hashLen])
+	} else {
+		s.logger.Info("review recorded (no session context, global only)",
+			"verdict", verdict,
+			"diff_hash", diffHash[:hashLen])
 	}
-	s.logger.Info("review recorded for PR enforcement",
-		"verdict", verdict,
-		"diff_hash", diffHash[:hashLen])
 }
 
-// GetLastReview returns the last review result.
+// GetLastReview returns the last review result from global state.
+// Used by the orchestrator when it needs the verdict for a specific session via GetReviewBySession.
 func (s *Server) GetLastReview() (verdict string, timestamp time.Time, diffHash string) {
 	s.reviewMu.RLock()
 	defer s.reviewMu.RUnlock()
@@ -338,50 +386,85 @@ func (s *Server) GetLastReview() (verdict string, timestamp time.Time, diffHash 
 	return s.lastReviewResult.Verdict, s.lastReviewResult.Timestamp, s.lastReviewResult.DiffHash
 }
 
-// CheckApproval verifies if there's a recent approved review.
-func (s *Server) CheckApproval(diffHash string) error {
+// GetReviewBySession returns the review result for a specific agent session ID.
+// Falls back to global state when no session-specific result exists.
+func (s *Server) GetReviewBySession(sessionID string) (verdict string, timestamp time.Time, diffHash string) {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
+	if r, ok := s.reviewsBySession[sessionID]; ok {
+		return r.Verdict, r.Timestamp, r.DiffHash
+	}
+	// Fallback to global for sessions that predated per-session tracking.
+	if s.lastReviewResult != nil {
+		return s.lastReviewResult.Verdict, s.lastReviewResult.Timestamp, s.lastReviewResult.DiffHash
+	}
+	return "", time.Time{}, ""
+}
+
+// CheckApprovalBySession verifies there is a recent approved review for the session in ctx.
+// Falls back to global state when no session ID is present.
+func (s *Server) CheckApprovalBySession(ctx context.Context, diffHash string) error {
+	sessionID := tools.SessionIDFromContext(ctx)
+
 	s.reviewMu.RLock()
 	defer s.reviewMu.RUnlock()
 
-	if s.lastReviewResult == nil {
+	result := s.lastReviewResult // global fallback
+	if sessionID != "" {
+		if r, ok := s.reviewsBySession[sessionID]; ok {
+			result = r
+		}
+	}
+
+	if result == nil {
 		return fmt.Errorf("no code review found: you must call review_code and receive APPROVE verdict before creating a PR")
 	}
-
-	// Check if review is for the same code (diff hash matches)
-	if diffHash != "" && s.lastReviewResult.DiffHash != "" && diffHash != s.lastReviewResult.DiffHash {
+	if diffHash != "" && result.DiffHash != "" && diffHash != result.DiffHash {
 		return fmt.Errorf("code has changed since last review: please run review_code again")
 	}
-
-	// Check if review is approved or a comment
-	if s.lastReviewResult.Verdict != core.VerdictApprove && s.lastReviewResult.Verdict != core.VerdictComment {
-		return fmt.Errorf("last review verdict was %s (needs APPROVE or COMMENT): fix issues and run review_code again", s.lastReviewResult.Verdict)
+	if result.Verdict != core.VerdictApprove && result.Verdict != core.VerdictComment {
+		return fmt.Errorf("last review verdict was %s (needs APPROVE or COMMENT): fix issues and run review_code again", result.Verdict)
 	}
-
-	// Check if review is recent
-	if time.Since(s.lastReviewResult.Timestamp) > maxReviewAge {
+	if time.Since(result.Timestamp) > maxReviewAge {
 		return fmt.Errorf("review is stale (older than %v): please run review_code again", maxReviewAge)
 	}
 
 	s.logger.Info("PR creation approved",
-		"review_verdict", s.lastReviewResult.Verdict,
-		"review_age", time.Since(s.lastReviewResult.Timestamp))
+		"session_id", sessionID,
+		"review_verdict", result.Verdict,
+		"review_age", time.Since(result.Timestamp))
 	return nil
 }
 
 // RecordReviewFiles stores the list of files that were changed in the reviewed diff.
-// A copy of the slice is stored to prevent aliasing issues.
-func (s *Server) RecordReviewFiles(files []string) {
+// Files are stored both in the per-session result (keyed by session ID from ctx)
+// and in the global fallback, preventing concurrent sessions from overwriting
+// each other's file lists.
+func (s *Server) RecordReviewFiles(ctx context.Context, files []string) {
+	sessionID := tools.SessionIDFromContext(ctx)
+	filesCopy := append([]string(nil), files...)
+
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
+
+	// Update global fallback.
 	if s.lastReviewResult == nil {
 		s.lastReviewResult = &reviewResult{}
 	}
-	// Copy the slice to prevent aliasing issues
-	s.lastReviewResult.Files = append([]string(nil), files...)
-	s.logger.Info("review files recorded", "file_count", len(files))
+	s.lastReviewResult.Files = filesCopy
+
+	// Also update per-session result when a session ID is available.
+	if sessionID != "" {
+		if s.reviewsBySession[sessionID] == nil {
+			s.reviewsBySession[sessionID] = &reviewResult{}
+		}
+		s.reviewsBySession[sessionID].Files = filesCopy
+	}
+
+	s.logger.Info("review files recorded", "session_id", sessionID, "file_count", len(files))
 }
 
-// GetLastReviewFiles returns a copy of the files from the last review.
+// GetLastReviewFiles returns a copy of the files from the last review (global).
 // Returns nil if no review has been recorded.
 func (s *Server) GetLastReviewFiles() []string {
 	s.reviewMu.RLock()
@@ -389,8 +472,48 @@ func (s *Server) GetLastReviewFiles() []string {
 	if s.lastReviewResult == nil {
 		return nil
 	}
-	// Return a copy to prevent aliasing issues
 	return append([]string(nil), s.lastReviewResult.Files...)
+}
+
+// GetReviewFilesBySession returns a copy of the files from the review for a specific
+// session ID. Falls back to global state if the session has no record.
+func (s *Server) GetReviewFilesBySession(sessionID string) []string {
+	s.reviewMu.RLock()
+	defer s.reviewMu.RUnlock()
+	if r, ok := s.reviewsBySession[sessionID]; ok && r != nil {
+		return append([]string(nil), r.Files...)
+	}
+	// Fallback to global.
+	if s.lastReviewResult == nil {
+		return nil
+	}
+	return append([]string(nil), s.lastReviewResult.Files...)
+}
+
+// ClearReviewBySession removes the review entry for a specific session, freeing
+// memory once an agent session has completed.
+func (s *Server) ClearReviewBySession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.reviewMu.Lock()
+	delete(s.reviewsBySession, sessionID)
+	s.reviewMu.Unlock()
+	s.logger.Debug("session review cleared", "session_id", sessionID)
+}
+
+// cleanupStaleSessionReviews evicts entries from reviewsBySession that are
+// older than maxReviewAge. Called opportunistically on workspace unregistration
+// to bound the map size without requiring a background goroutine.
+func (s *Server) cleanupStaleSessionReviews() {
+	cutoff := time.Now().Add(-maxReviewAge)
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+	for id, r := range s.reviewsBySession {
+		if r.Timestamp.Before(cutoff) {
+			delete(s.reviewsBySession, id)
+		}
+	}
 }
 
 // CallTool executes a tool by name.
@@ -579,10 +702,13 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 			case <-toolCtx.Done():
 			}
 		}()
-		// Inject per-session project root into tool context
+		// Inject per-session project root and session ID into tool context.
+		// The session ID is used by review_code and create_pull_request to scope
+		// review results per session, preventing race conditions under concurrent sessions.
 		if session.projectRoot != "" {
 			toolCtx = tools.WithProjectRoot(toolCtx, session.projectRoot)
 		}
+		toolCtx = tools.WithSessionID(toolCtx, sessionID)
 	} else {
 		toolCtx = r.Context()
 	}

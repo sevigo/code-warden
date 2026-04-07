@@ -50,6 +50,14 @@ type Service interface {
 	GenerateProjectContext(ctx context.Context, collectionName, embedderModelName string) (string, error)
 	GenerateArchSummaries(ctx context.Context, collectionName, embedderModelName, repoPath string, targetPaths []string) error
 	GetTextSplitter() textsplitter.TextSplitter
+	// GeneratorLLM returns the underlying LLM model used for generation.
+	// Used by the native in-process agent to drive its ReAct loop directly.
+	GeneratorLLM() llms.Model
+	// GetLLM returns an LLM for the given model name, creating and caching it on
+	// first use.  If modelName matches the configured generator model the existing
+	// instance is returned.  Used by the native agent to load a dedicated
+	// implementation model separate from the review model.
+	GetLLM(ctx context.Context, modelName string) (llms.Model, error)
 }
 
 // ttlCacheEntry holds a cached value with an expiry timestamp.
@@ -284,6 +292,14 @@ func newContextPacker(gen llms.Model, tokenBudget int, logger *slog.Logger) (*co
 // GetTextSplitter returns the configured text splitter.
 func (r *ragService) GetTextSplitter() textsplitter.TextSplitter {
 	return r.splitter
+}
+
+func (r *ragService) GeneratorLLM() llms.Model {
+	return r.generatorLLM
+}
+
+func (r *ragService) GetLLM(ctx context.Context, modelName string) (llms.Model, error) {
+	return r.getOrCreateLLM(ctx, modelName)
 }
 
 // getOrCreateLLM returns an LLM instance for the given model name.
