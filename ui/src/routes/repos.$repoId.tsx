@@ -130,10 +130,10 @@ function SeverityBadge({ severity, count }: { severity: 'critical' | 'high' | 'm
     low: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400',
   }
 
-  const labels = { critical: 'CRIT', high: 'HIGH', medium: 'MED', low: 'LOW' }
+  const labels = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' }
 
   return (
-    <span className={cn('text-[10px] font-bold px-1.5 py-0.5 rounded-[4px] border', styles[severity])}>
+    <span className={cn('text-xs font-semibold px-2 py-0.5 rounded-[4px] border', styles[severity])}>
       {count} {labels[severity]}
     </span>
   )
@@ -148,40 +148,40 @@ function ReviewRow({ group, repoId }: { group: GroupedReview; repoId: string }) 
   return (
     <motion.div variants={fadeUp} className="border-b border-[#e1e3e6] dark:border-[#2d2f36] last:border-0">
       <div
-        className="flex items-center gap-3 px-4 py-3 hover:bg-[#f1f2f3] dark:hover:bg-[#1e2025] transition-colors cursor-pointer group"
+        className="flex items-center gap-4 px-5 py-4 hover:bg-[#f1f2f3] dark:hover:bg-[#1e2025] transition-colors cursor-pointer group"
         onClick={() => hasRevisions && setIsExpanded(!isExpanded)}
       >
-        <div className="h-7 w-7 rounded-[6px] bg-[#f1f2f3] dark:bg-[#1e2025] flex items-center justify-center shrink-0">
-          <GitPullRequest className="h-3.5 w-3.5 text-[#8c919b]" />
+        <div className="h-9 w-9 rounded-[6px] bg-[#f1f2f3] dark:bg-[#1e2025] flex items-center justify-center shrink-0">
+          <GitPullRequest className="h-4 w-4 text-[#8c919b]" />
         </div>
-        
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs font-mono text-[#8c919b]">#{pr_number}</span>
-        </div>
-        
+
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="text-sm text-foreground truncate">{pr_title}</p>
+          <div className="flex items-center gap-2 mb-1">
+            <p className="text-sm font-semibold text-foreground truncate">{pr_title}</p>
             {hasRevisions && (
-              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-[4px] bg-blue-500/10 text-blue-600 dark:text-blue-400">
+              <span className="shrink-0 text-xs font-semibold px-2 py-0.5 rounded-[4px] bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
                 {revisions.length} re-review{revisions.length > 1 ? 's' : ''}
               </span>
             )}
           </div>
-          
-          <div className="flex items-center gap-1.5 mt-1.5">
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-[#8c919b]">#{pr_number}</span>
+            {(displayCounts.critical > 0 || displayCounts.high > 0 || displayCounts.medium > 0 || displayCounts.low > 0) && (
+              <span className="text-[#8c919b]">·</span>
+            )}
             <SeverityBadge severity="critical" count={displayCounts.critical} />
             <SeverityBadge severity="high" count={displayCounts.high} />
             <SeverityBadge severity="medium" count={displayCounts.medium} />
             <SeverityBadge severity="low" count={displayCounts.low} />
           </div>
         </div>
-        
+
         <div className="flex items-center gap-3 shrink-0">
-          <span className="text-xs text-[#8c919b]">
+          <span className="text-sm text-[#8c919b]">
             {new Date(original_review.reviewed_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
           </span>
-          
+
           <Link
             to={`/repos/${repoId}/reviews/${pr_number}?id=${original_review.id}`}
             onClick={(e) => e.stopPropagation()}
@@ -196,33 +196,33 @@ function ReviewRow({ group, repoId }: { group: GroupedReview; repoId: string }) 
         <motion.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          className="ml-11 border-l border-blue-500/20 pl-4 space-y-1 mb-2"
+          className="ml-14 border-l border-blue-500/20 pl-4 space-y-1 mb-3"
         >
           {revisions.map((rev, idx) => (
             <Link
               key={rev.id}
               to={`/repos/${repoId}/reviews/${pr_number}?id=${rev.id}`}
-              className="flex items-center justify-between py-2 px-3 hover:bg-[#f1f2f3] dark:hover:bg-[#1e2025] rounded-[6px] transition-colors"
+              className="flex items-center justify-between py-2.5 px-3 hover:bg-[#f1f2f3] dark:hover:bg-[#1e2025] rounded-[6px] transition-colors"
             >
               <div className="flex items-center gap-2">
-                <span className="text-[9px] font-black px-1.5 py-0.5 rounded-[4px] bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                <span className="text-xs font-bold px-2 py-0.5 rounded-[4px] bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
                   V{rev.revision}
                 </span>
                 {idx === revisions.length - 1 && (
-                  <span className="text-[9px] font-bold px-1 py-0.5 rounded-[4px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-[4px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
                     Latest
                   </span>
                 )}
               </div>
-              
+
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1 opacity-70 scale-90 origin-right">
+                <div className="flex items-center gap-1.5">
                   <SeverityBadge severity="critical" count={rev.severity_counts.critical} />
                   <SeverityBadge severity="high" count={rev.severity_counts.high} />
                   <SeverityBadge severity="medium" count={rev.severity_counts.medium} />
                   <SeverityBadge severity="low" count={rev.severity_counts.low} />
                 </div>
-                <span className="text-[10px] text-[#8c919b] font-mono">
+                <span className="text-xs text-[#8c919b]">
                   {new Date(rev.reviewed_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                 </span>
               </div>
@@ -429,8 +429,8 @@ export default function RepoDetailPage() {
       {isCompleted && (
         <motion.div variants={fadeUp} className="space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-semibold text-[#656a76] uppercase tracking-wider">Recent Reviews</h2>
-            <Link to={`/repos/${repoId}/reviews`} className="text-xs text-[#2264d6] hover:underline dark:text-[#2b89ff]">View all →</Link>
+            <h2 className="text-sm font-semibold text-[#656a76] uppercase tracking-wider">Recent Reviews</h2>
+            <Link to={`/repos/${repoId}/reviews`} className="text-sm text-[#2264d6] hover:underline dark:text-[#2b89ff]">View all →</Link>
           </div>
           
           <div className="bg-white dark:bg-[#15181e] rounded-[8px] border border-[#e1e3e6] dark:border-[#2d2f36] overflow-hidden">
