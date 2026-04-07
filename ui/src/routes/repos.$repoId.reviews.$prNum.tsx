@@ -360,10 +360,11 @@ export default function ReviewDetailPage() {
     )
   }
 
-  const criticals = review.findings.filter(f => f.severity === 'critical')
-  const highs      = review.findings.filter(f => f.severity === 'high')
-  const mediums    = review.findings.filter(f => f.severity === 'medium')
-  const lows       = review.findings.filter(f => f.severity === 'low')
+  const findings = review.findings ?? []
+  const criticals = findings.filter(f => f.severity === 'critical')
+  const highs      = findings.filter(f => f.severity === 'high')
+  const mediums    = findings.filter(f => f.severity === 'medium')
+  const lows       = findings.filter(f => f.severity === 'low')
 
   return (
     <motion.div className="space-y-6" initial="hidden" animate="show" variants={stagger}>
@@ -428,7 +429,7 @@ export default function ReviewDetailPage() {
             {lows.length} low
           </Badge>
           <span className="text-xs text-muted-foreground ml-1">
-            {review.findings.length} total finding{review.findings.length !== 1 ? 's' : ''}
+            {findings.length} total finding{findings.length !== 1 ? 's' : ''}
           </span>
         </div>
       </motion.div>
