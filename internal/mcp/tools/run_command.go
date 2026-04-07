@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -109,7 +110,8 @@ func (t *RunCommand) Execute(ctx context.Context, args map[string]any) (any, err
 
 	exitCode := 0
 	if err != nil {
-		if exitErr, ok2 := err.(*exec.ExitError); ok2 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
 			// Context timeout or other exec error.
