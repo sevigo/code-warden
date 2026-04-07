@@ -20,7 +20,8 @@ OPENCODE_PORT=4096
 OPENCODE_MCP_URL=http://127.0.0.1:8081/sse
 
 .DEFAULT_GOAL := all
-.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev ui-deps build-ui dev-ui run/server run/ui
+.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev ui-deps build-ui dev-ui run/server run/ui \
+	demo quickstart pull-models demo-up demo-down demo-logs
 
 all: build
 
@@ -131,3 +132,35 @@ dev-ui:
 # Full build including UI
 build-all: build build-ui
 	@echo "All binaries and UI built successfully"
+
+# ── Demo & Quickstart ─────────────────────────────────────────────────────────
+
+## CLI review — no server, no GitHub App needed. Just a GitHub PAT.
+## Usage: make demo PR=https://github.com/owner/repo/pull/123
+demo:
+	@[ -f .env ] || cp .env.example .env
+	@[ -n "$(PR)" ] || (echo "Usage: make demo PR=<pr-url>" && exit 1)
+	@go run ./cmd/cli review $(PR)
+
+## Full server quickstart — starts all services in Docker, opens web UI.
+quickstart:
+	@[ -f .env ] || cp .env.example .env
+	@bash scripts/quickstart.sh
+
+## Pull local Ollama models for demo (run on host Ollama, not Docker)
+## Generator (kimi-k2.5) is a cloud model — no local download needed for it.
+pull-models:
+	ollama pull qwen3-embedding:0.6b
+	ollama pull qwen2.5-coder:1.5b
+
+## Start all demo services (after initial quickstart)
+demo-up:
+	docker compose -f docker-compose.demo.yml up -d
+
+## Stop all demo services
+demo-down:
+	docker compose -f docker-compose.demo.yml down
+
+## Stream server logs from the demo stack
+demo-logs:
+	docker compose -f docker-compose.demo.yml logs -f server

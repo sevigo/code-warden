@@ -1,0 +1,23 @@
+# docker-compose.gpu.yml — NVIDIA GPU override for docker-compose.demo.yml
+#
+# Usage:
+#   docker-compose -f docker-compose.demo.yml -f docker-compose.gpu.yml up -d
+#
+# Requirements:
+#   - NVIDIA GPU with CUDA support (Turing/RTX 20xx or newer recommended)
+#   - nvidia-container-toolkit installed on the host:
+#       https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# Verify GPU is visible inside the container:
+#   docker exec cw-ollama nvidia-smi
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

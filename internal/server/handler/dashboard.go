@@ -73,8 +73,8 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	{
 		host := h.cfg.Storage.QdrantHost
 		// Switch to HTTP port for health check if configured for gRPC
-		if strings.HasSuffix(host, ":6334") {
-			host = strings.TrimSuffix(host, ":6334") + ":6333"
+		if rest, ok := strings.CutSuffix(host, ":6334"); ok {
+			host = rest + ":6333"
 		}
 		if !strings.HasPrefix(host, "http") {
 			host = "http://" + host
@@ -95,6 +95,38 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Ping LLM endpoint (Ollama or Gemini)
+	var llmStatus string
+	var llmLatency int64
+	{
+		var llmURL string
+		switch h.cfg.AI.LLMProvider {
+		case "gemini":
+			llmURL = "https://generativelanguage.googleapis.com/v1beta/models"
+		default: // ollama
+			host := h.cfg.AI.OllamaHost
+			if host == "" {
+				host = "http://localhost:11434"
+			}
+			llmURL = host + "/api/tags"
+		}
+		start := time.Now()
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get(llmURL) //nolint:noctx // short health check
+		llmLatency = time.Since(start).Milliseconds()
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode < 300 {
+				llmStatus = "ok"
+			} else {
+				llmStatus = statusError
+			}
+		} else {
+			llmStatus = statusError
+		}
+	}
+
 	installURL := ""
 	if configured && appName != "" {
 		installURL = fmt.Sprintf("https://github.com/apps/%s/installations/new",
@@ -111,8 +143,9 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		"services": map[string]any{
 			"database": map[string]any{"status": dbStatus, "latency_ms": dbLatency},
 			"qdrant":   map[string]any{"status": qdrantStatus, "latency_ms": qdrantLatency},
+			"llm":      map[string]any{"status": llmStatus, "latency_ms": llmLatency, "provider": h.cfg.AI.LLMProvider},
 		},
-		"ready": configured && dbStatus == "ok" && qdrantStatus == "ok",
+		"ready": configured && dbStatus == "ok" && qdrantStatus == "ok" && llmStatus == "ok",
 	})
 }
 
@@ -573,8 +606,8 @@ func buildTitle(comment string, idx int) string {
 	// (Simple check for common review emojis)
 	emojis := []string{"🔍", "💡", "📖", "🔴", "🟠", "🟡", "🟢", "✅", "🚫", "💬"}
 	for _, e := range emojis {
-		if strings.HasPrefix(comment, e) {
-			comment = strings.TrimSpace(strings.TrimPrefix(comment, e))
+		if rest, ok := strings.CutPrefix(comment, e); ok {
+			comment = strings.TrimSpace(rest)
 			break
 		}
 	}

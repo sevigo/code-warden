@@ -1,5 +1,31 @@
 # Setup Guide
 
+---
+
+## Quick Demo (5 minutes, no GitHub App)
+
+Review a real PR with just a GitHub PAT:
+
+```sh
+git clone https://github.com/sevigo/code-warden
+cd code-warden
+cp .env.example .env    # set GITHUB_TOKEN to your PAT
+make demo PR=https://github.com/owner/repo/pull/42
+```
+
+**Full server with web UI (15 minutes):**
+
+```sh
+make quickstart         # guided setup, starts all Docker services
+# open http://localhost:8080
+```
+
+See the [README](../README.md#quick-start) for GPU support and useful commands.
+
+---
+
+## Full Production Setup
+
 This guide walks through deploying Code-Warden from scratch — GitHub App creation, infrastructure, configuration, and first review.
 
 ## Prerequisites

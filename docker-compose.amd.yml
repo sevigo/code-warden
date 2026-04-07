@@ -1,0 +1,29 @@
+# docker-compose.amd.yml — AMD ROCm GPU override for docker-compose.demo.yml
+#
+# Usage:
+#   docker-compose -f docker-compose.demo.yml -f docker-compose.amd.yml up -d
+#
+# Requirements:
+#   - AMD GPU with ROCm support (RDNA2/RX 6000 series or newer recommended)
+#   - ROCm drivers installed on the host (https://rocm.docs.amd.com)
+#   - The /dev/kfd and /dev/dri devices must be available
+#
+# Supported cards (ROCm): RX 6000/7000 series, MI-series datacenter GPUs
+# Unsupported: RX 5000 series and older (no ROCm support)
+#
+# Verify GPU is visible inside the container:
+#   docker exec cw-ollama rocm-smi
+
+services:
+  ollama:
+    image: ollama/ollama:rocm
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      HSA_OVERRIDE_GFX_VERSION: "10.3.0"   # override for RX 6000 if not auto-detected
+      # Remove the line above if you are using RX 7000/MI-series (auto-detected)

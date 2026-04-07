@@ -1,0 +1,105 @@
+# config.demo.yaml — Code-Warden demo / quickstart configuration
+#
+# This config is designed for local demo and on-prem evaluation.
+# All secrets are read from environment variables (see .env.example).
+# Viper maps env vars automatically: SECTION_KEY → section.key
+#
+# Used by:
+#   make demo PR=<url>        — CLI review with just a GitHub PAT
+#   make quickstart           — Full server stack via Docker
+#   docker-compose.demo.yml   — Mounts this file as /app/config.yaml
+
+server:
+  port: "8080"
+  max_workers: 3
+
+github:
+  # Secrets come from env vars: GITHUB_APP_ID, GITHUB_WEBHOOK_SECRET,
+  # GITHUB_PRIVATE_KEY_PATH, GITHUB_TOKEN
+  private_key_path: "keys/code-warden-app.private-key.pem"
+
+ai:
+  # Provider: "ollama" — routes to Ollama cloud for generation, local for embeddings
+  # Override via AI_LLM_PROVIDER env var.
+  llm_provider: "ollama"
+  embedder_provider: "ollama"
+
+  # Ollama endpoint — overridden to http://ollama:11434 inside docker-compose
+  ollama_host: "http://localhost:11434"
+
+  # Generator: Ollama cloud model — runs on Ollama's infrastructure, no GPU needed.
+  # No large model download; Ollama routes the request to the cloud.
+  # Override via AI_GENERATOR_MODEL env var.
+  # Alternatives: qwen3.5:35b, glm-5.1, minimax-m2.7, deepseek-v3.2
+  generator_model: "kimi-k2.5"
+
+  # Fast model: local model used for quick passes (HyDE, validation).
+  # Must run locally. ollama-init pulls this alongside the embedder.
+  # qwen2.5-coder:1.5b is ~1 GB — small enough for any machine.
+  fast_model: "qwen2.5-coder:1.5b"
+
+  # Embedder: local model — called for every indexed chunk, must run locally.
+  # ollama-init pulls this automatically (~639 MB one-time download).
+  # qwen3-embedding:0.6b: 32K context, 1024-dim — ideal for code files
+  # Upgrade options (set AI_EMBEDDER_MODEL in .env):
+  #   qwen3-embedding:4b  — 2.5 GB, 40K ctx, 4096-dim, better recall
+  #   qwen3-embedding:8b  — 4.7 GB, 40K ctx, MTEB #1, best quality
+  # (nomic-embed-text only has 2K context — truncates larger source files)
+  embedder_model: "qwen3-embedding:0.6b"
+  embedder_task_description: "search_document"
+
+  # Reranking disabled — no extra model needed.
+  # Sparse vectors are handled in-process by the Go code-sparse provider.
+  enable_reranking: false
+  reranker_model: "qwen2.5-coder:1.5b"
+
+  # Hybrid search (dense + sparse) — sparse is zero-cost in-process
+  enable_hybrid_search: true
+  sparse_vector_name: "code_sparse"
+
+  # HyDE adds an extra LLM round-trip; disable for demo speed
+  enable_hyde: false
+
+  # Thinking/reasoning mode — off by default; enable for models that support it
+  # (kimi-k2.5 and qwen3.5 both support thinking mode)
+  enable_thinking: false
+
+  context_token_budget: 64000
+  model_keep_alive: "10m"
+  enable_code_suggestions: true
+
+storage:
+  # gRPC port — overridden to qdrant:6334 inside docker-compose
+  qdrant_host: "localhost:6334"
+  repo_path: "./data/repos"
+
+database:
+  driver: "postgres"
+  # Host overridden to "db" inside docker-compose via DATABASE_HOST env var
+  host: "localhost"
+  port: 5432
+  database: "codewarden"
+  username: "warden"
+  # Password comes from DATABASE_PASSWORD env var
+  password: "secret"
+  ssl_mode: "disable"
+  max_open_conns: 10
+  max_idle_conns: 3
+  conn_max_lifetime: "5m"
+  conn_max_idle_time: "5m"
+
+logging:
+  level: "info"
+  format: "text"
+  output: "stdout"
+
+features:
+  enable_binary_quantization: true
+  enable_graph_analysis: false
+
+# Agent and Warden disabled in demo mode
+agent:
+  enabled: false
+
+warden:
+  enabled: false

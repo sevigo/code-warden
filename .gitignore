@@ -23,6 +23,7 @@ bin/
 keys/
 reviews/
 *.sh
+!scripts/quickstart.sh
 
 # Go workspace file
 go.work
