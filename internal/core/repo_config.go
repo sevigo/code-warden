@@ -79,6 +79,10 @@ type RepoConfig struct {
 	// Example: ["make lint", "make test"] or ["go vet ./...", "go test ./..."]
 	// If empty, defaults to ["make lint", "make test"].
 	VerifyCommands []string `yaml:"verify_commands"`
+
+	// CommandTimeoutSeconds is the per-command timeout for run_command in seconds.
+	// Defaults to 300 (5 minutes) when zero. Increase for repos with long test suites.
+	CommandTimeoutSeconds int `yaml:"command_timeout_seconds"`
 }
 
 // DefaultRepoConfig returns a config with default values.

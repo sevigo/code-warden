@@ -235,11 +235,16 @@ func (s *Server) RegisterWorkspace(token, projectRoot string) {
 	s.logger.Info("workspace registered", "token", token, "project_root", projectRoot)
 }
 
-// UnregisterWorkspace removes a workspace association.
+// UnregisterWorkspace removes a workspace association and its session review data.
+// Cleaning review data here prevents the reviewsBySession map from growing
+// without bound in long-running servers (one entry per agent session).
 func (s *Server) UnregisterWorkspace(token string) {
 	s.workspacesMu.Lock()
 	delete(s.workspaces, token)
 	s.workspacesMu.Unlock()
+
+	s.ClearReviewBySession(token)
+	s.cleanupStaleSessionReviews()
 	s.logger.Debug("workspace unregistered", "token", token)
 }
 
@@ -483,6 +488,32 @@ func (s *Server) GetReviewFilesBySession(sessionID string) []string {
 		return nil
 	}
 	return append([]string(nil), s.lastReviewResult.Files...)
+}
+
+// ClearReviewBySession removes the review entry for a specific session, freeing
+// memory once an agent session has completed.
+func (s *Server) ClearReviewBySession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.reviewMu.Lock()
+	delete(s.reviewsBySession, sessionID)
+	s.reviewMu.Unlock()
+	s.logger.Debug("session review cleared", "session_id", sessionID)
+}
+
+// cleanupStaleSessionReviews evicts entries from reviewsBySession that are
+// older than maxReviewAge. Called opportunistically on workspace unregistration
+// to bound the map size without requiring a background goroutine.
+func (s *Server) cleanupStaleSessionReviews() {
+	cutoff := time.Now().Add(-maxReviewAge)
+	s.reviewMu.Lock()
+	defer s.reviewMu.Unlock()
+	for id, r := range s.reviewsBySession {
+		if r.Timestamp.Before(cutoff) {
+			delete(s.reviewsBySession, id)
+		}
+	}
 }
 
 // CallTool executes a tool by name.

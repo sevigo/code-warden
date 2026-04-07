@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+// maxErrorDisplayLength is the maximum number of characters shown in GitHub
+// failure comments to keep them readable without truncating useful context.
+const maxErrorDisplayLength = 800
+
 // postIssueComment posts a comment to the GitHub issue linked to this session.
 // Errors are logged but not returned — comment failures must never block agent execution.
 func (o *Orchestrator) postIssueComment(ctx context.Context, issue Issue, body string) {
@@ -61,7 +65,7 @@ func (o *Orchestrator) postSessionFailed(ctx context.Context, session *Session, 
 			"The agent could not complete the implementation.\n\n"+
 			"<details><summary>Error detail</summary>\n\n```\n%s\n```\n</details>\n\n"+
 			"You can retry by commenting `/implement` again.",
-		session.ID, truncateString(errMsg, 800),
+		session.ID, truncateString(errMsg, maxErrorDisplayLength),
 	)
 	o.postIssueComment(ctx, session.Issue, body)
 }

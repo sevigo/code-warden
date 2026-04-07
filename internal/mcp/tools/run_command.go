@@ -56,7 +56,11 @@ allowed (defaults: "make lint", "make test").
 Use this tool to verify that the code compiles and all tests pass before
 calling review_code or create_pull_request.
 
-Returns stdout, stderr, exit_code, and a boolean success field.`
+Returns stdout, stderr, exit_code, and a boolean success field.
+
+Note: commands are split on whitespace; quoted arguments with spaces are not
+supported. Whitelist entries should use simple space-separated tokens only
+(e.g. "make test" not "go test -run 'My Test'").`
 }
 
 func (t *RunCommand) ParametersSchema() map[string]any {
@@ -95,7 +99,12 @@ func (t *RunCommand) Execute(ctx context.Context, args map[string]any) (any, err
 	t.Logger.Info("run_command: executing", "command", command, "dir", projectRoot)
 
 	// Apply a hard timeout independent of the parent context.
-	runCtx, cancel := context.WithTimeout(ctx, defaultCommandTimeout)
+	// Configurable via repo_config.CommandTimeoutSeconds; falls back to default.
+	timeout := defaultCommandTimeout
+	if t.RepoConfig != nil && t.RepoConfig.CommandTimeoutSeconds > 0 {
+		timeout = time.Duration(t.RepoConfig.CommandTimeoutSeconds) * time.Second
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	parts := strings.Fields(command)
