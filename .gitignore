@@ -40,4 +40,5 @@ llm_context.md
 
 .agent/
 .claude/
+.opencode/
 CLAUDE.md

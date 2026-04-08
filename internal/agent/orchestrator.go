@@ -477,6 +477,8 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		o.runAgentSDK(ctx, session, branch)
 	case "native":
 		o.runInProcessAgent(ctx, session, branch)
+	case "pi", "warden":
+		o.runWardenAgent(ctx, session, branch)
 	default:
 		// CLI mode: spawn external binary
 		o.logger.Info("🧭 EXPLORATION: Building agent context", "session_id", session.ID)

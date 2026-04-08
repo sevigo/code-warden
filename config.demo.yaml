@@ -97,9 +97,21 @@ features:
   enable_binary_quantization: true
   enable_graph_analysis: false
 
-# Agent and Warden disabled in demo mode
+# Agent (autonomous /implement command) — disabled by default in demo mode.
+# To enable: set agent.enabled: true and configure a GitHub App + ngrok tunnel.
+#
+# mode: "pi" uses the native Go agent loop with file manipulation tools
+# (read_file, write_file, edit_file, list_dir) in addition to the MCP code
+# navigation tools. No external binary required.
 agent:
   enabled: false
+  mode: "pi"
+  model: "kimi-k2.5"          # Ollama cloud model — same as generator, no extra download
+  max_iterations: 5
+  max_concurrent_sessions: 3
+  timeout: "1h"
+  mcp_addr: "127.0.0.1:8081"
+  working_dir: "./data/agent-workspaces"
 
 warden:
   enabled: false

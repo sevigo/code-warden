@@ -153,8 +153,15 @@ func (c *AgentConfig) Validate() error {
 
 // validateMode validates the agent mode and OpenCode URL if needed.
 func (c *AgentConfig) validateMode() error {
-	if c.Mode != "server" && c.Mode != "cli" {
-		return fmt.Errorf("agent.mode must be 'server' or 'cli', got: %s", c.Mode)
+	validModes := map[string]bool{
+		"server": true,
+		"cli":    true,
+		"native": true,
+		"pi":     true,
+		"warden": true,
+	}
+	if !validModes[c.Mode] {
+		return fmt.Errorf("agent.mode must be 'server', 'cli', 'native', 'pi', or 'warden', got: %s", c.Mode)
 	}
 
 	// Validate OpenCodeURL when mode is "server"
