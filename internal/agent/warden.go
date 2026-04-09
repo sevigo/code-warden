@@ -19,10 +19,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	goframeagent "github.com/sevigo/goframe/agent"
 	"github.com/sevigo/goframe/llms"
+	"github.com/sevigo/goframe/schema"
 
 	"github.com/sevigo/code-warden/internal/agent/lsp"
 )
@@ -216,6 +218,7 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, ws.lsp != nil && ws.lsp.Available(), plan)),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopGovernance(governance),
+		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session)),
 	)
 }
 
@@ -313,4 +316,103 @@ Available tools: push_branch, create_pull_request.
 
 Do not make any code changes. Do not review. Just push and open the PR.`,
 		issue.Number, issue.Title, branch, issue.Number)
+}
+
+// compactionThreshold is the fraction of input tokens (relative to a conservative
+// 128K ceiling) at which we compact the conversation history. GLM-5.1 and
+// MiniMax M2.7 both support 198K+ context, but we compact well before the limit
+// to leave room for tool outputs in the current iteration.
+const compactionThreshold = 0.70
+
+// compactionContextCeiling is the conservative token ceiling used to compute
+// the 70% threshold. Models support more, but we stay well within headroom.
+const compactionContextCeiling = 128_000
+
+// buildCompactionHook returns a goframe WithLoopCompactionHook callback that
+// summarizes the conversation history when token usage exceeds 70% of the
+// conservative context ceiling. The system prompt (first message) and the most
+// recent user/tool messages are preserved verbatim; everything in between is
+// replaced with a one-paragraph summary produced by the same LLM.
+//
+// If the LLM call for summarization fails the hook returns nil, leaving the
+// history unchanged and letting the loop continue naturally.
+func (o *Orchestrator) buildCompactionHook(session *Session) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+	return func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+		used := tokens.Input + tokens.Output
+		threshold := float64(compactionContextCeiling) * compactionThreshold
+		if used < threshold {
+			return nil // still plenty of room
+		}
+
+		o.logger.Info("warden: context approaching limit, compacting",
+			"session_id", session.ID,
+			"tokens_used", used,
+			"threshold", threshold,
+			"messages", len(msgs),
+		)
+
+		// Build a plain-text transcript of the history (excluding system prompt)
+		// for the summarization prompt.
+		var transcript strings.Builder
+		for _, m := range msgs[1:] {
+			role := string(m.Role)
+			for _, part := range m.Parts {
+				switch p := part.(type) {
+				case schema.TextContent:
+					fmt.Fprintf(&transcript, "[%s] %s\n\n", role, p.Text)
+				}
+			}
+		}
+
+		summaryPrompt := fmt.Sprintf(`You are summarizing a coding agent's conversation history to save context space.
+
+Below is the conversation so far (excluding the system prompt). Produce a concise
+summary (max 400 words) that preserves:
+- Which files were read and what was found
+- Which files were edited and what changes were made
+- Results of lint / test runs (pass/fail, key errors)
+- Any review_code verdicts received
+- Outstanding issues or next steps the agent was working on
+
+Do not include any preamble. Output only the summary text.
+
+--- CONVERSATION ---
+%s`, transcript.String())
+
+		agentLLM, err := o.resolveAgentLLM(ctx)
+		if err != nil {
+			o.logger.Warn("warden: compaction: failed to resolve LLM, skipping", "error", err)
+			return nil
+		}
+
+		resp, err := agentLLM.GenerateContent(ctx,
+			[]schema.MessageContent{schema.NewHumanMessage(summaryPrompt)},
+		)
+		if err != nil || len(resp.Choices) == 0 {
+			o.logger.Warn("warden: compaction: LLM summarization failed, skipping", "error", err)
+			return nil
+		}
+
+		summary := resp.Choices[0].Content
+		o.logger.Info("warden: context compacted",
+			"session_id", session.ID,
+			"summary_len", len(summary),
+			"original_messages", len(msgs),
+		)
+
+		// Rebuild: system prompt + compacted summary + last 4 messages (tool results
+		// from the current iteration so the model has immediate context).
+		tail := msgs
+		if len(msgs) > 5 {
+			tail = msgs[len(msgs)-4:]
+		}
+
+		compacted := make([]schema.MessageContent, 0, 2+len(tail))
+		compacted = append(compacted, msgs[0]) // system prompt
+		compacted = append(compacted,
+			schema.NewHumanMessage("## Context Summary (earlier conversation compacted)\n\n"+summary),
+		)
+		compacted = append(compacted, tail...)
+		return compacted
+	}
 }
