@@ -58,6 +58,15 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	}
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
+	// ── Progress tracker ─────────────────────────────────────────────────────
+	// Intercepts every tool call to write real-time log lines and post periodic
+	// GitHub progress comments. Runs a background goroutine until stop() is called.
+	tracker := newProgressTracker(session, ws.logFile, func(tctx context.Context, body string) {
+		o.postIssueComment(tctx, session.Issue, body)
+	})
+	tracker.start(ctx)
+	defer tracker.stop()
+
 	o.logger.Info("🛠️  IMPLEMENTATION: Starting warden agent (phased)",
 		"session_id", session.ID,
 		"working_dir", ws.dir,
@@ -66,13 +75,13 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	)
 
 	// ── Planning phase ───────────────────────────────────────────────────────
-	// Runs a short read-only loop to explore the codebase and produce a plan.
-	// The plan is injected into the implement loop's system prompt.
-	plan := o.buildPlan(ctx, agentLLM, session, ws)
+	tracker.setPhase("planning")
+	plan := o.buildPlan(ctx, agentLLM, session, ws, tracker)
 	o.logger.Info("warden: planning complete, starting implement loop", "session_id", session.ID)
 
 	// ── Loop 1: Implement ────────────────────────────────────────────────────
-	implLoop, err := o.buildImplementLoop(agentLLM, session, ws, plan)
+	tracker.setPhase("implementing")
+	implLoop, err := o.buildImplementLoop(agentLLM, session, ws, plan, tracker)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build implement loop: %v", err))
 		return
@@ -116,7 +125,8 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	}
 
 	// ── Loop 2: Publish ──────────────────────────────────────────────────────
-	pubLoop, err := o.buildPublishLoop(agentLLM, session, ws, branch)
+	tracker.setPhase("publishing")
+	pubLoop, err := o.buildPublishLoop(agentLLM, session, ws, branch, tracker)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build publish loop: %v", err))
 		return
@@ -174,7 +184,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 // All MCP tools EXCEPT push_branch and create_pull_request are included,
 // plus file tools and LSP tools. plan is the output of the planning phase
 // and is embedded in the system prompt to give the model a head start.
-func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, plan string) (*goframeagent.AgentLoop, error) {
+func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, plan string, tracker *progressTracker) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
@@ -183,35 +193,17 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 		if publishToolNames[t.Name()] {
 			continue // reserved for publish loop
 		}
-		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
-		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildImplementLoop: failed to register MCP tool",
-				"tool", t.Name(), "error", err)
-			continue
-		}
-		allowedTools[t.Name()] = true
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	// File tools (with LSP diagnostic hook).
 	for _, t := range fileTools(ws.lsp) {
-		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
-		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildImplementLoop: failed to register file tool",
-				"tool", t.Name(), "error", err)
-			continue
-		}
-		allowedTools[t.Name()] = true
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	// LSP tools — only if a language server is running.
 	for _, t := range lsp.Tools(ws.lsp) {
-		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
-		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildImplementLoop: failed to register LSP tool",
-				"tool", t.Name(), "error", err)
-			continue
-		}
-		allowedTools[t.Name()] = true
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 	if ws.lsp != nil && ws.lsp.Available() {
 		o.logger.Info("buildImplementLoop: LSP tools registered", "session_id", session.ID)
@@ -229,7 +221,7 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 
 // buildPublishLoop builds the agent loop for the publish phase.
 // Only push_branch and create_pull_request are available.
-func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, branch string) (*goframeagent.AgentLoop, error) {
+func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, branch string, tracker *progressTracker) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
@@ -237,13 +229,7 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 		if !publishToolNames[t.Name()] {
 			continue // implement-phase tools are not needed here
 		}
-		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
-		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildPublishLoop: failed to register tool",
-				"tool", t.Name(), "error", err)
-			continue
-		}
-		allowedTools[t.Name()] = true
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})

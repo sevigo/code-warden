@@ -18,6 +18,8 @@ import (
 
 	goframeagent "github.com/sevigo/goframe/agent"
 	"github.com/sevigo/goframe/llms"
+
+	"github.com/sevigo/code-warden/internal/mcp"
 )
 
 // plannerAllowedMCPTools is the set of MCP tools available during planning.
@@ -37,8 +39,8 @@ var plannerAllowedMCPTools = map[string]bool{
 //
 // If planning fails (timeout, loop error, empty output) a minimal fallback plan
 // is returned so the implement loop always has some context.
-func (o *Orchestrator) buildPlan(ctx context.Context, agentLLM llms.Model, session *Session, ws *agentWorkspace) string {
-	loop, err := o.buildPlannerLoop(agentLLM, session, ws)
+func (o *Orchestrator) buildPlan(ctx context.Context, agentLLM llms.Model, session *Session, ws *agentWorkspace, tracker *progressTracker) string {
+	loop, err := o.buildPlannerLoop(agentLLM, session, ws, tracker)
 	if err != nil {
 		o.logger.Warn("planner: failed to build loop, skipping planning phase",
 			"session_id", session.ID, "error", err)
@@ -78,7 +80,7 @@ func (o *Orchestrator) buildPlan(ctx context.Context, agentLLM llms.Model, sessi
 }
 
 // buildPlannerLoop constructs the read-only agent loop for the planning phase.
-func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace) (*goframeagent.AgentLoop, error) {
+func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, tracker *progressTracker) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
@@ -87,32 +89,15 @@ func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, w
 		if !plannerAllowedMCPTools[t.Name()] {
 			continue
 		}
-		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
-		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildPlannerLoop: failed to register tool",
-				"tool", t.Name(), "error", err)
-			continue
-		}
-		allowedTools[t.Name()] = true
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	// Read-only file tools: read_file and list_dir only (no write/edit).
-	for _, t := range []interface {
-		Name() string
-		Description() string
-		ParametersSchema() map[string]any
-		Execute(context.Context, map[string]any) (any, error)
-	}{
+	for _, t := range []mcp.Tool{
 		&readFileTool{},
 		&listDirTool{},
 	} {
-		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
-		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildPlannerLoop: failed to register file tool",
-				"tool", t.Name(), "error", err)
-			continue
-		}
-		allowedTools[t.Name()] = true
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
