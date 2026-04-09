@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	goframeagent "github.com/sevigo/goframe/agent"
@@ -27,6 +28,7 @@ import (
 	"github.com/sevigo/goframe/schema"
 
 	"github.com/sevigo/code-warden/internal/agent/lsp"
+	"github.com/sevigo/code-warden/internal/mcp"
 )
 
 // publishToolNames are withheld from the implement loop and reserved for the
@@ -34,6 +36,44 @@ import (
 var publishToolNames = map[string]bool{
 	"push_branch":         true,
 	"create_pull_request": true,
+}
+
+// maxReviewRounds is the maximum number of times the agent may call review_code
+// before the implement loop is told to stop and request human review.
+// This prevents endless ping-pong when reviewer and coder keep disagreeing.
+const maxReviewRounds = 5
+
+// reviewCapTool wraps the review_code MCP tool and enforces maxReviewRounds.
+// After the cap is reached every subsequent call returns a synthetic verdict
+// instructing the agent to stop rather than continuing to cycle.
+type reviewCapTool struct {
+	inner mcp.Tool
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *reviewCapTool) Name() string                     { return r.inner.Name() }
+func (r *reviewCapTool) Description() string              { return r.inner.Description() }
+func (r *reviewCapTool) ParametersSchema() map[string]any { return r.inner.ParametersSchema() }
+
+func (r *reviewCapTool) Execute(ctx context.Context, args map[string]any) (any, error) {
+	r.mu.Lock()
+	r.calls++
+	n := r.calls
+	r.mu.Unlock()
+
+	if n > maxReviewRounds {
+		return map[string]any{
+			"verdict": "HUMAN_REVIEW_REQUIRED",
+			"message": fmt.Sprintf(
+				"Maximum automated review rounds (%d) reached without APPROVE. "+
+					"Stop implementation and leave a comment asking for human review. "+
+					"Do not call review_code again.",
+				maxReviewRounds,
+			),
+		}, nil
+	}
+	return r.inner.Execute(ctx, args)
 }
 
 // runWardenAgent runs the two-phase warden loop: implement then publish.
@@ -63,12 +103,26 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	// Persist the session as "running" now that the workspace and branch are ready.
 	o.persistSessionRunning(ctx, session, branch)
 
+	// ── LSP mode label ────────────────────────────────────────────────────────
+	lspMode := "degraded (RAG-only)"
+	if ws.lsp != nil && ws.lsp.Available() {
+		lspMode = "precise (LSP)"
+	}
+
 	// ── Progress tracker ─────────────────────────────────────────────────────
-	// Intercepts every tool call to write real-time log lines and post periodic
-	// GitHub progress comments. Runs a background goroutine until stop() is called.
-	tracker := newProgressTracker(session, ws.logFile, func(tctx context.Context, body string) {
-		o.postIssueComment(tctx, session.Issue, body)
-	})
+	// Intercepts every tool call to write real-time log lines and EDIT a single
+	// GitHub status comment every 30 s rather than posting new ones each time.
+	tracker := newProgressTracker(
+		session,
+		ws.logFile,
+		lspMode,
+		func(tctx context.Context, body string) int64 {
+			return o.createIssueComment(tctx, session.Issue, body)
+		},
+		func(tctx context.Context, id int64, body string) {
+			o.updateIssueComment(tctx, session.Issue, id, body)
+		},
+	)
 	tracker.start(ctx)
 	defer tracker.stop()
 
@@ -208,12 +262,16 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
-	// MCP tools — exclude publish tools.
+	// MCP tools — exclude publish tools; wrap review_code with the cap.
 	for _, t := range o.mcpServer.Tools() {
 		if publishToolNames[t.Name()] {
 			continue // reserved for publish loop
 		}
-		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
+		tool := mcp.Tool(t) //nolint:unconvert // mcp.Tool is an interface; explicit for clarity
+		if t.Name() == "review_code" {
+			tool = &reviewCapTool{inner: t}
+		}
+		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
 	}
 
 	// File tools (with LSP diagnostic hook).

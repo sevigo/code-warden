@@ -23,6 +23,38 @@ func (o *Orchestrator) postIssueComment(ctx context.Context, issue Issue, body s
 	}
 }
 
+// createIssueComment posts a new comment and returns its ID (0 on failure).
+// Used by progressTracker to create the single rolling status comment.
+func (o *Orchestrator) createIssueComment(ctx context.Context, issue Issue, body string) int64 {
+	if o.ghClient == nil {
+		return 0
+	}
+	id, err := o.ghClient.CreateCommentID(ctx, issue.RepoOwner, issue.RepoName, issue.Number, body)
+	if err != nil {
+		o.logger.Warn("failed to create issue comment",
+			"issue", issue.Number,
+			"repo", issue.RepoOwner+"/"+issue.RepoName,
+			"error", err)
+		return 0
+	}
+	return id
+}
+
+// updateIssueComment edits an existing comment by ID.
+// Used by progressTracker to update the rolling status comment in-place.
+func (o *Orchestrator) updateIssueComment(ctx context.Context, issue Issue, commentID int64, body string) {
+	if o.ghClient == nil || commentID == 0 {
+		return
+	}
+	if err := o.ghClient.UpdateComment(ctx, issue.RepoOwner, issue.RepoName, commentID, body); err != nil {
+		o.logger.Warn("failed to update issue comment",
+			"issue", issue.Number,
+			"comment_id", commentID,
+			"repo", issue.RepoOwner+"/"+issue.RepoName,
+			"error", err)
+	}
+}
+
 func (o *Orchestrator) postSessionStarted(ctx context.Context, session *Session) {
 	body := fmt.Sprintf(
 		"🤖 **Implementation started** — session `%s`\n\n"+

@@ -71,6 +71,35 @@ func (mr *MockClientMockRecorder) CreateComment(ctx, owner, repo, number, body a
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateComment", reflect.TypeOf((*MockClient)(nil).CreateComment), ctx, owner, repo, number, body)
 }
 
+// CreateCommentID mocks base method.
+func (m *MockClient) CreateCommentID(ctx context.Context, owner, repo string, number int, body string) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateCommentID", ctx, owner, repo, number, body)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CreateCommentID indicates an expected call of CreateCommentID.
+func (mr *MockClientMockRecorder) CreateCommentID(ctx, owner, repo, number, body any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateCommentID", reflect.TypeOf((*MockClient)(nil).CreateCommentID), ctx, owner, repo, number, body)
+}
+
+// UpdateComment mocks base method.
+func (m *MockClient) UpdateComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateComment", ctx, owner, repo, commentID, body)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateComment indicates an expected call of UpdateComment.
+func (mr *MockClientMockRecorder) UpdateComment(ctx, owner, repo, commentID, body any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateComment", reflect.TypeOf((*MockClient)(nil).UpdateComment), ctx, owner, repo, commentID, body)
+}
+
 // CreatePullRequest mocks base method.
 func (m *MockClient) CreatePullRequest(ctx context.Context, owner, repo string, opts github0.PullRequestOptions) (*github.PullRequest, error) {
 	m.ctrl.T.Helper()

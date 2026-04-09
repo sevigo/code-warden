@@ -3,12 +3,13 @@ package agent
 // progress.go — real-time progress tracking for agent sessions.
 //
 // progressTracker intercepts every tool call via the progressTool wrapper and:
-//   1. Writes a timestamped line to the session log file immediately.
-//   2. Maintains an in-memory list of recent calls.
-//   3. Posts a GitHub issue comment every 30 seconds (when new calls occurred).
+//  1. Writes a timestamped line to the session log file immediately.
+//  2. Maintains an in-memory list of recent calls.
+//  3. Creates a single GitHub status comment on the first tick, then EDITs
+//     that same comment every 30 seconds rather than posting new ones.
 //
-// This gives live visibility into long GLM-5.1 / MiniMax M2.7 runs without
-// requiring any changes to goframe's AgentLoop.
+// This avoids cluttering the issue timeline with dozens of progress comments
+// during long GLM-5.1 / MiniMax M2.7 runs.
 
 import (
 	"context"
@@ -39,37 +40,53 @@ type progressEntry struct {
 }
 
 // progressTracker tracks agent tool calls, writes them to the session log,
-// and posts periodic GitHub progress comments.
+// and posts/edits a single GitHub progress comment.
 type progressTracker struct {
 	session *Session
-	logW    io.Writer // session log file
+	logW    io.Writer
 
-	// postComment posts a body string to the GitHub issue.
-	// It is a no-op closure when the GitHub client is unavailable.
-	postComment func(ctx context.Context, body string)
+	// createComment creates the initial status comment and returns its ID.
+	// Returns 0 on error. Called at most once.
+	createComment func(ctx context.Context, body string) int64
+	// updateComment edits the comment created by createComment.
+	// No-op when commentID is 0.
+	updateComment func(ctx context.Context, id int64, body string)
 
-	mu         sync.Mutex
-	entries    []progressEntry
-	lastPosted int    // number of entries at the time of the last comment
-	phase      string // "planning" | "implementing" | "publishing"
+	// lspMode is included in every status comment so the reader knows
+	// whether precise LSP diagnostics or RAG-only mode is active.
+	lspMode string
+
+	mu              sync.Mutex
+	entries         []progressEntry
+	lastPosted      int // number of entries at the time of the last comment
+	phase           string
+	statusCommentID int64 // 0 until the first comment is created
 
 	done chan struct{}
 	wg   sync.WaitGroup
 }
 
 // newProgressTracker creates a tracker but does not start the background goroutine.
-func newProgressTracker(session *Session, logW io.Writer, postComment func(ctx context.Context, body string)) *progressTracker {
+// lspMode should be "precise (LSP)" or "degraded (RAG-only)".
+func newProgressTracker(
+	session *Session,
+	logW io.Writer,
+	lspMode string,
+	createComment func(ctx context.Context, body string) int64,
+	updateComment func(ctx context.Context, id int64, body string),
+) *progressTracker {
 	return &progressTracker{
-		session:     session,
-		logW:        logW,
-		postComment: postComment,
-		phase:       "implementing",
-		done:        make(chan struct{}),
+		session:       session,
+		logW:          logW,
+		lspMode:       lspMode,
+		createComment: createComment,
+		updateComment: updateComment,
+		phase:         "implementing",
+		done:          make(chan struct{}),
 	}
 }
 
 // start launches the background goroutine that posts periodic GitHub comments.
-// ctx is used for the comment HTTP calls; the goroutine itself runs until stop().
 func (pt *progressTracker) start(ctx context.Context) {
 	pt.wg.Add(1)
 	go func() {
@@ -112,41 +129,50 @@ func (pt *progressTracker) record(tool string, success bool) {
 		At:      time.Now(),
 	}
 	pt.entries = append(pt.entries, entry)
-	total := len(pt.entries)
 	pt.mu.Unlock()
 
-	// Write to log file immediately for real-time tail visibility.
 	status := "ok"
 	if !success {
 		status = "error"
 	}
 	fmt.Fprintf(pt.logW, "[%s] [%s] TOOL %-25s %s\n",
 		entry.At.Format("15:04:05"), strings.ToUpper(phase), tool, status)
-
-	_ = total // used below
 }
 
-// maybePostComment posts a GitHub comment if new tool calls have occurred since
-// the last post. It is safe to call from any goroutine.
+// maybePostComment creates or edits the GitHub status comment when new tool
+// calls have occurred since the last update. Safe to call from any goroutine.
 func (pt *progressTracker) maybePostComment(ctx context.Context) {
 	pt.mu.Lock()
 	total := len(pt.entries)
 	if total == pt.lastPosted {
 		pt.mu.Unlock()
-		return // nothing new
+		return
 	}
 
 	phase := pt.phase
-	// Grab the last N entries for display.
 	start := max(0, total-progressRecentWindow)
 	recent := make([]progressEntry, total-start)
 	copy(recent, pt.entries[start:])
 	pt.lastPosted = total
+	id := pt.statusCommentID
 	pt.mu.Unlock()
 
 	body := pt.buildCommentBody(phase, total, recent)
+
 	// Post in a goroutine so a slow GitHub API call does not block the next tick.
-	go pt.postComment(ctx, body)
+	go func(commentID int64, b string) {
+		if commentID == 0 {
+			// First update — create the comment and store its ID.
+			newID := pt.createComment(ctx, b)
+			if newID != 0 {
+				pt.mu.Lock()
+				pt.statusCommentID = newID
+				pt.mu.Unlock()
+			}
+		} else {
+			pt.updateComment(ctx, commentID, b)
+		}
+	}(id, body)
 }
 
 // buildCommentBody formats the GitHub progress comment.
@@ -164,6 +190,7 @@ func (pt *progressTracker) buildCommentBody(phase string, total int, recent []pr
 	fmt.Fprintf(&sb, "🔄 **Implementation in progress** — session `%s`\n\n", pt.session.ID)
 	fmt.Fprintf(&sb, "| | |\n|---|---|\n")
 	fmt.Fprintf(&sb, "| **Phase** | %s |\n", phaseLabel)
+	fmt.Fprintf(&sb, "| **Mode** | %s |\n", pt.lspMode)
 	fmt.Fprintf(&sb, "| **Tool calls** | %d total |\n", total)
 	fmt.Fprintf(&sb, "| **Updated** | %s |\n\n", time.Now().Format("15:04:05"))
 
@@ -182,7 +209,6 @@ func (pt *progressTracker) buildCommentBody(phase string, total int, recent []pr
 }
 
 // progressTool wraps any tool and records each execution in the progressTracker.
-// It sits between the goframe registry and contextInjectingTool in the call chain.
 type progressTool struct {
 	inner interface {
 		Name() string
