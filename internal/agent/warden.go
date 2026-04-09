@@ -60,6 +60,9 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	}
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
+	// Persist the session as "running" now that the workspace and branch are ready.
+	o.persistSessionRunning(ctx, session, branch)
+
 	// ── Progress tracker ─────────────────────────────────────────────────────
 	// Intercepts every tool call to write real-time log lines and post periodic
 	// GitHub progress comments. Runs a background goroutine until stop() is called.

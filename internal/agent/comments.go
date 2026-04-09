@@ -34,6 +34,7 @@ func (o *Orchestrator) postSessionStarted(ctx context.Context, session *Session)
 }
 
 func (o *Orchestrator) postSessionCompleted(ctx context.Context, session *Session, result *Result) {
+	o.persistSessionCompleted(ctx, session, result)
 	var body string
 	if result.PRURL != "" {
 		filesNote := ""

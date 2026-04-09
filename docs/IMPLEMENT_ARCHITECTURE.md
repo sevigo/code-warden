@@ -1,471 +1,384 @@
 # `/implement` Command Architecture
 
-This document describes the architecture and flow of the `/implement` command, which enables autonomous code implementation by AI agents.
+This document describes the architecture and data-flow of the `/implement` command, which drives autonomous code implementation via the **Warden agent harness**.
+
+---
 
 ## Overview
 
-The `/implement` command allows users to request an AI agent to automatically implement a GitHub issue. The agent uses the same RAG (Retrieval-Augmented Generation) infrastructure as the `/review` command to understand the codebase, implements changes, runs internal code review, and creates a pull request.
+When a GitHub issue comment contains `/implement`, Code-Warden:
 
-## Architecture Diagram
+1. Spawns a `Session` and persists it to PostgreSQL.
+2. Clones the repository to an isolated workspace.
+3. Runs the **Warden phased loop** (plan → implement → publish).
+4. Posts real-time GitHub progress comments throughout.
+5. Opens a draft PR once the implementation is approved.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           /implement COMMAND FLOW                                │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────────────────────────┐ │
-│  │   GitHub     │────►│   Webhook    │────►│     ReviewJob.RunImplementIssue │ │
-│  │   Issue      │     │   Handler    │     │     (internal/jobs/review.go)     │ │
-│  │  /implement  │     │              │     │                                  │ │
-│  └──────────────┘     └──────────────┘     └─────────────┬────────────────────┘ │
-│                                                            │                     │
-│                                                            ▼                     │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                        Orchestrator.SpawnAgent                              ││
-│  │                        (internal/agent/orchestrator.go)                     ││
-│  │                                                                             ││
-│  │   ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐   ││
-│  │   │ Create Session │───►│ Clone Repo to   │───►│ Start MCP Server    │   ││
-│  │   │ (session ID)   │    │ Isolated WS     │    │ (port 8081)         │   ││
-│  │   └─────────────────┘    └─────────────────┘    └─────────────────────┘   ││
-│  │                                                                             ││
-│  │   ┌─────────────────────────────────────────────────────────────────────┐ ││
-│  │   │                      OpenCode Agent Process                          │ ││
-│  │   │                                                                      │ ││
-│  │   │   System Prompt:                                                     │ ││
-│  │   │   1. Understand - Read issue                                        │ ││
-│  │   │   2. Explore - Use MCP tools to understand codebase                 │ ││
-│  │   │   3. Plan - Identify files to modify                                │ ││
-│  │   │   4. Implement - Write code                                          │ ││
-│  │   │   5. Verify - Run make lint && make test                            │ ││
-│  │   │   6. Review - Call review_code on changes                           │ ││
-│  │   │   7. Iterate - Fix issues if REQUEST_CHANGES                        │ ││
-│  │   │   8. Sync - Call push_branch                                         │ ││
-│  │   │   9. Submit - Create pull request                                    │ ││
-│  │   └─────────────────────────────────────────────────────────────────────┘ ││
-│  └─────────────────────────────────────────────────────────────────────────────┘│
-│                                                            │                     │
-│                                                            ▼                     │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                           MCP Server                                        ││
-│  │                           (internal/mcp/server.go)                          ││
-│  │                                                                             ││
-│  │   Transport: HTTP/SSE at http://127.0.0.1:8081/sse                        ││
-│  │   Protocol: JSON-RPC 2.0                                                    ││
-│  │                                                                             ││
-│  │   Available Tools:                                                          ││
-│  │   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐           ││
-│  │   │ search_code     │  │ get_arch_context │  │ get_symbol      │           ││
-│  │   │ (semantic       │  │ (directory       │  │ (type/function  │           ││
-│  │   │  search)        │  │  summaries)      │  │  definitions)   │           ││
-│  │   └─────────────────┘  └─────────────────┘  └─────────────────┘           ││
-│  │   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐           ││
-│  │   │ get_structure   │  │ review_code      │  │ push_branch     │           ││
-│  │   │ (project tree)  │  │ (5-stage RAG)    │  │ (git push)      │           ││
-│  │   └─────────────────┘  └─────────────────┘  └─────────────────┘           ││
-│  │   ┌─────────────────┐  ┌─────────────────┐                                 ││
-│  │   │ create_pull     │  │ list_issues/    │                                 ││
-│  │   │ _request        │  │ get_issue       │                                 ││
-│  │   └─────────────────┘  └─────────────────┘                                 ││
-│  └─────────────────────────────────────────────────────────────────────────────┘│
-│                                                            │                     │
-│                                                            ▼                     │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                    review_code Tool Flow                                    ││
-│  │                    (internal/mcp/tools.go:401-517)                          ││
-│  │                                                                             ││
-│  │   Input: diff (string)                                                     ││
-│  │   ┌─────────────────┐                                                      ││
-│  │   │ 1. Parse Diff   │  ──► Extract changed files from unified diff        ││
-│  │   │    (ParseDiff)  │      (no VectorStore modification)                   ││
-│  │   └────────┬────────┘                                                      ││
-│  │            ▼                                                                ││
-│  │   ┌─────────────────────────────────────────────────────────────────────┐  ││
-│  │   │ 2. Generate Review (5-Stage RAG Pipeline)                          │  ││
-│  │   │                                                                     │  ││
-│  │   │   Uses existing main-branch VectorStore (no pollution)              │  ││
-│  │   │                                                                     │  ││
-│  │   │   Stage 1: Architectural Context                                   │  ││
-│  │   │     └─► Get directory summaries from VectorStore (chunk_type=arch) │  ││
-│  │   │                                                                     │  ││
-│  │   │   Stage 2: HyDE Context (if enabled)                               │  ││
-│  │   │     └─► Generate hypothetical code, search for similar             │  ││
-│  │   │                                                                     │  ││
-│  │   │   Stage 3: Impact Context                                          │  ││
-│  │   │     └─► Find dependents via DependencyRetriever                    │  ││
-│  │   │                                                                     │  ││
-│  │   │   Stage 4: Description Context                                     │  ││
-│  │   │     └─► MultiQuery from PR description                             │  ││
-│  │   │                                                                     │  ││
-│  │   │   Stage 5: Definitions Context                                     │  ││
-│  │   │     └─► Resolve symbols from diff via DefinitionRetriever          │  ││
-│  │   └─────────────────────────────────────────────────────────────────────┘  ││
-│  │            ▼                                                                ││
-│  │   ┌─────────────────┐                                                      ││
-│  │   │ 3. LLM Review   │  ──► Generate StructuredReview                       ││
-│  │   │    (Verdict,    │      {verdict, summary, suggestions[]}               ││
-│  │   │    Suggestions) │                                                      ││
-│  │   └─────────────────┘                                                      ││
-│  └─────────────────────────────────────────────────────────────────────────────┘│
-│                                                                                  │
-│  Result: StructuredReview returned to agent for iteration decision             │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+The harness is entirely in-process: no external agent binary, no OpenCode subprocess.  
+Tools are called as direct Go function calls inside `goframe.AgentLoop`.
 
-## Key Components
+---
 
-### 1. Orchestrator (`internal/agent/orchestrator.go`)
-
-Manages the agent lifecycle:
-
-| Method | Purpose |
-|--------|---------|
-| `SpawnAgent()` | Creates a new agent session |
-| `runAgent()` | Dispatches to CLI, SDK, or native mode |
-| `runAgentCLI()` | Execute via OpenCode CLI subprocess |
-| `runAgentSDK()` | Execute via goframe/agent OpenCode SDK |
-| `runInProcessAgent()` | Native in-process goframe `AgentLoop` |
-| `buildSystemPrompt()` | Constructs instructions for CLI/SDK modes |
-| `buildNativeSystemPrompt()` | Constructs instructions for native mode |
-| `prepareWorkspace()` | Clones repo to isolated directory |
-| `postSessionStarted()` | Posts GitHub comment when session starts |
-| `postReviewIteration()` | Posts GitHub comment after each review |
-| `postSessionCompleted()` | Posts GitHub comment with PR link |
-| `postSessionFailed()` | Posts GitHub comment with error detail |
-
-**Configuration (`internal/config/config.go`)**:
-
-```yaml
-agent:
-  enabled: true
-  provider: opencode         # "opencode", "goose", "claude"
-  mode: native               # "server" | "cli" | "native"
-  model: llama3.1:70b
-  timeout: 30m
-  max_iterations: 3
-  mcp_addr: "127.0.0.1:8081"
-  working_dir: "/tmp/code-warden-agents"
-```
-
-**Mode selection:**
-
-| Mode | How it works | When to use |
-|------|-------------|-------------|
-| `native` | In-process goframe `AgentLoop` using the RAG LLM | No external services needed; lightweight |
-| `server` | goframe/agent SDK connects to provider HTTP server | OpenCode server running separately |
-| `cli` | Spawns provider binary as subprocess | External binary available on PATH |
-
-### 2. MCP Server (`internal/mcp/server.go`)
-
-Provides JSON-RPC 2.0 interface over HTTP/SSE:
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/sse` | GET | SSE connection for streaming |
-| `/message` | POST | JSON-RPC message handling |
-| `/` | POST | Direct JSON-RPC (fallback) |
-
-**Protocol Methods**:
-- `initialize` - Server handshake
-- `tools/list` - List available tools
-- `tools/call` - Execute a tool
-- `ping` - Health check
-
-### 3. MCP Tools (`internal/mcp/tools/`)
-
-| Tool | Input | Output | Description |
-|------|-------|--------|-------------|
-| `search_code` | `{query, limit?, chunk_type?}` | `{results: [{content, score, metadata}]}` | Semantic search in VectorStore |
-| `get_arch_context` | `{directory}` | `{found, summaries[]}` | Get architectural summary for directory |
-| `get_symbol` | `{name}` | `{found, definitions[]}` | Get type/function definition |
-| `get_structure` | `{}` | `{projectRoot, directories[]}` | Get project structure |
-| `find_usages` | `{symbol}` | `{found, usages[]}` | Find call sites for a symbol |
-| `get_callers` | `{symbol}` | `{found, callers[]}` | Get functions calling a symbol |
-| `get_callees` | `{symbol}` | `{found, callees[]}` | Get functions called by a symbol |
-| `run_command` | `{command}` | `{stdout, stderr, exit_code, success}` | Run whitelisted command in workspace |
-| `review_code` | `{diff, title?, description?}` | `{verdict, confidence, summary, suggestions, diff_hash}` | **Single-model RAG review** (not consensus) |
-| `push_branch` | `{branch, force?}` | `{status, message}` | Commit pending changes and push branch |
-| `create_pull_request` | `{title, body, head, base?, draft?}` | `{number, url, state}` | Create GitHub PR (requires prior APPROVE) |
-| `list_issues` | `{state?, labels?, limit?}` | `{count, issues[]}` | List repository issues |
-| `get_issue` | `{number}` | `{number, title, body, ...}` | Get issue details |
-
-**Note on `review_code` Model Selection:**
-- The agent's `review_code` tool uses a **single model** for review, not full consensus review
-- If `comparison_models` is configured, one model is randomly selected for faster review
-- If `comparison_models` is empty, the `generator_model` is used
-- This keeps review time within the 60-second MCP tool timeout (full consensus takes 90-180+ seconds)
-
-### 4. RAG Service (`internal/rag/`)
-
-The 5-stage context building pipeline:
+## High-Level Flow
 
 ```
-buildRelevantContext(ctx, collection, embedder, repoPath, changedFiles, prContext)
-    │
-    ├─── Stage 1: Architectural Context
-    │    └─── GetArchContextForPaths(changedFiles)
-    │         └─── Query VectorStore (chunk_type="arch")
-    │
-    ├─── Stage 2: HyDE Context (optional)
-    │    └─── GenerateHyDEContext(patch)
-    │         ├─── Generate hypothetical code snippet
-    │         └─── Search with generated snippet
-    │
-    ├─── Stage 3: Impact Context
-    │    └─── GetDependencyNetwork(changedFiles)
-    │         └─── DependencyRetriever.GetContextNetwork()
-    │
-    ├─── Stage 4: Description Context
-    │    └─── GetDescriptionContext(prTitle + prBody)
-    │         └─── MultiQuery retrieval
-    │
-    └─── Stage 5: Definitions Context
-         └─── gatherDefinitionsContext(changedFiles)
-              ├─── Extract symbols from patch
-              └─── DefinitionRetriever.GetDefinition(symbol)
+GitHub issue comment "/implement"
+        │
+        ▼
+WebhookHandler  →  ReviewJob.RunImplementIssue
+        │
+        ▼
+Orchestrator.SpawnAgent(ctx, issue)
+  ├── create Session (status=pending, persist to DB)
+  ├── go runAgent(ctx, session)          ← goroutine
+  └── return Session immediately
+
+runAgent  dispatches by mode:
+  ├── "warden"  →  runWardenAgent()      ← current production mode
+  └── "native"  →  runInProcessAgent()  ← simpler legacy mode
 ```
 
-## Session Lifecycle
+---
+
+## Warden Agent — Three-Phase Loop
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Session State Machine                            │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   ┌────────────┐     ┌────────────┐     ┌────────────┐            │
-│   │  PENDING   │────►│  RUNNING   │────►│ REVIEWING   │            │
-│   │            │     │            │     │            │            │
-│   └────────────┘     └─────┬──────┘     └─────┬──────┘            │
-│                            │                   │                    │
-│                            │                   │                    │
-│                            ▼                   ▼                    │
-│                     ┌────────────┐     ┌────────────┐            │
-│                     │  FAILED    │     │ COMPLETED  │            │
-│                     │            │     │            │            │
-│                     └────────────┘     └────────────┘            │
-│                            │                   ▲                    │
-│                            │                   │                    │
-│                            ▼                   │                    │
-│                     ┌────────────┐            │                    │
-│                     │ CANCELLED  │────────────┘                    │
-│                     │            │                                 │
-│                     └────────────┘                                 │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-
-Session States:
-- PENDING:   Session created, waiting to start
-- RUNNING:   Agent is implementing changes
-- REVIEWING: Agent is running review_code (subset of RUNNING)
-- COMPLETED: PR created successfully
-- FAILED:    Agent encountered an error
-- CANCELLED: Session was cancelled (timeout or manual)
+runWardenAgent(ctx, session, branch)
+│
+├─ prepareAgentWorkspace()
+│    ├── git clone projectRoot → /tmp/code-warden-agents/<id>
+│    ├── git remote set-url origin  (with token for push)
+│    ├── RegisterWorkspace(session.ID, dir)  ← MCP routing
+│    ├── open agent.log
+│    └── lsp.NewManager().Start()  ← gopls + language servers
+│
+├─ persistSessionRunning(branch)
+│
+├─ progressTracker.start()          ← 30s GitHub comment ticker
+│
+├─ ── Phase 1: Plan ──────────────────────────────────────────────────
+│   tracker.setPhase("planning")
+│   buildPlan()  →  buildPlannerLoop()
+│     tools: search_code, get_symbol, get_structure, get_arch_context,
+│            find_usages, get_callers, get_callees, read_file, list_dir
+│     max_iterations: 5
+│     output: markdown "## Implementation Plan" injected into implement prompt
+│
+├─ ── Phase 2: Implement ─────────────────────────────────────────────
+│   tracker.setPhase("implementing")
+│   buildImplementLoop()
+│     tools: ALL MCP tools except push_branch / create_pull_request
+│            + read_file, write_file, edit_file, list_dir  (file tools)
+│            + lsp_diagnostics, lsp_definition, lsp_references, lsp_hover
+│     max_iterations: max(MaxIterations*10, 30)
+│     compactionHook: fires at 70% of 128K tokens, summarises history
+│
+│   loop.Run()  →  Think → call tools → Observe → repeat
+│     agent explores, writes code, runs lint/tests, calls review_code
+│     loop exits when agent produces a final response (no more tool calls)
+│
+│   HARD GATE: GetReviewBySession(session.ID) must be "APPROVE"
+│              → if not: failSession()
+│
+├─ ── Phase 3: Publish ───────────────────────────────────────────────
+│   tracker.setPhase("publishing")
+│   buildPublishLoop()
+│     tools: push_branch, create_pull_request  ONLY
+│     max_iterations: 5
+│
+│   loop.Run()  →  push branch → open draft PR
+│
+├─ persistSessionCompleted(result)
+├─ postSessionCompleted(result)    ← GitHub comment with PR link
+└─ cleanupNativeSession()
+     ├── cleanupWorkspace()        ← rm -rf /tmp/code-warden-agents/<id>
+     └── UnregisterWorkspace()
 ```
 
-## Data Flow
+---
 
-### Input Event
+## LSP Integration (`internal/agent/lsp/`)
+
+The Language Server Protocol client provides precise, always-current code navigation during the implement phase — complementing the RAG-based `search_code` tools that are better for open-ended exploration.
+
+### Architecture
+
+```
+lsp.Manager
+  ├── detectLanguages()        ← walks workspace, collects extensions
+  ├── Start(ctx)               ← starts one Client per detected language
+  │     GoServer       (.go)   → gopls
+  │     TypeScriptServer (.ts) → typescript-language-server
+  │     PythonServer    (.py)  → pylsp
+  │     RustServer      (.rs)  → rust-analyzer
+  └── clientForFile(absPath)   ← routes tool calls to correct client
+
+lsp.Client (per language)
+  ├── starts server subprocess via stdio
+  ├── JSON-RPC 2.0 with Content-Length framing
+  ├── readLoop()               ← goroutine: routes responses + notifications
+  ├── Diagnostics()            ← pull (textDocument/diagnostic) with push fallback
+  ├── Definition() / References() / Hover()
+  └── DidOpen() / DidChange()  ← keeps server in sync with file edits
+```
+
+### LSP hook on file writes
+
+Every `write_file` and `edit_file` call automatically:
+1. Sends `DidChange` to the language server.
+2. Waits 700 ms for diagnostics to settle.
+3. Calls `Diagnostics()` and appends results to the tool's return value.
+
+The agent sees compiler errors in the **same turn** it made the change — no extra tool call needed.
+
+### Agent-facing LSP tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `lsp_diagnostics` | `path` | Compiler errors and warnings for a file |
+| `lsp_definition` | `path, line, column` | Jump-to-definition (0-based) |
+| `lsp_references` | `path, line, column` | All usages of a symbol |
+| `lsp_hover` | `path, line, column` | Type signature and doc comment |
+
+LSP tools are registered only when at least one language server started successfully. If `gopls` is not on PATH, the agent falls back to RAG-based `search_code` transparently.
+
+---
+
+## Phase-Based Tool Scoping
+
+Tools are assigned to loops architecturally — the model literally cannot call a publish tool during implementation.
+
+| Phase | Loop | Tools available |
+|-------|------|----------------|
+| Plan | `buildPlannerLoop` | `search_code`, `get_symbol`, `get_structure`, `get_arch_context`, `find_usages`, `get_callers`, `get_callees`, `read_file`, `list_dir` |
+| Implement | `buildImplementLoop` | All MCP tools except `push_branch` / `create_pull_request`, plus file tools and LSP tools |
+| Publish | `buildPublishLoop` | `push_branch`, `create_pull_request` **only** |
+
+`publishToolNames` is the single source of truth for what is withheld during implementation (see `warden.go`).
+
+---
+
+## Progress Tracking (`internal/agent/progress.go`)
+
+```
+progressTracker
+  ├── start(ctx)          ← goroutine: ticks every 30 s
+  ├── setPhase(phase)     ← called at each phase boundary
+  ├── record(tool, ok)    ← called by progressTool.Execute after every tool
+  │     writes timestamped line to agent.log immediately
+  │     appends to in-memory entries list
+  └── maybePostComment()  ← posts GitHub comment if new entries since last post
+        buildCommentBody() → table: phase, tool count, recent activity list
+
+progressTool (wraps every registered tool)
+  Execute(ctx, args):
+    1. inner.Execute(ctx, args)
+    2. tracker.record(name, err==nil)
+    return result, err
+```
+
+GitHub receives a progress comment every 30 seconds showing:
+- Current phase (planning / implementing / publishing)
+- Total tool calls so far
+- Last 6 tool names with ✓/✗ status
+
+---
+
+## Context Compaction
+
+Long implement loops (GLM-5.1 / MiniMax M2.7 run 30–100+ iterations) accumulate conversation history that can approach the model's context window.
+
+The compaction hook fires when `tokens.Input + tokens.Output > 128_000 * 0.70`:
+
+```
+buildCompactionHook(session) → func(ctx, msgs, tokens) []schema.MessageContent
+  if used < threshold: return nil  ← no-op, loop continues unchanged
+  
+  build plain-text transcript of msgs[1:]  ← exclude system prompt
+  call LLM with summarization prompt (max 400 words)
+  
+  rebuild history:
+    [0] system prompt           (preserved verbatim)
+    [1] "## Context Summary…"  (LLM summary)
+    [2..5] last 4 messages     (current iteration context)
+  
+  return compacted  ← goframe replaces messages, increments result.Compactions
+```
+
+If the summarization call fails, the hook returns `nil` and the loop continues with the full history (graceful degradation).
+
+The hook is wired via `goframeagent.WithLoopCompactionHook` added in goframe v0.36.6.
+
+---
+
+## Session Persistence (`internal/storage/agent_session.go`)
+
+Every session is persisted to the `agent_sessions` PostgreSQL table defined in `agent_schema.sql`.
+
+### State transitions
+
+| Event | Status written | Method |
+|-------|---------------|--------|
+| `SpawnAgent` creates session | `pending` | `persistSessionCreated` |
+| Workspace ready, branch set | `running` | `persistSessionRunning` |
+| `postSessionCompleted` called | `completed` | `persistSessionCompleted` |
+| `failSession` called | `failed` | `persistSessionFailed` |
+
+All persist calls are nil-safe: when `store == nil` (tests, DB unavailable) they log a warning and return — the session continues normally.
+
+### Schema (abbreviated)
+
+```sql
+CREATE TABLE agent_sessions (
+    id            UUID PRIMARY KEY,
+    task_type     VARCHAR(50),     -- "implement"
+    repo_owner    VARCHAR(255),
+    repo_name     VARCHAR(255),
+    branch        VARCHAR(255),
+    issue_number  INTEGER,
+    status        VARCHAR(50),     -- pending|running|completed|failed
+    created_at    TIMESTAMPTZ,
+    updated_at    TIMESTAMPTZ,     -- updated via trigger
+    completed_at  TIMESTAMPTZ,
+    task_inputs   JSONB,           -- issue title + body excerpt
+    result        JSONB,           -- Result struct (PR URL, verdict, iterations)
+    error         TEXT,
+    iterations    INTEGER,
+    final_verdict VARCHAR(50)      -- APPROVE | REQUEST_CHANGES | COMMENT
+);
+```
+
+### Store interface
+
+`storage.AgentSessionStore` is embedded in `storage.Store`:
 
 ```go
-// core/events.go
-type GitHubEvent struct {
-    Type           EventType      // ImplementIssue
-    IssueNumber    int            // Issue to implement
-    IssueTitle     string         // Issue title
-    IssueBody      string         // Issue description
-    UserInstructions string       // Additional instructions from comment
-    RepoOwner      string         // Repository owner
-    RepoName       string         // Repository name
-    RepoFullName   string         // "owner/name"
-    InstallationID int64          // GitHub App installation ID
+type AgentSessionStore interface {
+    CreateAgentSession(ctx, *AgentSession) error
+    UpdateAgentSession(ctx, *AgentSession) error
+    GetAgentSession(ctx, id string) (*AgentSession, error)
+    ListAgentSessions(ctx, owner, repo string, limit int) ([]*AgentSession, error)
 }
 ```
 
-### Session Result
+---
+
+## MCP Tools Reference
+
+Tools used by the implement loop (see `internal/mcp/tools/` and `internal/agent/file_tools.go`):
+
+### Code exploration (RAG-backed, read-only)
+
+| Tool | Description |
+|------|-------------|
+| `search_code` | Semantic search over the indexed codebase |
+| `get_symbol` | Look up a symbol definition |
+| `get_structure` | Project directory tree |
+| `get_arch_context` | Architecture summary for a directory |
+| `find_usages` | Call sites for a symbol |
+| `get_callers` / `get_callees` | Call graph navigation |
+
+### File operations (workspace-scoped)
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read a file, optionally paginated |
+| `write_file` | Create or overwrite (triggers LSP diagnostics) |
+| `edit_file` | Exact-string replace (triggers LSP diagnostics) |
+| `list_dir` | List directory contents |
+
+### LSP (live compiler feedback)
+
+| Tool | Description |
+|------|-------------|
+| `lsp_diagnostics` | Errors/warnings from language server |
+| `lsp_definition` | Jump to definition |
+| `lsp_references` | Find all usages |
+| `lsp_hover` | Type info and docs |
+
+### Verification
+
+| Tool | Description |
+|------|-------------|
+| `run_command` | Run whitelisted commands (`make lint`, `make test`) |
+| `review_code` | RAG-based code review returning APPROVE / REQUEST_CHANGES |
+
+### Publish (Phase 3 only)
+
+| Tool | Description |
+|------|-------------|
+| `push_branch` | Commit pending changes and push to origin |
+| `create_pull_request` | Open a draft PR (requires prior APPROVE) |
+
+---
+
+## Key Types
 
 ```go
 // internal/agent/orchestrator.go
 type Result struct {
-    PRNumber      int      // Created PR number
-    PRURL         string   // PR URL
-    Branch        string   // Branch name (e.g., "agent/issue-123")
-    FilesChanged  []string // List of modified files
-    ReviewSummary string   // Summary from review_code
-    Verdict       string   // "APPROVE", "REQUEST_CHANGES", "COMMENT"
-    Iterations    int      // Number of review iterations
+    PRNumber     int
+    PRURL        string
+    Branch       string
+    FilesChanged []string
+    Verdict      string  // "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
+    Iterations   int     // implement + publish combined
+}
+
+// internal/agent/session.go
+type Session struct {
+    ID          string
+    Issue       Issue
+    status      SessionStatus   // pending | running | completed | failed | cancelled
+    StartedAt   time.Time
+    CompletedAt time.Time
+    Result      *Result
+    // ...
 }
 ```
 
-### Review Output
+---
 
-```go
-// internal/core/structured_review.go
-type StructuredReview struct {
-    Verdict     string       // APPROVE, REQUEST_CHANGES, COMMENT
-    Confidence  int          // 0-100
-    Summary     string       // Markdown summary
-    Suggestions []Suggestion // Line-specific feedback
-}
-
-type Suggestion struct {
-    FilePath    string // File path
-    LineNumber  int    // Line number
-    Severity    string // "critical", "warning", "info"
-    Comment     string // Suggestion text
-    Rationale   string // Why this change is needed
-    Suggestion  string // Code suggestion (optional)
-}
-```
-
-## Error Handling
-
-### Session Failures
-
-| Failure Mode | Handling |
-|--------------|----------|
-| MCP server startup | Return error, don't spawn agent |
-| OpenCode process exit | Mark session FAILED, log output |
-| Timeout exceeded | Cancel session, mark CANCELLED |
-| PR creation fails | Mark session FAILED, report error |
-
-### Recovery
-
-```go
-// Cleanup on session end
-defer func() {
-    if session.cancel != nil {
-        session.cancel()
-    }
-}()
-
-// Cleanup old sessions (every 5 minutes)
-func (o *Orchestrator) cleanupOldSessions() {
-    cutoff := time.Now().Add(-1 * time.Hour)
-    for id, session := range o.sessions {
-        if session.CompletedAt.Before(cutoff) {
-            delete(o.sessions, id)
-        }
-    }
-}
-```
-
-## Limitations and Considerations
-
-### Current Limitations
-
-1. **~~No GitHub feedback during session~~** ✅ Fixed — Progress comments are posted at start, each review iteration, completion, and failure. See `internal/agent/comments.go`.
-
-2. **~~No `run_command` MCP tool~~** ✅ Fixed — `run_command` tool added (`internal/mcp/tools/run_command.go`), whitelisted via `verify_commands` in `.code-warden.yml`, 5-minute timeout.
-
-3. **~~`GetLastReview()` race condition~~** ✅ Fixed — Review results are now stored per-session in `Server.reviewsBySession` and retrieved via `GetReviewBySession(sessionID)`.
-
-4. **In-memory sessions** — Session state (`sessions map[string]*Session`) is lost on server restart. Any active session becomes orphaned: no status, no GitHub notification, workspace left on disk. Needs a `agent_sessions` PostgreSQL table with restart recovery.
-
-5. **No post-PR review** — After the agent creates a PR, no standard `/review` is enqueued on it. Human reviewers see no Code-Warden analysis on agent-created PRs unless they manually comment `/review`. Auto-triggering a full review job after `create_pull_request` succeeds would close this gap.
-
-6. **Fragile output parsing** — `extractFilesFromImplementation` and `extractPRInfo` use string matching and regex on free-text agent output to determine changed files and PR metadata. Any variation in how the agent phrases its output can break this. The fix is to query the GitHub API after push/PR creation rather than parsing agent output.
-
-### Security Considerations
-
-1. **Branch Name Validation**: `validBranchName` regex prevents command injection:
-   ```go
-   var validBranchName = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9/_\-\.]*[a-zA-Z0-9])?$`)
-   ```
-
-2. **Input Limits**: All MCP tools validate input lengths:
-   ```go
-   const (
-       maxQueryLength   = 10000
-       maxDiffLength    = 1000000  // 1MB
-       maxTitleLength   = 500
-       maxSymbolLength  = 200
-   )
-   ```
-
-3. **Isolated Workspace**: Each agent works in `/tmp/code-warden-agents/<session-id>`
-
-4. **MCP Server Binding**: Server binds to `127.0.0.1` only (localhost), not externally accessible.
-
-## Native In-Process Agent (`mode: native`)
-
-`runInProcessAgent` (`internal/agent/inprocess.go`) is a third execution mode that runs the entire ReAct loop in-process using the goframe `AgentLoop` — no external process or server needed.
-
-### How it works
-
-```
-Orchestrator.runAgent()
-    └── case "native": runInProcessAgent()
-            │
-            ├── prepareAgentWorkspace()   — clone repo to /tmp/code-warden-agents/<id>
-            │
-            ├── goframeagent.NewRegistry()
-            │   └── for each mcp.Server.Tools():
-            │         contextInjectingTool{inner: tool, projectRoot: ws.dir, sessionID: id}
-            │         // injects project root + session ID into every tool call context
-            │
-            ├── goframeagent.NewAgentLoop(o.llm, registry, ...)
-            │   // same LLM as reviews, max iterations = MaxIterations * 10 (floor 30)
-            │
-            └── loop.Run(ctx, task, nil)
-                    └── Think → tool calls → Observe → repeat
-                            all MCP tools available: search_code, run_command,
-                            review_code, push_branch, create_pull_request, …
-```
-
-### Key differences from CLI/SDK modes
-
-| Aspect | CLI / SDK | Native |
-|--------|-----------|--------|
-| External process | Yes (OpenCode binary or server) | No |
-| LLM | Provider's model | Code-Warden's RAG LLM |
-| Tool transport | HTTP/SSE JSON-RPC | Direct Go function calls |
-| Context injection | HTTP workspace token | Go context values |
-| Session isolation | MCP workspace token | `contextInjectingTool` wrapper |
-
-### contextInjectingTool
-
-Every MCP tool is wrapped in `contextInjectingTool` which adds `projectRoot` and `sessionID` to the context before delegating to the inner tool's `Execute`. This mirrors what the MCP HTTP server does in `handleMessage` for remote sessions.
-
-## Configuration Reference
+## Configuration
 
 ```yaml
-# config.yaml
 agent:
-  enabled: true                    # Enable /implement functionality
-  provider: opencode               # "opencode" | "goose" | "claude" (cli/server modes)
-  mode: native                     # "native" | "server" | "cli"
-  model: llama3.1:70b              # Model for implementation (cli/server modes)
-  timeout: 30m                     # Maximum session duration
-  max_iterations: 3                # Max review iterations (native: * 10 = loop steps)
-  max_concurrent_sessions: 3       # Max parallel agent sessions (default: 3)
-  mcp_addr: "127.0.0.1:8081"       # MCP server bind address (cli/server modes)
-  working_dir: "/tmp/code-warden-agents"  # Workspace directory
+  enabled: true
+  mode: warden                          # "warden" (phased) | "native" (legacy single-loop)
+  model: "glm-4-9b"                    # Override LLM for implementation (empty = use review LLM)
+  timeout: 60m                          # Hard session timeout
+  max_iterations: 3                     # implement loop cap = max(this*10, 30)
+  max_concurrent_sessions: 3
+  working_dir: "/tmp/code-warden-agents"
 
 ai:
-  llm_provider: ollama              # Provider for RAG
-  generator_model: gemma3:latest   # Model for reviews
-  embedder_model: nomic-embed-text # Model for embeddings
-  enable_hyde: true                # Enable HyDE context stage
-  comparison_models: []            # For /review: multi-model consensus
-                                   # For /implement: randomly selects ONE model
-                                   # (faster than full consensus, fits in 60s timeout)
+  llm_provider: ollama
+  generator_model: glm-4-9b            # Used for implementation when agent.model is unset
+  embedder_model: nomic-embed-text
 ```
 
-### Model Selection for Agent Reviews
+**Model resolution order for the implement loop:**
+1. `agent.model` (if set and different from review model)
+2. `ragService.GeneratorLLM()` (the review model)
 
-The agent's internal `review_code` tool uses a **single model** (not consensus) for faster reviews:
+---
 
-- **No `comparison_models` configured**: Uses `generator_model` for review
-- **`comparison_models` configured**: Randomly selects ONE model from the list
+## Execution Modes
 
-This design keeps review time within the 60-second MCP tool timeout, since full consensus review (3+ models) takes 90-180+ seconds.
+| Mode | Description | When to use |
+|------|-------------|-------------|
+| `warden` | Three-phase loop: plan → implement → publish. LSP, progress tracking, compaction, PostgreSQL persistence. | Production |
+| `native` | Single-phase in-process loop. All tools available at once, no planning, no compaction. | Simpler tasks, debugging |
+| `server` | goframe SDK connects to OpenCode HTTP server. | External OpenCode server |
+| `cli` | Spawns OpenCode binary as subprocess. | Legacy / testing |
 
-## Future Improvements
+---
 
-The limitations above are tracked with detailed explanations in [TODO.md](../TODO.md) under "Agent Integration". In addition:
+## Limitations and Known Issues
 
-- **Iteration detail logging** — Store each iteration's diff, review verdict, and suggestions in the DB so sessions can be replayed and debugged after the fact.
-- **Workspace reuse** — For re-runs of the same issue, reuse the existing workspace and branch rather than cloning fresh each time.
-- **Sub-issue support** — Allow `/implement` on a checklist item within an issue body, not just the whole issue.
-- **Session UI** — A web page listing active and recent sessions with status badges, elapsed time, cancel button, and a link to the created PR. See [TODO.md](../TODO.md) under "UI / Dashboard".
+| Issue | Status |
+|-------|--------|
+| Sessions lost on server restart | **Mitigated** — `agent_sessions` table persists key state; full recovery (re-attach workspace) not yet implemented |
+| No auto-review on agent PRs | Open — human reviewers must manually `/review` agent-created PRs |
+| Single language server per extension | LSP manager starts one server per language; multi-root workspaces not supported |
+| Compaction ceiling is fixed at 128K | Models support 198K+; ceiling is conservative to leave room for tool outputs |

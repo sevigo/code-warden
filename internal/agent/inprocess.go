@@ -187,6 +187,7 @@ func (o *Orchestrator) failSession(ctx context.Context, session *Session, errMsg
 	o.logger.Error("runInProcessAgent: "+errMsg, "session_id", session.ID)
 	session.SetStatus(StatusFailed)
 	session.SetError(errMsg)
+	o.persistSessionFailed(ctx, session, errMsg)
 	o.postSessionFailed(ctx, session, errMsg)
 }
 

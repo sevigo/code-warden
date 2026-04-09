@@ -45,6 +45,7 @@ type Orchestrator struct {
 	repo              *storage.Repository
 	ragService        rag.Service
 	llm               llms.Model // used by native in-process agent mode
+	store             storage.AgentSessionStore
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
@@ -178,6 +179,7 @@ func NewOrchestrator(
 		repoConfig:        repoConfig,
 		repo:              repo,
 		ragService:        ragService,
+		store:             store,
 		sessions:          make(map[string]*Session),
 		sessionsMu:        sync.RWMutex{},
 		done:              make(chan struct{}),
@@ -368,6 +370,9 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 	}
 	o.sessions[sessionID] = session
 	o.sessionsMu.Unlock()
+
+	// Persist the new session row so it's visible immediately.
+	o.persistSessionCreated(ctx, session)
 
 	// Create context with timeout
 	//nolint:gosec // G118: cancel stored in session for cleanup in runAgentCLI/runAgentSDK
