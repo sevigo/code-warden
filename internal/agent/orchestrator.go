@@ -104,6 +104,10 @@ type Config struct {
 	// so no external process ever calls the MCP HTTP endpoint. Avoids unnecessary
 	// port binding and listener goroutines.
 	InProcessOnly bool `yaml:"in_process_only"`
+
+	// BaseBranch is the target base branch for pull requests (default: "main").
+	// Set this to "master" or your repo's default branch if it differs.
+	BaseBranch string `yaml:"base_branch"`
 }
 
 // Constants for agent orchestration

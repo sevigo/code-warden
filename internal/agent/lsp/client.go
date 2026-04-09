@@ -150,6 +150,7 @@ func (c *Client) Diagnostics(ctx context.Context, absPath string) ([]Diagnostic,
 }
 
 // Definition returns the definition location for the symbol at the given position.
+// Retained for potential future use — not currently called by any agent tool.
 func (c *Client) Definition(ctx context.Context, absPath string, line, col int) ([]Location, error) {
 	var locs []Location
 	err := c.call(ctx, "textDocument/definition", textDocumentPositionParams{
@@ -160,6 +161,7 @@ func (c *Client) Definition(ctx context.Context, absPath string, line, col int) 
 }
 
 // References returns all references to the symbol at the given position.
+// Retained for potential future use — not currently called by any agent tool.
 func (c *Client) References(ctx context.Context, absPath string, line, col int) ([]Location, error) {
 	var locs []Location
 	err := c.call(ctx, "textDocument/references", referencesParams{
@@ -171,6 +173,7 @@ func (c *Client) References(ctx context.Context, absPath string, line, col int) 
 }
 
 // Hover returns hover documentation for the symbol at the given position.
+// Retained for potential future use — not currently called by any agent tool.
 func (c *Client) Hover(ctx context.Context, absPath string, line, col int) (string, error) {
 	var result hoverResult
 	if err := c.call(ctx, "textDocument/hover", textDocumentPositionParams{
@@ -183,6 +186,7 @@ func (c *Client) Hover(ctx context.Context, absPath string, line, col int) (stri
 }
 
 // Format requests that the server format the given file. Returns the edits to apply.
+// Retained for potential future use — not currently called by any agent tool.
 func (c *Client) Format(ctx context.Context, absPath string) ([]TextEdit, error) {
 	var edits []TextEdit
 	err := c.call(ctx, "textDocument/formatting", formattingParams{

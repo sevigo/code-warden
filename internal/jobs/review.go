@@ -225,6 +225,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			ComparisonModels:      agentComparisonModel,
 			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 			InProcessOnly:         j.cfg.Agent.InProcessOnly,
+			BaseBranch:            j.cfg.Agent.BaseBranch,
 		},
 		j.logger,
 		j.globalMCPRegistry,

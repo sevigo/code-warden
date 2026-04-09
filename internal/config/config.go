@@ -86,6 +86,10 @@ type AgentConfig struct {
 	// Set to true when mode is "warden" or "native" — tools are registered
 	// directly in the goframe registry and the HTTP endpoint is never used.
 	InProcessOnly bool `mapstructure:"in_process_only"`
+
+	// BaseBranch is the target base branch for pull requests (default: "main").
+	// Set this to "master" or your repo's default branch if it differs.
+	BaseBranch string `mapstructure:"base_branch"`
 }
 
 // GetTimeout parses and returns the timeout duration.

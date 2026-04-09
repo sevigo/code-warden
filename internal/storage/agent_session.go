@@ -75,6 +75,7 @@ func (p *postgresStore) UpdateAgentSession(ctx context.Context, s *AgentSession)
 	const q = `
 UPDATE agent_sessions SET
   status         = :status,
+  branch         = COALESCE(NULLIF(:branch, ''), branch),
   completed_at   = :completed_at,
   result         = :result,
   error          = :error,

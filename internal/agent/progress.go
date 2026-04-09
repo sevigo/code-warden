@@ -60,7 +60,8 @@ type progressTracker struct {
 	entries         []progressEntry
 	lastPosted      int // number of entries at the time of the last comment
 	phase           string
-	statusCommentID int64 // 0 until the first comment is created
+	statusCommentID int64     // 0 until the first comment is created
+	commentOnce     sync.Once // ensures createComment is called exactly once
 
 	done chan struct{}
 	wg   sync.WaitGroup
@@ -162,15 +163,18 @@ func (pt *progressTracker) maybePostComment(ctx context.Context) {
 	body := pt.buildCommentBody(phase, total, recent)
 
 	// Post in a goroutine so a slow GitHub API call does not block the next tick.
+	// commentOnce ensures createComment is called exactly once even when two ticks
+	// fire back-to-back before the first goroutine's API call returns (race fix).
 	go func(commentID int64, b string) {
 		if commentID == 0 {
-			// First update — create the comment and store its ID.
-			newID := pt.createComment(ctx, b)
-			if newID != 0 {
-				pt.mu.Lock()
-				pt.statusCommentID = newID
-				pt.mu.Unlock()
-			}
+			pt.commentOnce.Do(func() {
+				newID := pt.createComment(ctx, b)
+				if newID != 0 {
+					pt.mu.Lock()
+					pt.statusCommentID = newID
+					pt.mu.Unlock()
+				}
+			})
 		} else {
 			pt.updateComment(ctx, commentID, b)
 		}

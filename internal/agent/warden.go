@@ -124,7 +124,9 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	checkRunID := o.createCheckRun(ctx, session.Issue, baseSHA,
 		fmt.Sprintf("Session `%s` started.", session.ID))
 	// Complete the Check Run when runWardenAgent returns, whatever the outcome.
-	defer func() {
+	// checkRunID is passed explicitly so the closure is not sensitive to any
+	// future reassignment of the local variable.
+	defer func(crID int64) {
 		conclusion := "success"
 		summary := fmt.Sprintf("Session `%s` completed.", session.ID)
 		if s := session.GetStatus(); s == StatusFailed {
@@ -134,8 +136,8 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 			conclusion = "action_required"
 			summary = fmt.Sprintf("Session `%s` yielded a draft PR for human review.", session.ID)
 		}
-		o.completeCheckRun(ctx, session.Issue, checkRunID, conclusion, summary)
-	}()
+		o.completeCheckRun(ctx, session.Issue, crID, conclusion, summary)
+	}(checkRunID)
 
 	// ── Progress tracker ─────────────────────────────────────────────────────
 	// Intercepts every tool call to write real-time log lines.
@@ -591,10 +593,17 @@ Do not include any preamble. Output only the summary text.
 	}
 }
 
+// errNoChanges is returned by yieldCommitAndPush when the workspace has no
+// uncommitted changes to push. The caller should skip PR creation and post
+// a "no changes were made" comment instead.
+var errNoChanges = fmt.Errorf("no changes to commit")
+
 // yieldDraftPR is called when the implement loop ends without an APPROVE verdict.
 // Instead of silently failing, it commits any pending changes, pushes the branch,
 // and opens a draft PR so a human can pick up where the agent left off.
-// Errors are logged but never returned — the session is marked "draft" regardless.
+// When there are no changes to push, it posts an explanatory comment and marks
+// the session failed rather than creating an empty draft PR.
+// Errors are logged but never returned — the session status is set regardless.
 func (o *Orchestrator) yieldDraftPR(
 	ctx context.Context,
 	session *Session,
@@ -605,13 +614,28 @@ func (o *Orchestrator) yieldDraftPR(
 ) {
 	o.logger.Info("warden: yielding draft PR", "session_id", session.ID, "branch", branch)
 
+	baseBranch := o.config.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
 	// ── Commit + push ───────────────────────────────────────────────────────
 	// The workspace remote already has the GitHub token embedded in its URL
 	// (set by prepareAgentWorkspace), so no token injection is needed here.
-	if err := yieldCommitAndPush(ctx, ws.dir, branch); err != nil {
+	pushErr := yieldCommitAndPush(ctx, ws.dir, branch)
+	if pushErr != nil && !strings.Contains(pushErr.Error(), errNoChanges.Error()) {
 		o.logger.Warn("warden: yieldDraftPR: push failed, session will still be marked draft",
-			"session_id", session.ID, "error", err)
-		// Continue — we still mark the session draft and post a comment.
+			"session_id", session.ID, "error", pushErr)
+	}
+
+	// When the agent made no file changes at all, a draft PR would be empty and
+	// confusing. Skip PR creation and fall through to a descriptive failure comment.
+	if pushErr != nil && strings.Contains(pushErr.Error(), errNoChanges.Error()) {
+		o.logger.Info("warden: no changes to push, marking session failed instead of creating empty draft",
+			"session_id", session.ID)
+		o.failSession(ctx, session, fmt.Sprintf(
+			"implement loop ended without APPROVE and without any code changes after %d iterations", iterations))
+		return
 	}
 
 	// ── Create draft PR ─────────────────────────────────────────────────────
@@ -627,7 +651,7 @@ func (o *Orchestrator) yieldDraftPR(
 				iterations, branch, session.Issue.Number,
 			),
 			Head:  branch,
-			Base:  "main",
+			Base:  baseBranch,
 			Draft: true,
 		})
 		if err != nil {
@@ -670,6 +694,7 @@ func (o *Orchestrator) yieldDraftPR(
 }
 
 // yieldCommitAndPush stages all pending changes, commits, and pushes the branch.
+// Returns errNoChanges when the workspace is clean (nothing to commit or push).
 // The workspace remote URL already contains authentication (set up by
 // prepareAgentWorkspace), so no explicit token injection is needed.
 func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string) error {
@@ -687,12 +712,17 @@ func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string) error 
 		}
 	}
 
-	// Stage everything and commit (tolerate "nothing to commit").
+	// Stage everything.
 	_, _ = run("add", ".")
-	if out, err := run("commit", "-m", "WIP: automated partial implementation"); err != nil {
-		if !strings.Contains(out, "nothing to commit") {
-			return fmt.Errorf("git commit: %w (output: %s)", err, out)
+
+	// Commit — detect "nothing to commit" and surface it as errNoChanges so the
+	// caller can skip PR creation rather than pushing an empty branch.
+	out, err := run("commit", "-m", "WIP: automated partial implementation")
+	if err != nil {
+		if strings.Contains(out, "nothing to commit") {
+			return errNoChanges
 		}
+		return fmt.Errorf("git commit: %w (output: %s)", err, out)
 	}
 
 	// Push — the remote URL already has the token embedded.

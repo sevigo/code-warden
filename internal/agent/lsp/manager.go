@@ -166,6 +166,8 @@ func (m *Manager) Diagnostics(ctx context.Context, absPath string) ([]Diagnostic
 }
 
 // Definition returns the definition location(s) for the symbol at the given position.
+// Retained for potential future use — not currently called by any agent tool
+// (coordinate-based LSP tools were removed; see lsp/tools.go).
 func (m *Manager) Definition(ctx context.Context, absPath string, line, col int) ([]Location, error) {
 	if m == nil {
 		return nil, nil
@@ -178,6 +180,7 @@ func (m *Manager) Definition(ctx context.Context, absPath string, line, col int)
 }
 
 // References returns all references to the symbol at the given position.
+// Retained for potential future use — not currently called by any agent tool.
 func (m *Manager) References(ctx context.Context, absPath string, line, col int) ([]Location, error) {
 	if m == nil {
 		return nil, nil
@@ -190,6 +193,7 @@ func (m *Manager) References(ctx context.Context, absPath string, line, col int)
 }
 
 // Hover returns hover documentation for the symbol at the given position.
+// Retained for potential future use — not currently called by any agent tool.
 func (m *Manager) Hover(ctx context.Context, absPath string, line, col int) (string, error) {
 	if m == nil {
 		return "", nil

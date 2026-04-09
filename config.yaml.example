@@ -177,6 +177,10 @@ agent:
   # agent registry. Set to true whenever mode is "warden" or "native".
   in_process_only: true
 
+  # Base branch for pull requests opened by the agent (default: "main").
+  # Set to "master" or your repo's default branch if it differs.
+  base_branch: "main"
+
   # Maximum review→fix iterations in the implement loop before the agent
   # yields a draft PR for human review (capped by reviewCapTool).
   max_iterations: 3
