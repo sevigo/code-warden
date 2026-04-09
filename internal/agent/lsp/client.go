@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,21 +19,21 @@ import (
 // Client is a JSON-RPC 2.0 client that speaks the Language Server Protocol
 // over a stdio subprocess. It is safe for concurrent use.
 type Client struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	stderr  io.ReadCloser
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout *bufio.Reader
+	stderr io.ReadCloser
 
-	mu      sync.Mutex       // guards stdin writes and pending map
+	mu      sync.Mutex // guards stdin writes and pending map
 	pending map[int64]chan *response
 
 	// Push-notification diagnostics cache: uri -> []Diagnostic
 	diagMu  sync.RWMutex
 	diagMap map[string][]Diagnostic
 
-	nextID  atomic.Int64
-	done    chan struct{}
-	wg      sync.WaitGroup
+	nextID atomic.Int64
+	done   chan struct{}
+	wg     sync.WaitGroup
 }
 
 // newClient starts the given command as an LSP server and performs the
@@ -99,7 +100,7 @@ func (c *Client) Stop() {
 }
 
 // DidOpen notifies the server that a file has been opened.
-func (c *Client) DidOpen(ctx context.Context, absPath, languageID, content string) error {
+func (c *Client) DidOpen(_ context.Context, absPath, languageID, content string) error {
 	return c.notify("textDocument/didOpen", didOpenParams{
 		TextDocument: textDocumentItem{
 			URI:        pathToURI(absPath),
@@ -111,7 +112,7 @@ func (c *Client) DidOpen(ctx context.Context, absPath, languageID, content strin
 }
 
 // DidChange notifies the server of a full document update.
-func (c *Client) DidChange(ctx context.Context, absPath, content string) error {
+func (c *Client) DidChange(_ context.Context, absPath, content string) error {
 	return c.notify("textDocument/didChange", didChangeParams{
 		TextDocument: versionedTextDocumentIdentifier{
 			URI:     pathToURI(absPath),
@@ -274,7 +275,7 @@ func (c *Client) readLoop() {
 
 		data, err := c.readMessage()
 		if err != nil {
-			if err == io.EOF || strings.Contains(err.Error(), "closed") {
+			if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "closed") {
 				return
 			}
 			continue

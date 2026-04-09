@@ -131,6 +131,21 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 
 	// ── Loop 2: Publish ──────────────────────────────────────────────────────
 	tracker.setPhase("publishing")
+	o.runPublishPhase(ctx, session, agentLLM, ws, branch, verdict, implResult.Iterations, tracker)
+}
+
+// runPublishPhase builds and runs the publish loop, assembles the final result,
+// and posts the completion comment. Extracted from runWardenAgent to keep that
+// function within the linter's statement-count limit.
+func (o *Orchestrator) runPublishPhase(
+	ctx context.Context,
+	session *Session,
+	agentLLM llms.Model,
+	ws *agentWorkspace,
+	branch, verdict string,
+	implIterations int,
+	tracker *progressTracker,
+) {
 	pubLoop, err := o.buildPublishLoop(agentLLM, session, ws, branch, tracker)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build publish loop: %v", err))
@@ -161,7 +176,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	result := &Result{
 		Branch:     branch,
 		Verdict:    verdict,
-		Iterations: implResult.Iterations + pubResult.Iterations,
+		Iterations: implIterations + pubResult.Iterations,
 	}
 	if prInfo := extractPRInfo(pubResult.Response); prInfo != nil {
 		result.PRNumber = prInfo.PRNumber
@@ -179,7 +194,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		"session_id", session.ID,
 		"verdict", result.Verdict,
 		"total_iterations", result.Iterations,
-		"impl_iterations", implResult.Iterations,
+		"impl_iterations", implIterations,
 		"pub_iterations", pubResult.Iterations,
 		"pr_url", result.PRURL,
 	)
@@ -360,8 +375,7 @@ func (o *Orchestrator) buildCompactionHook(session *Session) func(ctx context.Co
 		for _, m := range msgs[1:] {
 			role := string(m.Role)
 			for _, part := range m.Parts {
-				switch p := part.(type) {
-				case schema.TextContent:
+				if p, ok := part.(schema.TextContent); ok {
 					fmt.Fprintf(&transcript, "[%s] %s\n\n", role, p.Text)
 				}
 			}

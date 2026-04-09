@@ -48,10 +48,10 @@ type progressTracker struct {
 	// It is a no-op closure when the GitHub client is unavailable.
 	postComment func(ctx context.Context, body string)
 
-	mu          sync.Mutex
-	entries     []progressEntry
-	lastPosted  int    // number of entries at the time of the last comment
-	phase       string // "planning" | "implementing" | "publishing"
+	mu         sync.Mutex
+	entries    []progressEntry
+	lastPosted int    // number of entries at the time of the last comment
+	phase      string // "planning" | "implementing" | "publishing"
 
 	done chan struct{}
 	wg   sync.WaitGroup
@@ -183,7 +183,7 @@ func (pt *progressTracker) buildCommentBody(phase string, total int, recent []pr
 // progressTool wraps any tool and records each execution in the progressTracker.
 // It sits between the goframe registry and contextInjectingTool in the call chain.
 type progressTool struct {
-	inner   interface {
+	inner interface {
 		Name() string
 		Description() string
 		ParametersSchema() map[string]any
@@ -205,7 +205,7 @@ func (t *progressTool) Execute(ctx context.Context, args map[string]any) (any, e
 // registerTool wraps t in a contextInjectingTool (injects workspace + sessionID)
 // and, when tracker is non-nil, an outer progressTool (records the call).
 // It registers the result in registry and marks the tool name as allowed.
-// Returns false and logs a warning if registration fails.
+// Logs a warning and skips the tool if registration fails.
 func registerTool(
 	registry *goframeagent.Registry,
 	allowed map[string]bool,
@@ -214,7 +214,7 @@ func registerTool(
 	sessionID string,
 	tracker *progressTracker,
 	logger *slog.Logger,
-) bool {
+) {
 	ci := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: sessionID}
 
 	var target interface {
@@ -232,8 +232,7 @@ func registerTool(
 
 	if err := registry.Register(target); err != nil {
 		logger.Warn("failed to register tool", "tool", t.Name(), "error", err)
-		return false
+		return
 	}
 	allowed[t.Name()] = true
-	return true
 }

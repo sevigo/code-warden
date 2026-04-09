@@ -88,6 +88,16 @@ func (s *mockStore) ListJobRuns(_ context.Context, _, _ int) ([]*storage.JobRun,
 	return nil, nil
 }
 
+// AgentSessionStore stubs
+func (s *mockStore) CreateAgentSession(_ context.Context, _ *storage.AgentSession) error { return nil }
+func (s *mockStore) UpdateAgentSession(_ context.Context, _ *storage.AgentSession) error { return nil }
+func (s *mockStore) GetAgentSession(_ context.Context, _ string) (*storage.AgentSession, error) {
+	return nil, nil
+}
+func (s *mockStore) ListAgentSessions(_ context.Context, _, _ string, _ int) ([]*storage.AgentSession, error) {
+	return nil, nil
+}
+
 // Mock VectorStore
 type mockVectorStore struct{}
 
