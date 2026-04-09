@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// lspDiagnosticSettleDelay is how long we wait after notifying the language server
+// of a file change before requesting diagnostics. LSP servers process changes
+// asynchronously; this delay gives them time to reanalyze the file.
+const lspDiagnosticSettleDelay = 500 * time.Millisecond
+
 // Manager starts and manages LSP servers for all languages present in a workspace.
 // It is the primary entry point for LSP functionality in an agent session.
 //
@@ -114,7 +119,7 @@ func (m *Manager) NotifyChange(ctx context.Context, absPath, content string) ([]
 
 	// Give the server a moment to process.
 	select {
-	case <-time.After(700 * time.Millisecond):
+	case <-time.After(lspDiagnosticSettleDelay):
 	case <-ctx.Done():
 		return nil, nil
 	}

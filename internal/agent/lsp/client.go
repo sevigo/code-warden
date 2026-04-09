@@ -16,6 +16,10 @@ import (
 	"time"
 )
 
+// diagMapMaxFiles is the maximum number of files whose diagnostics are kept
+// in memory. When the cache exceeds this size the oldest entry is evicted.
+const diagMapMaxFiles = 200
+
 // Client is a JSON-RPC 2.0 client that speaks the Language Server Protocol
 // over a stdio subprocess. It is safe for concurrent use.
 type Client struct {
@@ -62,6 +66,7 @@ func newClient(ctx context.Context, workspaceDir string, command []string, env [
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = stderrPipe.Close()
 		return nil, fmt.Errorf("lsp: start %s: %w", command[0], err)
 	}
 
@@ -230,6 +235,11 @@ func (c *Client) call(ctx context.Context, method string, params, result any) er
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return ctx.Err()
+	case <-c.done:
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return fmt.Errorf("lsp: server stopped")
 	case resp := <-ch:
 		if resp.Error != nil {
 			return resp.Error
@@ -315,6 +325,13 @@ func (c *Client) handleNotification(resp *response) {
 		var p publishDiagnosticsParams
 		if err := json.Unmarshal(resp.Params, &p); err == nil {
 			c.diagMu.Lock()
+			// Evict an arbitrary entry when the cache is full to bound memory use.
+			if _, exists := c.diagMap[p.URI]; !exists && len(c.diagMap) >= diagMapMaxFiles {
+				for k := range c.diagMap {
+					delete(c.diagMap, k)
+					break
+				}
+			}
 			c.diagMap[p.URI] = p.Diagnostics
 			c.diagMu.Unlock()
 		}

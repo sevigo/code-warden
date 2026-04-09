@@ -145,7 +145,8 @@ func (pt *progressTracker) maybePostComment(ctx context.Context) {
 	pt.mu.Unlock()
 
 	body := pt.buildCommentBody(phase, total, recent)
-	pt.postComment(ctx, body)
+	// Post in a goroutine so a slow GitHub API call does not block the next tick.
+	go pt.postComment(ctx, body)
 }
 
 // buildCommentBody formats the GitHub progress comment.

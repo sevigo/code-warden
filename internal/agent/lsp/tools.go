@@ -177,15 +177,18 @@ func (t *hoverTool) Execute(ctx context.Context, args map[string]any) (any, erro
 // --- helpers ---
 
 // resolveWorkspacePath extracts "path" from args and resolves it to an absolute
-// path within the workspace (obtained from context).
+// path within the workspace (obtained from context). It rejects paths that
+// escape the workspace root using filepath.Rel rather than string prefix matching,
+// which is safer on case-insensitive or symlink-heavy file systems.
 func resolveWorkspacePath(ctx context.Context, args map[string]any) (string, error) {
-	root := tools.ProjectRootFromContext(ctx)
+	root := filepath.Clean(tools.ProjectRootFromContext(ctx))
 	relPath, ok := args["path"].(string)
 	if !ok || relPath == "" {
 		return "", fmt.Errorf("path is required")
 	}
 	abs := filepath.Clean(filepath.Join(root, relPath))
-	if !strings.HasPrefix(abs, root) {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("path %q escapes workspace root", relPath)
 	}
 	return abs, nil
@@ -224,7 +227,7 @@ func formatLocations(workspace string, locs []Location) map[string]any {
 		}
 		results = append(results, map[string]any{
 			"path":   relPath,
-			"line":   loc.Range.Start.Line + 1,   // 1-based
+			"line":   loc.Range.Start.Line + 1, // 1-based
 			"column": loc.Range.Start.Character + 1,
 		})
 	}

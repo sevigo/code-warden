@@ -308,6 +308,7 @@ func appendLSPDiagnostics(ctx context.Context, mgr *lsp.Manager, absPath, conten
 		return
 	}
 	items := make([]map[string]any, 0, len(diags))
+	hasErrors := false
 	for _, d := range diags {
 		items = append(items, map[string]any{
 			"severity": d.Severity.String(),
@@ -315,9 +316,14 @@ func appendLSPDiagnostics(ctx context.Context, mgr *lsp.Manager, absPath, conten
 			"column":   d.Range.Start.Character + 1,
 			"message":  d.Message,
 		})
+		if d.Severity == lsp.SeverityError {
+			hasErrors = true
+		}
 	}
 	result["diagnostics"] = items
-	result["ok"] = false
+	if hasErrors {
+		result["ok"] = false
+	}
 }
 
 // safeJoin joins root and relPath, returning an error if the result escapes root.

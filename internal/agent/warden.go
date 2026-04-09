@@ -417,11 +417,11 @@ Do not include any preamble. Output only the summary text.
 			"original_messages", len(msgs),
 		)
 
-		// Rebuild: system prompt + compacted summary + last 4 messages (tool results
+		// Rebuild: system prompt + compacted summary + last 8 messages (tool results
 		// from the current iteration so the model has immediate context).
 		tail := msgs
-		if len(msgs) > 5 {
-			tail = msgs[len(msgs)-4:]
+		if len(msgs) > 9 {
+			tail = msgs[len(msgs)-8:]
 		}
 
 		compacted := make([]schema.MessageContent, 0, 2+len(tail))
