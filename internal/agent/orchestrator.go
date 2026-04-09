@@ -98,6 +98,12 @@ type Config struct {
 
 	// OpenCodeURL is the URL of the OpenCode server (required when mode is "server").
 	OpenCodeURL string `yaml:"opencode_url"`
+
+	// InProcessOnly skips starting the MCP HTTP server when true.
+	// Set this when the agent runs exclusively in native in-process mode (warden/pi)
+	// so no external process ever calls the MCP HTTP endpoint. Avoids unnecessary
+	// port binding and listener goroutines.
+	InProcessOnly bool `yaml:"in_process_only"`
 }
 
 // Constants for agent orchestration
@@ -193,9 +199,19 @@ func NewOrchestrator(
 }
 
 // Start begins the MCP HTTP server. Must be called before agents can use tools.
+// In native in-process mode (InProcessOnly=true), the HTTP server is skipped
+// because tools are injected directly into the goframe registry and never called
+// over HTTP.
 func (o *Orchestrator) Start() error {
 	if !o.config.Enabled {
 		o.logger.Info("agent orchestrator is disabled, not starting MCP server")
+		return nil
+	}
+
+	if o.config.InProcessOnly {
+		o.logger.Info("agent orchestrator: in-process-only mode, skipping MCP HTTP server",
+			"mode", o.config.Mode)
+		go o.cleanupLoop()
 		return nil
 	}
 

@@ -214,6 +214,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 		agent.Config{
 			Enabled:               j.cfg.Agent.Enabled,
 			Provider:              j.cfg.Agent.Provider,
+			Mode:                  j.cfg.Agent.Mode,
 			Model:                 j.cfg.Agent.Model,
 			Timeout:               timeout,
 			MaxIterations:         j.cfg.Agent.MaxIterations,
@@ -223,6 +224,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			WorkingDir:            j.cfg.Agent.WorkingDir,
 			ComparisonModels:      agentComparisonModel,
 			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
+			InProcessOnly:         j.cfg.Agent.InProcessOnly,
 		},
 		j.logger,
 		j.globalMCPRegistry,

@@ -15,6 +15,9 @@ const (
 	StatusCompleted SessionStatus = "completed"
 	StatusFailed    SessionStatus = "failed"
 	StatusCancelled SessionStatus = "cancelled"
+	// StatusDraft indicates the agent made partial progress but could not reach
+	// APPROVE. A draft PR was pushed to allow human review and continuation.
+	StatusDraft SessionStatus = "draft"
 )
 
 // Session represents an active agent session.

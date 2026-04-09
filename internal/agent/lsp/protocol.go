@@ -215,8 +215,3 @@ func pathToURI(absPath string) string {
 	}
 	return "file://" + absPath
 }
-
-// uriToPath converts a file:// URI back to an absolute filesystem path.
-func uriToPath(uri string) string {
-	return strings.TrimPrefix(uri, "file://")
-}

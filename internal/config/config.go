@@ -81,6 +81,11 @@ type AgentConfig struct {
 	// DefaultWorkspaceRepo is the full name of the default workspace repository (e.g., "owner/repo").
 	// Required when DefaultWorkspace is set.
 	DefaultWorkspaceRepo string `mapstructure:"default_workspace_repo"`
+
+	// InProcessOnly skips starting the MCP HTTP server.
+	// Set to true when mode is "warden" or "native" — tools are registered
+	// directly in the goframe registry and the HTTP endpoint is never used.
+	InProcessOnly bool `mapstructure:"in_process_only"`
 }
 
 // GetTimeout parses and returns the timeout duration.
@@ -137,9 +142,9 @@ func (c *AgentConfig) Validate() error {
 		c.MaxConcurrentSessions = 3
 	}
 
-	// MCP address validation
-	if c.MCPAddr == "" {
-		return errors.New("agent.mcp_addr is required when agent is enabled")
+	// MCP address validation (not required in in-process-only mode)
+	if c.MCPAddr == "" && !c.InProcessOnly {
+		return errors.New("agent.mcp_addr is required when agent is enabled (or set in_process_only: true)")
 	}
 
 	// Default workspace validation

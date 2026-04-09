@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"github.com/sevigo/goframe/schema"
 
 	"github.com/sevigo/code-warden/internal/agent/lsp"
+	gh "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/mcp"
 )
 
@@ -114,20 +116,53 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		lspMode = "precise (LSP)"
 	}
 
+	// ── GitHub Check Run ──────────────────────────────────────────────────────
+	// Create a Check Run on the base branch so progress appears in GitHub UI.
+	// Falls back gracefully when the GitHub client is unavailable or the base
+	// SHA cannot be fetched (e.g., network failure, insufficient permissions).
+	baseSHA := o.getBaseSHA(ctx, session.Issue.RepoOwner, session.Issue.RepoName)
+	checkRunID := o.createCheckRun(ctx, session.Issue, baseSHA,
+		fmt.Sprintf("Session `%s` started.", session.ID))
+	// Complete the Check Run when runWardenAgent returns, whatever the outcome.
+	defer func() {
+		conclusion := "success"
+		summary := fmt.Sprintf("Session `%s` completed.", session.ID)
+		if s := session.GetStatus(); s == StatusFailed {
+			conclusion = "failure"
+			summary = fmt.Sprintf("Session `%s` failed: %s", session.ID, session.GetError())
+		} else if s == StatusDraft {
+			conclusion = "action_required"
+			summary = fmt.Sprintf("Session `%s` yielded a draft PR for human review.", session.ID)
+		}
+		o.completeCheckRun(ctx, session.Issue, checkRunID, conclusion, summary)
+	}()
+
 	// ── Progress tracker ─────────────────────────────────────────────────────
-	// Intercepts every tool call to write real-time log lines and EDIT a single
-	// GitHub status comment every 30 s rather than posting new ones each time.
-	tracker := newProgressTracker(
-		session,
-		ws.logFile,
-		lspMode,
-		func(tctx context.Context, body string) int64 {
-			return o.createIssueComment(tctx, session.Issue, body)
-		},
-		func(tctx context.Context, id int64, body string) {
-			o.updateIssueComment(tctx, session.Issue, id, body)
-		},
+	// Intercepts every tool call to write real-time log lines.
+	// When a Check Run is available, progress updates edit its summary.
+	// Otherwise a single rolling GitHub issue comment is created and edited.
+	var (
+		progressCreate func(context.Context, string) int64
+		progressUpdate func(context.Context, int64, string)
 	)
+	if checkRunID != 0 {
+		// Use the Check Run for in-progress updates — avoids issue comment noise.
+		progressCreate = func(tctx context.Context, body string) int64 {
+			o.updateCheckRun(tctx, session.Issue, checkRunID, body)
+			return checkRunID // re-use the check run ID as the "comment" ID
+		}
+		progressUpdate = func(tctx context.Context, _ int64, body string) {
+			o.updateCheckRun(tctx, session.Issue, checkRunID, body)
+		}
+	} else {
+		progressCreate = func(tctx context.Context, body string) int64 {
+			return o.createIssueComment(tctx, session.Issue, body)
+		}
+		progressUpdate = func(tctx context.Context, id int64, body string) {
+			o.updateIssueComment(tctx, session.Issue, id, body)
+		}
+	}
+	tracker := newProgressTracker(session, ws.logFile, lspMode, progressCreate, progressUpdate)
 	tracker.start(ctx)
 	defer tracker.stop()
 
@@ -197,12 +232,13 @@ func (o *Orchestrator) runImplementPhase(
 
 	v, _, _ := o.mcpServer.GetReviewBySession(session.ID)
 	if v != "APPROVE" {
-		msg := fmt.Sprintf(
-			"implement loop completed without APPROVE verdict (got %q) after %d iterations",
-			v, implResult.Iterations,
+		o.logger.Warn("warden: implement loop ended without APPROVE, yielding draft PR",
+			"session_id", session.ID,
+			"verdict", v,
+			"iterations", implResult.Iterations,
 		)
-		o.logger.Warn("warden: "+msg, "session_id", session.ID)
-		o.failSession(ctx, session, msg)
+		o.yieldDraftPR(ctx, session, ws, branch, implResult.Iterations,
+			implResult.Tokens.Input, implResult.Tokens.Output)
 		return 0, 0, 0, "", false
 	}
 
@@ -353,9 +389,6 @@ func (o *Orchestrator) buildImplementSystemPrompt(issue Issue, workspaceDir stri
 		lspSection = `
 **LSP** (live compiler feedback):
 - lsp_diagnostics(path) — get compiler errors/warnings for a file
-- lsp_definition(path, line, column) — jump to definition of a symbol
-- lsp_references(path, line, column) — find all usages of a symbol
-- lsp_hover(path, line, column) — get type info and docs for a symbol
 Note: write_file and edit_file automatically return diagnostics — check them.`
 	}
 
@@ -441,9 +474,6 @@ var compactionExplorationTools = map[string]bool{
 	"find_usages":      true,
 	"get_callers":      true,
 	"get_callees":      true,
-	"lsp_definition":   true,
-	"lsp_references":   true,
-	"lsp_hover":        true,
 }
 
 // compactionFilterText replaces the output of exploration tool calls with a
@@ -559,6 +589,117 @@ Do not include any preamble. Output only the summary text.
 		compacted = append(compacted, tail...)
 		return compacted
 	}
+}
+
+// yieldDraftPR is called when the implement loop ends without an APPROVE verdict.
+// Instead of silently failing, it commits any pending changes, pushes the branch,
+// and opens a draft PR so a human can pick up where the agent left off.
+// Errors are logged but never returned — the session is marked "draft" regardless.
+func (o *Orchestrator) yieldDraftPR(
+	ctx context.Context,
+	session *Session,
+	ws *agentWorkspace,
+	branch string,
+	iterations int,
+	tokensIn, tokensOut float64,
+) {
+	o.logger.Info("warden: yielding draft PR", "session_id", session.ID, "branch", branch)
+
+	// ── Commit + push ───────────────────────────────────────────────────────
+	// The workspace remote already has the GitHub token embedded in its URL
+	// (set by prepareAgentWorkspace), so no token injection is needed here.
+	if err := yieldCommitAndPush(ctx, ws.dir, branch); err != nil {
+		o.logger.Warn("warden: yieldDraftPR: push failed, session will still be marked draft",
+			"session_id", session.ID, "error", err)
+		// Continue — we still mark the session draft and post a comment.
+	}
+
+	// ── Create draft PR ─────────────────────────────────────────────────────
+	prURL := ""
+	if o.ghClient != nil {
+		pr, err := o.ghClient.CreatePullRequest(ctx, session.Issue.RepoOwner, session.Issue.RepoName, gh.PullRequestOptions{
+			Title: fmt.Sprintf("WIP: %s (draft — needs human review)", session.Issue.Title),
+			Body: fmt.Sprintf(
+				"## Draft — automatic yield\n\n"+
+					"The implementation agent could not achieve an APPROVE verdict after %d iterations.\n"+
+					"Partial work has been pushed to branch `%s` for human review.\n\n"+
+					"Closes #%d",
+				iterations, branch, session.Issue.Number,
+			),
+			Head:  branch,
+			Base:  "main",
+			Draft: true,
+		})
+		if err != nil {
+			o.logger.Warn("warden: yieldDraftPR: failed to create draft PR",
+				"session_id", session.ID, "error", err)
+		} else {
+			prURL = pr.GetHTMLURL()
+			o.logger.Info("warden: draft PR created", "session_id", session.ID, "url", prURL)
+		}
+	}
+
+	// ── Persist + comment ────────────────────────────────────────────────────
+	result := &Result{
+		Branch:       branch,
+		Verdict:      "HUMAN_REVIEW_REQUIRED",
+		Iterations:   iterations,
+		PRURL:        prURL,
+		TokensInput:  int64(tokensIn),
+		TokensOutput: int64(tokensOut),
+	}
+	if files := o.mcpServer.GetReviewFilesBySession(session.ID); files != nil {
+		result.FilesChanged = files
+	}
+
+	session.SetResult(result)
+	session.SetStatus(StatusDraft)
+	o.persistSessionCompleted(ctx, session, result)
+
+	body := fmt.Sprintf(
+		"⚠️ **Draft PR created** — session `%s`\n\n"+
+			"The agent made partial progress but could not reach an APPROVE verdict after %d iterations.\n",
+		session.ID, iterations,
+	)
+	if prURL != "" {
+		body += fmt.Sprintf("\n**Draft PR:** %s\n\nA human can review the partial work, continue on branch `%s`, or close the draft.", prURL, branch)
+	} else {
+		body += fmt.Sprintf("\nBranch `%s` was pushed with partial changes. Open a draft PR manually to continue.", branch)
+	}
+	o.postIssueComment(ctx, session.Issue, body)
+}
+
+// yieldCommitAndPush stages all pending changes, commits, and pushes the branch.
+// The workspace remote URL already contains authentication (set up by
+// prepareAgentWorkspace), so no explicit token injection is needed.
+func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string) error {
+	run := func(args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = workspaceDir
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	// Ensure we are on the right branch.
+	if _, err := run("checkout", branch); err != nil {
+		if _, err2 := run("checkout", "-b", branch); err2 != nil {
+			return fmt.Errorf("git checkout -b %s: %w", branch, err2)
+		}
+	}
+
+	// Stage everything and commit (tolerate "nothing to commit").
+	_, _ = run("add", ".")
+	if out, err := run("commit", "-m", "WIP: automated partial implementation"); err != nil {
+		if !strings.Contains(out, "nothing to commit") {
+			return fmt.Errorf("git commit: %w (output: %s)", err, out)
+		}
+	}
+
+	// Push — the remote URL already has the token embedded.
+	if out, err := run("push", "-u", "origin", branch); err != nil {
+		return fmt.Errorf("git push: %w (output: %s)", err, out)
+	}
+	return nil
 }
 
 // writeTrace appends a JSONL snapshot of the current conversation to the trace

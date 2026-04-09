@@ -62,14 +62,19 @@ func (o *Orchestrator) persistSessionRunning(ctx context.Context, session *Sessi
 }
 
 // persistSessionCompleted writes the final result to the database.
-// Called from postSessionCompleted.
+// Uses the session's current status so StatusDraft is preserved correctly.
+// Called from postSessionCompleted and yieldDraftPR.
 func (o *Orchestrator) persistSessionCompleted(ctx context.Context, session *Session, result *Result) {
 	if o.store == nil {
 		return
 	}
+	status := session.GetStatus()
+	if status != StatusDraft {
+		status = StatusCompleted
+	}
 	row := &storage.AgentSession{
 		ID:     session.ID,
-		Status: string(StatusCompleted),
+		Status: string(status),
 		CompletedAt: sql.NullTime{
 			Time:  time.Now(),
 			Valid: true,

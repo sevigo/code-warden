@@ -136,12 +136,14 @@ func TestCompactionFilterText(t *testing.T) {
 		{"read_file: {\"content\": \"...\"}", true},
 		{"search_code: {\"results\": []}", true},
 		{"list_dir: {\"entries\": []}", true},
-		{"lsp_definition: {\"location\": \"...\"}", true},
 		{"write_file: {\"ok\": true}", false},
 		{"edit_file: {\"ok\": true}", false},
 		{"review_code: {\"verdict\": \"APPROVE\"}", false},
 		{"run_command: {\"output\": \"ok\"}", false},
 		{"some random assistant message", false},
+		// Coordinate LSP tools were removed from the explorer set;
+		// lsp_diagnostics is also not stripped (it belongs to verification).
+		{"lsp_diagnostics: {\"ok\": true}", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.input[:min(20, len(tc.input))], func(t *testing.T) {
