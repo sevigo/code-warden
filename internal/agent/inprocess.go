@@ -46,6 +46,9 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 		return
 	}
 	defer ws.logFile.Close()
+	if ws.lsp != nil {
+		defer ws.lsp.Stop()
+	}
 	// Unregister from the per-session MCP workspace registry (different from
 	// globalMCPRegistry, which is handled in cleanupNativeSession).
 	defer o.mcpServer.UnregisterWorkspace(session.ID)

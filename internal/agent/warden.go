@@ -2,58 +2,244 @@ package agent
 
 // warden.go — "pi" / "warden" agent mode.
 //
-// Extends the native in-process AgentLoop with workspace file manipulation
-// tools (read_file, write_file, edit_file, list_dir) so the LLM can directly
-// create and modify files in the cloned repository without relying on an
-// external binary.
+// Runs two sequential agent loops with minimal, phase-appropriate tool sets:
 //
-// The concurrency limit (MaxConcurrentSessions) is already enforced by
-// SpawnAgent in orchestrator.go via the sessions map length check.
+//  Loop 1 — Implement:
+//    search_code, file tools, LSP tools, run_command, review_code
+//    (no push_branch / create_pull_request)
+//    Terminates when review_code returns APPROVE or max iterations reached.
+//
+//  Loop 2 — Publish (only if Loop 1 produced APPROVE):
+//    push_branch, create_pull_request
+//    Max 5 iterations — focused task, should complete in 1-2 turns.
+//
+// Keeping publish tools out of the implement loop means the model never
+// attempts to push or open a PR before the code has been reviewed and approved.
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	goframeagent "github.com/sevigo/goframe/agent"
 	"github.com/sevigo/goframe/llms"
+
+	"github.com/sevigo/code-warden/internal/agent/lsp"
 )
 
-// runWardenAgent executes the agent workflow using the native goframe AgentLoop
-// augmented with workspace file tools (read_file, write_file, edit_file, list_dir).
-func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, branch string) {
-	o.runNativeLoop(ctx, session, branch, "warden", o.buildWardenLoop)
+// publishToolNames are withheld from the implement loop and reserved for the
+// publish loop. Keeping this as an explicit set makes it easy to audit.
+var publishToolNames = map[string]bool{
+	"push_branch":         true,
+	"create_pull_request": true,
 }
 
-// buildWardenLoop constructs the goframe AgentLoop with all MCP tools AND the
-// workspace file manipulation tools (read_file, write_file, edit_file, list_dir).
-func (o *Orchestrator) buildWardenLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace) (*goframeagent.AgentLoop, error) {
+// runWardenAgent runs the two-phase warden loop: implement then publish.
+func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, branch string) {
+	defer o.cleanupNativeSession(ctx, session)
+
+	agentLLM, err := o.resolveAgentLLM(ctx)
+	if err != nil {
+		o.failSession(ctx, session, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
+	defer cancel()
+
+	ws, err := o.prepareAgentWorkspace(ctx, session)
+	if err != nil {
+		o.failSession(ctx, session, err.Error())
+		return
+	}
+	defer ws.logFile.Close()
+	if ws.lsp != nil {
+		defer ws.lsp.Stop()
+	}
+	defer o.mcpServer.UnregisterWorkspace(session.ID)
+
+	o.logger.Info("🛠️  IMPLEMENTATION: Starting warden agent (phased)",
+		"session_id", session.ID,
+		"working_dir", ws.dir,
+		"timeout", o.config.Timeout,
+		"model", agentLLM,
+	)
+
+	// ── Planning phase ───────────────────────────────────────────────────────
+	// Runs a short read-only loop to explore the codebase and produce a plan.
+	// The plan is injected into the implement loop's system prompt.
+	plan := o.buildPlan(ctx, agentLLM, session, ws)
+	o.logger.Info("warden: planning complete, starting implement loop", "session_id", session.ID)
+
+	// ── Loop 1: Implement ────────────────────────────────────────────────────
+	implLoop, err := o.buildImplementLoop(agentLLM, session, ws, plan)
+	if err != nil {
+		o.failSession(ctx, session, fmt.Sprintf("build implement loop: %v", err))
+		return
+	}
+
+	implTask := goframeagent.Task{
+		ID:          session.ID + "-impl",
+		Description: fmt.Sprintf("Implement GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
+		Context:     o.buildNativeTaskContext(session.Issue, branch),
+		Priority:    5,
+	}
+
+	o.logger.Info("warden: starting implement loop", "session_id", session.ID)
+	implResult, implErr := implLoop.Run(ctx, implTask, nil)
+	if implErr != nil {
+		o.logger.Error("warden: implement loop failed",
+			"session_id", session.ID, "iterations", implResult.Iterations, "error", implErr)
+		o.failSession(ctx, session, fmt.Sprintf("implement loop: %v", implErr))
+		return
+	}
+
+	o.logger.Info("warden: implement loop done",
+		"session_id", session.ID,
+		"iterations", implResult.Iterations,
+		"tokens_in", implResult.Tokens.Input,
+		"tokens_out", implResult.Tokens.Output,
+	)
+
+	// Check verdict before proceeding to publish.
+	verdict, _, _ := o.mcpServer.GetReviewBySession(session.ID)
+	if verdict != "APPROVE" {
+		// Implementation finished without an approved review — surface as failure
+		// so the operator can inspect and the issue gets a comment.
+		msg := fmt.Sprintf(
+			"implement loop completed without APPROVE verdict (got %q) after %d iterations",
+			verdict, implResult.Iterations,
+		)
+		o.logger.Warn("warden: "+msg, "session_id", session.ID)
+		o.failSession(ctx, session, msg)
+		return
+	}
+
+	// ── Loop 2: Publish ──────────────────────────────────────────────────────
+	pubLoop, err := o.buildPublishLoop(agentLLM, session, ws, branch)
+	if err != nil {
+		o.failSession(ctx, session, fmt.Sprintf("build publish loop: %v", err))
+		return
+	}
+
+	pubTask := goframeagent.Task{
+		ID:          session.ID + "-pub",
+		Description: fmt.Sprintf("Push branch and open PR for issue #%d", session.Issue.Number),
+		Context:     fmt.Sprintf("Branch: %s\nAll changes have been reviewed and approved. Push and open a draft PR.", branch),
+		Priority:    5,
+	}
+
+	o.logger.Info("warden: starting publish loop", "session_id", session.ID)
+	pubResult, pubErr := pubLoop.Run(ctx, pubTask, nil)
+
+	session.mu.Lock()
+	session.CompletedAt = time.Now()
+	session.mu.Unlock()
+
+	if pubErr != nil {
+		o.logger.Error("warden: publish loop failed",
+			"session_id", session.ID, "iterations", pubResult.Iterations, "error", pubErr)
+		o.failSession(ctx, session, fmt.Sprintf("publish loop: %v", pubErr))
+		return
+	}
+
+	result := &Result{
+		Branch:     branch,
+		Verdict:    verdict,
+		Iterations: implResult.Iterations + pubResult.Iterations,
+	}
+	if prInfo := extractPRInfo(pubResult.Response); prInfo != nil {
+		result.PRNumber = prInfo.PRNumber
+		result.PRURL = prInfo.PRURL
+	}
+	if files := o.mcpServer.GetReviewFilesBySession(session.ID); files != nil {
+		result.FilesChanged = files
+	}
+
+	session.SetResult(result)
+	session.SetStatus(StatusCompleted)
+	o.postSessionCompleted(ctx, session, result)
+
+	o.logger.Info("warden: completed",
+		"session_id", session.ID,
+		"verdict", result.Verdict,
+		"total_iterations", result.Iterations,
+		"impl_iterations", implResult.Iterations,
+		"pub_iterations", pubResult.Iterations,
+		"pr_url", result.PRURL,
+	)
+}
+
+// buildImplementLoop builds the agent loop for the implement phase.
+// All MCP tools EXCEPT push_branch and create_pull_request are included,
+// plus file tools and LSP tools. plan is the output of the planning phase
+// and is embedded in the system prompt to give the model a head start.
+func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, plan string) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
-	// Register existing MCP tools (search_code, get_symbol, review_code, etc.)
+	// MCP tools — exclude publish tools.
 	for _, t := range o.mcpServer.Tools() {
-		wrapped := &contextInjectingTool{
-			inner:       t,
-			projectRoot: ws.dir,
-			sessionID:   session.ID,
+		if publishToolNames[t.Name()] {
+			continue // reserved for publish loop
 		}
+		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
 		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildWardenLoop: failed to register MCP tool",
+			o.logger.Warn("buildImplementLoop: failed to register MCP tool",
 				"tool", t.Name(), "error", err)
 			continue
 		}
 		allowedTools[t.Name()] = true
 	}
 
-	// Register file manipulation tools — sandbox restricted to workspace dir
-	for _, t := range fileTools() {
-		wrapped := &contextInjectingTool{
-			inner:       t,
-			projectRoot: ws.dir,
-			sessionID:   session.ID,
-		}
+	// File tools (with LSP diagnostic hook).
+	for _, t := range fileTools(ws.lsp) {
+		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
 		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("buildWardenLoop: failed to register file tool",
+			o.logger.Warn("buildImplementLoop: failed to register file tool",
+				"tool", t.Name(), "error", err)
+			continue
+		}
+		allowedTools[t.Name()] = true
+	}
+
+	// LSP tools — only if a language server is running.
+	for _, t := range lsp.Tools(ws.lsp) {
+		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
+		if err := registry.Register(wrapped); err != nil {
+			o.logger.Warn("buildImplementLoop: failed to register LSP tool",
+				"tool", t.Name(), "error", err)
+			continue
+		}
+		allowedTools[t.Name()] = true
+	}
+	if ws.lsp != nil && ws.lsp.Available() {
+		o.logger.Info("buildImplementLoop: LSP tools registered", "session_id", session.ID)
+	}
+
+	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
+	maxIter := max(o.config.MaxIterations*10, 30)
+
+	return goframeagent.NewAgentLoop(agentLLM, registry,
+		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, ws.lsp != nil && ws.lsp.Available(), plan)),
+		goframeagent.WithLoopMaxIterations(maxIter),
+		goframeagent.WithLoopGovernance(governance),
+	)
+}
+
+// buildPublishLoop builds the agent loop for the publish phase.
+// Only push_branch and create_pull_request are available.
+func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, branch string) (*goframeagent.AgentLoop, error) {
+	registry := goframeagent.NewRegistry()
+	allowedTools := make(map[string]bool)
+
+	for _, t := range o.mcpServer.Tools() {
+		if !publishToolNames[t.Name()] {
+			continue // implement-phase tools are not needed here
+		}
+		wrapped := &contextInjectingTool{inner: t, projectRoot: ws.dir, sessionID: session.ID}
+		if err := registry.Register(wrapped); err != nil {
+			o.logger.Warn("buildPublishLoop: failed to register tool",
 				"tool", t.Name(), "error", err)
 			continue
 		}
@@ -62,18 +248,28 @@ func (o *Orchestrator) buildWardenLoop(agentLLM llms.Model, session *Session, ws
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
-	maxIter := max(o.config.MaxIterations*10, 30)
-
 	return goframeagent.NewAgentLoop(agentLLM, registry,
-		goframeagent.WithLoopSystemPrompt(o.buildWardenSystemPrompt(session.Issue, ws.dir)),
-		goframeagent.WithLoopMaxIterations(maxIter),
+		goframeagent.WithLoopSystemPrompt(o.buildPublishSystemPrompt(session.Issue, branch)),
+		goframeagent.WithLoopMaxIterations(5), // push + PR creation should need at most 2-3 turns
 		goframeagent.WithLoopGovernance(governance),
 	)
 }
 
-// buildWardenSystemPrompt returns the system prompt for warden mode, extending
-// the native prompt with file tool instructions.
-func (o *Orchestrator) buildWardenSystemPrompt(issue Issue, workspaceDir string) string {
+// buildImplementSystemPrompt returns the system prompt for the implement loop.
+// Publish tools are intentionally omitted — the model has no reason to
+// attempt pushing before the review is complete.
+func (o *Orchestrator) buildImplementSystemPrompt(issue Issue, workspaceDir string, lspAvailable bool, plan string) string {
+	lspSection := ""
+	if lspAvailable {
+		lspSection = `
+**LSP** (live compiler feedback):
+- lsp_diagnostics(path) — get compiler errors/warnings for a file
+- lsp_definition(path, line, column) — jump to definition of a symbol
+- lsp_references(path, line, column) — find all usages of a symbol
+- lsp_hover(path, line, column) — get type info and docs for a symbol
+Note: write_file and edit_file automatically return diagnostics — check them.`
+	}
+
 	return fmt.Sprintf(`You are an expert software engineer implementing GitHub issue #%d.
 
 ## Task
@@ -85,37 +281,50 @@ Description:
 Working directory: %s
 
 ## Available Tools
-**Code navigation** (read-only, repository-indexed):
-- search_code, get_arch_context, get_symbol, get_structure
-- find_usages, get_callers, get_callees
 
-**File operations** (workspace-scoped):
-- read_file(path, offset?, limit?) — read a file (optionally paginated)
-- write_file(path, content) — write/create a file
-- edit_file(path, old_string, new_string) — targeted in-place edit
-- list_dir(path?) — list directory
+**Code exploration** (repository-indexed, read-only):
+- search_code(query) — semantic search over the codebase
+- get_symbol(name) — find a symbol definition
+- get_structure() — project structure overview
+- get_arch_context(dir) — architecture summary for a directory
+- find_usages(symbol), get_callers(fn), get_callees(fn)
+%s
+**File operations** (workspace-scoped, paths relative to working directory):
+- read_file(path, offset?, limit?) — read a file, optionally paginated
+- write_file(path, content) — create or overwrite a file
+- edit_file(path, old_string, new_string) — replace an exact string in a file
+- list_dir(path?) — list directory contents
 
 **Verification**:
-- run_command(command) — run whitelisted commands (make lint, make test)
-- review_code — automated code review
-
-**Publishing** (requires APPROVE from review_code):
-- push_branch — push the branch
-- create_pull_request — open a draft PR
+- run_command(command) — run whitelisted commands: "make lint", "make test"
+- review_code — request an automated code review of your changes
 
 ## Workflow
-1. **Explore** — use search_code / get_symbol / list_dir / read_file to understand the codebase.
-2. **Plan** — identify which files need changing.
-3. **Implement** — use write_file / edit_file to make changes. Prefer edit_file for targeted changes.
-4. **Verify** — run run_command("make lint") then run_command("make test").
-5. **Review** — call review_code with the full diff; fix any REQUEST_CHANGES findings.
-6. **Push** — call push_branch.
-7. **PR** — call create_pull_request (requires APPROVE verdict first).
+1. **Explore** — use search_code / get_symbol / list_dir / read_file to understand the code.
+2. **Implement** — use write_file / edit_file. Prefer edit_file for targeted changes.
+3. **Verify** — run_command("make lint"), then run_command("make test"). Fix failures.
+4. **Review** — call review_code. If REQUEST_CHANGES, fix and re-verify. Repeat until APPROVE.
 
 ## Rules
-- All file paths are relative to the workspace root.
-- Always verify with lint and tests before calling review_code.
-- You MUST receive APPROVE from review_code before creating a PR.
-- Keep changes minimal and focused on the issue.`,
-		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir)
+- Paths are relative to the working directory.
+- Always run lint and tests before calling review_code.
+- Your work here is done when review_code returns APPROVE. Do not attempt to push or open a PR.
+- Keep changes minimal and focused on the issue.
+
+%s`,
+		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, lspSection, plan)
+}
+
+// buildPublishSystemPrompt returns the system prompt for the publish loop.
+func (o *Orchestrator) buildPublishSystemPrompt(issue Issue, branch string) string {
+	return fmt.Sprintf(`The implementation for GitHub issue #%d ("%s") has been reviewed and approved.
+
+Your task is to publish the changes:
+1. Call push_branch to push branch "%s" to the remote.
+2. Call create_pull_request to open a draft pull request referencing issue #%d.
+
+Available tools: push_branch, create_pull_request.
+
+Do not make any code changes. Do not review. Just push and open the PR.`,
+		issue.Number, issue.Title, branch, issue.Number)
 }
