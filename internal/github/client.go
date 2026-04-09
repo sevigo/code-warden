@@ -63,6 +63,10 @@ type Client interface {
 	GetPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 	GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]ChangedFile, error)
 	CreateComment(ctx context.Context, owner, repo string, number int, body string) error
+	// CreateCommentID creates a comment and returns its ID for later editing.
+	CreateCommentID(ctx context.Context, owner, repo string, number int, body string) (int64, error)
+	// UpdateComment edits an existing comment body in-place.
+	UpdateComment(ctx context.Context, owner, repo string, commentID int64, body string) error
 	CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error
 	CreateCheckRun(ctx context.Context, owner, repo string, opts github.CreateCheckRunOptions) (*github.CheckRun, error)
 	UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, opts github.UpdateCheckRunOptions) (*github.CheckRun, error)
@@ -215,6 +219,27 @@ func (g *gitHubClient) CreateComment(ctx context.Context, owner, repo string, nu
 	_, _, err := g.client.Issues.CreateComment(ctx, owner, repo, number, comment)
 	if err != nil {
 		g.logger.Error("failed to create comment", "owner", owner, "repo", repo, "pr", number, "error", err)
+	}
+	return err
+}
+
+// CreateCommentID creates a new comment and returns its integer ID for later editing.
+func (g *gitHubClient) CreateCommentID(ctx context.Context, owner, repo string, number int, body string) (int64, error) {
+	comment := &github.IssueComment{Body: &body}
+	created, _, err := g.client.Issues.CreateComment(ctx, owner, repo, number, comment)
+	if err != nil {
+		g.logger.Error("failed to create comment", "owner", owner, "repo", repo, "pr", number, "error", err)
+		return 0, err
+	}
+	return created.GetID(), nil
+}
+
+// UpdateComment edits the body of an existing issue comment.
+func (g *gitHubClient) UpdateComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
+	comment := &github.IssueComment{Body: &body}
+	_, _, err := g.client.Issues.EditComment(ctx, owner, repo, commentID, comment)
+	if err != nil {
+		g.logger.Error("failed to update comment", "owner", owner, "repo", repo, "comment_id", commentID, "error", err)
 	}
 	return err
 }

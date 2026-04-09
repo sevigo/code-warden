@@ -138,75 +138,72 @@ ai:
 # ============================================================================
 # Agent Configuration (Autonomous Issue Implementation)
 # ============================================================================
-# The agent system implements GitHub issues autonomously using AI agents.
-# It connects to an agent provider (OpenCode, Claude, etc.) via MCP tools
-# to search code, review changes, and create pull requests.
+# The agent system implements GitHub issues autonomously using AI.
+# Two modes are supported:
 #
-# Architecture:
-#   code-warden ──► MCP Server (port 8081) ◄──► Agent Provider
-#                        │                           │
-#                        ▼                           ▼
-#                   RAG/Qdrant              HTTP API (mode: server)
-#                   Code Index                     or
-#                                                 CLI (mode: cli)
+#  "warden" (recommended — in-process, no external dependencies):
+#   code-warden runs a phased plan→implement→publish loop directly
+#   using the same Ollama/Gemini LLM as the review system.
+#   Tools are injected in-process; no MCP HTTP server is started.
+#
+#   Architecture:
+#     GitHub Issue ──► Orchestrator ──► plan loop ──► implement loop ──► publish loop
+#                           │                 └── file tools, LSP, search_code, review_code
+#                           └── RAG/Qdrant (code index, search)
+#
+#  "server" / "cli" (external agent provider):
+#   code-warden ──► MCP Server (port 8081) ◄──► Agent Provider (OpenCode, etc.)
 #
 agent:
   # Enable the agent system for /implement comments on GitHub issues
   enabled: true
 
-  # Agent provider: "opencode", "goose", "claude", etc.
-  # Currently only "opencode" is fully supported.
-  provider: "opencode"
+  # ── In-process warden mode (recommended) ────────────────────────────────
+  # Runs entirely inside code-warden; no external binary or server needed.
+  # Uses the same Ollama/Gemini LLM configured under the "ai" section.
 
-  # Connection mode: "server" (HTTP API) or "cli" (subprocess)
-  # - "server": Connects to agent provider via HTTP API (recommended)
-  #   - Uses goframe/agent SDK for communication
-  #   - Requires opencode_url to be set
-  #   - Better error handling and structured responses
-  # - "cli": Spawns agent binary as subprocess (legacy)
-  #   - Requires agent binary in PATH
-  #   - Uses CLI output parsing (AGENT_RESULT sentinels)
-  mode: "server"
+  # "warden" activates the phased plan→implement→publish harness.
+  mode: "warden"
 
-  # OpenCode server URL (required when mode is "server")
-  # The OpenCode server must be running and accessible.
-  # For Docker: http://opencode:3000
-  # For local: http://localhost:3000
-  opencode_url: "http://localhost:3000"
+  # Provider label (informational only in warden mode).
+  provider: "native"
 
-  # Model to use for the agent (provider-specific format)
-  # Examples:
-  #   - "ollama/qwen2.5-coder" (Ollama)
-  #   - "anthropic/claude-3-5-sonnet" (Anthropic)
-  #   - "openai/gpt-4" (OpenAI)
-  model: "ollama/qwen2.5-coder"
+  # LLM model for the agent loops (Ollama format: "ollama/<model>").
+  # GLM-5.1 and MiniMax M2.7 are well-suited: 198K context, agentic fine-tuning.
+  # Falls back to the review LLM (ai.generator_model) if this is unset.
+  model: "ollama/glm-5.1:cloud"
 
-  # Maximum review iterations before stopping
-  # The agent will iterate: implement → review → fix up to this many times
+  # Skip the MCP HTTP server — tools are registered directly in the goframe
+  # agent registry. Set to true whenever mode is "warden" or "native".
+  in_process_only: true
+
+  # Base branch for pull requests opened by the agent (default: "main").
+  # Set to "master" or your repo's default branch if it differs.
+  base_branch: "main"
+
+  # Maximum review→fix iterations in the implement loop before the agent
+  # yields a draft PR for human review (capped by reviewCapTool).
   max_iterations: 3
 
-  # Maximum concurrent agent sessions (prevents resource exhaustion)
+  # Maximum concurrent agent sessions (prevents resource exhaustion).
   max_concurrent_sessions: 3
 
-  # MCP server address (where agent connects to use code-warden tools)
-  # Tools available: search_code, get_arch_context, get_symbol, get_structure,
-  #                  review_code, push_branch, create_pull_request
-  mcp_addr: "127.0.0.1:8081"
-
-  # Timeout for individual MCP tool calls (e.g., code_review)
-  # Some operations like code review can take time with large diffs
-  mcp_timeout: "5m"
-
-  # Maximum time for an agent session
-  # Includes all iterations, reviews, and PR creation
+  # Maximum time for a single agent session (plan + implement + publish).
   timeout: "1h"
 
-  # Working directory for agent workspaces
-  # Each session gets an isolated workspace: <working_dir>/<session_id>/
-  # Must be an absolute path
-  # IMPORTANT: This directory must be mounted into the OpenCode Docker container
-  # at /agent-workspaces (see docker-compose.yml)
+  # Working directory for isolated agent workspaces.
+  # Each session gets its own subdirectory: <working_dir>/<session_id>/
   working_dir: "/tmp/code-warden-agents"
+
+  # ── External agent provider (alternative to warden mode) ────────────────
+  # Uncomment and set mode: "server" or "cli" to use an external agent.
+
+  # mode: "server"
+  # provider: "opencode"
+  # opencode_url: "http://localhost:3000"
+  # mcp_addr: "127.0.0.1:8081"
+  # mcp_timeout: "5m"
+  # in_process_only: false
 
 # ============================================================================
 # Storage Configuration

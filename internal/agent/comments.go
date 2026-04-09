@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"github.com/google/go-github/v73/github"
 )
 
 // maxErrorDisplayLength is the maximum number of characters shown in GitHub
@@ -23,6 +26,38 @@ func (o *Orchestrator) postIssueComment(ctx context.Context, issue Issue, body s
 	}
 }
 
+// createIssueComment posts a new comment and returns its ID (0 on failure).
+// Used by progressTracker to create the single rolling status comment.
+func (o *Orchestrator) createIssueComment(ctx context.Context, issue Issue, body string) int64 {
+	if o.ghClient == nil {
+		return 0
+	}
+	id, err := o.ghClient.CreateCommentID(ctx, issue.RepoOwner, issue.RepoName, issue.Number, body)
+	if err != nil {
+		o.logger.Warn("failed to create issue comment",
+			"issue", issue.Number,
+			"repo", issue.RepoOwner+"/"+issue.RepoName,
+			"error", err)
+		return 0
+	}
+	return id
+}
+
+// updateIssueComment edits an existing comment by ID.
+// Used by progressTracker to update the rolling status comment in-place.
+func (o *Orchestrator) updateIssueComment(ctx context.Context, issue Issue, commentID int64, body string) {
+	if o.ghClient == nil || commentID == 0 {
+		return
+	}
+	if err := o.ghClient.UpdateComment(ctx, issue.RepoOwner, issue.RepoName, commentID, body); err != nil {
+		o.logger.Warn("failed to update issue comment",
+			"issue", issue.Number,
+			"comment_id", commentID,
+			"repo", issue.RepoOwner+"/"+issue.RepoName,
+			"error", err)
+	}
+}
+
 func (o *Orchestrator) postSessionStarted(ctx context.Context, session *Session) {
 	body := fmt.Sprintf(
 		"🤖 **Implementation started** — session `%s`\n\n"+
@@ -34,6 +69,7 @@ func (o *Orchestrator) postSessionStarted(ctx context.Context, session *Session)
 }
 
 func (o *Orchestrator) postSessionCompleted(ctx context.Context, session *Session, result *Result) {
+	o.persistSessionCompleted(ctx, session, result)
 	var body string
 	if result.PRURL != "" {
 		filesNote := ""
@@ -59,6 +95,18 @@ func (o *Orchestrator) postSessionCompleted(ctx context.Context, session *Sessio
 	o.postIssueComment(ctx, session.Issue, body)
 }
 
+func (o *Orchestrator) postReviewIteration(ctx context.Context, session *Session, iteration int, verdict string) {
+	icon := "🔄"
+	if verdict == "APPROVE" || verdict == "COMMENT" {
+		icon = "✔️"
+	}
+	body := fmt.Sprintf(
+		"%s **Review iteration %d** — session `%s` — verdict: `%s`",
+		icon, iteration, session.ID, verdict,
+	)
+	o.postIssueComment(ctx, session.Issue, body)
+}
+
 func (o *Orchestrator) postSessionFailed(ctx context.Context, session *Session, errMsg string) {
 	body := fmt.Sprintf(
 		"❌ **Implementation failed** — session `%s`\n\n"+
@@ -70,14 +118,81 @@ func (o *Orchestrator) postSessionFailed(ctx context.Context, session *Session, 
 	o.postIssueComment(ctx, session.Issue, body)
 }
 
-func (o *Orchestrator) postReviewIteration(ctx context.Context, session *Session, iteration int, verdict string) {
-	icon := "🔄"
-	if verdict == "APPROVE" || verdict == "COMMENT" {
-		icon = "✔️"
+// getBaseSHA fetches the HEAD SHA for the repository's default base branch ("main").
+// Returns "" on error — callers treat empty SHA as "Check Run unavailable".
+func (o *Orchestrator) getBaseSHA(ctx context.Context, owner, repo string) string {
+	if o.ghClient == nil {
+		return ""
 	}
-	body := fmt.Sprintf(
-		"%s **Review iteration %d** — session `%s` — verdict: `%s`",
-		icon, iteration, session.ID, verdict,
-	)
-	o.postIssueComment(ctx, session.Issue, body)
+	b, err := o.ghClient.GetBranch(ctx, owner, repo, "main")
+	if err != nil {
+		o.logger.Warn("getBaseSHA: failed to fetch main branch SHA", "owner", owner, "repo", repo, "error", err)
+		return ""
+	}
+	return b.GetCommit().GetSHA()
+}
+
+// createCheckRun creates a GitHub Check Run and returns its ID (0 on failure).
+// The Check Run is associated with headSHA so it appears on the commit in GitHub UI.
+func (o *Orchestrator) createCheckRun(ctx context.Context, issue Issue, headSHA, summary string) int64 {
+	if o.ghClient == nil || headSHA == "" {
+		return 0
+	}
+	status := "in_progress"
+	startedAt := github.Timestamp{Time: time.Now()}
+	cr, err := o.ghClient.CreateCheckRun(ctx, issue.RepoOwner, issue.RepoName, github.CreateCheckRunOptions{
+		Name:      "code-warden: implementation",
+		HeadSHA:   headSHA,
+		Status:    &status,
+		StartedAt: &startedAt,
+		Output: &github.CheckRunOutput{
+			Title:   github.Ptr("Implementation in progress"),
+			Summary: github.Ptr(summary),
+		},
+	})
+	if err != nil {
+		o.logger.Warn("createCheckRun: failed", "issue", issue.Number, "error", err)
+		return 0
+	}
+	return cr.GetID()
+}
+
+// updateCheckRun edits the Check Run summary for in-progress updates.
+func (o *Orchestrator) updateCheckRun(ctx context.Context, issue Issue, checkRunID int64, summary string) {
+	if o.ghClient == nil || checkRunID == 0 {
+		return
+	}
+	status := "in_progress"
+	if _, err := o.ghClient.UpdateCheckRun(ctx, issue.RepoOwner, issue.RepoName, checkRunID, github.UpdateCheckRunOptions{
+		Name:   "code-warden: implementation",
+		Status: &status,
+		Output: &github.CheckRunOutput{
+			Title:   github.Ptr("Implementation in progress"),
+			Summary: github.Ptr(summary),
+		},
+	}); err != nil {
+		o.logger.Warn("updateCheckRun: failed", "check_run_id", checkRunID, "error", err)
+	}
+}
+
+// completeCheckRun marks the Check Run as completed with the given conclusion
+// ("success", "failure", "action_required").
+func (o *Orchestrator) completeCheckRun(ctx context.Context, issue Issue, checkRunID int64, conclusion, summary string) {
+	if o.ghClient == nil || checkRunID == 0 {
+		return
+	}
+	status := "completed"
+	completedAt := github.Timestamp{Time: time.Now()}
+	if _, err := o.ghClient.UpdateCheckRun(ctx, issue.RepoOwner, issue.RepoName, checkRunID, github.UpdateCheckRunOptions{
+		Name:        "code-warden: implementation",
+		Status:      &status,
+		Conclusion:  &conclusion,
+		CompletedAt: &completedAt,
+		Output: &github.CheckRunOutput{
+			Title:   github.Ptr("Implementation " + conclusion),
+			Summary: github.Ptr(summary),
+		},
+	}); err != nil {
+		o.logger.Warn("completeCheckRun: failed", "check_run_id", checkRunID, "conclusion", conclusion, "error", err)
+	}
 }

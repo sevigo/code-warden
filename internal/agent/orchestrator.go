@@ -45,6 +45,7 @@ type Orchestrator struct {
 	repo              *storage.Repository
 	ragService        rag.Service
 	llm               llms.Model // used by native in-process agent mode
+	store             storage.AgentSessionStore
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
@@ -97,6 +98,16 @@ type Config struct {
 
 	// OpenCodeURL is the URL of the OpenCode server (required when mode is "server").
 	OpenCodeURL string `yaml:"opencode_url"`
+
+	// InProcessOnly skips starting the MCP HTTP server when true.
+	// Set this when the agent runs exclusively in native in-process mode (warden/pi)
+	// so no external process ever calls the MCP HTTP endpoint. Avoids unnecessary
+	// port binding and listener goroutines.
+	InProcessOnly bool `yaml:"in_process_only"`
+
+	// BaseBranch is the target base branch for pull requests (default: "main").
+	// Set this to "master" or your repo's default branch if it differs.
+	BaseBranch string `yaml:"base_branch"`
 }
 
 // Constants for agent orchestration
@@ -178,6 +189,7 @@ func NewOrchestrator(
 		repoConfig:        repoConfig,
 		repo:              repo,
 		ragService:        ragService,
+		store:             store,
 		sessions:          make(map[string]*Session),
 		sessionsMu:        sync.RWMutex{},
 		done:              make(chan struct{}),
@@ -191,9 +203,19 @@ func NewOrchestrator(
 }
 
 // Start begins the MCP HTTP server. Must be called before agents can use tools.
+// In native in-process mode (InProcessOnly=true), the HTTP server is skipped
+// because tools are injected directly into the goframe registry and never called
+// over HTTP.
 func (o *Orchestrator) Start() error {
 	if !o.config.Enabled {
 		o.logger.Info("agent orchestrator is disabled, not starting MCP server")
+		return nil
+	}
+
+	if o.config.InProcessOnly {
+		o.logger.Info("agent orchestrator: in-process-only mode, skipping MCP HTTP server",
+			"mode", o.config.Mode)
+		go o.cleanupLoop()
 		return nil
 	}
 
@@ -343,6 +365,8 @@ type Result struct {
 	ReviewSummary string   `json:"review_summary"`
 	Verdict       string   `json:"verdict"`
 	Iterations    int      `json:"iterations"`
+	TokensInput   int64    `json:"tokens_input"`
+	TokensOutput  int64    `json:"tokens_output"`
 }
 
 // SpawnAgent creates a new agent session to implement an issue.
@@ -368,6 +392,9 @@ func (o *Orchestrator) SpawnAgent(ctx context.Context, issue Issue) (*Session, e
 	}
 	o.sessions[sessionID] = session
 	o.sessionsMu.Unlock()
+
+	// Persist the new session row so it's visible immediately.
+	o.persistSessionCreated(ctx, session)
 
 	// Create context with timeout
 	//nolint:gosec // G118: cancel stored in session for cleanup in runAgentCLI/runAgentSDK
@@ -477,6 +504,8 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		o.runAgentSDK(ctx, session, branch)
 	case "native":
 		o.runInProcessAgent(ctx, session, branch)
+	case "pi", "warden":
+		o.runWardenAgent(ctx, session, branch)
 	default:
 		// CLI mode: spawn external binary
 		o.logger.Info("🧭 EXPLORATION: Building agent context", "session_id", session.ID)

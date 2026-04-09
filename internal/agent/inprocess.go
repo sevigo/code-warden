@@ -12,6 +12,9 @@ import (
 	"github.com/sevigo/code-warden/internal/mcp/tools"
 )
 
+// loopBuilderFn constructs a goframe AgentLoop for a given session and workspace.
+type loopBuilderFn func(agentLLM llms.Model, session *Session, ws *agentWorkspace) (*goframeagent.AgentLoop, error)
+
 // runInProcessAgent executes the agent workflow using the native in-process
 // goframe AgentLoop — no external process or external LLM provider required.
 //
@@ -19,6 +22,13 @@ import (
 // ragService.GetLLM and used for the implementation loop.  Otherwise the review
 // LLM (o.llm) is used as fallback.
 func (o *Orchestrator) runInProcessAgent(ctx context.Context, session *Session, branch string) {
+	o.runNativeLoop(ctx, session, branch, "native in-process", o.buildNativeLoop)
+}
+
+// runNativeLoop is the shared driver for native and warden agent modes.
+// It prepares the workspace, invokes buildLoop to create the AgentLoop, runs
+// the task, and handles result/failure bookkeeping.
+func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, branch, label string, buildLoop loopBuilderFn) {
 	defer o.cleanupNativeSession(ctx, session)
 
 	agentLLM, err := o.resolveAgentLLM(ctx)
@@ -36,18 +46,21 @@ func (o *Orchestrator) runInProcessAgent(ctx context.Context, session *Session, 
 		return
 	}
 	defer ws.logFile.Close()
+	if ws.lsp != nil {
+		defer ws.lsp.Stop()
+	}
 	// Unregister from the per-session MCP workspace registry (different from
 	// globalMCPRegistry, which is handled in cleanupNativeSession).
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
-	o.logger.Info("🛠️ IMPLEMENTATION: Starting native in-process agent",
+	o.logger.Info("🛠️ IMPLEMENTATION: Starting "+label+" agent",
 		"session_id", session.ID,
 		"working_dir", ws.dir,
 		"timeout", o.config.Timeout,
 		"model", agentLLM,
 	)
 
-	loop, err := o.buildNativeLoop(agentLLM, session, ws)
+	loop, err := buildLoop(agentLLM, session, ws)
 	if err != nil {
 		o.failSession(ctx, session, err.Error())
 		return
@@ -67,9 +80,10 @@ func (o *Orchestrator) runInProcessAgent(ctx context.Context, session *Session, 
 	session.mu.Unlock()
 
 	if err != nil {
-		errMsg := fmt.Sprintf("native agent loop failed: %v", err)
-		o.logger.Error("runInProcessAgent: loop error",
+		errMsg := fmt.Sprintf("%s agent loop failed: %v", label, err)
+		o.logger.Error("runNativeLoop: loop error",
 			"session_id", session.ID,
+			"label", label,
 			"iterations", loopResult.Iterations,
 			"error", err)
 		o.failSession(ctx, session, errMsg)
@@ -95,8 +109,9 @@ func (o *Orchestrator) runInProcessAgent(ctx context.Context, session *Session, 
 	session.SetStatus(StatusCompleted)
 	o.postSessionCompleted(ctx, session, result)
 
-	o.logger.Info("runInProcessAgent: completed",
+	o.logger.Info("runNativeLoop: completed",
 		"session_id", session.ID,
+		"label", label,
 		"verdict", result.Verdict,
 		"iterations", result.Iterations,
 		"pr_url", result.PRURL,
@@ -145,10 +160,7 @@ func (o *Orchestrator) buildNativeLoop(agentLLM llms.Model, session *Session, ws
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
-	maxIter := o.config.MaxIterations * 10
-	if maxIter < 30 {
-		maxIter = 30
-	}
+	maxIter := max(o.config.MaxIterations*10, 30)
 
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildNativeSystemPrompt(session.Issue, ws.dir)),
@@ -175,6 +187,7 @@ func (o *Orchestrator) failSession(ctx context.Context, session *Session, errMsg
 	o.logger.Error("runInProcessAgent: "+errMsg, "session_id", session.ID)
 	session.SetStatus(StatusFailed)
 	session.SetError(errMsg)
+	o.persistSessionFailed(ctx, session, errMsg)
 	o.postSessionFailed(ctx, session, errMsg)
 }
 

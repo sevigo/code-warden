@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     -- Iteration tracking
     iterations      INTEGER DEFAULT 0,
     final_verdict   VARCHAR(50),
+
+    -- Token usage (input + output, summed across all loop phases)
+    tokens_input    BIGINT DEFAULT 0,
+    tokens_output   BIGINT DEFAULT 0,
     
     -- Session log (tool calls, responses, events)
     session_log     JSONB DEFAULT '[]'::jsonb

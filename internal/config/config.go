@@ -81,6 +81,15 @@ type AgentConfig struct {
 	// DefaultWorkspaceRepo is the full name of the default workspace repository (e.g., "owner/repo").
 	// Required when DefaultWorkspace is set.
 	DefaultWorkspaceRepo string `mapstructure:"default_workspace_repo"`
+
+	// InProcessOnly skips starting the MCP HTTP server.
+	// Set to true when mode is "warden" or "native" — tools are registered
+	// directly in the goframe registry and the HTTP endpoint is never used.
+	InProcessOnly bool `mapstructure:"in_process_only"`
+
+	// BaseBranch is the target base branch for pull requests (default: "main").
+	// Set this to "master" or your repo's default branch if it differs.
+	BaseBranch string `mapstructure:"base_branch"`
 }
 
 // GetTimeout parses and returns the timeout duration.
@@ -137,9 +146,9 @@ func (c *AgentConfig) Validate() error {
 		c.MaxConcurrentSessions = 3
 	}
 
-	// MCP address validation
-	if c.MCPAddr == "" {
-		return errors.New("agent.mcp_addr is required when agent is enabled")
+	// MCP address validation (not required in in-process-only mode)
+	if c.MCPAddr == "" && !c.InProcessOnly {
+		return errors.New("agent.mcp_addr is required when agent is enabled (or set in_process_only: true)")
 	}
 
 	// Default workspace validation
@@ -153,8 +162,15 @@ func (c *AgentConfig) Validate() error {
 
 // validateMode validates the agent mode and OpenCode URL if needed.
 func (c *AgentConfig) validateMode() error {
-	if c.Mode != "server" && c.Mode != "cli" {
-		return fmt.Errorf("agent.mode must be 'server' or 'cli', got: %s", c.Mode)
+	validModes := map[string]bool{
+		"server": true,
+		"cli":    true,
+		"native": true,
+		"pi":     true,
+		"warden": true,
+	}
+	if !validModes[c.Mode] {
+		return fmt.Errorf("agent.mode must be 'server', 'cli', 'native', 'pi', or 'warden', got: %s", c.Mode)
 	}
 
 	// Validate OpenCodeURL when mode is "server"

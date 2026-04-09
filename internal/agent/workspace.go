@@ -8,13 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/sevigo/code-warden/internal/agent/lsp"
 )
 
 // agentWorkspace holds the prepared workspace state for a session.
 type agentWorkspace struct {
-	dir     string
-	logPath string
-	logFile *os.File
+	dir       string
+	logPath   string
+	logFile   *os.File
+	traceFile *os.File     // JSONL conversation trace for post-mortem debugging (nil = not opened)
+	lsp       *lsp.Manager // nil when LSP is unavailable for this workspace
 }
 
 // prepareAgentWorkspace creates the workspace directory, clones the project,
@@ -67,10 +71,31 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}
 
+	// Open JSONL trace file for per-iteration conversation snapshots.
+	// Written by buildCompactionHook after every loop iteration.
+	// Non-fatal if creation fails — tracing is best-effort.
+	tracePath := filepath.Join(workspaceDir, "trace.jsonl")
+	traceFile, err := os.Create(tracePath)
+	if err != nil {
+		o.logger.Warn("failed to create trace file, tracing disabled", "error", err)
+		traceFile = nil
+	}
+
+	// Start LSP manager for the workspace languages. Errors are non-fatal:
+	// if gopls (or another server) isn't installed the agent falls back to
+	// the RAG-based search_code tools.
+	lspMgr := lsp.NewManager(workspaceDir, o.logger, lsp.DefaultServers()...)
+	if err := lspMgr.Start(ctx); err != nil {
+		o.logger.Warn("lsp: manager failed to start, continuing without LSP", "error", err)
+		lspMgr = nil
+	}
+
 	return &agentWorkspace{
-		dir:     workspaceDir,
-		logPath: logPath,
-		logFile: logFile,
+		dir:       workspaceDir,
+		logPath:   logPath,
+		logFile:   logFile,
+		traceFile: traceFile,
+		lsp:       lspMgr,
 	}, nil
 }
 
