@@ -345,6 +345,8 @@ type Result struct {
 	ReviewSummary string   `json:"review_summary"`
 	Verdict       string   `json:"verdict"`
 	Iterations    int      `json:"iterations"`
+	TokensInput   int64    `json:"tokens_input"`
+	TokensOutput  int64    `json:"tokens_output"`
 }
 
 // SpawnAgent creates a new agent session to implement an issue.

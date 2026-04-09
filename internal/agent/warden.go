@@ -18,7 +18,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +97,9 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		return
 	}
 	defer ws.logFile.Close()
+	if ws.traceFile != nil {
+		defer ws.traceFile.Close()
+	}
 	if ws.lsp != nil {
 		defer ws.lsp.Stop()
 	}
@@ -140,10 +145,31 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 
 	// ── Loop 1: Implement ────────────────────────────────────────────────────
 	tracker.setPhase("implementing")
+	implIter, implTokIn, implTokOut, verdict, ok := o.runImplementPhase(ctx, session, agentLLM, ws, branch, plan, tracker)
+	if !ok {
+		return
+	}
+
+	// ── Loop 2: Publish ──────────────────────────────────────────────────────
+	tracker.setPhase("publishing")
+	o.runPublishPhase(ctx, session, agentLLM, ws, branch, verdict, implIter, implTokIn, implTokOut, tracker)
+}
+
+// runImplementPhase builds and runs the implement loop. Returns the iteration
+// count, token usage, final verdict, and whether to continue to the publish phase.
+// Returns (0, 0, 0, "", false) and calls failSession on any error.
+func (o *Orchestrator) runImplementPhase(
+	ctx context.Context,
+	session *Session,
+	agentLLM llms.Model,
+	ws *agentWorkspace,
+	branch, plan string,
+	tracker *progressTracker,
+) (iterations int, tokensIn, tokensOut float64, verdict string, ok bool) {
 	implLoop, err := o.buildImplementLoop(agentLLM, session, ws, plan, tracker)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build implement loop: %v", err))
-		return
+		return 0, 0, 0, "", false
 	}
 
 	implTask := goframeagent.Task{
@@ -159,7 +185,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		o.logger.Error("warden: implement loop failed",
 			"session_id", session.ID, "iterations", implResult.Iterations, "error", implErr)
 		o.failSession(ctx, session, fmt.Sprintf("implement loop: %v", implErr))
-		return
+		return 0, 0, 0, "", false
 	}
 
 	o.logger.Info("warden: implement loop done",
@@ -169,23 +195,18 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		"tokens_out", implResult.Tokens.Output,
 	)
 
-	// Check verdict before proceeding to publish.
-	verdict, _, _ := o.mcpServer.GetReviewBySession(session.ID)
-	if verdict != "APPROVE" {
-		// Implementation finished without an approved review — surface as failure
-		// so the operator can inspect and the issue gets a comment.
+	v, _, _ := o.mcpServer.GetReviewBySession(session.ID)
+	if v != "APPROVE" {
 		msg := fmt.Sprintf(
 			"implement loop completed without APPROVE verdict (got %q) after %d iterations",
-			verdict, implResult.Iterations,
+			v, implResult.Iterations,
 		)
 		o.logger.Warn("warden: "+msg, "session_id", session.ID)
 		o.failSession(ctx, session, msg)
-		return
+		return 0, 0, 0, "", false
 	}
 
-	// ── Loop 2: Publish ──────────────────────────────────────────────────────
-	tracker.setPhase("publishing")
-	o.runPublishPhase(ctx, session, agentLLM, ws, branch, verdict, implResult.Iterations, tracker)
+	return implResult.Iterations, implResult.Tokens.Input, implResult.Tokens.Output, v, true
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -198,6 +219,7 @@ func (o *Orchestrator) runPublishPhase(
 	ws *agentWorkspace,
 	branch, verdict string,
 	implIterations int,
+	implTokensIn, implTokensOut float64,
 	tracker *progressTracker,
 ) {
 	pubLoop, err := o.buildPublishLoop(agentLLM, session, ws, branch, tracker)
@@ -228,9 +250,11 @@ func (o *Orchestrator) runPublishPhase(
 	}
 
 	result := &Result{
-		Branch:     branch,
-		Verdict:    verdict,
-		Iterations: implIterations + pubResult.Iterations,
+		Branch:       branch,
+		Verdict:      verdict,
+		Iterations:   implIterations + pubResult.Iterations,
+		TokensInput:  int64(implTokensIn + pubResult.Tokens.Input),
+		TokensOutput: int64(implTokensOut + pubResult.Tokens.Output),
 	}
 	if prInfo := extractPRInfo(pubResult.Response); prInfo != nil {
 		result.PRNumber = prInfo.PRNumber
@@ -294,7 +318,7 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, ws.lsp != nil && ws.lsp.Available(), plan)),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopGovernance(governance),
-		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session)),
+		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile)),
 	)
 }
 
@@ -404,6 +428,39 @@ const compactionThreshold = 0.70
 // the 70% threshold. Models support more, but we stay well within headroom.
 const compactionContextCeiling = 128_000
 
+// compactionExplorationTools is the set of tool names whose outputs are stripped
+// before the LLM summarisation step. These are read-only discovery calls —
+// large, noisy, and safe to discard because the agent can re-run them if needed.
+var compactionExplorationTools = map[string]bool{
+	"read_file":        true,
+	"list_dir":         true,
+	"search_code":      true,
+	"get_symbol":       true,
+	"get_structure":    true,
+	"get_arch_context": true,
+	"find_usages":      true,
+	"get_callers":      true,
+	"get_callees":      true,
+	"lsp_definition":   true,
+	"lsp_references":   true,
+	"lsp_hover":        true,
+}
+
+// compactionFilterText replaces the output of exploration tool calls with a
+// short placeholder. Write-side and verification tool outputs are passed through
+// unchanged. The heuristic is simple: if the text starts with a known tool
+// prefix (as JSON-serialised by goframe's tool-result formatting), strip it.
+func compactionFilterText(text string) string {
+	for name := range compactionExplorationTools {
+		// goframe formats tool results as: `tool_name: <JSON output>`
+		prefix := name + ":"
+		if strings.HasPrefix(text, prefix) {
+			return prefix + " [output omitted during compaction]"
+		}
+	}
+	return text
+}
+
 // buildCompactionHook returns a goframe WithLoopCompactionHook callback that
 // summarizes the conversation history when token usage exceeds 70% of the
 // conservative context ceiling. The system prompt (first message) and the most
@@ -412,8 +469,15 @@ const compactionContextCeiling = 128_000
 //
 // If the LLM call for summarization fails the hook returns nil, leaving the
 // history unchanged and letting the loop continue naturally.
-func (o *Orchestrator) buildCompactionHook(session *Session) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
 	return func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+		// Always write a trace snapshot for post-mortem debugging, regardless
+		// of whether compaction fires. This gives a per-iteration conversation
+		// dump that survives session completion.
+		if traceFile != nil {
+			writeTrace(traceFile, msgs, tokens)
+		}
+
 		used := tokens.Input + tokens.Output
 		threshold := float64(compactionContextCeiling) * compactionThreshold
 		if used < threshold {
@@ -427,14 +491,19 @@ func (o *Orchestrator) buildCompactionHook(session *Session) func(ctx context.Co
 			"messages", len(msgs),
 		)
 
-		// Build a plain-text transcript of the history (excluding system prompt)
-		// for the summarization prompt.
+		// Build a pre-filtered transcript for the summarization LLM.
+		// Exploration tool outputs (read_file, search_code, list_dir, etc.) are
+		// replaced with a one-line placeholder — they are pure discovery noise that
+		// the LLM would otherwise spend tokens summarizing inaccurately.
+		// Write-side results (write_file, edit_file, review_code, run_command) are
+		// preserved verbatim so the summary reliably reflects every code change.
 		var transcript strings.Builder
 		for _, m := range msgs[1:] {
 			role := string(m.Role)
 			for _, part := range m.Parts {
 				if p, ok := part.(schema.TextContent); ok {
-					fmt.Fprintf(&transcript, "[%s] %s\n\n", role, p.Text)
+					text := compactionFilterText(p.Text)
+					fmt.Fprintf(&transcript, "[%s] %s\n\n", role, text)
 				}
 			}
 		}
@@ -490,4 +559,30 @@ Do not include any preamble. Output only the summary text.
 		compacted = append(compacted, tail...)
 		return compacted
 	}
+}
+
+// writeTrace appends a JSONL snapshot of the current conversation to the trace
+// file. Each line is a JSON object: {tokens, message_count, messages}.
+// The file survives session completion and can be used for post-mortem debugging
+// or replaying the session from a specific iteration.
+// Errors are silently dropped — tracing is best-effort.
+func writeTrace(f *os.File, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) {
+	type traceEntry struct {
+		TokensIn  float64                 `json:"tokens_in"`
+		TokensOut float64                 `json:"tokens_out"`
+		MsgCount  int                     `json:"msg_count"`
+		Messages  []schema.MessageContent `json:"messages"`
+	}
+	entry := traceEntry{
+		TokensIn:  tokens.Input,
+		TokensOut: tokens.Output,
+		MsgCount:  len(msgs),
+		Messages:  msgs,
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	line = append(line, '\n')
+	_, _ = f.Write(line)
 }

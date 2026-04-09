@@ -28,9 +28,13 @@ type AgentSession struct {
 	TaskInputs json.RawMessage `db:"task_inputs"`
 	Result     json.RawMessage `db:"result"`
 
-	Error         sql.NullString `db:"error"`
-	Iterations    int            `db:"iterations"`
-	FinalVerdict  sql.NullString `db:"final_verdict"`
+	Error        sql.NullString `db:"error"`
+	Iterations   int            `db:"iterations"`
+	FinalVerdict sql.NullString `db:"final_verdict"`
+
+	// Token usage summed across all phases (plan + implement + publish).
+	TokensInput  int64 `db:"tokens_input"`
+	TokensOutput int64 `db:"tokens_output"`
 }
 
 // AgentSessionStore defines persistence operations for agent sessions.
@@ -75,7 +79,9 @@ UPDATE agent_sessions SET
   result         = :result,
   error          = :error,
   iterations     = :iterations,
-  final_verdict  = :final_verdict
+  final_verdict  = :final_verdict,
+  tokens_input   = :tokens_input,
+  tokens_output  = :tokens_output
 WHERE id = :id`
 
 	res, err := p.db.NamedExecContext(ctx, q, s)

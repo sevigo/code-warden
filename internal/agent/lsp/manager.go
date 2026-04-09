@@ -31,6 +31,12 @@ type Manager struct {
 	mu      sync.RWMutex
 	clients map[string]*Client // language name -> active client
 	logger  *slog.Logger
+
+	// openFiles tracks which absolute file paths have been DidOpen'd per client.
+	// The LSP protocol requires DidOpen before DidChange; skipping it is a
+	// protocol violation that most servers silently ignore but some reject.
+	openFilesMu sync.Mutex
+	openFiles   map[string]bool // absPath -> true
 }
 
 // NewManager creates a Manager for the given workspace directory.
@@ -44,6 +50,7 @@ func NewManager(workspace string, logger *slog.Logger, servers ...LanguageServer
 		workspace: workspace,
 		registry:  servers,
 		clients:   make(map[string]*Client),
+		openFiles: make(map[string]bool),
 		logger:    logger,
 	}
 }
@@ -112,9 +119,23 @@ func (m *Manager) NotifyChange(ctx context.Context, absPath, content string) ([]
 
 	langID := m.languageIDForFile(absPath)
 
-	// Notify the server. Try DidChange first; if the file was never opened, use DidOpen.
-	if err := c.DidChange(ctx, absPath, content); err != nil {
-		_ = c.DidOpen(ctx, absPath, langID, content)
+	// DidChange is a protocol violation if the file was never DidOpen'd.
+	// Track open state per file and always DidOpen first.
+	m.openFilesMu.Lock()
+	opened := m.openFiles[absPath]
+	if !opened {
+		m.openFiles[absPath] = true
+	}
+	m.openFilesMu.Unlock()
+
+	if !opened {
+		if err := c.DidOpen(ctx, absPath, langID, content); err != nil {
+			m.logger.Debug("lsp: DidOpen failed", "file", absPath, "error", err)
+		}
+	} else {
+		if err := c.DidChange(ctx, absPath, content); err != nil {
+			m.logger.Debug("lsp: DidChange failed", "file", absPath, "error", err)
+		}
 	}
 
 	// Give the server a moment to process.

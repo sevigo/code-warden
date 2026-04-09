@@ -18,12 +18,12 @@ type request struct {
 }
 
 type response struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      *int64          `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"` // for notifications
-	Result  jsonRaw         `json:"result,omitempty"`
-	Error   *responseError  `json:"error,omitempty"`
-	Params  jsonRaw         `json:"params,omitempty"` // for notifications
+	JSONRPC string         `json:"jsonrpc"`
+	ID      *int64         `json:"id,omitempty"`
+	Method  string         `json:"method,omitempty"` // for notifications
+	Result  jsonRaw        `json:"result,omitempty"`
+	Error   *responseError `json:"error,omitempty"`
+	Params  jsonRaw        `json:"params,omitempty"` // for notifications
 }
 
 type responseError struct {

@@ -25,13 +25,13 @@ import (
 // plannerAllowedMCPTools is the set of MCP tools available during planning.
 // All are read-only — no code changes, no publishing.
 var plannerAllowedMCPTools = map[string]bool{
-	"search_code":     true,
-	"get_symbol":      true,
-	"get_structure":   true,
+	"search_code":      true,
+	"get_symbol":       true,
+	"get_structure":    true,
 	"get_arch_context": true,
-	"find_usages":     true,
-	"get_callers":     true,
-	"get_callees":     true,
+	"find_usages":      true,
+	"get_callers":      true,
+	"get_callees":      true,
 }
 
 // buildPlan runs a short read-only agent loop to produce an implementation plan

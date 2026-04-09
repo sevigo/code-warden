@@ -119,7 +119,14 @@ func (pt *progressTracker) setPhase(phase string) {
 }
 
 // record logs a tool call. Called from progressTool.Execute after each tool runs.
+// The log write is performed inside the mutex so concurrent calls do not race
+// on the shared io.Writer.
 func (pt *progressTracker) record(tool string, success bool) {
+	status := "ok"
+	if !success {
+		status = "error"
+	}
+
 	pt.mu.Lock()
 	phase := pt.phase
 	entry := progressEntry{
@@ -129,14 +136,9 @@ func (pt *progressTracker) record(tool string, success bool) {
 		At:      time.Now(),
 	}
 	pt.entries = append(pt.entries, entry)
-	pt.mu.Unlock()
-
-	status := "ok"
-	if !success {
-		status = "error"
-	}
 	fmt.Fprintf(pt.logW, "[%s] [%s] TOOL %-25s %s\n",
 		entry.At.Format("15:04:05"), strings.ToUpper(phase), tool, status)
+	pt.mu.Unlock()
 }
 
 // maybePostComment creates or edits the GitHub status comment when new tool

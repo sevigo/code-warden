@@ -74,12 +74,14 @@ func (o *Orchestrator) persistSessionCompleted(ctx context.Context, session *Ses
 			Time:  time.Now(),
 			Valid: true,
 		},
-		Result: marshalJSON(result),
+		Result:     marshalJSON(result),
 		Iterations: result.Iterations,
 		FinalVerdict: sql.NullString{
 			String: result.Verdict,
 			Valid:  result.Verdict != "",
 		},
+		TokensInput:  result.TokensInput,
+		TokensOutput: result.TokensOutput,
 	}
 	if err := o.store.UpdateAgentSession(ctx, row); err != nil {
 		o.logger.Warn("persist: failed to update session to completed",

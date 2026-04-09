@@ -195,11 +195,14 @@ func resolveWorkspacePath(ctx context.Context, args map[string]any) (string, err
 }
 
 // formatDiagnostics converts []Diagnostic to a human-readable agent result.
+// ok is true unless at least one diagnostic has SeverityError — warnings,
+// hints, and info messages are surfaced but do not mark the file as broken.
 func formatDiagnostics(diags []Diagnostic) map[string]any {
 	if len(diags) == 0 {
 		return map[string]any{"ok": true, "count": 0, "diagnostics": []any{}}
 	}
 	items := make([]map[string]any, 0, len(diags))
+	hasErrors := false
 	for _, d := range diags {
 		items = append(items, map[string]any{
 			"severity": d.Severity.String(),
@@ -208,9 +211,12 @@ func formatDiagnostics(diags []Diagnostic) map[string]any {
 			"message":  d.Message,
 			"source":   d.Source,
 		})
+		if d.Severity == SeverityError {
+			hasErrors = true
+		}
 	}
 	return map[string]any{
-		"ok":          false,
+		"ok":          !hasErrors,
 		"count":       len(diags),
 		"diagnostics": items,
 	}
@@ -235,6 +241,8 @@ func formatLocations(workspace string, locs []Location) map[string]any {
 }
 
 // parseIntArg extracts an integer argument from the args map.
+// Note: a copy of this helper exists in the parent agent package. The lsp
+// sub-package cannot import agent (circular), so the duplication is intentional.
 func parseIntArg(args map[string]any, key string) int {
 	v, ok := args[key]
 	if !ok {

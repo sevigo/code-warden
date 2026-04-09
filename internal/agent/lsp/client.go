@@ -35,9 +35,10 @@ type Client struct {
 	diagMu  sync.RWMutex
 	diagMap map[string][]Diagnostic
 
-	nextID atomic.Int64
-	done   chan struct{}
-	wg     sync.WaitGroup
+	nextID      atomic.Int64
+	nextVersion atomic.Int32 // LSP document version; monotonically increasing per client
+	done        chan struct{}
+	wg          sync.WaitGroup
 }
 
 // newClient starts the given command as an LSP server and performs the
@@ -121,7 +122,7 @@ func (c *Client) DidChange(_ context.Context, absPath, content string) error {
 	return c.notify("textDocument/didChange", didChangeParams{
 		TextDocument: versionedTextDocumentIdentifier{
 			URI:     pathToURI(absPath),
-			Version: int(time.Now().UnixMilli()), // monotonically increasing
+			Version: int(c.nextVersion.Add(1)), // atomic counter, safe for rapid edits
 		},
 		ContentChanges: []textDocumentContentChangeEvent{{Text: content}},
 	})
