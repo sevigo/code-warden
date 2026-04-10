@@ -490,6 +490,18 @@ func (s *Server) GetReviewFilesBySession(sessionID string) []string {
 	return append([]string(nil), s.lastReviewResult.Files...)
 }
 
+// GetLastReviewFilesBySession returns the files from the review for the session
+// in ctx. Falls back to global state when no session ID is present.
+func (s *Server) GetLastReviewFilesBySession(ctx context.Context) []string {
+	sessionID := tools.SessionIDFromContext(ctx)
+	if sessionID != "" {
+		if files := s.GetReviewFilesBySession(sessionID); files != nil {
+			return files
+		}
+	}
+	return s.GetLastReviewFiles()
+}
+
 // ClearReviewBySession removes the review entry for a specific session, freeing
 // memory once an agent session has completed.
 func (s *Server) ClearReviewBySession(sessionID string) {

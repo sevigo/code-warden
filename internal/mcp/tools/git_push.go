@@ -130,14 +130,11 @@ func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot strin
 		return err
 	}
 
-	// Determine which files to stage
-	reviewedFiles := t.getReviewedFiles()
+	reviewedFiles := t.getReviewedFiles(ctx)
 	if reviewedFiles == nil {
-		// No review performed - stage all changes
 		return t.stageAllAndCommit(ctx, projectRoot)
 	}
 
-	// Review was performed - stage only reviewed files
 	return t.stageReviewedAndCommit(ctx, projectRoot, reviewedFiles)
 }
 
@@ -153,13 +150,12 @@ func (t *PushBranch) hasUncommittedChanges(ctx context.Context, projectRoot stri
 }
 
 // getReviewedFiles returns reviewed files from the tracker, or nil if no review was performed.
-func (t *PushBranch) getReviewedFiles() []string {
+// Uses session-scoped lookup when a session ID is available in ctx.
+func (t *PushBranch) getReviewedFiles(ctx context.Context) []string {
 	if t.ReviewTracker == nil {
 		return nil
 	}
-	files := t.ReviewTracker.GetLastReviewFiles()
-	// nil means no review, empty slice means review found no files
-	return files
+	return t.ReviewTracker.GetLastReviewFilesBySession(ctx)
 }
 
 // stageAllAndCommit stages all changes and creates a commit.

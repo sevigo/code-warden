@@ -36,4 +36,8 @@ type ReviewTracker interface {
 
 	// GetLastReviewFiles returns the files from the last review (global fallback).
 	GetLastReviewFiles() []string
+
+	// GetLastReviewFilesBySession returns the files from the review for the
+	// session in ctx. Falls back to global state when no session ID is present.
+	GetLastReviewFilesBySession(ctx context.Context) []string
 }

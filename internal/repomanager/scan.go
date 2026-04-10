@@ -39,9 +39,13 @@ func (m *manager) scanLocalRepo(
 		}
 	}
 
-	headSHA, err := currentHeadSHA(gitRepo)
+	// Re-read HEAD SHA after the merge. We cannot use the go-git Repository
+	// object opened above because it holds an in-memory cache of refs that is
+	// not updated by CLI git commands (fetch + merge). Use the CLI instead so
+	// we always read the true post-merge HEAD.
+	headSHA, err := m.gitClient.GetHeadSHA(ctx, repoPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read HEAD SHA: %w", err)
 	}
 
 	if repoFullName == "" {
@@ -154,12 +158,4 @@ func (m *manager) ensureRepoRecord(ctx context.Context, fullName, clonePath stri
 		}
 	}
 	return nil
-}
-
-func currentHeadSHA(r *git.Repository) (string, error) {
-	h, err := r.Head()
-	if err != nil {
-		return "", fmt.Errorf("git HEAD: %w", err)
-	}
-	return h.Hash().String(), nil
 }
