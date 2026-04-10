@@ -78,6 +78,50 @@ func stripTrailingWhitespace(text string) string {
 	return strings.Join(lines, "\n")
 }
 
+// bomUTF8 is the UTF-8 byte-order mark.
+const bomUTF8 = "\xEF\xBB\xBF"
+
+// stripBOM removes a leading UTF-8 BOM from content.
+// Returns the stripped content and whether a BOM was found.
+func stripBOM(content string) (string, bool) {
+	if strings.HasPrefix(content, bomUTF8) {
+		return content[len(bomUTF8):], true
+	}
+	return content, false
+}
+
+// prependBOM adds a UTF-8 BOM to content if hasBOM is true.
+func prependBOM(content string, hasBOM bool) string {
+	if hasBOM {
+		return bomUTF8 + content
+	}
+	return content
+}
+
+// detectLineEnding returns the dominant line ending in content.
+// Checks the first line only for efficiency (mirrors Pi's approach).
+func detectLineEnding(content string) string {
+	idx := strings.Index(content, "\n")
+	if idx > 0 && content[idx-1] == '\r' {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+// normalizeLineEndings converts all CRLF sequences to LF.
+func normalizeLineEndings(content string) string {
+	return strings.ReplaceAll(content, "\r\n", "\n")
+}
+
+// restoreLineEndings converts LF to the detected line ending.
+// Only performs replacement if lineEnding is CRLF.
+func restoreLineEndings(content, lineEnding string) string {
+	if lineEnding == "\r\n" {
+		return strings.ReplaceAll(content, "\n", "\r\n")
+	}
+	return content
+}
+
 // fuzzyFindResult holds the result of a fuzzy text search.
 type fuzzyFindResult struct {
 	found                 bool

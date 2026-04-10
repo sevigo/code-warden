@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -294,4 +295,145 @@ func TestApplyMultiEdit_FuzzyOneEditMissedOtherExact(t *testing.T) {
 	assert.True(t, fuzzy)
 	assert.Contains(t, result, "A = 10")
 	assert.Contains(t, result, "B = 20")
+}
+
+// ── Line ending and BOM handling ───────────────────────────────────────────
+
+func TestDetectLineEnding_CRLF(t *testing.T) {
+	content := "line1\r\nline2\r\n"
+	assert.Equal(t, "\r\n", detectLineEnding(content))
+}
+
+func TestDetectLineEnding_LF(t *testing.T) {
+	content := "line1\nline2\n"
+	assert.Equal(t, "\n", detectLineEnding(content))
+}
+
+func TestDetectLineEnding_LFOnly(t *testing.T) {
+	assert.Equal(t, "\n", detectLineEnding("single line"))
+}
+
+func TestNormalizeLineEndings(t *testing.T) {
+	input := "a\r\nb\r\nc\n"
+	want := "a\nb\nc\n"
+	assert.Equal(t, want, normalizeLineEndings(input))
+}
+
+func TestRestoreLineEndings_CRLF(t *testing.T) {
+	input := "a\nb\nc\n"
+	want := "a\r\nb\r\nc\r\n"
+	assert.Equal(t, want, restoreLineEndings(input, "\r\n"))
+}
+
+func TestRestoreLineEndings_LF(t *testing.T) {
+	input := "a\nb\nc\n"
+	assert.Equal(t, input, restoreLineEndings(input, "\n"))
+}
+
+func TestStripBOM_WithBOM(t *testing.T) {
+	content := "\xEF\xBB\xBFpackage main\n"
+	stripped, hasBOM := stripBOM(content)
+	assert.True(t, hasBOM)
+	assert.Equal(t, "package main\n", stripped)
+}
+
+func TestStripBOM_NoBOM(t *testing.T) {
+	content := "package main\n"
+	stripped, hasBOM := stripBOM(content)
+	assert.False(t, hasBOM)
+	assert.Equal(t, content, stripped)
+}
+
+func TestPrependBOM(t *testing.T) {
+	content := "hello\n"
+	assert.Equal(t, "\xEF\xBB\xBFhello\n", prependBOM(content, true))
+	assert.Equal(t, content, prependBOM(content, false))
+}
+
+func TestApplyEdit_CRLFFile_LFQuery(t *testing.T) {
+	// Simulate a file with CRLF line endings where the LLM sends LF-only old_string.
+	fileContent := "func hello() {\r\n\treturn true\r\n}\r\n"
+	llmOldStr := "func hello() {\n\treturn true\n}\n"
+	llmNewStr := "func hello() {\n\treturn false\n}\n"
+
+	// Pre-process as editFileTool would.
+	working, _ := stripBOM(fileContent)
+	lineEnding := detectLineEnding(working)
+	working = normalizeLineEndings(working)
+
+	normalizedOld := normalizeLineEndings(llmOldStr)
+	normalizedNew := normalizeLineEndings(llmNewStr)
+
+	result, fuzzy, err := applyEdit(working, normalizedOld, normalizedNew)
+	assert.NoError(t, err)
+	assert.False(t, fuzzy, "should match exactly after CRLF normalization")
+
+	result = restoreLineEndings(result, lineEnding)
+	assert.Contains(t, result, "return false")
+	assert.Contains(t, result, "\r\n", "CRLF must be preserved in output")
+	assert.NotContains(t, result, "return true")
+}
+
+func TestApplyEdit_BOMFile(t *testing.T) {
+	// Simulate a file with a UTF-8 BOM prefix.
+	fileContent := "\xEF\xBB\xBFpackage main\n\nfunc main() {}\n"
+	llmOldStr := "func main() {}\n"
+	llmNewStr := "func main() { fmt.Println(\"hi\") }\n"
+
+	working, hasBOM := stripBOM(fileContent)
+	assert.True(t, hasBOM)
+
+	result, fuzzy, err := applyEdit(working, llmOldStr, llmNewStr)
+	assert.NoError(t, err)
+	assert.False(t, fuzzy)
+
+	result = prependBOM(result, hasBOM)
+	assert.True(t, strings.HasPrefix(result, "\xEF\xBB\xBF"), "BOM must be preserved in output")
+	assert.Contains(t, result, "fmt.Println")
+}
+
+func TestApplyMultiEdit_CRLFFile(t *testing.T) {
+	// Multi-edit on CRLF file — both edits must succeed and CRLF must be restored.
+	fileContent := "const A = 1\r\nconst B = 2\r\nconst C = 3\r\n"
+
+	working, _ := stripBOM(fileContent)
+	lineEnding := detectLineEnding(working)
+	working = normalizeLineEndings(working)
+
+	pairs := []editPair{
+		{OldStr: "A = 1", NewStr: "A = 10"},
+		{OldStr: "C = 3", NewStr: "C = 30"},
+	}
+
+	result, _, err := applyMultiEdit(working, pairs)
+	assert.NoError(t, err)
+
+	result = restoreLineEndings(result, lineEnding)
+	assert.Contains(t, result, "A = 10")
+	assert.Contains(t, result, "C = 30")
+	assert.Contains(t, result, "\r\n", "CRLF must be preserved")
+}
+
+func TestApplyEdit_BOMFile_CRLFFile(t *testing.T) {
+	// Both BOM and CRLF in the same file.
+	fileContent := "\xEF\xBB\xBFvar x = 1\r\nvar y = 2\r\n"
+	llmOldStr := "var y = 2\n"
+	llmNewStr := "var y = 20\n"
+
+	working, hasBOM := stripBOM(fileContent)
+	lineEnding := detectLineEnding(working)
+	working = normalizeLineEndings(working)
+
+	normalizedOld := normalizeLineEndings(llmOldStr)
+	normalizedNew := normalizeLineEndings(llmNewStr)
+
+	result, fuzzy, err := applyEdit(working, normalizedOld, normalizedNew)
+	assert.NoError(t, err)
+	assert.False(t, fuzzy)
+
+	result = restoreLineEndings(result, lineEnding)
+	result = prependBOM(result, hasBOM)
+
+	assert.True(t, strings.HasPrefix(result, "\xEF\xBB\xBF"), "BOM preserved")
+	assert.Contains(t, result, "var y = 20\r\n", "CRLF preserved and content replaced")
 }
