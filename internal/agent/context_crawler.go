@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,11 @@ func crawlProjectContext(workspaceDir string) string {
 				continue
 			}
 			content, err := readMarkdownFile(filepath.Join(skillsDir, entry.Name()))
-			if err != nil || content == "" {
+			if err != nil {
+				slog.Warn("context_crawler: failed to read skill file", "path", filepath.Join(skillsDir, entry.Name()), "error", err)
+				continue
+			}
+			if content == "" {
 				continue
 			}
 			name := strings.TrimSuffix(entry.Name(), ".md")

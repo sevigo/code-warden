@@ -57,12 +57,12 @@ func (c *queryCache) set(collection, query string, numDocs int, docs []schema.Do
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if len(c.entries) >= c.maxSize {
+	if _, exists := c.entries[k]; !exists && len(c.entries) >= c.maxSize {
 		var oldestKey string
 		oldestAt := time.Time{}
-		for k, e := range c.entries {
+		for ek, e := range c.entries {
 			if e.expiresAt.Before(oldestAt) || oldestAt.IsZero() {
-				oldestKey = k
+				oldestKey = ek
 				oldestAt = e.expiresAt
 			}
 		}

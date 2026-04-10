@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"strings"
-	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -78,9 +77,7 @@ func normalizeForFuzzyMatch(text string) string {
 func stripTrailingWhitespace(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		lines[i] = strings.TrimRightFunc(line, func(r rune) bool {
-			return unicode.IsSpace(r) && r != '\n' && r != '\r'
-		})
+		lines[i] = strings.TrimRight(line, " \t\r")
 	}
 	return strings.Join(lines, "\n")
 }

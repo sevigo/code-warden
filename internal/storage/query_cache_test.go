@@ -127,3 +127,30 @@ func TestQueryCacheEviction(t *testing.T) {
 		t.Fatalf("expected at most 3 entries, got %d", count)
 	}
 }
+
+func TestQueryCacheOverwriteNoEviction(t *testing.T) {
+	c := newQueryCache(5*time.Minute, 3)
+	docs := []schema.Document{{PageContent: "v1"}}
+	c.set("col", "q1", 1, docs)
+	c.set("col", "q2", 1, docs)
+	c.set("col", "q3", 1, docs)
+
+	if len(c.entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(c.entries))
+	}
+
+	c.set("col", "q1", 1, []schema.Document{{PageContent: "v2"}})
+
+	c.mu.RLock()
+	count := len(c.entries)
+	c.mu.RUnlock()
+
+	if count != 3 {
+		t.Fatalf("overwrite should not trigger eviction, expected 3 entries, got %d", count)
+	}
+
+	got, ok := c.get("col", "q1", 1)
+	if !ok || got[0].PageContent != "v2" {
+		t.Fatal("overwritten entry should have new value")
+	}
+}

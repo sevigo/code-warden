@@ -78,6 +78,15 @@ func TestNormalizeForFuzzyMatch_TrailingWhitespace(t *testing.T) {
 	}
 }
 
+func TestStripTrailingWhitespace_CRLF(t *testing.T) {
+	input := "var x string   \r\nvar y int\t\r\nend\r\n"
+	want := "var x string\nvar y int\nend\n"
+	got := stripTrailingWhitespace(input)
+	if got != want {
+		t.Errorf("stripTrailingWhitespace(CRLF) = %q, want %q", got, want)
+	}
+}
+
 func TestApplyEdit_ExactMatch(t *testing.T) {
 	content := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
 	result, fuzzy, err := applyEdit(content, "println(\"hello\")", "println(\"world\")")
