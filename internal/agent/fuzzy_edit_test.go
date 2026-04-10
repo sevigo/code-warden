@@ -1,8 +1,9 @@
 package agent
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNormalizeForFuzzyMatch_SmartQuotes(t *testing.T) {
@@ -99,15 +100,9 @@ func TestNormalizeForFuzzyMatch_AllSpecialSpaces(t *testing.T) {
 func TestApplyEdit_ExactMatch(t *testing.T) {
 	content := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
 	result, fuzzy, err := applyEdit(content, "println(\"hello\")", "println(\"world\")")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fuzzy {
-		t.Error("should not use fuzzy for exact match")
-	}
-	if !strings.Contains(result, "println(\"world\")") {
-		t.Errorf("expected replacement, got: %s", result)
-	}
+	assert.NoError(t, err)
+	assert.False(t, fuzzy, "should not use fuzzy for exact match")
+	assert.Contains(t, result, "println(\"world\")", "expected replacement")
 }
 
 func TestApplyEdit_FuzzyMatch_TrailingSpaces(t *testing.T) {
@@ -117,15 +112,9 @@ func TestApplyEdit_FuzzyMatch_TrailingSpaces(t *testing.T) {
 	newText := "if x == 2\n    return true\n"
 
 	result, fuzzy, err := applyEdit(content, oldText, newText)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !fuzzy {
-		t.Error("expected fuzzy match for trailing whitespace difference")
-	}
-	if !strings.Contains(result, "if x == 2") {
-		t.Errorf("expected replacement, got: %s", result)
-	}
+	assert.NoError(t, err)
+	assert.True(t, fuzzy, "expected fuzzy match for trailing whitespace difference")
+	assert.Contains(t, result, "if x == 2", "expected replacement")
 }
 
 func TestApplyEdit_FuzzyMatch_SmartQuotes(t *testing.T) {
@@ -135,34 +124,24 @@ func TestApplyEdit_FuzzyMatch_SmartQuotes(t *testing.T) {
 	newText := "msg := \u201Cgoodbye world\u201D\n"
 
 	result, fuzzy, err := applyEdit(content, oldText, newText)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !fuzzy {
-		t.Error("expected fuzzy match for smart quote difference")
-	}
+	assert.NoError(t, err)
+	assert.True(t, fuzzy, "expected fuzzy match for smart quote difference")
 	// In fuzzy mode, the result is in normalized space
-	if !strings.Contains(result, "goodbye") {
-		t.Errorf("expected replacement, got: %s", result)
-	}
+	assert.Contains(t, result, "goodbye", "expected replacement")
 }
 
 func TestApplyEdit_NoMatch(t *testing.T) {
 	content := "package main\n"
 	_, _, err := applyEdit(content, "nonexistent", "replacement")
-	if err == nil {
-		t.Error("expected error for no match")
-	}
+	assert.Error(t, err, "expected error for no match")
 }
 
 func TestApplyEdit_MultipleExactMatches(t *testing.T) {
 	content := "x\nx\n"
 	_, _, err := applyEdit(content, "x", "y")
-	if err == nil {
-		t.Error("expected error for multiple matches")
-	}
-	if !strings.Contains(err.Error(), "2 times") {
-		t.Errorf("expected '2 times' in error, got: %v", err)
+	assert.Error(t, err, "expected error for multiple matches")
+	if err != nil {
+		assert.ErrorContains(t, err, "2 times", "expected '2 times' in error")
 	}
 }
 
@@ -170,11 +149,9 @@ func TestApplyEdit_MultipleFuzzyMatches(t *testing.T) {
 	content := "  x  \n  x  \n" // trailing spaces on both lines
 	oldText := "x\n"            // without trailing spaces
 	_, _, err := applyEdit(content, oldText, "y")
-	if err == nil {
-		t.Error("expected error for multiple fuzzy matches")
-	}
-	if !strings.Contains(err.Error(), "2 times") {
-		t.Errorf("expected '2 times' in error, got: %v", err)
+	assert.Error(t, err, "expected error for multiple fuzzy matches")
+	if err != nil {
+		assert.ErrorContains(t, err, "2 times", "expected '2 times' in error")
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSpawnAgent(t *testing.T) {
@@ -169,7 +171,5 @@ func TestReadLogFile_Capping(t *testing.T) {
 	}
 
 	// Verify it contains the end of the sentinel which was at the end of the file
-	if !strings.Contains(string(got), "AGENT_RESULT:") {
-		t.Errorf("readLogFile() failed to capture trailing sentinel. Content: %s", string(got))
-	}
+	assert.Contains(t, string(got), "AGENT_RESULT:", "readLogFile() failed to capture trailing sentinel")
 }
