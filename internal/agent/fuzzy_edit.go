@@ -50,26 +50,22 @@ func normalizeForFuzzyMatch(text string) string {
 	).Replace(result)
 
 	// Special spaces → regular space
-	specialSpaces := []struct{ from, to string }{
-		{"\u00A0", " "}, // NO-BREAK SPACE
-		{"\u2002", " "}, // EN SPACE
-		{"\u2003", " "}, // EM SPACE
-		{"\u2004", " "}, // THREE-PER-EM SPACE
-		{"\u2005", " "}, // FOUR-PER-EM SPACE
-		{"\u2006", " "}, // SIX-PER-EM SPACE
-		{"\u2007", " "}, // FIGURE SPACE
-		{"\u2008", " "}, // PUNCTUATION SPACE
-		{"\u2009", " "}, // THIN SPACE
-		{"\u200A", " "}, // HAIR SPACE
-		{"\u202F", " "}, // NARROW NO-BREAK SPACE
-		{"\u205F", " "}, // MEDIUM MATHEMATICAL SPACE
-		{"\u3000", " "}, // IDEOGRAPHIC SPACE
-	}
-	r := strings.NewReplacer()
-	for _, sp := range specialSpaces {
-		r = strings.NewReplacer(sp.from, sp.to)
-	}
-	result = r.Replace(result)
+	specialSpaceReplacer := strings.NewReplacer(
+		"\u00A0", " ", // NO-BREAK SPACE
+		"\u2002", " ", // EN SPACE
+		"\u2003", " ", // EM SPACE
+		"\u2004", " ", // THREE-PER-EM SPACE
+		"\u2005", " ", // FOUR-PER-EM SPACE
+		"\u2006", " ", // SIX-PER-EM SPACE
+		"\u2007", " ", // FIGURE SPACE
+		"\u2008", " ", // PUNCTUATION SPACE
+		"\u2009", " ", // THIN SPACE
+		"\u200A", " ", // HAIR SPACE
+		"\u202F", " ", // NARROW NO-BREAK SPACE
+		"\u205F", " ", // MEDIUM MATHEMATICAL SPACE
+		"\u3000", " ", // IDEOGRAPHIC SPACE
+	)
+	result = specialSpaceReplacer.Replace(result)
 
 	return result
 }
@@ -127,7 +123,12 @@ func fuzzyFindText(content, oldText string) fuzzyFindResult {
 // applyEdit performs a text replacement using exact-then-fuzzy matching.
 // It first tries an exact match; if that fails (not found or ambiguous),
 // it falls back to fuzzy matching with Unicode normalization.
-// Returns the new content, whether fuzzy matching was used, and any error.
+//
+// WARNING: When fuzzy matching is used, the returned content is the
+// NFKC-normalized form of the entire file. This means characters outside
+// the edited region (smart quotes, ligatures, special spaces) will be
+// converted to their ASCII equivalents. This is an acceptable trade-off
+// for code files but may alter non-code content.
 func applyEdit(content, oldText, newText string) (result string, usedFuzzy bool, err error) {
 	count := strings.Count(content, oldText)
 	if count == 1 {

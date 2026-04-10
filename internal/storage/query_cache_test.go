@@ -98,6 +98,21 @@ func TestQueryCacheInvalidate(t *testing.T) {
 	}
 }
 
+func TestQueryCacheInvalidate_NoPrefixCollision(t *testing.T) {
+	c := newQueryCache(5*time.Minute, 100)
+	c.set("myrepo", "q1", 5, []schema.Document{{PageContent: "a"}})
+	c.set("myrepo-extra", "q1", 5, []schema.Document{{PageContent: "b"}})
+
+	c.invalidate("myrepo")
+
+	if _, ok := c.get("myrepo", "q1", 5); ok {
+		t.Fatal("myrepo/q1 should be invalidated")
+	}
+	if _, ok := c.get("myrepo-extra", "q1", 5); !ok {
+		t.Fatal("myrepo-extra/q1 should still exist — prefix collision bug")
+	}
+}
+
 func TestQueryCacheClear(t *testing.T) {
 	c := newQueryCache(5*time.Minute, 100)
 	c.set("col1", "q1", 5, []schema.Document{{PageContent: "a"}})

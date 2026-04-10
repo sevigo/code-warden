@@ -87,6 +87,15 @@ func TestStripTrailingWhitespace_CRLF(t *testing.T) {
 	}
 }
 
+func TestNormalizeForFuzzyMatch_AllSpecialSpaces(t *testing.T) {
+	input := "a\u00A0b\u2002c\u2003d\u2004e\u2005f\u2006g\u2007h\u2008i\u2009j\u200Ak\u202Fl\u205Fm\u3000n"
+	want := "a b c d e f g h i j k l m n"
+	got := normalizeForFuzzyMatch(input)
+	if got != want {
+		t.Errorf("only last space replaced; got %q, want %q", got, want)
+	}
+}
+
 func TestApplyEdit_ExactMatch(t *testing.T) {
 	content := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
 	result, fuzzy, err := applyEdit(content, "println(\"hello\")", "println(\"world\")")

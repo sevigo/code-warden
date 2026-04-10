@@ -3,6 +3,7 @@ package storage
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,8 +78,9 @@ func (c *queryCache) set(collection, query string, numDocs int, docs []schema.Do
 func (c *queryCache) invalidate(collection string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	prefix := collection + "|"
 	for k := range c.entries {
-		if len(k) >= len(collection) && k[:len(collection)] == collection {
+		if strings.HasPrefix(k, prefix) {
 			delete(c.entries, k)
 		}
 	}
