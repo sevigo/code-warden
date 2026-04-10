@@ -449,6 +449,10 @@ const compactionThreshold = 0.70
 // the 70% threshold. Models support more, but we stay well within headroom.
 const compactionContextCeiling = 128_000
 
+// compactionSummaryMarker prefixes compaction summary messages so we can detect
+// them on subsequent compactions and use the iterative update prompt.
+const compactionSummaryMarker = "## Context Summary (earlier conversation compacted)\n\n"
+
 // compactionExplorationTools is the set of tool names whose outputs are stripped
 // before the LLM summarisation step. These are read-only discovery calls —
 // large, noisy, and safe to discard because the agent can re-run them if needed.
@@ -464,12 +468,76 @@ var compactionExplorationTools = map[string]bool{
 	"get_callees":      true,
 }
 
+// compactionUpdatePrompt is used when a previous compaction summary already exists.
+// It takes the old summary + recent messages and produces an updated summary.
+const compactionUpdatePrompt = `You are updating a coding agent's context summary.
+
+An earlier summary of the conversation exists below. New messages have been
+added since that summary. Produce an UPDATED summary (max 400 words) that
+merges the old summary with the new information.
+
+Preserve from the old summary:
+- Which files were read and what was found
+- Which files were edited and what changes were made
+- Results of lint/test runs (pass/fail, key errors)
+- Review verdicts (APPROVE/REQUEST_CHANGES)
+- Outstanding issues or next steps
+
+Update with new information:
+- Any new files read or edited since the summary
+- New test/lint results
+- New review verdicts
+- Current progress on the task
+
+Do not include any preamble. Output only the updated summary text.
+
+--- OLD SUMMARY ---
+%s
+
+--- NEW MESSAGES ---
+%s`
+
+// compactionFreshPrompt is used when there is no previous summary.
+const compactionFreshPrompt = `You are summarizing a coding agent's conversation history to save context space.
+
+Below is the conversation so far (excluding the system prompt). Produce a concise
+summary (max 400 words) that preserves:
+- Which files were read and what was found
+- Which files were edited and what changes were made
+- Results of lint / test runs (pass/fail, key errors)
+- Any review_code verdicts received
+- Outstanding issues or next steps the agent was working on
+
+Do not include any preamble. Output only the summary text.
+
+--- CONVERSATION ---
+%s`
+
 // compactionMaxOutputLen is the maximum length of any single tool result or
 // assistant message that gets included in the compaction transcript. Anything
 // beyond this is truncated with a marker. This mirrors Pi's approach of
 // truncating tool results to ~2000 chars during summarization to prevent
 // large search_code or read_file outputs from overflowing the summary context.
 const compactionMaxOutputLen = 2000
+
+// extractPreviousSummary scans messages for an existing compaction summary and
+// returns it along with only the messages that came after it. If no previous
+// summary exists, it returns all messages after the system prompt.
+func extractPreviousSummary(msgs []schema.MessageContent) (previousSummary string, newMsgs []schema.MessageContent) {
+	for _, m := range msgs[1:] {
+		for _, part := range m.Parts {
+			if p, ok := part.(schema.TextContent); ok {
+				if strings.HasPrefix(p.Text, compactionSummaryMarker) && string(m.Role) == "human" {
+					previousSummary = strings.TrimPrefix(p.Text, compactionSummaryMarker)
+					newMsgs = nil
+					continue
+				}
+			}
+		}
+		newMsgs = append(newMsgs, m)
+	}
+	return previousSummary, newMsgs
+}
 
 // compactionFilterText replaces the output of exploration tool calls with a
 // short placeholder and truncates large tool outputs to fit within the
@@ -498,9 +566,6 @@ func compactionFilterText(text string) string {
 // history unchanged and letting the loop continue naturally.
 func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File, llm llms.Model) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
 	return func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
-		// Always write a trace snapshot for post-mortem debugging, regardless
-		// of whether compaction fires. This gives a per-iteration conversation
-		// dump that survives session completion.
 		if traceFile != nil {
 			writeTrace(traceFile, msgs, tokens)
 		}
@@ -508,7 +573,7 @@ func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File,
 		used := tokens.Input + tokens.Output
 		threshold := float64(compactionContextCeiling) * compactionThreshold
 		if used < threshold {
-			return nil // still plenty of room
+			return nil
 		}
 
 		o.logger.Info("warden: context approaching limit, compacting",
@@ -518,68 +583,65 @@ func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File,
 			"messages", len(msgs),
 		)
 
-		// Build a pre-filtered transcript for the summarization LLM.
-		// Exploration tool outputs (read_file, search_code, list_dir, etc.) are
-		// replaced with a one-line placeholder — they are pure discovery noise that
-		// the LLM would otherwise spend tokens summarizing inaccurately.
-		// Write-side results (write_file, edit_file, review_code, run_command) are
-		// preserved verbatim so the summary reliably reflects every code change.
-		var transcript strings.Builder
-		for _, m := range msgs[1:] {
-			role := string(m.Role)
-			for _, part := range m.Parts {
-				if p, ok := part.(schema.TextContent); ok {
-					text := compactionFilterText(p.Text)
-					fmt.Fprintf(&transcript, "[%s] %s\n\n", role, text)
-				}
-			}
-		}
-
-		summaryPrompt := fmt.Sprintf(`You are summarizing a coding agent's conversation history to save context space.
-
-Below is the conversation so far (excluding the system prompt). Produce a concise
-summary (max 400 words) that preserves:
-- Which files were read and what was found
-- Which files were edited and what changes were made
-- Results of lint / test runs (pass/fail, key errors)
-- Any review_code verdicts received
-- Outstanding issues or next steps the agent was working on
-
-Do not include any preamble. Output only the summary text.
-
---- CONVERSATION ---
-%s`, transcript.String())
-
-		resp, err := llm.GenerateContent(ctx,
-			[]schema.MessageContent{schema.NewHumanMessage(summaryPrompt)},
-		)
-		if err != nil || len(resp.Choices) == 0 {
-			o.logger.Warn("warden: compaction: LLM summarization failed, skipping", "error", err)
+		summary, err := o.compactMessages(ctx, llm, msgs)
+		if err != nil {
+			o.logger.Warn("warden: compaction failed, skipping", "error", err)
 			return nil
 		}
 
-		summary := resp.Choices[0].Content
 		o.logger.Info("warden: context compacted",
 			"session_id", session.ID,
 			"summary_len", len(summary),
 			"original_messages", len(msgs),
 		)
 
-		// Rebuild: system prompt + compacted summary + last 8 messages (tool results
-		// from the current iteration so the model has immediate context).
 		tail := msgs
 		if len(msgs) > 9 {
 			tail = msgs[len(msgs)-8:]
 		}
 
 		compacted := make([]schema.MessageContent, 0, 2+len(tail))
-		compacted = append(compacted, msgs[0]) // system prompt
+		compacted = append(compacted, msgs[0])
 		compacted = append(compacted,
-			schema.NewHumanMessage("## Context Summary (earlier conversation compacted)\n\n"+summary),
+			schema.NewHumanMessage(compactionSummaryMarker+summary),
 		)
 		compacted = append(compacted, tail...)
 		return compacted
 	}
+}
+
+// compactMessages produces a conversation summary using iterative compaction.
+// If a previous summary exists in the messages, it updates it rather than
+// summarizing from scratch — more efficient and preserves continuity.
+func (o *Orchestrator) compactMessages(ctx context.Context, llm llms.Model, msgs []schema.MessageContent) (string, error) {
+	previousSummary, newMsgs := extractPreviousSummary(msgs)
+
+	var transcript strings.Builder
+	for _, m := range newMsgs {
+		role := string(m.Role)
+		for _, part := range m.Parts {
+			if p, ok := part.(schema.TextContent); ok {
+				text := compactionFilterText(p.Text)
+				fmt.Fprintf(&transcript, "[%s] %s\n\n", role, text)
+			}
+		}
+	}
+
+	var summaryPrompt string
+	if previousSummary != "" {
+		summaryPrompt = fmt.Sprintf(compactionUpdatePrompt, previousSummary, transcript.String())
+	} else {
+		summaryPrompt = fmt.Sprintf(compactionFreshPrompt, transcript.String())
+	}
+
+	resp, err := llm.GenerateContent(ctx,
+		[]schema.MessageContent{schema.NewHumanMessage(summaryPrompt)},
+	)
+	if err != nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("LLM summarization failed: %w", err)
+	}
+
+	return resp.Choices[0].Content, nil
 }
 
 // errNoChanges is returned by yieldCommitAndPush when the workspace has no
