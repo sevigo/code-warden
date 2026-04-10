@@ -156,6 +156,36 @@ func (o *Orchestrator) buildNativeLoopWithObs(obs *loopObserver) loopBuilderFn {
 			allowedTools[t.Name()] = true
 		}
 
+		// Search tools (grep + find) — read-only, useful in native mode too.
+		for _, t := range searchTools() {
+			wrapped := &contextInjectingTool{
+				inner:       t,
+				projectRoot: ws.dir,
+				sessionID:   session.ID,
+			}
+			if err := registry.Register(wrapped); err != nil {
+				o.logger.Warn("runInProcessAgent: failed to register tool",
+					"tool", t.Name(), "error", err)
+				continue
+			}
+			allowedTools[t.Name()] = true
+		}
+
+		// File tools for native agent — needed for read/write/edit/list operations.
+		for _, t := range fileTools() {
+			wrapped := &contextInjectingTool{
+				inner:       t,
+				projectRoot: ws.dir,
+				sessionID:   session.ID,
+			}
+			if err := registry.Register(wrapped); err != nil {
+				o.logger.Warn("runInProcessAgent: failed to register tool",
+					"tool", t.Name(), "error", err)
+				continue
+			}
+			allowedTools[t.Name()] = true
+		}
+
 		governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
 		maxIter := max(o.config.MaxIterations*15, 50)

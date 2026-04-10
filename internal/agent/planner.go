@@ -100,6 +100,11 @@ func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, w
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
+	// Search tools (grep + find) — read-only, safe during planning.
+	for _, t := range searchTools() {
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
+	}
+
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "plan")
