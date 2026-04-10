@@ -196,3 +196,18 @@ func (o *Orchestrator) completeCheckRun(ctx context.Context, issue Issue, checkR
 		o.logger.Warn("completeCheckRun: failed", "check_run_id", checkRunID, "conclusion", conclusion, "error", err)
 	}
 }
+
+// deferCheckRunCompletion returns a function suitable for deferring that
+// completes a Check Run with a conclusion based on the session's final status.
+func (o *Orchestrator) deferCheckRunCompletion(ctx context.Context, session *Session, checkRunID int64) {
+	conclusion := "success"
+	summary := fmt.Sprintf("Session `%s` completed.", session.ID)
+	if s := session.GetStatus(); s == StatusFailed {
+		conclusion = "failure"
+		summary = fmt.Sprintf("Session `%s` failed: %s", session.ID, session.GetError())
+	} else if s == StatusDraft {
+		conclusion = "action_required"
+		summary = fmt.Sprintf("Session `%s` yielded a draft PR for human review.", session.ID)
+	}
+	o.completeCheckRun(ctx, session.Issue, checkRunID, conclusion, summary)
+}

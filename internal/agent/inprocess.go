@@ -36,6 +36,7 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 		o.failSession(ctx, session, err.Error())
 		return
 	}
+	tracer := NewTracingModel(agentLLM)
 
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
 	defer cancel()
@@ -46,6 +47,10 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 		return
 	}
 	defer ws.logFile.Close()
+	if ws.traceFile != nil {
+		defer ws.traceFile.Close()
+	}
+	defer o.persistLogs(ws, session.ID)
 	if ws.lsp != nil {
 		defer ws.lsp.Stop()
 	}
@@ -60,7 +65,7 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 		"model", agentLLM,
 	)
 
-	loop, err := buildLoop(agentLLM, session, ws)
+	loop, err := buildLoop(tracer, session, ws)
 	if err != nil {
 		o.failSession(ctx, session, err.Error())
 		return
@@ -109,14 +114,15 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 	session.SetStatus(StatusCompleted)
 	o.postSessionCompleted(ctx, session, result)
 
+	totalIn, totalOut, _ := tracer.TokenCounts()
 	o.logger.Info("runNativeLoop: completed",
 		"session_id", session.ID,
 		"label", label,
 		"verdict", result.Verdict,
 		"iterations", result.Iterations,
 		"pr_url", result.PRURL,
-		"tokens_in", loopResult.Tokens.Input,
-		"tokens_out", loopResult.Tokens.Output)
+		"tokens_in", totalIn,
+		"tokens_out", totalOut)
 }
 
 // resolveAgentLLM returns the LLM to use for the native agent.
