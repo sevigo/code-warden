@@ -45,11 +45,6 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 		defer ws.traceFile.Close()
 	}
 	defer o.persistLogs(ws, session.ID)
-	if ws.lsp != nil {
-		defer ws.lsp.Stop()
-	}
-	// Unregister from the per-session MCP workspace registry (different from
-	// globalMCPRegistry, which is handled in cleanupNativeSession).
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
 	o.logger.Info("🛠️ IMPLEMENTATION: Starting "+label+" agent",
@@ -163,7 +158,7 @@ func (o *Orchestrator) buildNativeLoopWithObs(obs *loopObserver) loopBuilderFn {
 
 		governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
-		maxIter := max(o.config.MaxIterations*10, 30)
+		maxIter := max(o.config.MaxIterations*15, 50)
 
 		opts := []goframeagent.NativeLoopOption{
 			goframeagent.WithLoopSystemPrompt(o.buildNativeSystemPrompt(session.Issue, ws.dir)),

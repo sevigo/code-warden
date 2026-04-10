@@ -8,8 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-
-	"github.com/sevigo/code-warden/internal/agent/lsp"
 )
 
 // agentWorkspace holds the prepared workspace state for a session.
@@ -18,8 +16,7 @@ type agentWorkspace struct {
 	logPath   string
 	tracePath string // absolute path to trace.jsonl (empty if tracing disabled)
 	logFile   *os.File
-	traceFile *os.File     // JSONL conversation trace for post-mortem debugging (nil = not opened)
-	lsp       *lsp.Manager // nil when LSP is unavailable for this workspace
+	traceFile *os.File // JSONL conversation trace for post-mortem debugging (nil = not opened)
 }
 
 // prepareAgentWorkspace creates the workspace directory, clones the project,
@@ -82,16 +79,9 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 		traceFile = nil
 	}
 
-	// Start LSP manager for the workspace languages. Errors are non-fatal:
-	// if gopls (or another server) isn't installed the agent falls back to
-	// the RAG-based search_code tools.
-	o.logger.Info("lsp: starting language servers", "session_id", session.ID, "dir", workspaceDir)
-	lspMgr := lsp.NewManager(workspaceDir, o.logger, lsp.DefaultServers()...)
-	if err := lspMgr.Start(ctx); err != nil {
-		o.logger.Warn("lsp: manager failed to start, continuing without LSP", "error", err)
-		lspMgr = nil
-	}
-	o.logger.Info("lsp: language server init complete", "session_id", session.ID, "available", lspMgr != nil && lspMgr.Available())
+	// Start LSP manager removed — agent uses run_command("go build ./...")
+	// for compile checks instead. 30-120s LSP startup is not worth it
+	// when the model can verify with `make lint` / `make test`.
 
 	return &agentWorkspace{
 		dir:       workspaceDir,
@@ -99,7 +89,6 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 		tracePath: tracePath,
 		logFile:   logFile,
 		traceFile: traceFile,
-		lsp:       lspMgr,
 	}, nil
 }
 

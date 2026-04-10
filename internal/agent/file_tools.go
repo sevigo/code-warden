@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sevigo/code-warden/internal/agent/lsp"
 	"github.com/sevigo/code-warden/internal/mcp"
 	"github.com/sevigo/code-warden/internal/mcp/tools"
 )
@@ -82,12 +81,7 @@ func (t *readFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 }
 
 // writeFileTool writes (or creates) a file in the agent workspace.
-// When lsp is non-nil it notifies the language server of the change and
-// appends any compiler diagnostics to the tool result — so the agent sees
-// compile errors in the same turn it wrote the file.
-type writeFileTool struct {
-	lsp *lsp.Manager // may be nil
-}
+type writeFileTool struct{}
 
 func (t *writeFileTool) Name() string { return "write_file" }
 
@@ -137,16 +131,12 @@ func (t *writeFileTool) Execute(ctx context.Context, args map[string]any) (any, 
 	}
 
 	result := map[string]any{"ok": true, "path": relPath, "bytes": len(content)}
-	appendLSPDiagnostics(ctx, t.lsp, abs, content, result)
 	return result, nil
 }
 
 // editFileTool replaces the first occurrence of old_string with new_string.
-// Mirrors Claude Code's Edit tool semantics. When lsp is non-nil it appends
-// compiler diagnostics to the result after the edit.
-type editFileTool struct {
-	lsp *lsp.Manager // may be nil
-}
+// Mirrors Claude Code's Edit tool semantics.
+type editFileTool struct{}
 
 func (t *editFileTool) Name() string { return "edit_file" }
 
@@ -218,7 +208,6 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	}
 
 	result := map[string]any{"ok": true, "path": relPath}
-	appendLSPDiagnostics(ctx, t.lsp, abs, updated, result)
 	return result, nil
 }
 
@@ -285,44 +274,12 @@ func (t *listDirTool) Execute(ctx context.Context, args map[string]any) (any, er
 }
 
 // fileTools returns all workspace file manipulation tools.
-// Pass a non-nil lsp.Manager to enable automatic diagnostic feedback after
-// write_file and edit_file calls. Pass nil to disable LSP integration.
-func fileTools(mgr *lsp.Manager) []mcp.Tool {
+func fileTools() []mcp.Tool {
 	return []mcp.Tool{
 		&readFileTool{},
-		&writeFileTool{lsp: mgr},
-		&editFileTool{lsp: mgr},
+		&writeFileTool{},
+		&editFileTool{},
 		&listDirTool{},
-	}
-}
-
-// appendLSPDiagnostics notifies the language server of a file change and, if
-// any diagnostics are returned, adds them to result under the "diagnostics" key.
-// It is a no-op when mgr is nil or when the file extension is not handled.
-func appendLSPDiagnostics(ctx context.Context, mgr *lsp.Manager, absPath, content string, result map[string]any) {
-	if mgr == nil {
-		return
-	}
-	diags, err := mgr.NotifyChange(ctx, absPath, content)
-	if err != nil || len(diags) == 0 {
-		return
-	}
-	items := make([]map[string]any, 0, len(diags))
-	hasErrors := false
-	for _, d := range diags {
-		items = append(items, map[string]any{
-			"severity": d.Severity.String(),
-			"line":     d.Range.Start.Line + 1,
-			"column":   d.Range.Start.Character + 1,
-			"message":  d.Message,
-		})
-		if d.Severity == lsp.SeverityError {
-			hasErrors = true
-		}
-	}
-	result["diagnostics"] = items
-	if hasErrors {
-		result["ok"] = false
 	}
 }
 

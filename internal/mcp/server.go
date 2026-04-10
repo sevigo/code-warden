@@ -42,6 +42,7 @@ type Server struct {
 
 	// Comparison models for consensus review (optional)
 	comparisonModels []string
+	agentMode        bool
 	reviewsDir       string
 
 	// SSE session management
@@ -94,14 +95,11 @@ type Tool interface {
 
 // Config holds configuration for the MCP server.
 type Config struct {
-	// Port is the HTTP port for the MCP server.
-	Port int
-	// ProjectRoot is the path to the repository root.
-	ProjectRoot string
-	// ComparisonModels are models for consensus review (optional).
+	Port             int
+	ProjectRoot      string
 	ComparisonModels []string
-	// ReviewsDir is the directory to save review artifacts (optional).
-	ReviewsDir string
+	ReviewsDir       string
+	AgentMode        bool // When true, review_code uses single-model review for faster agent feedback
 }
 
 // NewServer creates a new MCP server.
@@ -132,6 +130,7 @@ func NewServer(
 		workspaces:       make(map[string]string),
 		reviewsBySession: make(map[string]*reviewResult),
 		comparisonModels: config.ComparisonModels,
+		agentMode:        config.AgentMode,
 		reviewsDir:       config.ReviewsDir,
 	}
 
@@ -179,6 +178,7 @@ func (s *Server) registerTools() {
 		RepoConfig:       s.repoConfig,
 		ComparisonModels: s.comparisonModels,
 		ReviewsDir:       s.reviewsDir,
+		SingleModelOnly:  s.agentMode,
 		ReviewTracker:    s,
 		Logger:           s.logger,
 	})

@@ -23,12 +23,11 @@ type ReviewCode struct {
 	RagService       rag.Service
 	Repo             *storage.Repository
 	RepoConfig       *core.RepoConfig
-	ComparisonModels []string // Models for consensus review
+	ComparisonModels []string // Models for consensus review (empty = single-model)
 	ReviewsDir       string   // Directory to save review artifacts
-	// ReviewTracker records review results for PR enforcement.
-	// Always provided by the MCP server. The nil check is defensive programming.
-	ReviewTracker ReviewTracker
-	Logger        *slog.Logger
+	SingleModelOnly  bool     // When true, always use single-model review (for agent speed)
+	ReviewTracker    ReviewTracker
+	Logger           *slog.Logger
 }
 
 // ReviewCodeResponse is the response for review_code tool.
@@ -43,6 +42,15 @@ type ReviewCodeResponse struct {
 
 func (t *ReviewCode) Name() string {
 	return "review_code"
+}
+
+// comparisonModels returns the models to use for review.
+// When SingleModelOnly is true (agent mode), consensus is skipped for speed.
+func (t *ReviewCode) comparisonModels() []string {
+	if t.SingleModelOnly {
+		return nil
+	}
+	return t.ComparisonModels
 }
 
 func (t *ReviewCode) Description() string {
@@ -113,9 +121,9 @@ func (t *ReviewCode) Execute(ctx context.Context, args map[string]any) (any, err
 		InstallationID: 0,
 	}
 
-	t.Logger.Info("⚖️  Starting code review consensus phase", "repo", t.Repo.FullName)
+	t.Logger.Info("⚖️  Starting code review", "repo", t.Repo.FullName, "single_model", t.SingleModelOnly)
 	executor := reviewpkg.NewExecutor(t.RagService, reviewpkg.Config{
-		ComparisonModels: t.ComparisonModels,
+		ComparisonModels: t.comparisonModels(),
 		ReviewsDir:       t.ReviewsDir,
 		Logger:           t.Logger,
 	})

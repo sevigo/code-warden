@@ -32,7 +32,6 @@ import (
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/schema"
 
-	"github.com/sevigo/code-warden/internal/agent/lsp"
 	gh "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/mcp"
 )
@@ -47,7 +46,7 @@ var publishToolNames = map[string]bool{
 // maxReviewRounds is the maximum number of times the agent may call review_code
 // before the implement loop is told to stop and request human review.
 // This prevents endless ping-pong when reviewer and coder keep disagreeing.
-const maxReviewRounds = 5
+const maxReviewRounds = 10
 
 // reviewCapTool wraps the review_code MCP tool and enforces maxReviewRounds.
 // After the cap is reached every subsequent call returns a synthetic verdict
@@ -105,19 +104,10 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		defer ws.traceFile.Close()
 	}
 	defer o.persistLogs(ws, session.ID)
-	if ws.lsp != nil {
-		defer ws.lsp.Stop()
-	}
 	defer o.mcpServer.UnregisterWorkspace(session.ID)
 
 	// Persist the session as "running" now that the workspace and branch are ready.
 	o.persistSessionRunning(ctx, session, branch)
-
-	// ── LSP mode label ────────────────────────────────────────────────────────
-	lspMode := "degraded (RAG-only)"
-	if ws.lsp != nil && ws.lsp.Available() {
-		lspMode = "precise (LSP)"
-	}
 
 	// ── GitHub Check Run ──────────────────────────────────────────────────────
 	// Create a Check Run on the base branch so progress appears in GitHub UI.
@@ -154,7 +144,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 			o.updateIssueComment(tctx, session.Issue, id, body)
 		}
 	}
-	tracker := newProgressTracker(session, ws.logFile, lspMode, progressCreate, progressUpdate)
+	tracker := newProgressTracker(session, ws.logFile, "RAG-only", progressCreate, progressUpdate)
 	tracker.start(ctx)
 	defer tracker.stop()
 
@@ -336,25 +326,17 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools (with LSP diagnostic hook).
-	for _, t := range fileTools(ws.lsp) {
+	// File tools (no LSP — agent uses run_command for compile checks).
+	for _, t := range fileTools() {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
-	}
-
-	// LSP tools — only if a language server is running.
-	for _, t := range lsp.Tools(ws.lsp) {
-		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
-	}
-	if ws.lsp != nil && ws.lsp.Available() {
-		o.logger.Info("buildImplementLoop: LSP tools registered", "session_id", session.ID)
 	}
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
-	maxIter := max(o.config.MaxIterations*10, 30)
+	maxIter := max(o.config.MaxIterations*15, 50)
 
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "implement")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
-		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, ws.lsp != nil && ws.lsp.Available(), plan)),
+		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, false, plan)),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
@@ -381,7 +363,7 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "publish")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildPublishSystemPrompt(session.Issue, branch)),
-		goframeagent.WithLoopMaxIterations(5), // push + PR creation should need at most 2-3 turns
+		goframeagent.WithLoopMaxIterations(8), // push + PR creation
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopLogger(loopLogger),
 		goframeagent.WithLoopObserver(obs),
@@ -391,15 +373,7 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 // buildImplementSystemPrompt returns the system prompt for the implement loop.
 // Publish tools are intentionally omitted — the model has no reason to
 // attempt pushing before the review is complete.
-func (o *Orchestrator) buildImplementSystemPrompt(issue Issue, workspaceDir string, lspAvailable bool, plan string) string {
-	lspSection := ""
-	if lspAvailable {
-		lspSection = `
-**LSP** (live compiler feedback):
-- lsp_diagnostics(path) — get compiler errors/warnings for a file
-Note: write_file and edit_file automatically return diagnostics — check them.`
-	}
-
+func (o *Orchestrator) buildImplementSystemPrompt(issue Issue, workspaceDir string, _ bool, plan string) string {
 	return fmt.Sprintf(`You are an expert software engineer implementing GitHub issue #%d.
 
 ## Task
@@ -418,7 +392,7 @@ Working directory: %s
 - get_structure() — project structure overview
 - get_arch_context(dir) — architecture summary for a directory
 - find_usages(symbol), get_callers(fn), get_callees(fn)
-%s
+
 **File operations** (workspace-scoped, paths relative to working directory):
 - read_file(path, offset?, limit?) — read a file, optionally paginated
 - write_file(path, content) — create or overwrite a file
@@ -442,7 +416,7 @@ Working directory: %s
 - Keep changes minimal and focused on the issue.
 
 %s`,
-		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, lspSection, plan)
+		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, plan)
 }
 
 // buildPublishSystemPrompt returns the system prompt for the publish loop.

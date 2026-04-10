@@ -114,6 +114,7 @@ func NewOrchestrator(
 		mcp.Config{
 			ComparisonModels: config.ComparisonModels,
 			ReviewsDir:       config.ReviewsDir,
+			AgentMode:        true,
 		},
 	)
 
