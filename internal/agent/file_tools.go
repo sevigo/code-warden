@@ -219,10 +219,30 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	}
 	original := string(data)
 
-	updated, usedFuzzy, err := applyMultiEdit(original, pairs)
+	// Detect file-level properties before matching so we can restore them
+	// after the edit. BOM and CRLF would otherwise prevent matching
+	// because the LLM's old_string will always use LF and no BOM.
+	working, hasBOM := stripBOM(original)
+	lineEnding := detectLineEnding(working)
+	working = normalizeLineEndings(working)
+
+	// Normalize edit pairs to LF so they match the normalized content.
+	normalizedPairs := make([]editPair, len(pairs))
+	for i, p := range pairs {
+		normalizedPairs[i] = editPair{
+			OldStr: normalizeLineEndings(p.OldStr),
+			NewStr: normalizeLineEndings(p.NewStr),
+		}
+	}
+
+	updated, usedFuzzy, err := applyMultiEdit(working, normalizedPairs)
 	if err != nil {
 		return nil, fmt.Errorf("edit_file: %w", err)
 	}
+
+	// Restore the file's original line endings and BOM before writing.
+	updated = restoreLineEndings(updated, lineEnding)
+	updated = prependBOM(updated, hasBOM)
 	if err := os.WriteFile(abs, []byte(updated), 0o644); err != nil { //nolint:gosec // G306: 0644 is intentional for source files
 		return nil, fmt.Errorf("edit_file: write: %w", err)
 	}
