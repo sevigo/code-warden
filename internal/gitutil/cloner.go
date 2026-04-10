@@ -123,6 +123,19 @@ func (c *Client) Fetch(ctx context.Context, path string, token string, refSpecs 
 	return err
 }
 
+// MergeFF fast-forwards the current branch to its upstream tracking branch
+// (equivalent to `git merge --ff-only`). This must be called after Fetch to
+// advance the local HEAD; Fetch alone only updates remote tracking refs.
+func (c *Client) MergeFF(ctx context.Context, path string) error {
+	cmd := exec.CommandContext(ctx, "git", "merge", "--ff-only")
+	cmd.Dir = path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git merge --ff-only: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 func (c *Client) maskToken(input, token string) string {
 	if token == "" {
 		return input

@@ -21,14 +21,22 @@ func (m *manager) scanLocalRepo(
 		return nil, fmt.Errorf("open local repo: %w", err)
 	}
 
-	// Fetch latest from origin so the index reflects the current remote state.
-	// Non-fatal: if fetch fails (e.g. offline, no auth) we continue with the
-	// existing local state and log a warning.
+	// Fetch + fast-forward the local branch so HEAD reflects the current remote state.
+	// git fetch only updates remote tracking refs; without the merge the local HEAD
+	// stays at the old SHA and the incremental scan incorrectly reports "nothing changed".
+	// Non-fatal: if either step fails (e.g. offline, no auth, dirty worktree) we
+	// continue with the existing local state and log a warning.
 	if fetchErr := m.gitClient.Fetch(ctx, repoPath, ""); fetchErr != nil {
 		m.logger.Warn("scanLocalRepo: fetch from origin failed, using local state",
 			"repo", repoPath, "error", fetchErr)
 	} else {
 		m.logger.Info("scanLocalRepo: fetched latest from origin", "repo", repoPath)
+		if mergeErr := m.gitClient.MergeFF(ctx, repoPath); mergeErr != nil {
+			m.logger.Warn("scanLocalRepo: fast-forward merge failed, using local state",
+				"repo", repoPath, "error", mergeErr)
+		} else {
+			m.logger.Info("scanLocalRepo: fast-forwarded local branch to origin", "repo", repoPath)
+		}
 	}
 
 	headSHA, err := currentHeadSHA(gitRepo)
