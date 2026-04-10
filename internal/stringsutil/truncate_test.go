@@ -21,6 +21,7 @@ func TestTruncate(t *testing.T) {
 		{"multi-byte CJK truncation", "你好世界测试", 4, "...", "你..."},
 		{"emoji at truncation boundary", "ab🌍cd", 3, "...", "ab🌍"},
 		{"empty suffix", "hello world", 5, "", "hello"},
+		{"multi-byte suffix rune count", "hello world", 6, "…", "hello…"}, // "…" is 3 bytes but 1 rune
 	}
 
 	for _, tt := range tests {

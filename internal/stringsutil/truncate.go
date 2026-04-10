@@ -13,10 +13,11 @@ func Truncate(s string, maxLen int, suffix string) string {
 		return s
 	}
 	runes := []rune(s)
-	if maxLen <= len(suffix) {
+	suffixRunes := []rune(suffix)
+	if maxLen <= len(suffixRunes) {
 		return string(runes[:maxLen])
 	}
-	return string(runes[:maxLen-len(suffix)]) + suffix
+	return string(runes[:maxLen-len(suffixRunes)]) + suffix
 }
 
 // TruncateLeft truncates from the left side, keeping the right portion.
