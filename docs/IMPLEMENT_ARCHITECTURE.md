@@ -59,8 +59,9 @@ runWardenAgent(ctx, session, branch)
 ├─ ── Phase 1: Plan ──────────────────────────────────────────────────
 │   tracker.setPhase("planning")
 │   buildPlan()  →  buildPlannerLoop()
-│     tools: search_code, get_symbol, get_structure, get_arch_context,
-│            find_usages, get_callers, get_callees, read_file, list_dir
+│   tools: search_code, get_symbol, get_structure, get_arch_context,
+│          find_usages, get_callers, get_callees, read_file, list_dir,
+│          grep, find
 │     max_iterations: 5
 │     output: markdown "## Implementation Plan" injected into implement prompt
 │
@@ -69,8 +70,9 @@ runWardenAgent(ctx, session, branch)
 │   buildImplementLoop()
 │     tools: ALL MCP tools except push_branch / create_pull_request
 │            + read_file, write_file, edit_file, list_dir  (file tools)
-│            + lsp_diagnostics, lsp_definition, lsp_references, lsp_hover
-│     max_iterations: max(MaxIterations*10, 30)
+│            + grep, find  (search tools — exact pattern search and file discovery)
+│            + run_command  (shell commands for lint/test verification)
+│     max_iterations: max(MaxIterations*15, 50)
 │     compactionHook: fires at 70% of 128K tokens, summarises history
 │
 │   loop.Run()  →  Think → call tools → Observe → repeat
@@ -97,50 +99,11 @@ runWardenAgent(ctx, session, branch)
 
 ---
 
-## LSP Integration (`internal/agent/lsp/`)
+## LSP Removal
 
-The Language Server Protocol client provides precise, always-current code navigation during the implement phase — complementing the RAG-based `search_code` tools that are better for open-ended exploration.
+The Language Server Protocol client was removed from agent sessions. It added 30–120 seconds of startup time per session and required per-language server binaries on the host. The agent now uses `grep` for exact pattern search, `find` for file discovery, and `run_command("go build ./...")` for compile checks — which is faster and works for any language without pre-installed language servers.
 
-### Architecture
-
-```
-lsp.Manager
-  ├── detectLanguages()        ← walks workspace, collects extensions
-  ├── Start(ctx)               ← starts one Client per detected language
-  │     GoServer       (.go)   → gopls
-  │     TypeScriptServer (.ts) → typescript-language-server
-  │     PythonServer    (.py)  → pylsp
-  │     RustServer      (.rs)  → rust-analyzer
-  └── clientForFile(absPath)   ← routes tool calls to correct client
-
-lsp.Client (per language)
-  ├── starts server subprocess via stdio
-  ├── JSON-RPC 2.0 with Content-Length framing
-  ├── readLoop()               ← goroutine: routes responses + notifications
-  ├── Diagnostics()            ← pull (textDocument/diagnostic) with push fallback
-  ├── Definition() / References() / Hover()
-  └── DidOpen() / DidChange()  ← keeps server in sync with file edits
-```
-
-### LSP hook on file writes
-
-Every `write_file` and `edit_file` call automatically:
-1. Sends `DidChange` to the language server.
-2. Waits 700 ms for diagnostics to settle.
-3. Calls `Diagnostics()` and appends results to the tool's return value.
-
-The agent sees compiler errors in the **same turn** it made the change — no extra tool call needed.
-
-### Agent-facing LSP tools
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `lsp_diagnostics` | `path` | Compiler errors and warnings for a file |
-| `lsp_definition` | `path, line, column` | Jump-to-definition (0-based) |
-| `lsp_references` | `path, line, column` | All usages of a symbol |
-| `lsp_hover` | `path, line, column` | Type signature and doc comment |
-
-LSP tools are registered only when at least one language server started successfully. If `gopls` is not on PATH, the agent falls back to RAG-based `search_code` transparently.
+The LSP package (`internal/agent/lsp/`) still exists for non-agent use but is no longer started during workspace preparation.
 
 ---
 
@@ -150,8 +113,8 @@ Tools are assigned to loops architecturally — the model literally cannot call 
 
 | Phase | Loop | Tools available |
 |-------|------|----------------|
-| Plan | `buildPlannerLoop` | `search_code`, `get_symbol`, `get_structure`, `get_arch_context`, `find_usages`, `get_callers`, `get_callees`, `read_file`, `list_dir` |
-| Implement | `buildImplementLoop` | All MCP tools except `push_branch` / `create_pull_request`, plus file tools and LSP tools |
+| Plan | `buildPlannerLoop` | `search_code`, `get_symbol`, `get_structure`, `get_arch_context`, `find_usages`, `get_callers`, `get_callees`, `read_file`, `list_dir`, `grep`, `find` |
+| Implement | `buildImplementLoop` | All MCP tools except `push_branch` / `create_pull_request`, plus file tools (`read_file`, `write_file`, `edit_file`, `list_dir`), search tools (`grep`, `find`), and `run_command` |
 | Publish | `buildPublishLoop` | `push_branch`, `create_pull_request` **only** |
 
 `publishToolNames` is the single source of truth for what is withheld during implementation (see `warden.go`).
@@ -200,10 +163,11 @@ buildCompactionHook(session) → func(ctx, msgs, tokens) []schema.MessageContent
   call LLM with summarization prompt (iterative: update summary vs. fresh start)
     max 400 words; if previousSummary != "": "Update this summary: …" prompt
 
-  extract file ops from newMsgs:
-    - parse tool result messages for read_file / write_file / edit_file paths
-    - merge with file lists already in previousSummary (<read-files>/<modified-files> XML)
-    - append formatFileOps(allRead, allMod) to the new summary
+   extract file ops from newMsgs:
+     - parse tool result messages for read_file / write_file / edit_file paths
+     - also parse grep and find results to track explored files
+     - merge with file lists already in previousSummary (<read-files>/<modified-files> XML)
+     - append formatFileOps(allRead, allMod) to the new summary
 
   find tail boundary via findTailStart(msgs, 8):
     - walks backward from end until landing on a ChatMessageTypeHuman message
@@ -303,23 +267,21 @@ Tools used by the implement loop (see `internal/mcp/tools/` and `internal/agent/
 | `find_usages` | Call sites for a symbol |
 | `get_callers` / `get_callees` | Call graph navigation |
 
+### Code exploration (exact search, read-only)
+
+| Tool | Description |
+|------|-------------|
+| `grep` | Search file contents by pattern (regex or literal). Uses ripgrep with grep fallback. Returns `file:line: content` format with match count and truncation hints. |
+| `find` | Find files by glob pattern (e.g. `*.go`, `**/*_test.go`). Pure Go, skips `.git`/`node_modules`/`vendor`. Returns workspace-relative paths with truncation hints. |
+
 ### File operations (workspace-scoped)
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | Read a file, optionally paginated; returns `{content, lines, path}` |
-| `write_file` | Create or overwrite; returns `{ok, path, bytes}` (triggers LSP diagnostics) |
-| `edit_file` | Exact-string replace with fuzzy fallback; returns `{ok, path, diff}` (triggers LSP diagnostics) — supports single `{old_string, new_string}` or atomic multi-edit `{edits:[…]}` |
+| `read_file` | Read a file, optionally paginated; returns `{content, lines, path}`. When truncated, includes `total_lines`, `truncated`, and `hint` with the offset to read next. |
+| `write_file` | Create or overwrite; returns `{ok, path, bytes}` |
+| `edit_file` | Exact-string replace with fuzzy fallback and CRLF/BOM handling; returns `{ok, path, diff, fuzzy_match?}`. Supports single `{old_string, new_string}` or atomic multi-edit `{edits:[{old_string, new_string}, ...]}`. Returns a unified diff (≤4 KB) for verification without a follow-up `read_file`. |
 | `list_dir` | List directory entries with name, type, size |
-
-### LSP (live compiler feedback)
-
-| Tool | Description |
-|------|-------------|
-| `lsp_diagnostics` | Errors/warnings from language server |
-| `lsp_definition` | Jump to definition |
-| `lsp_references` | Find all usages |
-| `lsp_hover` | Type info and docs |
 
 ### Verification
 

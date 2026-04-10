@@ -5,7 +5,8 @@ package agent
 // Runs two sequential agent loops with minimal, phase-appropriate tool sets:
 //
 //  Loop 1 — Implement:
-//    search_code, file tools, LSP tools, run_command, review_code
+//    search_code, file tools (read/write/edit/list_dir), search tools (grep/find),
+//    run_command, review_code
 //    (no push_branch / create_pull_request)
 //    Terminates when review_code returns APPROVE or max iterations reached.
 //
@@ -337,6 +338,11 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 
 	// File tools (no LSP — agent uses run_command for compile checks).
 	for _, t := range fileTools() {
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
+	}
+
+	// Search tools (grep + find) — read-only, no workspace modifications.
+	for _, t := range searchTools() {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 

@@ -61,26 +61,43 @@ func (t *readFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 		return nil, fmt.Errorf("read_file: %w", err)
 	}
 
-	lines := strings.Split(string(data), "\n")
+	allLines := strings.Split(string(data), "\n")
+	// A file ending with \n produces a trailing empty element — don't count it.
+	totalLines := len(allLines)
+	if totalLines > 0 && allLines[totalLines-1] == "" {
+		totalLines--
+	}
 
 	offset := parseIntArg(args, "offset")
 	if offset > 0 {
 		offset-- // convert 1-based to 0-based
 	}
-	if offset >= len(lines) {
+	if offset >= totalLines {
 		return map[string]any{"content": "", "lines": 0}, nil
 	}
-	lines = lines[offset:]
+	lines := allLines[offset:]
 
-	if limit := parseIntArg(args, "limit"); limit > 0 && limit < len(lines) {
+	limit := parseIntArg(args, "limit")
+	truncated := limit > 0 && limit < len(lines)
+	if truncated {
 		lines = lines[:limit]
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"content": strings.Join(lines, "\n"),
 		"lines":   len(lines),
 		"path":    relPath,
-	}, nil
+	}
+	if truncated {
+		nextOffset := offset + limit + 1 // 1-based for the user-facing parameter
+		result["total_lines"] = totalLines
+		result["truncated"] = true
+		result["hint"] = fmt.Sprintf(
+			"File has %d lines total; output stopped at line %d. Use offset=%d to read the next chunk.",
+			totalLines, offset+limit, nextOffset,
+		)
+	}
+	return result, nil
 }
 
 // writeFileTool writes (or creates) a file in the agent workspace.

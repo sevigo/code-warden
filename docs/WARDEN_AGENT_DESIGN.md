@@ -69,9 +69,10 @@ not implement anything.
 **Goal:** Write and verify code until `review_code` returns APPROVE.
 
 **Tool selection:**
-LSP tools complement RAG tools. RAG (`search_code`) is better for "find things related
-to X" open-ended exploration. LSP (`lsp_definition`, `lsp_references`) is better for
-"where exactly is this symbol used" precision — and it is always current (no index lag).
+RAG tools (`search_code`, `get_symbol`) are best for semantic exploration ("find things related to X").
+Search tools (`grep`, `find`) are best for exact pattern search ("find all usages of `handleAuth`") and file
+discovery ("find all `*_test.go` files"). The agent uses `run_command("go build ./...")` for compile checks
+instead of LSP, which was removed to avoid 30–120 seconds of startup per session.
 
 **Verification ladder (cheapest first):**
 1. `write_file` / `edit_file` return gopls diagnostics automatically.
@@ -80,7 +81,7 @@ to X" open-ended exploration. LSP (`lsp_definition`, `lsp_references`) is better
 4. `review_code` — LLM-as-judge with full RAG context.
 
 **Iteration cap:**
-`max(config.MaxIterations * 10, 30)`. With `MaxIterations: 3` the cap is 30 loop
+`max(config.MaxIterations * 15, 50)`. With `MaxIterations: 3` the cap is 50 loop
 steps — enough for multi-file changes with several review cycles.
 
 **Compaction:**
@@ -104,38 +105,17 @@ completed-without-APPROVE loop is treated as a failure (`failSession`).
 
 ---
 
-## LSP Design
+## LSP Removal
 
-### Why LSP instead of more RAG?
+The Language Server Protocol client was removed from agent sessions. It added
+30–120 seconds of startup time per session and required per-language server
+binaries (`gopls`, `typescript-language-server`, etc.) on the host. The agent
+now uses `grep` for exact pattern search, `find` for file discovery, and
+`run_command("go build ./...")` for compile verification — which is faster and
+works across all programming languages without pre-installed servers.
 
-RAG vector search has inherent lag (documents must be indexed before they are
-searchable) and can return stale results when the agent is actively editing files.
-LSP talks directly to the compiler and is always authoritative.
-
-The two tools complement each other:
-- **RAG** for broad, semantic exploration ("what handles authentication?")
-- **LSP** for precise, structural navigation ("where is `handleAuth` called?")
-
-### Language server lifecycle
-
-Each `lsp.Client` starts its server as a subprocess over stdio with JSON-RPC 2.0
-Content-Length framing. The manager starts one client per detected language and
-routes tool calls by file extension. If a server binary is not found, that language
-silently falls back to RAG — no error is surfaced to the agent.
-
-### Extending to new languages
-
-Add one struct implementing `LanguageServer` to `server.go` and add it to
-`DefaultServers()`:
-
-```go
-type RustServer struct{}
-func (s *RustServer) Name()       string   { return "rust-analyzer" }
-func (s *RustServer) Extensions() []string { return []string{".rs"} }
-func (s *RustServer) Command(dir string) []string { return []string{"rust-analyzer"} }
-func (s *RustServer) Env()        []string { return nil }
-func (s *RustServer) LanguageID() string   { return "rust" }
-```
+The LSP package (`internal/agent/lsp/`) still exists for standalone use but is
+no longer started during workspace preparation.
 
 ---
 
