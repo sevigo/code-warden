@@ -73,8 +73,14 @@ func TestSetupGovernance_PermissionCheck(t *testing.T) {
 }
 
 func TestSetupGovernance_RateLimits(t *testing.T) {
+	registry := goframeagent.NewRegistry()
+	registry.Register(&testTool{
+		name:   "review_code",
+		schema: map[string]any{},
+	})
+
 	s := &Server{
-		registry: goframeagent.NewRegistry(),
+		registry: registry,
 		logger:   slog.New(slog.NewTextHandler(os.Stderr, nil)),
 	}
 
@@ -91,19 +97,19 @@ func TestSetupGovernance_RateLimits(t *testing.T) {
 	}
 
 	// First call should pass
-	err := s.governance.Validate(context.Background(), "review_code", nil)
+	_, err := s.CallTool(context.Background(), "review_code", nil)
 	if err != nil {
 		t.Errorf("First call should pass: %v", err)
 	}
 
 	// Second call should pass
-	err = s.governance.Validate(context.Background(), "review_code", nil)
+	_, err = s.CallTool(context.Background(), "review_code", nil)
 	if err != nil {
 		t.Errorf("Second call should pass: %v", err)
 	}
 
 	// Third call should fail (rate limit exceeded)
-	err = s.governance.Validate(context.Background(), "review_code", nil)
+	_, err = s.CallTool(context.Background(), "review_code", nil)
 	if err == nil {
 		t.Error("Third call should fail rate limit")
 	}

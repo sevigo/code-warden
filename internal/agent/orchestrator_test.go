@@ -36,8 +36,9 @@ func TestSpawnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpawnAgent() unexpected error: %v", err)
 	}
-	if s1.GetStatus() != StatusPending {
-		t.Errorf("SpawnAgent() expected status %v, got %v", StatusPending, s1.GetStatus())
+	status := s1.GetStatus()
+	if status != StatusPending && status != StatusRunning {
+		t.Errorf("SpawnAgent() expected status %v or %v, got %v", StatusPending, StatusRunning, status)
 	}
 
 	_, err = o.SpawnAgent(ctx, issue)

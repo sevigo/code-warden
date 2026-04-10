@@ -38,6 +38,7 @@ type Server struct {
 	// Tool registry using goframe/agent
 	registry   *goframeagent.Registry
 	governance *goframeagent.Governance
+	rateCheck  *goframeagent.RateLimitCheck
 
 	// Comparison models for consensus review (optional)
 	comparisonModels []string
@@ -281,7 +282,10 @@ func (s *Server) SetupGovernance(config GovernanceConfig) {
 			rateCheck.SetLimit(tool, limit)
 		}
 		checks = append(checks, rateCheck)
+		s.rateCheck = rateCheck
 		s.logger.Info("governance rate limits configured", "tools", len(config.RateLimits))
+	} else {
+		s.rateCheck = nil
 	}
 
 	if len(checks) == 0 {
@@ -541,7 +545,14 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 		}
 	}
 
-	return s.registry.Execute(ctx, name, args)
+	res, err := s.registry.Execute(ctx, name, args)
+	
+	// Record successful calls for rate limiting
+	if err == nil && s.rateCheck != nil {
+		s.rateCheck.RecordCall(name)
+	}
+	
+	return res, err
 }
 
 // ToolInfo represents tool metadata for the MCP protocol.
