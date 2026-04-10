@@ -69,20 +69,7 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 
 	// Handle /cancel <session-id> on any issue comment.
 	if !event.GetIssue().IsPullRequest() {
-		if body := strings.TrimSpace(event.GetComment().GetBody()); strings.HasPrefix(body, "/cancel ") {
-			sessionID := strings.TrimSpace(strings.TrimPrefix(body, "/cancel "))
-			if h.canceller == nil {
-				h.logger.Warn("received /cancel but agent is not enabled")
-				_, _ = fmt.Fprint(w, "Agent not enabled")
-				return
-			}
-			if err := h.canceller.CancelSession(sessionID); err != nil {
-				h.logger.Warn("cancel session failed", "session_id", sessionID, "error", err)
-				_, _ = fmt.Fprintf(w, "Cancel failed: %v", err)
-				return
-			}
-			h.logger.Info("session cancelled via webhook", "session_id", sessionID)
-			_, _ = fmt.Fprint(w, "Session cancelled")
+		if handled := h.handleCancelCommand(w, event.GetComment().GetBody()); handled {
 			return
 		}
 	}
@@ -134,4 +121,27 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 	h.logger.Info("review job dispatched successfully", "repo", reviewEvent.RepoFullName, "pr", reviewEvent.PRNumber)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprint(w, "Review job accepted")
+}
+
+// handleCancelCommand checks if body is a /cancel command and cancels the session.
+// Returns true if the command was handled (caller should return).
+func (h *WebhookHandler) handleCancelCommand(w http.ResponseWriter, body string) bool {
+	trimmed := strings.TrimSpace(body)
+	if !strings.HasPrefix(trimmed, "/cancel ") {
+		return false
+	}
+	sessionID := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cancel "))
+	if h.canceller == nil {
+		h.logger.Warn("received /cancel but agent is not enabled")
+		_, _ = fmt.Fprint(w, "Agent not enabled")
+		return true
+	}
+	if err := h.canceller.CancelSession(sessionID); err != nil {
+		h.logger.Warn("cancel session failed", "session_id", sessionID, "error", err)
+		_, _ = fmt.Fprintf(w, "Cancel failed: %v", err)
+		return true
+	}
+	h.logger.Info("session cancelled via webhook", "session_id", sessionID)
+	_, _ = fmt.Fprint(w, "Session cancelled")
+	return true
 }
