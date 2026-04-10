@@ -95,18 +95,6 @@ func (o *Orchestrator) postSessionCompleted(ctx context.Context, session *Sessio
 	o.postIssueComment(ctx, session.Issue, body)
 }
 
-func (o *Orchestrator) postReviewIteration(ctx context.Context, session *Session, iteration int, verdict string) {
-	icon := "🔄"
-	if verdict == "APPROVE" || verdict == "COMMENT" {
-		icon = "✔️"
-	}
-	body := fmt.Sprintf(
-		"%s **Review iteration %d** — session `%s` — verdict: `%s`",
-		icon, iteration, session.ID, verdict,
-	)
-	o.postIssueComment(ctx, session.Issue, body)
-}
-
 func (o *Orchestrator) postSessionFailed(ctx context.Context, session *Session, errMsg string) {
 	body := fmt.Sprintf(
 		"❌ **Implementation failed** — session `%s`\n\n"+

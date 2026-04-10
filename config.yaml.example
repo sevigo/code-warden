@@ -139,37 +139,27 @@ ai:
 # Agent Configuration (Autonomous Issue Implementation)
 # ============================================================================
 # The agent system implements GitHub issues autonomously using AI.
-# Two modes are supported:
+# Only in-process modes are supported:
 #
-#  "warden" (recommended — in-process, no external dependencies):
-#   code-warden runs a phased plan→implement→publish loop directly
-#   using the same Ollama/Gemini LLM as the review system.
-#   Tools are injected in-process; no MCP HTTP server is started.
+#   "warden" (recommended) — phased plan→implement→publish loop using
+#   the same LLM as configured under "ai". Tools injected in-process;
+#   no MCP HTTP server needed when in_process_only is true.
+#
+#   "native" — single-loop in-process mode (no phased publish step).
 #
 #   Architecture:
 #     GitHub Issue ──► Orchestrator ──► plan loop ──► implement loop ──► publish loop
 #                           │                 └── file tools, LSP, search_code, review_code
 #                           └── RAG/Qdrant (code index, search)
 #
-#  "server" / "cli" (external agent provider):
-#   code-warden ──► MCP Server (port 8081) ◄──► Agent Provider (OpenCode, etc.)
-#
 agent:
   # Enable the agent system for /implement comments on GitHub issues
   enabled: true
 
-  # ── In-process warden mode (recommended) ────────────────────────────────
-  # Runs entirely inside code-warden; no external binary or server needed.
-  # Uses the same Ollama/Gemini LLM configured under the "ai" section.
-
   # "warden" activates the phased plan→implement→publish harness.
   mode: "warden"
 
-  # Provider label (informational only in warden mode).
-  provider: "native"
-
   # LLM model for the agent loops (Ollama format: "ollama/<model>").
-  # GLM-5.1 and MiniMax M2.7 are well-suited: 198K context, agentic fine-tuning.
   # Falls back to the review LLM (ai.generator_model) if this is unset.
   model: "ollama/glm-5.1:cloud"
 
@@ -178,7 +168,6 @@ agent:
   in_process_only: true
 
   # Base branch for pull requests opened by the agent (default: "main").
-  # Set to "master" or your repo's default branch if it differs.
   base_branch: "main"
 
   # Maximum review→fix iterations in the implement loop before the agent
@@ -194,16 +183,6 @@ agent:
   # Working directory for isolated agent workspaces.
   # Each session gets its own subdirectory: <working_dir>/<session_id>/
   working_dir: "/tmp/code-warden-agents"
-
-  # ── External agent provider (alternative to warden mode) ────────────────
-  # Uncomment and set mode: "server" or "cli" to use an external agent.
-
-  # mode: "server"
-  # provider: "opencode"
-  # opencode_url: "http://localhost:3000"
-  # mcp_addr: "127.0.0.1:8081"
-  # mcp_timeout: "5m"
-  # in_process_only: false
 
 # ============================================================================
 # Storage Configuration

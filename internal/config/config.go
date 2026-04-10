@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,17 +36,8 @@ type AgentConfig struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Provider is the agent provider (e.g., "opencode", "goose", "claude").
-	Provider string `mapstructure:"provider"`
-
-	// Mode is how to connect to the agent: "server" (HTTP API) or "cli" (subprocess).
-	// "server" uses goframe/agent SDK to connect to OpenCode server.
-	// "cli" spawns the opencode binary as a subprocess.
+	// Mode is how the agent runs: "native" (in-process loop) or "warden"/"pi" (phased loop).
 	Mode string `mapstructure:"mode"`
-
-	// OpenCodeURL is the URL of the OpenCode server (e.g., "http://localhost:3000").
-	// Required when mode is "server".
-	OpenCodeURL string `mapstructure:"opencode_url"`
 
 	// Model is the LLM model to use for the agent.
 	Model string `mapstructure:"model"`
@@ -59,7 +49,6 @@ type AgentConfig struct {
 	MaxIterations int `mapstructure:"max_iterations"`
 
 	// MaxConcurrentSessions is the maximum number of concurrent agent sessions.
-	// When reached, new /implement requests will be rejected. Default: 3.
 	MaxConcurrentSessions int `mapstructure:"max_concurrent_sessions"`
 
 	// MCPAddr is the address for the MCP server.
@@ -69,26 +58,19 @@ type AgentConfig struct {
 	WorkingDir string `mapstructure:"working_dir"`
 
 	// MCPTimeout is the timeout for individual MCP tool calls (e.g., "5m").
-	// This is used to configure OpenCode to wait longer for slow tool responses.
 	MCPTimeout string `mapstructure:"mcp_timeout"`
 
 	// DefaultWorkspace is an optional path to a repository that should be used
-	// as the default workspace for standalone MCP mode. When set, the MCP server
-	// will serve tools directly without requiring a workspace token.
-	// This enables direct connection from tools like OpenCode.
+	// as the default workspace for standalone MCP mode.
 	DefaultWorkspace string `mapstructure:"default_workspace"`
 
 	// DefaultWorkspaceRepo is the full name of the default workspace repository (e.g., "owner/repo").
-	// Required when DefaultWorkspace is set.
 	DefaultWorkspaceRepo string `mapstructure:"default_workspace_repo"`
 
 	// InProcessOnly skips starting the MCP HTTP server.
-	// Set to true when mode is "warden" or "native" — tools are registered
-	// directly in the goframe registry and the HTTP endpoint is never used.
 	InProcessOnly bool `mapstructure:"in_process_only"`
 
 	// BaseBranch is the target base branch for pull requests (default: "main").
-	// Set this to "master" or your repo's default branch if it differs.
 	BaseBranch string `mapstructure:"base_branch"`
 }
 
@@ -116,14 +98,14 @@ func (c *AgentConfig) Validate() error {
 		return nil // No validation needed if disabled
 	}
 
-	// Provider validation - default to opencode if empty
-	if c.Provider == "" {
-		c.Provider = "opencode"
-	}
-
 	// Mode validation
-	if err := c.validateMode(); err != nil {
-		return err
+	validModes := map[string]bool{
+		"native": true,
+		"pi":     true,
+		"warden": true,
+	}
+	if !validModes[c.Mode] {
+		return fmt.Errorf("agent.mode must be 'native', 'pi', or 'warden', got: %s", c.Mode)
 	}
 
 	// Model validation
@@ -151,6 +133,11 @@ func (c *AgentConfig) Validate() error {
 		return errors.New("agent.mcp_addr is required when agent is enabled (or set in_process_only: true)")
 	}
 
+	// Validate MCP address doesn't contain path separator
+	if c.MCPAddr != "" && (strings.Contains(c.MCPAddr, "/") || strings.Contains(c.MCPAddr, "\\")) {
+		return fmt.Errorf("agent.mcp_addr should not contain path separators: %s", c.MCPAddr)
+	}
+
 	// Default workspace validation
 	if err := c.validateDefaultWorkspace(); err != nil {
 		return err
@@ -158,45 +145,6 @@ func (c *AgentConfig) Validate() error {
 
 	// Working directory validation
 	return c.validateWorkingDir()
-}
-
-// validateMode validates the agent mode and OpenCode URL if needed.
-func (c *AgentConfig) validateMode() error {
-	validModes := map[string]bool{
-		"server": true,
-		"cli":    true,
-		"native": true,
-		"pi":     true,
-		"warden": true,
-	}
-	if !validModes[c.Mode] {
-		return fmt.Errorf("agent.mode must be 'server', 'cli', 'native', 'pi', or 'warden', got: %s", c.Mode)
-	}
-
-	// Validate OpenCodeURL when mode is "server"
-	if c.Mode == "server" {
-		if c.OpenCodeURL == "" {
-			return errors.New("agent.opencode_url is required when agent.mode is 'server'")
-		}
-		// Validate URL format
-		u, err := url.Parse(c.OpenCodeURL)
-		if err != nil {
-			return fmt.Errorf("agent.opencode_url is invalid: %w", err)
-		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("agent.opencode_url must use http or https scheme, got: %s", u.Scheme)
-		}
-		if u.Host == "" {
-			return errors.New("agent.opencode_url must include a host")
-		}
-	}
-
-	// Validate MCP address doesn't contain path separator
-	if strings.Contains(c.MCPAddr, "/") || strings.Contains(c.MCPAddr, "\\") {
-		return fmt.Errorf("agent.mcp_addr should not contain path separators: %s", c.MCPAddr)
-	}
-
-	return nil
 }
 
 // validateWorkingDir validates the working directory.
@@ -588,9 +536,7 @@ func setDefaults(v *viper.Viper) {
 
 	// Agent
 	v.SetDefault("agent.enabled", false)
-	v.SetDefault("agent.provider", "opencode")
-	v.SetDefault("agent.mode", "server") // "server" (HTTP API) or "cli" (subprocess)
-	v.SetDefault("agent.opencode_url", "http://localhost:3000")
+	v.SetDefault("agent.mode", "warden")
 	v.SetDefault("agent.model", "qwen2.5-coder")
 	v.SetDefault("agent.timeout", "30m")
 	v.SetDefault("agent.max_iterations", 3)

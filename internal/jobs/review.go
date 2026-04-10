@@ -229,7 +229,6 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 		updateResult.RepoPath,
 		agent.Config{
 			Enabled:               j.cfg.Agent.Enabled,
-			Provider:              j.cfg.Agent.Provider,
 			Mode:                  j.cfg.Agent.Mode,
 			Model:                 j.cfg.Agent.Model,
 			Timeout:               timeout,

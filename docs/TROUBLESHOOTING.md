@@ -125,22 +125,18 @@ This is **non-fatal** — retrieval falls back to dense-only search. The review 
 
 **Check:**
 1. `agent.enabled: true` in `config.yaml`
-2. MCP server is listening: look for `MCP server listening` in logs
-3. OpenCode server is running and accessible at `agent.opencode_url`
-4. `agent.max_concurrent_sessions` limit not reached — check active sessions in logs
+2. `agent.mode` is set to `warden` or `native`
+3. `agent.max_concurrent_sessions` limit not reached — check active sessions in logs
 
 ---
 
-## Agent workspace path mapping errors
+## Agent workspace errors
 
-**Symptom:** OpenCode agent errors with "no such file or directory" when accessing workspace files.
+**Symptom:** Agent errors with "no such file or directory" when accessing workspace files.
 
-**Cause:** The host path and the path inside the OpenCode Docker container don't match.
-
-**Fix:** See [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md) for the path mapping configuration. Ensure:
-- `agent.working_dir` in `config.yaml` is the host path
-- The same directory is mounted into the OpenCode container at `/agent-workspaces`
-- No trailing slashes in either path
+**Fix:** See [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md) for the workspace configuration. Ensure:
+- `agent.working_dir` in `config.yaml` is an absolute path
+- The directory exists and is writable
 
 ---
 
@@ -158,26 +154,6 @@ The password can be set via environment variable to avoid putting it in `config.
 ```sh
 export DATABASE_PASSWORD=secret
 ```
-
----
-
-## MCP tools not discovered by OpenCode
-
-**Symptom:** OpenCode connects to the MCP server but doesn't call any tools.
-
-**Check:**
-1. The MCP URL must end with `/sse` and use `"type": "remote"` in OpenCode config (not `"type": "sse"`):
-   ```json
-   "mcp": {
-     "code-warden": {
-       "type": "remote",
-       "url": "http://127.0.0.1:8081/sse",
-       "enabled": true
-     }
-   }
-   ```
-2. Check Code-Warden logs for `MCP tool call` entries — if tools are being called but failing, the error will be logged there.
-3. Verify the MCP server bind address (`agent.mcp_addr`) is reachable from where OpenCode is running.
 
 ---
 

@@ -73,7 +73,7 @@ GoFrame is a **RAG framework for code understanding** that provides:
 
 **GoFrame does NOT include:**
 - Application logic (GitHub webhooks, job queues)
-- Agent orchestration (MCP server, OpenCode client)
+- Agent orchestration (MCP server, in-process agent loops)
 - Business-specific tools (PR creation, issue management)
 - Database persistence (PostgreSQL models)
 
@@ -130,13 +130,13 @@ Code-Warden builds on GoFrame to provide:
 │   For /implement command:                                                       │
 │                                                                                  │
 │   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐                      │
-│   │ Agent       │────►│ MCP Server  │────►│ OpenCode    │                      │
-│   │ Orchestrator│     │ (tools)     │     │ Client      │                      │
-│   └─────────────┘     └──────┬──────┘     └─────────────┘                      │
-│                              │                                                  │
-│                              ▼                                                  │
-│                       ┌─────────────┐                                          │
-│                       │ RAG Service  │ (via review_code tool)                   │
+│   │ Agent       │────►│ Agent Loop  │     │ MCP Server  │                      │
+│   │ Orchestrator│     │ (warden/pi) │     │ (tools,     │                      │
+│   └─────────────┘     └──────┬──────┘     │  optional)  │                      │
+│                              │            └──────┬──────┘                      │
+│                              ▼                   ▼                              │
+│                       ┌─────────────┐     ┌─────────────┐                      │
+│                       │ LLM Client  │     │ RAG Service  │                      │
 │                       │ VectorStore  │                                          │
 │                       └─────────────┘                                          │
 │                                                                                  │
@@ -280,6 +280,5 @@ This would NOT belong in GoFrame because:
 - [INDEXING.md](./INDEXING.md) - Chunk types, metadata schema, debugging retrieval
 - [IMPLEMENT_ARCHITECTURE.md](./IMPLEMENT_ARCHITECTURE.md) - `/implement` command and agent flow
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) - Common issues and fixes
-- [opencode-config.md](./opencode-config.md) - OpenCode agent configuration
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) - How to contribute
 - [../CLAUDE.md](../CLAUDE.md) - Development guidelines for Claude Code

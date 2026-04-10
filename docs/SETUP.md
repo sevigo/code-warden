@@ -216,7 +216,7 @@ For incremental updates after prescan is complete:
 
 ## Agent Setup (Optional)
 
-To enable the `/implement` command (autonomous issue implementation), see [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md) and [opencode-config.md](./opencode-config.md).
+To enable the `/implement` command (autonomous issue implementation), see [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md).
 
 ---
 
