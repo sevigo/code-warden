@@ -3,16 +3,15 @@ package agent
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestCrawlProjectContext_NoFiles(t *testing.T) {
 	dir := t.TempDir()
 	got := crawlProjectContext(dir)
-	if got != "" {
-		t.Errorf("expected empty string for no files, got: %q", got)
-	}
+	assert.Empty(t, got, "expected empty string for no files")
 }
 
 func TestCrawlProjectContext_AgentsMD(t *testing.T) {
@@ -23,12 +22,8 @@ func TestCrawlProjectContext_AgentsMD(t *testing.T) {
 	}
 
 	got := crawlProjectContext(dir)
-	if !contains(got, "AGENTS.md") {
-		t.Errorf("expected AGENTS.md section, got: %s", got)
-	}
-	if !contains(got, "Always use tabs") {
-		t.Errorf("expected convention content, got: %s", got)
-	}
+	assert.Contains(t, got, "AGENTS.md", "expected AGENTS.md section")
+	assert.Contains(t, got, "Always use tabs", "expected convention content")
 }
 
 func TestCrawlProjectContext_SystemMD(t *testing.T) {
@@ -42,12 +37,8 @@ func TestCrawlProjectContext_SystemMD(t *testing.T) {
 	}
 
 	got := crawlProjectContext(dir)
-	if !contains(got, "System Instructions") {
-		t.Errorf("expected System Instructions section, got: %s", got)
-	}
-	if !contains(got, "Run tests before committing") {
-		t.Errorf("expected system content, got: %s", got)
-	}
+	assert.Contains(t, got, "System Instructions", "expected System Instructions section")
+	assert.Contains(t, got, "Run tests before committing", "expected system content")
 }
 
 func TestCrawlProjectContext_Skills(t *testing.T) {
@@ -61,9 +52,7 @@ func TestCrawlProjectContext_Skills(t *testing.T) {
 	}
 
 	got := crawlProjectContext(dir)
-	if !contains(got, "Skill: tdd") {
-		t.Errorf("expected Skill: tdd section, got: %s", got)
-	}
+	assert.Contains(t, got, "Skill: tdd", "expected Skill: tdd section")
 }
 
 func TestCrawlProjectContext_BothFiles(t *testing.T) {
@@ -83,12 +72,8 @@ func TestCrawlProjectContext_BothFiles(t *testing.T) {
 	}
 
 	got := crawlProjectContext(dir)
-	if !contains(got, "AGENTS.md") {
-		t.Error("expected AGENTS.md section")
-	}
-	if !contains(got, "System Instructions") {
-		t.Error("expected System Instructions section")
-	}
+	assert.Contains(t, got, "AGENTS.md", "expected AGENTS.md section")
+	assert.Contains(t, got, "System Instructions", "expected System Instructions section")
 }
 
 func TestCrawlProjectContext_EmptyFile(t *testing.T) {
@@ -98,11 +83,5 @@ func TestCrawlProjectContext_EmptyFile(t *testing.T) {
 	}
 
 	got := crawlProjectContext(dir)
-	if got != "" {
-		t.Errorf("expected empty string for empty file, got: %q", got)
-	}
-}
-
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
+	assert.Empty(t, got, "expected empty string for empty file")
 }
