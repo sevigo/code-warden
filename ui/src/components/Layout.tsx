@@ -60,6 +60,30 @@ export default function Layout({ children }: SidebarProps) {
   const queryClient = useQueryClient()
   const { theme, toggle } = useTheme()
 
+  const parseGitHubRepo = useCallback((input: string): string | null => {
+    const value = input.trim()
+    const isUrlLike =
+      value.startsWith('http://') ||
+      value.startsWith('https://') ||
+      value.startsWith('github.com/')
+
+    if (!isUrlLike) return null
+
+    try {
+      const normalized = value.startsWith('github.com/') ? `https://${value}` : value
+      const url = new URL(normalized)
+
+      if (url.hostname !== 'github.com') return null
+
+      const parts = url.pathname.split('/').filter(Boolean)
+      if (parts.length < 2) return null
+
+      return `${parts[0]}/${parts[1]}`
+    } catch {
+      return null
+    }
+  }, [])
+
   // Setup status check
   const { data: setupStatus } = useQuery<SetupStatus>({
     queryKey: ['setup-status'],
@@ -84,10 +108,8 @@ export default function Layout({ children }: SidebarProps) {
   const addRepo = useMutation({
     mutationFn: () => {
       let name = repoName.trim()
-      if (name.startsWith('http') || name.startsWith('github.com')) {
-        const match = name.match(/github\.com\/([^/]+\/[^/]+)/)
-        if (match) name = match[1]
-      }
+      const parsed = parseGitHubRepo(name)
+      if (parsed) name = parsed
       return api.repos.register({ full_name: name })
     },
     onSuccess: (newRepo) => {
@@ -112,9 +134,14 @@ export default function Layout({ children }: SidebarProps) {
       return
     }
     
-    if (trimmed.startsWith('http') || trimmed.startsWith('github.com')) {
-      const match = trimmed.match(/github\.com\/([^/]+\/[^/]+)/)
-      if (!match) {
+    const parsed = parseGitHubRepo(trimmed)
+    const isUrlLike =
+      trimmed.startsWith('http://') ||
+      trimmed.startsWith('https://') ||
+      trimmed.startsWith('github.com/')
+
+    if (isUrlLike) {
+      if (!parsed) {
         setFormError('Invalid GitHub URL format')
         return
       }
