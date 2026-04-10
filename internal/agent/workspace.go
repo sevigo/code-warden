@@ -16,6 +16,7 @@ import (
 type agentWorkspace struct {
 	dir       string
 	logPath   string
+	tracePath string // absolute path to trace.jsonl (empty if tracing disabled)
 	logFile   *os.File
 	traceFile *os.File     // JSONL conversation trace for post-mortem debugging (nil = not opened)
 	lsp       *lsp.Manager // nil when LSP is unavailable for this workspace
@@ -90,11 +91,12 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 		o.logger.Warn("lsp: manager failed to start, continuing without LSP", "error", err)
 		lspMgr = nil
 	}
-	o.logger.Info("lsp: language server init complete", "session_id", session.ID, "available", lspMgr != nil)
+	o.logger.Info("lsp: language server init complete", "session_id", session.ID, "available", lspMgr != nil && lspMgr.Available())
 
 	return &agentWorkspace{
 		dir:       workspaceDir,
 		logPath:   logPath,
+		tracePath: tracePath,
 		logFile:   logFile,
 		traceFile: traceFile,
 		lsp:       lspMgr,
@@ -151,7 +153,70 @@ func (o *Orchestrator) cleanupWorkspace(sessionID string) error {
 	return nil
 }
 
-// readLogFile reads the content of a file up to maxBytes.
+// persistLogs copies agent.log and trace.jsonl from the workspace to a stable
+// directory that survives cleanupWorkspace. This enables post-mortem analysis
+// of sessions even after the workspace directory has been removed.
+func (o *Orchestrator) persistLogs(ws *agentWorkspace, sessionID string) {
+	safeID, err := sanitizeSessionID(sessionID)
+	if err != nil {
+		o.logger.Warn("persistLogs: invalid session ID", "error", err)
+		return
+	}
+
+	// Stable directory: sibling of the workspace parent, e.g. /tmp/code-warden-agents/../agent-traces/
+	traceDir := filepath.Join(filepath.Dir(o.config.WorkingDir), "agent-traces")
+	if err := os.MkdirAll(traceDir, 0750); err != nil {
+		o.logger.Warn("persistLogs: failed to create trace directory", "path", traceDir, "error", err)
+		return
+	}
+
+	// Sync+close the files before copying to ensure all data is flushed.
+	if ws.logFile != nil {
+		_ = ws.logFile.Sync()
+	}
+	if ws.traceFile != nil {
+		_ = ws.traceFile.Sync()
+	}
+
+	// Copy agent.log
+	srcLog := filepath.Join(ws.dir, "agent.log")
+	dstLog := filepath.Join(traceDir, safeID+".log")
+	if err := copyFile(srcLog, dstLog); err != nil {
+		o.logger.Debug("persistLogs: could not copy agent.log", "error", err)
+	} else {
+		o.logger.Info("persistLogs: saved agent.log", "path", dstLog)
+	}
+
+	// Copy trace.jsonl
+	if ws.tracePath != "" {
+		dstTrace := filepath.Join(traceDir, safeID+".jsonl")
+		if err := copyFile(ws.tracePath, dstTrace); err != nil {
+			o.logger.Debug("persistLogs: could not copy trace.jsonl", "error", err)
+		} else {
+			o.logger.Info("persistLogs: saved trace.jsonl", "path", dstTrace)
+		}
+	}
+}
+
+// copyFile copies a single file from src to dst. It returns an error if the
+// source file does not exist — callers should treat this as non-fatal.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
+}
+
 // If the file exceeds maxBytes, it reads the *last* maxBytes to ensure
 // the AGENT_RESULT: sentinel (typically at the end) is captured.
 func (o *Orchestrator) readLogFile(path string, maxBytes int64) ([]byte, error) {

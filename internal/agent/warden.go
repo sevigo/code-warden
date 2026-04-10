@@ -91,6 +91,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		o.failSession(ctx, session, err.Error())
 		return
 	}
+	tracer := NewTracingModel(agentLLM)
 
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
 	defer cancel()
@@ -104,6 +105,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	if ws.traceFile != nil {
 		defer ws.traceFile.Close()
 	}
+	defer o.persistLogs(ws, session.ID)
 	if ws.lsp != nil {
 		defer ws.lsp.Stop()
 	}
@@ -126,20 +128,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	checkRunID := o.createCheckRun(ctx, session.Issue, baseSHA,
 		fmt.Sprintf("Session `%s` started.", session.ID))
 	// Complete the Check Run when runWardenAgent returns, whatever the outcome.
-	// checkRunID is passed explicitly so the closure is not sensitive to any
-	// future reassignment of the local variable.
-	defer func(crID int64) {
-		conclusion := "success"
-		summary := fmt.Sprintf("Session `%s` completed.", session.ID)
-		if s := session.GetStatus(); s == StatusFailed {
-			conclusion = "failure"
-			summary = fmt.Sprintf("Session `%s` failed: %s", session.ID, session.GetError())
-		} else if s == StatusDraft {
-			conclusion = "action_required"
-			summary = fmt.Sprintf("Session `%s` yielded a draft PR for human review.", session.ID)
-		}
-		o.completeCheckRun(ctx, session.Issue, crID, conclusion, summary)
-	}(checkRunID)
+	defer o.deferCheckRunCompletion(ctx, session, checkRunID)
 
 	// ── Progress tracker ─────────────────────────────────────────────────────
 	// Intercepts every tool call to write real-time log lines.
@@ -179,19 +168,19 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 
 	// ── Planning phase ───────────────────────────────────────────────────────
 	tracker.setPhase("planning")
-	plan := o.buildPlan(ctx, agentLLM, session, ws, tracker)
+	plan := o.buildPlan(ctx, tracer, session, ws, tracker)
 	o.logger.Info("warden: planning complete, starting implement loop", "session_id", session.ID)
 
 	// ── Loop 1: Implement ────────────────────────────────────────────────────
 	tracker.setPhase("implementing")
-	implIter, implTokIn, implTokOut, verdict, ok := o.runImplementPhase(ctx, session, agentLLM, ws, branch, plan, tracker)
+	implIter, _, _, verdict, ok := o.runImplementPhase(ctx, session, tracer, ws, branch, plan, tracker)
 	if !ok {
 		return
 	}
 
 	// ── Loop 2: Publish ──────────────────────────────────────────────────────
 	tracker.setPhase("publishing")
-	o.runPublishPhase(ctx, session, agentLLM, ws, branch, verdict, implIter, implTokIn, implTokOut, tracker)
+	o.runPublishPhase(ctx, session, tracer, ws, branch, verdict, implIter, tracker)
 }
 
 // runImplementPhase builds and runs the implement loop. Returns the iteration
@@ -200,12 +189,12 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 func (o *Orchestrator) runImplementPhase(
 	ctx context.Context,
 	session *Session,
-	agentLLM llms.Model,
+	tracer *TracingModel,
 	ws *agentWorkspace,
 	branch, plan string,
 	tracker *progressTracker,
 ) (iterations int, tokensIn, tokensOut float64, verdict string, ok bool) {
-	implLoop, err := o.buildImplementLoop(agentLLM, session, ws, plan, tracker)
+	implLoop, err := o.buildImplementLoop(tracer, session, ws, plan, tracker)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build implement loop: %v", err))
 		return 0, 0, 0, "", false
@@ -231,11 +220,21 @@ func (o *Orchestrator) runImplementPhase(
 			"session_id", session.ID, "iterations", implResult.Iterations)
 	}
 
+	inTokens, outTokens, llmCalls := tracer.TokenCounts()
+	toolSummary := make(map[string]int)
+	for _, tc := range implResult.ToolCalls {
+		toolSummary[tc.Name]++
+	}
+	modifiedCount := len(modifiedFiles(implResult.ToolCalls))
+
 	o.logger.Info("warden: implement loop done",
 		"session_id", session.ID,
 		"iterations", implResult.Iterations,
-		"tokens_in", implResult.Tokens.Input,
-		"tokens_out", implResult.Tokens.Output,
+		"tokens_in", inTokens,
+		"tokens_out", outTokens,
+		"llm_calls", llmCalls,
+		"tool_calls", toolSummary,
+		"modified_files", modifiedCount,
 	)
 
 	v, _, _ := o.mcpServer.GetReviewBySession(session.ID)
@@ -246,12 +245,12 @@ func (o *Orchestrator) runImplementPhase(
 			"iterations", implResult.Iterations,
 		)
 		o.yieldDraftPR(ctx, session, ws, branch, implResult.Iterations,
-			implResult.Tokens.Input, implResult.Tokens.Output,
+			float64(inTokens), float64(outTokens),
 			modifiedFiles(implResult.ToolCalls))
 		return 0, 0, 0, "", false
 	}
 
-	return implResult.Iterations, implResult.Tokens.Input, implResult.Tokens.Output, v, true
+	return implResult.Iterations, float64(inTokens), float64(outTokens), v, true
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -260,14 +259,13 @@ func (o *Orchestrator) runImplementPhase(
 func (o *Orchestrator) runPublishPhase(
 	ctx context.Context,
 	session *Session,
-	agentLLM llms.Model,
+	tracer *TracingModel,
 	ws *agentWorkspace,
 	branch, verdict string,
 	implIterations int,
-	implTokensIn, implTokensOut float64,
 	tracker *progressTracker,
 ) {
-	pubLoop, err := o.buildPublishLoop(agentLLM, session, ws, branch, tracker)
+	pubLoop, err := o.buildPublishLoop(tracer, session, ws, branch, tracker)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build publish loop: %v", err))
 		return
@@ -294,12 +292,15 @@ func (o *Orchestrator) runPublishPhase(
 		return
 	}
 
+	// Accumulate token counts across all phases (tracer keeps running totals).
+	totalIn, totalOut, _ := tracer.TokenCounts()
+
 	result := &Result{
 		Branch:       branch,
 		Verdict:      verdict,
 		Iterations:   implIterations + pubResult.Iterations,
-		TokensInput:  int64(implTokensIn + pubResult.Tokens.Input),
-		TokensOutput: int64(implTokensOut + pubResult.Tokens.Output),
+		TokensInput:  totalIn,
+		TokensOutput: totalOut,
 	}
 	if prInfo := extractPRInfo(pubResult.Response); prInfo != nil {
 		result.PRNumber = prInfo.PRNumber
@@ -364,7 +365,7 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, ws.lsp != nil && ws.lsp.Available(), plan)),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopGovernance(governance),
-		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile)),
+		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
 		goframeagent.WithLoopLogger(loopLogger),
 	)
 }
@@ -512,7 +513,7 @@ func compactionFilterText(text string) string {
 //
 // If the LLM call for summarization fails the hook returns nil, leaving the
 // history unchanged and letting the loop continue naturally.
-func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File, llm llms.Model) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
 	return func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
 		// Always write a trace snapshot for post-mortem debugging, regardless
 		// of whether compaction fires. This gives a per-iteration conversation
@@ -566,13 +567,7 @@ Do not include any preamble. Output only the summary text.
 --- CONVERSATION ---
 %s`, transcript.String())
 
-		agentLLM, err := o.resolveAgentLLM(ctx)
-		if err != nil {
-			o.logger.Warn("warden: compaction: failed to resolve LLM, skipping", "error", err)
-			return nil
-		}
-
-		resp, err := agentLLM.GenerateContent(ctx,
+		resp, err := llm.GenerateContent(ctx,
 			[]schema.MessageContent{schema.NewHumanMessage(summaryPrompt)},
 		)
 		if err != nil || len(resp.Choices) == 0 {
