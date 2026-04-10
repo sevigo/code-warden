@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pmezard/go-difflib/difflib"
 	"github.com/sevigo/code-warden/internal/mcp"
 	"github.com/sevigo/code-warden/internal/mcp/tools"
 )
@@ -77,6 +78,7 @@ func (t *readFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	return map[string]any{
 		"content": strings.Join(lines, "\n"),
 		"lines":   len(lines),
+		"path":    relPath,
 	}, nil
 }
 
@@ -134,17 +136,30 @@ func (t *writeFileTool) Execute(ctx context.Context, args map[string]any) (any, 
 	return result, nil
 }
 
-// editFileTool replaces the first occurrence of old_string with new_string.
-// Mirrors Claude Code's Edit tool semantics.
+// editFileTool replaces text in a file. Accepts either a single old_string/new_string
+// pair (backwards-compatible) or an edits array for atomic multi-replacement.
+// Mirrors Pi's edit tool semantics.
 type editFileTool struct{}
 
 func (t *editFileTool) Name() string { return "edit_file" }
 
 func (t *editFileTool) Description() string {
-	return `Replace the first exact occurrence of old_string with new_string in a file.
-The match must be unique — if old_string appears more than once the edit is
-rejected. Use write_file to replace the entire file instead.
-Path is relative to the workspace root.`
+	return `Replace text in a file using exact-then-fuzzy matching.
+
+Two calling conventions are supported:
+
+1. Single replacement (backwards-compatible):
+   {"path": "...", "old_string": "...", "new_string": "..."}
+
+2. Multiple atomic replacements:
+   {"path": "...", "edits": [{"old_string": "...", "new_string": "..."}, ...]}
+
+Each old_string must appear exactly once; the edit is rejected if it is
+not found or is ambiguous. All replacements in edits[] are applied atomically
+in a single pass (no partial writes). Use write_file to replace the entire file.
+Path is relative to the workspace root.
+
+Returns ok, path, an optional fuzzy_match flag, and a unified diff of the changes.`
 }
 
 func (t *editFileTool) ParametersSchema() map[string]any {
@@ -157,14 +172,26 @@ func (t *editFileTool) ParametersSchema() map[string]any {
 			},
 			"old_string": map[string]any{
 				"type":        "string",
-				"description": "The exact string to replace (must appear exactly once in the file)",
+				"description": "Single replacement: the exact string to replace (must appear exactly once)",
 			},
 			"new_string": map[string]any{
 				"type":        "string",
-				"description": "The string to replace it with",
+				"description": "Single replacement: the string to replace it with",
+			},
+			"edits": map[string]any{
+				"type":        "array",
+				"description": "Multiple atomic replacements applied in one pass",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"old_string": map[string]any{"type": "string"},
+						"new_string": map[string]any{"type": "string"},
+					},
+					"required": []string{"old_string", "new_string"},
+				},
 			},
 		},
-		"required": []string{"path", "old_string", "new_string"},
+		"required": []string{"path"},
 	}
 }
 
@@ -174,13 +201,38 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	if !ok || relPath == "" {
 		return nil, fmt.Errorf("path is required")
 	}
-	oldStr, ok := args["old_string"].(string)
-	if !ok {
-		return nil, fmt.Errorf("old_string is required")
-	}
-	newStr, ok := args["new_string"].(string)
-	if !ok {
-		return nil, fmt.Errorf("new_string is required")
+
+	// Resolve edit pairs from either convention.
+	var pairs []editPair
+	if rawEdits, ok := args["edits"]; ok {
+		// Multi-edit: edits: [{old_string, new_string}, ...]
+		list, ok := rawEdits.([]any)
+		if !ok {
+			return nil, fmt.Errorf("edits must be an array")
+		}
+		for i, item := range list {
+			m, ok := item.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("edits[%d] must be an object", i)
+			}
+			oldStr, _ := m["old_string"].(string)
+			newStr, _ := m["new_string"].(string)
+			if oldStr == "" {
+				return nil, fmt.Errorf("edits[%d].old_string is required", i)
+			}
+			pairs = append(pairs, editPair{OldStr: oldStr, NewStr: newStr})
+		}
+		if len(pairs) == 0 {
+			return nil, fmt.Errorf("edits array is empty")
+		}
+	} else {
+		// Single replacement: old_string / new_string.
+		oldStr, ok := args["old_string"].(string)
+		if !ok {
+			return nil, fmt.Errorf("old_string is required (or provide edits array)")
+		}
+		newStr, _ := args["new_string"].(string)
+		pairs = []editPair{{OldStr: oldStr, NewStr: newStr}}
 	}
 
 	abs, err := safeJoin(root, relPath)
@@ -194,7 +246,7 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	}
 	original := string(data)
 
-	updated, usedFuzzy, err := applyEdit(original, oldStr, newStr)
+	updated, usedFuzzy, err := applyMultiEdit(original, pairs)
 	if err != nil {
 		return nil, fmt.Errorf("edit_file: %w", err)
 	}
@@ -206,7 +258,39 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	if usedFuzzy {
 		result["fuzzy_match"] = true
 	}
+
+	// Generate a unified diff so the LLM can verify its changes without a
+	// follow-up read_file call. Truncated to avoid flooding the context.
+	diffStr := buildUnifiedDiff(original, updated, relPath)
+	if diffStr != "" {
+		result["diff"] = diffStr
+	}
+
 	return result, nil
+}
+
+// diffMaxBytes is the maximum number of bytes returned in the edit_file diff
+// field. Large rewrites are truncated with a marker.
+const diffMaxBytes = 4000
+
+// buildUnifiedDiff returns a unified diff string between original and updated,
+// or an empty string if the diff cannot be produced.
+func buildUnifiedDiff(original, updated, path string) string {
+	ud := difflib.UnifiedDiff{
+		A:        difflib.SplitLines(original),
+		B:        difflib.SplitLines(updated),
+		FromFile: "a/" + path,
+		ToFile:   "b/" + path,
+		Context:  3,
+	}
+	s, err := difflib.GetUnifiedDiffString(ud)
+	if err != nil || s == "" {
+		return ""
+	}
+	if len(s) > diffMaxBytes {
+		return s[:diffMaxBytes] + "\n... [diff truncated]"
+	}
+	return s
 }
 
 // listDirTool lists the contents of a directory in the workspace.

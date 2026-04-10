@@ -120,9 +120,116 @@ func fuzzyFindText(content, oldText string) fuzzyFindResult {
 	}
 }
 
-// applyEdit performs a text replacement using exact-then-fuzzy matching.
-// It first tries an exact match; if that fails (not found or ambiguous),
-// it falls back to fuzzy matching with Unicode normalization.
+// editPair is a single old→new replacement to be applied to a file.
+type editPair struct {
+	OldStr string
+	NewStr string
+}
+
+// applyMultiEdit applies multiple (old→new) replacements atomically.
+// If any pair requires fuzzy matching the entire content is normalised first,
+// ensuring all replacements operate in a consistent character space.
+// Replacements are applied in descending position order so earlier indices
+// are not shifted by later writes.
+//
+// Rules (mirroring Pi's applyEditsToNormalizedContent):
+//   - Each OldStr must match exactly once (error if 0 or >1 occurrences).
+//   - No two matches may overlap (error if they do).
+//
+// WARNING: When fuzzy matching is used the returned content is the
+// NFKC-normalised form of the entire file — characters outside the edited
+// regions (smart quotes, ligatures, special spaces) are converted to their
+// ASCII equivalents. Acceptable for code; may alter documentation.
+func applyMultiEdit(content string, edits []editPair) (result string, usedFuzzy bool, err error) {
+	if len(edits) == 0 {
+		return content, false, nil
+	}
+
+	// Phase 1: attempt exact matches for all edits, note if any need fuzzy.
+	type matchResult struct {
+		index    int
+		matchLen int
+	}
+	matches := make([]matchResult, len(edits))
+	needsFuzzy := false
+
+	for i, e := range edits {
+		cnt := strings.Count(content, e.OldStr)
+		if cnt == 1 {
+			matches[i] = matchResult{strings.Index(content, e.OldStr), len(e.OldStr)}
+		} else if cnt > 1 {
+			return "", false, fmt.Errorf("edit_file: edits[%d] old_string appears %d times; provide more context to make it unique", i, cnt)
+		} else {
+			needsFuzzy = true
+		}
+	}
+
+	// Phase 2: if any edit missed exactly, normalise the entire content and
+	// re-resolve all matches in the normalised space.
+	working := content
+	if needsFuzzy {
+		working = normalizeForFuzzyMatch(content)
+		usedFuzzy = true
+		for i, e := range edits {
+			if matches[i].index != 0 || matches[i].matchLen != 0 {
+				// Re-find in normalised space (was exact in original space but
+				// the index is now invalid; normalisation may change byte offsets).
+				matches[i] = matchResult{}
+			}
+			normOld := normalizeForFuzzyMatch(e.OldStr)
+			cnt := strings.Count(working, normOld)
+			if cnt == 0 {
+				return "", false, fmt.Errorf("edit_file: edits[%d] old_string not found (tried exact match and fuzzy normalization)", i)
+			}
+			if cnt > 1 {
+				return "", false, fmt.Errorf("edit_file: edits[%d] old_string appears %d times after normalization; provide more context to make it unique", i, cnt)
+			}
+			matches[i] = matchResult{strings.Index(working, normOld), len(normOld)}
+		}
+	} else {
+		// All exact — re-index in original content (already done above).
+	}
+
+	// Phase 3: validate no overlapping ranges.
+	for i := range matches {
+		iEnd := matches[i].index + matches[i].matchLen
+		for j := i + 1; j < len(matches); j++ {
+			jEnd := matches[j].index + matches[j].matchLen
+			if matches[i].index < jEnd && matches[j].index < iEnd {
+				return "", false, fmt.Errorf("edit_file: edits[%d] and edits[%d] overlap", i, j)
+			}
+		}
+	}
+
+	// Phase 4: sort by position descending, apply in that order.
+	// Use a simple insertion sort — edit count is always small.
+	order := make([]int, len(edits))
+	for i := range order {
+		order[i] = i
+	}
+	for i := 1; i < len(order); i++ {
+		for j := i; j > 0 && matches[order[j]].index > matches[order[j-1]].index; j-- {
+			order[j], order[j-1] = order[j-1], order[j]
+		}
+	}
+
+	out := working
+	newStrFor := func(i int) string {
+		if needsFuzzy {
+			return edits[i].NewStr // newStr is always applied verbatim
+		}
+		return edits[i].NewStr
+	}
+	for _, i := range order {
+		m := matches[i]
+		out = out[:m.index] + newStrFor(i) + out[m.index+m.matchLen:]
+	}
+
+	return out, usedFuzzy, nil
+}
+
+// applyEdit performs a single text replacement using exact-then-fuzzy matching.
+// It delegates to applyMultiEdit with a one-element slice.
 //
 // WARNING: When fuzzy matching is used, the returned content is the
 // NFKC-normalized form of the entire file. This means characters outside
@@ -130,27 +237,5 @@ func fuzzyFindText(content, oldText string) fuzzyFindResult {
 // converted to their ASCII equivalents. This is an acceptable trade-off
 // for code files but may alter non-code content.
 func applyEdit(content, oldText, newText string) (result string, usedFuzzy bool, err error) {
-	count := strings.Count(content, oldText)
-	if count == 1 {
-		return strings.Replace(content, oldText, newText, 1), false, nil
-	}
-
-	if count > 1 {
-		return "", false, fmt.Errorf("edit_file: old_string appears %d times; provide more context to make it unique", count)
-	}
-
-	fuzzyResult := fuzzyFindText(content, oldText)
-	if !fuzzyResult.found {
-		return "", false, fmt.Errorf("edit_file: old_string not found in file (tried exact match and fuzzy normalization)")
-	}
-
-	fuzzyContent := fuzzyResult.contentForReplacement
-	fuzzyOldText := normalizeForFuzzyMatch(oldText)
-	fuzzyCount := strings.Count(fuzzyContent, fuzzyOldText)
-	if fuzzyCount > 1 {
-		return "", false, fmt.Errorf("edit_file: old_string appears %d times after normalization; provide more context to make it unique", fuzzyCount)
-	}
-
-	newContent := fuzzyContent[:fuzzyResult.index] + newText + fuzzyContent[fuzzyResult.index+fuzzyResult.matchLen:]
-	return newContent, true, nil
+	return applyMultiEdit(content, []editPair{{OldStr: oldText, NewStr: newText}})
 }

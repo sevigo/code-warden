@@ -112,7 +112,7 @@ require (
 	github.com/ollama/ollama v0.20.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0
 	github.com/qdrant/go-client v1.17.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect

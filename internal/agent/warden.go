@@ -556,6 +556,187 @@ func compactionFilterText(text string) string {
 	return text
 }
 
+// findTailStart returns the index of the first message to include in the
+// preserved tail after compaction. It ensures the tail starts at a
+// ChatMessageTypeHuman message so a "tool"-role result is never orphaned from
+// the AI turn that requested it.
+//
+// It walks backwards from the ideal cut point (len(msgs)-minTail) until it
+// lands on a human message. Stops at index 2 to always leave room for
+// msgs[0] (system prompt) and the new summary human message.
+func findTailStart(msgs []schema.MessageContent, minTail int) int {
+	n := len(msgs)
+	if n <= minTail+1 {
+		return 1 // not enough to compact — keep everything after system prompt
+	}
+	start := n - minTail
+	for start > 2 && msgs[start].Role != schema.ChatMessageTypeHuman {
+		start--
+	}
+	return start
+}
+
+// extractFileOpsFromMsgs parses ToolResultContent parts in the message history
+// and returns two sorted, deduplicated file lists:
+//   - readFiles: files touched by read_file but not subsequently modified
+//   - modifiedFiles: files written or edited (write_file / edit_file)
+//
+// Tool results are formatted by goframe as
+//
+//	"Tool '<name>' returned: <json>"
+//
+// so we strip the prefix and unmarshal the JSON to read the "path" field.
+// read_file results also include "path" (added in this PR).
+func extractFileOpsFromMsgs(msgs []schema.MessageContent) (readFiles, modifiedFiles []string) {
+	readSet := make(map[string]struct{})
+	modSet := make(map[string]struct{})
+
+	for _, m := range msgs {
+		if m.Role != schema.ChatMessageTypeTool {
+			continue
+		}
+		for _, part := range m.Parts {
+			trc, ok := part.(schema.ToolResultContent)
+			if !ok {
+				continue
+			}
+			switch trc.ToolName {
+			case "read_file", "write_file", "edit_file":
+				path := extractPathFromToolResult(trc.Content)
+				if path == "" {
+					continue
+				}
+				if trc.ToolName == "read_file" {
+					readSet[path] = struct{}{}
+				} else {
+					modSet[path] = struct{}{}
+				}
+			}
+		}
+	}
+
+	// read-only = read − modified
+	for p := range readSet {
+		if _, modified := modSet[p]; !modified {
+			readFiles = append(readFiles, p)
+		}
+	}
+	for p := range modSet {
+		modifiedFiles = append(modifiedFiles, p)
+	}
+	sortStrings(readFiles)
+	sortStrings(modifiedFiles)
+	return readFiles, modifiedFiles
+}
+
+// extractPathFromToolResult extracts the "path" field from a goframe tool
+// result string of the form "Tool '<name>' returned: <json>".
+func extractPathFromToolResult(content string) string {
+	_, jsonPart, found := strings.Cut(content, "returned: ")
+	if !found {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonPart)), &m); err != nil {
+		return ""
+	}
+	path, _ := m["path"].(string)
+	return path
+}
+
+// parseFileTagsFromSummary extracts the <read-files> and <modified-files> XML
+// blocks that were appended by a prior compaction, so they can be merged with
+// the file operations discovered in the new messages.
+func parseFileTagsFromSummary(summary string) (readFiles, modifiedFiles []string) {
+	readFiles = parseXMLBlock(summary, "read-files")
+	modifiedFiles = parseXMLBlock(summary, "modified-files")
+	return readFiles, modifiedFiles
+}
+
+// parseXMLBlock extracts newline-separated file paths from a block of the form
+//
+//	<tag>
+//	path1
+//	path2
+//	</tag>
+func parseXMLBlock(s, tag string) []string {
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	start := strings.Index(s, open)
+	if start == -1 {
+		return nil
+	}
+	start += len(open)
+	end := strings.Index(s[start:], close)
+	if end == -1 {
+		return nil
+	}
+	var paths []string
+	for line := range strings.SplitSeq(strings.TrimSpace(s[start:start+end]), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+// formatFileOps formats read and modified file lists as XML tags suitable for
+// appending to a compaction summary. Returns an empty string when both lists
+// are empty.
+func formatFileOps(readFiles, modifiedFiles []string) string {
+	if len(readFiles) == 0 && len(modifiedFiles) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n")
+	if len(readFiles) > 0 {
+		b.WriteString("<read-files>\n")
+		for _, f := range readFiles {
+			b.WriteString(f)
+			b.WriteByte('\n')
+		}
+		b.WriteString("</read-files>\n")
+	}
+	if len(modifiedFiles) > 0 {
+		if len(readFiles) > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("<modified-files>\n")
+		for _, f := range modifiedFiles {
+			b.WriteString(f)
+			b.WriteByte('\n')
+		}
+		b.WriteString("</modified-files>")
+	}
+	return b.String()
+}
+
+// mergeFileLists merges two slices, returning a sorted, deduplicated result.
+func mergeFileLists(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	for _, s := range a {
+		seen[s] = struct{}{}
+	}
+	for _, s := range b {
+		seen[s] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sortStrings(out)
+	return out
+}
+
+// sortStrings sorts a string slice in place.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
 // buildCompactionHook returns a goframe WithLoopCompactionHook callback that
 // summarizes the conversation history when token usage exceeds 70% of the
 // conservative context ceiling. The system prompt (first message) and the most
@@ -595,10 +776,8 @@ func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File,
 			"original_messages", len(msgs),
 		)
 
-		tail := msgs
-		if len(msgs) > 9 {
-			tail = msgs[len(msgs)-8:]
-		}
+		tailStart := findTailStart(msgs, 8)
+		tail := msgs[tailStart:]
 
 		compacted := make([]schema.MessageContent, 0, 2+len(tail))
 		compacted = append(compacted, msgs[0])
@@ -613,6 +792,12 @@ func (o *Orchestrator) buildCompactionHook(session *Session, traceFile *os.File,
 // compactMessages produces a conversation summary using iterative compaction.
 // If a previous summary exists in the messages, it updates it rather than
 // summarizing from scratch — more efficient and preserves continuity.
+//
+// File operation tracking: file paths touched by read_file / write_file /
+// edit_file are extracted from the message history and appended to the summary
+// as <read-files> / <modified-files> XML blocks, mirroring Pi's compaction
+// details. On re-compaction the prior blocks are merged with new operations so
+// the cumulative file footprint is never lost.
 func (o *Orchestrator) compactMessages(ctx context.Context, llm llms.Model, msgs []schema.MessageContent) (string, error) {
 	previousSummary, newMsgs := extractPreviousSummary(msgs)
 
@@ -641,7 +826,27 @@ func (o *Orchestrator) compactMessages(ctx context.Context, llm llms.Model, msgs
 		return "", fmt.Errorf("LLM summarization failed: %w", err)
 	}
 
-	return resp.Choices[0].Content, nil
+	summary := resp.Choices[0].Content
+
+	// Merge file operations: previous summary tags + new messages.
+	prevRead, prevMod := parseFileTagsFromSummary(previousSummary)
+	newRead, newMod := extractFileOpsFromMsgs(newMsgs)
+	allMod := mergeFileLists(prevMod, newMod)
+	// read-only = merged reads minus anything in modified
+	allReadRaw := mergeFileLists(prevRead, newRead)
+	modSet := make(map[string]struct{}, len(allMod))
+	for _, f := range allMod {
+		modSet[f] = struct{}{}
+	}
+	var allRead []string
+	for _, f := range allReadRaw {
+		if _, inMod := modSet[f]; !inMod {
+			allRead = append(allRead, f)
+		}
+	}
+
+	summary += formatFileOps(allRead, allMod)
+	return summary, nil
 }
 
 // errNoChanges is returned by yieldCommitAndPush when the workspace has no
