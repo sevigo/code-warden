@@ -91,7 +91,6 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 		o.failSession(ctx, session, err.Error())
 		return
 	}
-	tracer := NewTracingModel(agentLLM)
 
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
 	defer cancel()
@@ -168,36 +167,38 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 
 	// ── Planning phase ───────────────────────────────────────────────────────
 	tracker.setPhase("planning")
-	plan := o.buildPlan(ctx, tracer, session, ws, tracker)
+	plan := o.buildPlan(ctx, agentLLM, session, ws, tracker)
 	o.logger.Info("warden: planning complete, starting implement loop", "session_id", session.ID)
 
 	// ── Loop 1: Implement ────────────────────────────────────────────────────
 	tracker.setPhase("implementing")
-	implIter, _, _, verdict, ok := o.runImplementPhase(ctx, session, tracer, ws, branch, plan, tracker)
+	implIter, implObs, verdict, ok := o.runImplementPhase(ctx, session, agentLLM, ws, branch, plan, tracker)
 	if !ok {
 		return
 	}
 
 	// ── Loop 2: Publish ──────────────────────────────────────────────────────
 	tracker.setPhase("publishing")
-	o.runPublishPhase(ctx, session, tracer, ws, branch, verdict, implIter, tracker)
+	o.runPublishPhase(ctx, session, agentLLM, ws, branch, verdict, implIter, implObs, tracker)
 }
 
 // runImplementPhase builds and runs the implement loop. Returns the iteration
-// count, token usage, final verdict, and whether to continue to the publish phase.
-// Returns (0, 0, 0, "", false) and calls failSession on any error.
+// count, observer (for token accumulation), final verdict, and whether to continue
+// to the publish phase.
+// Returns (0, nil, "", false) and calls failSession on any error.
 func (o *Orchestrator) runImplementPhase(
 	ctx context.Context,
 	session *Session,
-	tracer *TracingModel,
+	agentLLM llms.Model,
 	ws *agentWorkspace,
 	branch, plan string,
 	tracker *progressTracker,
-) (iterations int, tokensIn, tokensOut float64, verdict string, ok bool) {
-	implLoop, err := o.buildImplementLoop(tracer, session, ws, plan, tracker)
+) (iterations int, obs *loopObserver, verdict string, ok bool) {
+	implObs := newLoopObserver(o.logger, session.ID, "implement")
+	implLoop, err := o.buildImplementLoop(agentLLM, session, ws, plan, tracker, implObs)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build implement loop: %v", err))
-		return 0, 0, 0, "", false
+		return 0, nil, "", false
 	}
 
 	implTask := goframeagent.Task{
@@ -213,29 +214,12 @@ func (o *Orchestrator) runImplementPhase(
 		o.logger.Error("warden: implement loop failed",
 			"session_id", session.ID, "iterations", implResult.Iterations, "error", implErr)
 		o.failSession(ctx, session, fmt.Sprintf("implement loop: %v", implErr))
-		return 0, 0, 0, "", false
+		return 0, nil, "", false
 	}
 	if implErr != nil {
 		o.logger.Warn("warden: implement loop hit max iterations, yielding draft PR",
 			"session_id", session.ID, "iterations", implResult.Iterations)
 	}
-
-	inTokens, outTokens, llmCalls := tracer.TokenCounts()
-	toolSummary := make(map[string]int)
-	for _, tc := range implResult.ToolCalls {
-		toolSummary[tc.Name]++
-	}
-	modifiedCount := len(modifiedFiles(implResult.ToolCalls))
-
-	o.logger.Info("warden: implement loop done",
-		"session_id", session.ID,
-		"iterations", implResult.Iterations,
-		"tokens_in", inTokens,
-		"tokens_out", outTokens,
-		"llm_calls", llmCalls,
-		"tool_calls", toolSummary,
-		"modified_files", modifiedCount,
-	)
 
 	v, _, _ := o.mcpServer.GetReviewBySession(session.ID)
 	if v != "APPROVE" {
@@ -245,12 +229,12 @@ func (o *Orchestrator) runImplementPhase(
 			"iterations", implResult.Iterations,
 		)
 		o.yieldDraftPR(ctx, session, ws, branch, implResult.Iterations,
-			float64(inTokens), float64(outTokens),
+			implResult.Tokens.Input, implResult.Tokens.Output,
 			modifiedFiles(implResult.ToolCalls))
-		return 0, 0, 0, "", false
+		return 0, nil, "", false
 	}
 
-	return implResult.Iterations, float64(inTokens), float64(outTokens), v, true
+	return implResult.Iterations, implObs, v, true
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -259,13 +243,15 @@ func (o *Orchestrator) runImplementPhase(
 func (o *Orchestrator) runPublishPhase(
 	ctx context.Context,
 	session *Session,
-	tracer *TracingModel,
+	agentLLM llms.Model,
 	ws *agentWorkspace,
 	branch, verdict string,
 	implIterations int,
+	implObs *loopObserver,
 	tracker *progressTracker,
 ) {
-	pubLoop, err := o.buildPublishLoop(tracer, session, ws, branch, tracker)
+	pubObs := newLoopObserver(o.logger, session.ID, "publish")
+	pubLoop, err := o.buildPublishLoop(agentLLM, session, ws, branch, tracker, pubObs)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build publish loop: %v", err))
 		return
@@ -292,15 +278,21 @@ func (o *Orchestrator) runPublishPhase(
 		return
 	}
 
-	// Accumulate token counts across all phases (tracer keeps running totals).
-	totalIn, totalOut, _ := tracer.TokenCounts()
+	// Accumulate token counts across both phases from LoopResult.Tokens.
+	var totalIn, totalOut float64
+	if implObs != nil {
+		totalIn += implObs.totalIn
+		totalOut += implObs.totalOut
+	}
+	totalIn += pubObs.totalIn
+	totalOut += pubObs.totalOut
 
 	result := &Result{
 		Branch:       branch,
 		Verdict:      verdict,
 		Iterations:   implIterations + pubResult.Iterations,
-		TokensInput:  totalIn,
-		TokensOutput: totalOut,
+		TokensInput:  int64(totalIn),
+		TokensOutput: int64(totalOut),
 	}
 	if prInfo := extractPRInfo(pubResult.Response); prInfo != nil {
 		result.PRNumber = prInfo.PRNumber
@@ -328,7 +320,7 @@ func (o *Orchestrator) runPublishPhase(
 // All MCP tools EXCEPT push_branch and create_pull_request are included,
 // plus file tools and LSP tools. plan is the output of the planning phase
 // and is embedded in the system prompt to give the model a head start.
-func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, plan string, tracker *progressTracker) (*goframeagent.AgentLoop, error) {
+func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, plan string, tracker *progressTracker, obs *loopObserver) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
@@ -367,12 +359,13 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
 		goframeagent.WithLoopLogger(loopLogger),
+		goframeagent.WithLoopObserver(obs),
 	)
 }
 
 // buildPublishLoop builds the agent loop for the publish phase.
 // Only push_branch and create_pull_request are available.
-func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, branch string, tracker *progressTracker) (*goframeagent.AgentLoop, error) {
+func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, branch string, tracker *progressTracker, obs *loopObserver) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
@@ -391,6 +384,7 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 		goframeagent.WithLoopMaxIterations(5), // push + PR creation should need at most 2-3 turns
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopLogger(loopLogger),
+		goframeagent.WithLoopObserver(obs),
 	)
 }
 

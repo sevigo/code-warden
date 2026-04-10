@@ -15,12 +15,8 @@ GOLINT_BIN_DIR=$(CURDIR)/bin
 GOLINT_CMD=$(GOLINT_BIN_DIR)/golangci-lint
 GOLINT_VERSION=v2.11.3
 
-# OpenCode configuration
-OPENCODE_PORT=4096
-OPENCODE_MCP_URL=http://127.0.0.1:8081/sse
-
 .DEFAULT_GOAL := all
-.PHONY: all build run clean test lint opencode-start opencode-stop opencode-config dev ui-deps build-ui dev-ui run/server run/ui \
+.PHONY: all build run clean test lint dev ui-deps build-ui dev-ui run/server run/ui \
 	demo quickstart pull-models demo-up demo-down demo-logs
 
 all: build
@@ -71,40 +67,6 @@ lint:
 		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOLINT_BIN_DIR) $(GOLINT_VERSION); \
 	fi
 	$(GOLINT_CMD) run ./...
-
-# OpenCode server management
-opencode-start:
-	@echo "Starting OpenCode server on port $(OPENCODE_PORT)..."
-	@OPENCODE_PORT=$(OPENCODE_PORT) opencode serve &>/tmp/opencode.log &
-	@sleep 2
-	@echo "OpenCode server started. Logs: /tmp/opencode.log"
-
-opencode-stop:
-	@echo "Stopping OpenCode server..."
-	@pkill -f "opencode serve" || echo "OpenCode server not running"
-	@echo "OpenCode server stopped"
-
-opencode-config:
-	@echo "Configuring OpenCode MCP server..."
-	@mkdir -p ~/.config/opencode
-	@echo '{\n\
-  "$$schema": "https://opencode.ai/config.json",\n\
-  "mcp": {\n\
-    "code-warden": {\n\
-      "type": "remote",\n\
-      "url": "$(OPENCODE_MCP_URL)",\n\
-      "enabled": true\n\
-    }\n\
-  }\n\
-}' > ~/.config/opencode/opencode.json
-	@echo "OpenCode MCP configured to connect to $(OPENCODE_MCP_URL)"
-
-# Development mode: start both code-warden and OpenCode
-dev: build-server opencode-config
-	@echo "Starting development environment..."
-	@$(MAKE) opencode-start
-	@echo "Starting code-warden server..."
-	@$(BIN_DIR)/$(SERVER_BINARY_NAME)
 
 # Clean up the built binary and tools
 clean:

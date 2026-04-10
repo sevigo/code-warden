@@ -15,14 +15,9 @@ import (
 // loopBuilderFn constructs a goframe AgentLoop for a given session and workspace.
 type loopBuilderFn func(agentLLM llms.Model, session *Session, ws *agentWorkspace) (*goframeagent.AgentLoop, error)
 
-// runInProcessAgent executes the agent workflow using the native in-process
-// goframe AgentLoop — no external process or external LLM provider required.
-//
-// If agent.model is set and differs from the review model, it is resolved via
-// ragService.GetLLM and used for the implementation loop.  Otherwise the review
-// LLM (o.llm) is used as fallback.
 func (o *Orchestrator) runInProcessAgent(ctx context.Context, session *Session, branch string) {
-	o.runNativeLoop(ctx, session, branch, "native in-process", o.buildNativeLoop)
+	obs := newLoopObserver(o.logger, session.ID, "native")
+	o.runNativeLoop(ctx, session, branch, "native in-process", o.buildNativeLoopWithObs(obs))
 }
 
 // runNativeLoop is the shared driver for native and warden agent modes.
@@ -36,7 +31,6 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 		o.failSession(ctx, session, err.Error())
 		return
 	}
-	tracer := NewTracingModel(agentLLM)
 
 	ctx, cancel := context.WithTimeout(ctx, o.config.Timeout)
 	defer cancel()
@@ -65,7 +59,7 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 		"model", agentLLM,
 	)
 
-	loop, err := buildLoop(tracer, session, ws)
+	loop, err := buildLoop(agentLLM, session, ws)
 	if err != nil {
 		o.failSession(ctx, session, err.Error())
 		return
@@ -114,15 +108,17 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 	session.SetStatus(StatusCompleted)
 	o.postSessionCompleted(ctx, session, result)
 
-	totalIn, totalOut, _ := tracer.TokenCounts()
+	result.TokensInput = int64(loopResult.Tokens.Input)
+	result.TokensOutput = int64(loopResult.Tokens.Output)
+
 	o.logger.Info("runNativeLoop: completed",
 		"session_id", session.ID,
 		"label", label,
 		"verdict", result.Verdict,
 		"iterations", result.Iterations,
 		"pr_url", result.PRURL,
-		"tokens_in", totalIn,
-		"tokens_out", totalOut)
+		"tokens_in", loopResult.Tokens.Input,
+		"tokens_out", loopResult.Tokens.Output)
 }
 
 // resolveAgentLLM returns the LLM to use for the native agent.
@@ -145,34 +141,41 @@ func (o *Orchestrator) resolveAgentLLM(ctx context.Context) (llms.Model, error) 
 	return o.llm, nil
 }
 
-// buildNativeLoop constructs the goframe AgentLoop with all MCP tools injected.
-func (o *Orchestrator) buildNativeLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace) (*goframeagent.AgentLoop, error) {
-	registry := goframeagent.NewRegistry()
-	allowedTools := make(map[string]bool)
+// buildNativeLoopWithObs returns a loopBuilderFn that wires the given observer.
+func (o *Orchestrator) buildNativeLoopWithObs(obs *loopObserver) loopBuilderFn {
+	return func(agentLLM llms.Model, session *Session, ws *agentWorkspace) (*goframeagent.AgentLoop, error) {
+		registry := goframeagent.NewRegistry()
+		allowedTools := make(map[string]bool)
 
-	for _, t := range o.mcpServer.Tools() {
-		wrapped := &contextInjectingTool{
-			inner:       t,
-			projectRoot: ws.dir,
-			sessionID:   session.ID,
+		for _, t := range o.mcpServer.Tools() {
+			wrapped := &contextInjectingTool{
+				inner:       t,
+				projectRoot: ws.dir,
+				sessionID:   session.ID,
+			}
+			if err := registry.Register(wrapped); err != nil {
+				o.logger.Warn("runInProcessAgent: failed to register tool",
+					"tool", t.Name(), "error", err)
+				continue
+			}
+			allowedTools[t.Name()] = true
 		}
-		if err := registry.Register(wrapped); err != nil {
-			o.logger.Warn("runInProcessAgent: failed to register tool",
-				"tool", t.Name(), "error", err)
-			continue
+
+		governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
+
+		maxIter := max(o.config.MaxIterations*10, 30)
+
+		opts := []goframeagent.NativeLoopOption{
+			goframeagent.WithLoopSystemPrompt(o.buildNativeSystemPrompt(session.Issue, ws.dir)),
+			goframeagent.WithLoopMaxIterations(maxIter),
+			goframeagent.WithLoopGovernance(governance),
 		}
-		allowedTools[t.Name()] = true
+		if obs != nil {
+			opts = append(opts, goframeagent.WithLoopObserver(obs))
+		}
+
+		return goframeagent.NewAgentLoop(agentLLM, registry, opts...)
 	}
-
-	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
-
-	maxIter := max(o.config.MaxIterations*10, 30)
-
-	return goframeagent.NewAgentLoop(agentLLM, registry,
-		goframeagent.WithLoopSystemPrompt(o.buildNativeSystemPrompt(session.Issue, ws.dir)),
-		goframeagent.WithLoopMaxIterations(maxIter),
-		goframeagent.WithLoopGovernance(governance),
-	)
 }
 
 // cleanupNativeSession deregisters the session workspace from global registry.

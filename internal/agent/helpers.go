@@ -79,11 +79,3 @@ func isSafeChar(c rune) bool {
 func truncateString(s string, maxLen int) string {
 	return stringsutil.Truncate(s, maxLen, "...")
 }
-
-// truncateTail returns the last maxLen characters of a string.
-func truncateTail(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return "... [truncated] ...\n" + s[len(s)-maxLen:]
-}

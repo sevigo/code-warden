@@ -14,7 +14,7 @@ When a GitHub issue comment contains `/implement`, Code-Warden:
 4. Posts real-time GitHub progress comments throughout.
 5. Opens a draft PR once the implementation is approved.
 
-The harness is entirely in-process: no external agent binary, no OpenCode subprocess.  
+The harness is entirely in-process: no external agent binary needed. 
 Tools are called as direct Go function calls inside `goframe.AgentLoop`.
 
 ---
@@ -369,8 +369,6 @@ ai:
 |------|-------------|-------------|
 | `warden` | Three-phase loop: plan → implement → publish. LSP, progress tracking, compaction, PostgreSQL persistence. | Production |
 | `native` | Single-phase in-process loop. All tools available at once, no planning, no compaction. | Simpler tasks, debugging |
-| `server` | goframe SDK connects to OpenCode HTTP server. | External OpenCode server |
-| `cli` | Spawns OpenCode binary as subprocess. | Legacy / testing |
 
 ---
 
