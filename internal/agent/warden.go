@@ -407,11 +407,13 @@ Working directory: %s
 - get_structure() — project structure overview
 - get_arch_context(dir) — architecture summary for a directory
 - find_usages(symbol), get_callers(fn), get_callees(fn)
+- grep(pattern, path?, glob?, ignore_case?) — search file contents by regex/literal; prefer over search_code when you know the exact string
+- find(pattern, path?) — find files by glob pattern (e.g. *.go, **/*_test.go)
 
 **File operations** (workspace-scoped, paths relative to working directory):
-- read_file(path, offset?, limit?) — read a file, optionally paginated
+- read_file(path, offset?, limit?) — read a file, optionally paginated; when truncated, use the hint offset to continue
 - write_file(path, content) — create or overwrite a file
-- edit_file(path, old_string, new_string) — replace an exact string in a file
+- edit_file(path, old_string, new_string) — replace an exact string; or use edits:[{old_string, new_string}, ...] for multiple atomic replacements
 - list_dir(path?) — list directory contents
 
 **Verification**:
@@ -419,7 +421,7 @@ Working directory: %s
 - review_code — request an automated code review of your changes
 
 ## Workflow
-1. **Explore** — use search_code / get_symbol / list_dir / read_file to understand the code.
+1. **Explore** — use grep / search_code / get_symbol / read_file to understand the code. Prefer grep for exact pattern search, search_code for semantic discovery.
 2. **Implement** — use write_file / edit_file. Prefer edit_file for targeted changes.
 3. **Verify** — run_command("make lint"), then run_command("make test"). Fix failures.
 4. **Review** — call review_code. If REQUEST_CHANGES, fix and re-verify. Repeat until APPROVE.
@@ -481,6 +483,8 @@ var compactionExplorationTools = map[string]bool{
 	"find_usages":      true,
 	"get_callers":      true,
 	"get_callees":      true,
+	"grep":             true,
+	"find":             true,
 }
 
 // compactionUpdatePrompt is used when a previous compaction summary already exists.

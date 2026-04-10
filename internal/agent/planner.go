@@ -139,6 +139,8 @@ Do NOT write or edit any files.
 - get_structure() — see the full project layout
 - get_arch_context(dir) — architecture summary for a directory
 - find_usages(symbol) / get_callers(fn) / get_callees(fn) — navigation
+- grep(pattern, path?, glob?) — search file contents by regex/literal; prefer over search_code when you know the exact string
+- find(pattern, path?) — find files by glob pattern (e.g. *.go, **/*_test.go)
 - read_file(path) — read a specific file (paths relative to workspace)
 - list_dir(path?) — list directory contents
 
