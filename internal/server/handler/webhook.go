@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/google/go-github/v73/github"
 
@@ -17,14 +18,16 @@ import (
 type WebhookHandler struct {
 	cfg        *config.Config
 	dispatcher core.JobDispatcher
+	canceller  core.SessionCanceller // optional; nil when agent is disabled
 	logger     *slog.Logger
 }
 
 // NewWebhookHandler creates a new webhook handler with the given configuration and dispatcher.
-func NewWebhookHandler(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *WebhookHandler {
+func NewWebhookHandler(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, logger *slog.Logger) *WebhookHandler {
 	return &WebhookHandler{
 		cfg:        cfg,
 		dispatcher: dispatcher,
+		canceller:  canceller,
 		logger:     logger,
 	}
 }
@@ -62,6 +65,26 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 		h.logger.Debug("ignoring issue comment", "reason", "action is "+action, "repo", event.GetRepo().GetFullName())
 		_, _ = fmt.Fprint(w, "Comment action ignored")
 		return
+	}
+
+	// Handle /cancel <session-id> on any issue comment.
+	if !event.GetIssue().IsPullRequest() {
+		if body := strings.TrimSpace(event.GetComment().GetBody()); strings.HasPrefix(body, "/cancel ") {
+			sessionID := strings.TrimSpace(strings.TrimPrefix(body, "/cancel "))
+			if h.canceller == nil {
+				h.logger.Warn("received /cancel but agent is not enabled")
+				_, _ = fmt.Fprint(w, "Agent not enabled")
+				return
+			}
+			if err := h.canceller.CancelSession(sessionID); err != nil {
+				h.logger.Warn("cancel session failed", "session_id", sessionID, "error", err)
+				_, _ = fmt.Fprintf(w, "Cancel failed: %v", err)
+				return
+			}
+			h.logger.Info("session cancelled via webhook", "session_id", sessionID)
+			_, _ = fmt.Fprint(w, "Session cancelled")
+			return
+		}
 	}
 
 	// Try to parse as /implement command on issue first

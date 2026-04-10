@@ -55,6 +55,11 @@ func NewManager(workspace string, logger *slog.Logger, servers ...LanguageServer
 	}
 }
 
+// lspInitTimeout caps how long we wait for a single language server to
+// initialize. gopls can take minutes on large repos; we'd rather proceed
+// without LSP than block the entire agent session.
+const lspInitTimeout = 2 * time.Minute
+
 // Start detects the languages present in the workspace and starts the
 // appropriate language servers. Servers whose binaries are not found in
 // PATH are silently skipped — LSP is always optional.
@@ -66,7 +71,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	for _, srv := range detected {
-		if err := m.startServer(ctx, srv); err != nil {
+		initCtx, cancel := context.WithTimeout(ctx, lspInitTimeout)
+		err := m.startServer(initCtx, srv)
+		cancel()
+		if err != nil {
 			m.logger.Warn("lsp: failed to start server, skipping",
 				"lang", srv.Name(), "error", err)
 		}

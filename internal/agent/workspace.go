@@ -84,11 +84,13 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 	// Start LSP manager for the workspace languages. Errors are non-fatal:
 	// if gopls (or another server) isn't installed the agent falls back to
 	// the RAG-based search_code tools.
+	o.logger.Info("lsp: starting language servers", "session_id", session.ID, "dir", workspaceDir)
 	lspMgr := lsp.NewManager(workspaceDir, o.logger, lsp.DefaultServers()...)
 	if err := lspMgr.Start(ctx); err != nil {
 		o.logger.Warn("lsp: manager failed to start, continuing without LSP", "error", err)
 		lspMgr = nil
 	}
+	o.logger.Info("lsp: language server init complete", "session_id", session.ID, "available", lspMgr != nil)
 
 	return &agentWorkspace{
 		dir:       workspaceDir,
@@ -101,14 +103,15 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 
 // prepareWorkspace clones the project into the isolated workspace.
 func (o *Orchestrator) prepareWorkspace(ctx context.Context, destDir string) error {
-	// First, clone from the local project root for speed
+	// Clone from the local project root for speed (avoids network round-trip).
+	o.logger.Info("workspace: cloning project", "src", o.projectRoot, "dest", destDir)
 	//nolint:gosec // G204: Subprocess launched with variable arguments - intentional for workspace preparation
 	cloneCmd := exec.CommandContext(ctx, "git", "clone", o.projectRoot, ".")
 	cloneCmd.Dir = destDir
 	if output, err := cloneCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone failed: %w (output: %s)", err, string(output))
 	}
-
+	o.logger.Info("workspace: clone complete", "dest", destDir)
 	return nil
 }
 

@@ -102,10 +102,12 @@ func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, w
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
+	loopLogger := o.logger.With("session_id", session.ID, "phase", "plan")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildPlannerSystemPrompt(session.Issue, ws.dir)),
 		goframeagent.WithLoopMaxIterations(5), // tight cap — explore, then plan
 		goframeagent.WithLoopGovernance(governance),
+		goframeagent.WithLoopLogger(loopLogger),
 	)
 }
 

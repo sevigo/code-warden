@@ -21,6 +21,13 @@ type JobDispatcher interface {
 	Stop()
 }
 
+// SessionCanceller can cancel a running agent session by its ID.
+// It is implemented by the jobs layer and passed to the webhook handler
+// so that /cancel <session-id> comments can stop in-flight sessions.
+type SessionCanceller interface {
+	CancelSession(id string) error
+}
+
 // Job represents a single, executable unit of work that can be processed by the
 // application's job dispatcher. Each job is triggered by a GitHubEvent and
 // performs a specific task, such as a code review.

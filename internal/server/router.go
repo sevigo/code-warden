@@ -19,11 +19,11 @@ import (
 
 // NewRouter creates and configures a new HTTP router with middleware and API routes.
 func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
-	return NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, logger)
+	return NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, nil, logger)
 }
 
 // NewRouterWithStore creates a router with storage for web UI endpoints.
-func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *chi.Mux {
+func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Configure middleware stack
@@ -40,7 +40,7 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, store
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
-		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, logger)
+		webhookHandler := handler.NewWebhookHandler(cfg, dispatcher, canceller, logger)
 		// Short timeout for webhook delivery acknowledgement
 		r.With(middleware.Timeout(30*time.Second)).Post("/webhook/github", webhookHandler.Handle)
 

@@ -20,6 +20,17 @@ func (m *manager) scanLocalRepo(
 	if err != nil {
 		return nil, fmt.Errorf("open local repo: %w", err)
 	}
+
+	// Fetch latest from origin so the index reflects the current remote state.
+	// Non-fatal: if fetch fails (e.g. offline, no auth) we continue with the
+	// existing local state and log a warning.
+	if fetchErr := m.gitClient.Fetch(ctx, repoPath, ""); fetchErr != nil {
+		m.logger.Warn("scanLocalRepo: fetch from origin failed, using local state",
+			"repo", repoPath, "error", fetchErr)
+	} else {
+		m.logger.Info("scanLocalRepo: fetched latest from origin", "repo", repoPath)
+	}
+
 	headSHA, err := currentHeadSHA(gitRepo)
 	if err != nil {
 		return nil, err

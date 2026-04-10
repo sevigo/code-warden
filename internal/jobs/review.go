@@ -31,6 +31,22 @@ type ReviewJob struct {
 	logger            *slog.Logger
 	globalMCPRegistry *globalmcp.WorkspaceRegistry
 	repoMutexes       sync.Map
+	// activeSessions maps session ID → orchestrator for in-flight implement jobs.
+	// Used by CancelSession to honour /cancel <id> webhook commands.
+	activeSessions sync.Map
+}
+
+// CancelSession cancels a running agent session. Implements core.SessionCanceller.
+func (j *ReviewJob) CancelSession(id string) error {
+	val, ok := j.activeSessions.Load(id)
+	if !ok {
+		return fmt.Errorf("session not found: %s", id)
+	}
+	orch, ok := val.(*agent.Orchestrator)
+	if !ok {
+		return fmt.Errorf("invalid session entry for: %s", id)
+	}
+	return orch.CancelSession(id)
 }
 
 // NewReviewJob creates a new ReviewJob.
@@ -42,7 +58,7 @@ func NewReviewJob(
 	repoMgr repomanager.RepoManager,
 	logger *slog.Logger,
 	globalMCPRegistry *globalmcp.WorkspaceRegistry,
-) core.Job {
+) *ReviewJob {
 	return &ReviewJob{
 		cfg:               cfg,
 		ragService:        rag,
@@ -257,6 +273,9 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	if err != nil {
 		return fmt.Errorf("failed to spawn agent: %w", err)
 	}
+
+	j.activeSessions.Store(session.ID, orchestrator)
+	defer j.activeSessions.Delete(session.ID)
 
 	// 10. Monitor session and wait for completion
 	result, err := j.waitForAgentSession(ctx, orchestrator, session, timeout)

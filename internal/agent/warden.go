@@ -19,7 +19,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -218,11 +220,15 @@ func (o *Orchestrator) runImplementPhase(
 
 	o.logger.Info("warden: starting implement loop", "session_id", session.ID)
 	implResult, implErr := implLoop.Run(ctx, implTask, nil)
-	if implErr != nil {
+	if implErr != nil && !errors.Is(implErr, goframeagent.ErrMaxIterations) {
 		o.logger.Error("warden: implement loop failed",
 			"session_id", session.ID, "iterations", implResult.Iterations, "error", implErr)
 		o.failSession(ctx, session, fmt.Sprintf("implement loop: %v", implErr))
 		return 0, 0, 0, "", false
+	}
+	if implErr != nil {
+		o.logger.Warn("warden: implement loop hit max iterations, yielding draft PR",
+			"session_id", session.ID, "iterations", implResult.Iterations)
 	}
 
 	o.logger.Info("warden: implement loop done",
@@ -240,7 +246,8 @@ func (o *Orchestrator) runImplementPhase(
 			"iterations", implResult.Iterations,
 		)
 		o.yieldDraftPR(ctx, session, ws, branch, implResult.Iterations,
-			implResult.Tokens.Input, implResult.Tokens.Output)
+			implResult.Tokens.Input, implResult.Tokens.Output,
+			modifiedFiles(implResult.ToolCalls))
 		return 0, 0, 0, "", false
 	}
 
@@ -352,11 +359,13 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 	maxIter := max(o.config.MaxIterations*10, 30)
 
+	loopLogger := o.logger.With("session_id", session.ID, "phase", "implement")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, ws.lsp != nil && ws.lsp.Available(), plan)),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile)),
+		goframeagent.WithLoopLogger(loopLogger),
 	)
 }
 
@@ -375,10 +384,12 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
+	loopLogger := o.logger.With("session_id", session.ID, "phase", "publish")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildPublishSystemPrompt(session.Issue, branch)),
 		goframeagent.WithLoopMaxIterations(5), // push + PR creation should need at most 2-3 turns
 		goframeagent.WithLoopGovernance(governance),
+		goframeagent.WithLoopLogger(loopLogger),
 	)
 }
 
@@ -604,6 +615,27 @@ var errNoChanges = fmt.Errorf("no changes to commit")
 // When there are no changes to push, it posts an explanatory comment and marks
 // the session failed rather than creating an empty draft PR.
 // Errors are logged but never returned — the session status is set regardless.
+// modifiedFiles extracts the unique set of file paths written or edited
+// during the implement loop from the recorded tool calls.
+func modifiedFiles(calls []goframeagent.ToolCallRecord) []string {
+	seen := make(map[string]struct{})
+	var files []string
+	for _, c := range calls {
+		if c.Name != "write_file" && c.Name != "edit_file" {
+			continue
+		}
+		path, _ := c.Params["path"].(string)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; !ok {
+			seen[path] = struct{}{}
+			files = append(files, path)
+		}
+	}
+	return files
+}
+
 func (o *Orchestrator) yieldDraftPR(
 	ctx context.Context,
 	session *Session,
@@ -611,6 +643,7 @@ func (o *Orchestrator) yieldDraftPR(
 	branch string,
 	iterations int,
 	tokensIn, tokensOut float64,
+	editedFiles []string,
 ) {
 	o.logger.Info("warden: yielding draft PR", "session_id", session.ID, "branch", branch)
 
@@ -622,7 +655,7 @@ func (o *Orchestrator) yieldDraftPR(
 	// ── Commit + push ───────────────────────────────────────────────────────
 	// The workspace remote already has the GitHub token embedded in its URL
 	// (set by prepareAgentWorkspace), so no token injection is needed here.
-	pushErr := yieldCommitAndPush(ctx, ws.dir, branch)
+	pushErr := yieldCommitAndPush(ctx, ws.dir, branch, editedFiles, o.logger)
 	if pushErr != nil && !strings.Contains(pushErr.Error(), errNoChanges.Error()) {
 		o.logger.Warn("warden: yieldDraftPR: push failed, session will still be marked draft",
 			"session_id", session.ID, "error", pushErr)
@@ -697,7 +730,7 @@ func (o *Orchestrator) yieldDraftPR(
 // Returns errNoChanges when the workspace is clean (nothing to commit or push).
 // The workspace remote URL already contains authentication (set up by
 // prepareAgentWorkspace), so no explicit token injection is needed.
-func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string) error {
+func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string, editedFiles []string, logger *slog.Logger) error {
 	run := func(args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = workspaceDir
@@ -706,29 +739,44 @@ func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string) error 
 	}
 
 	// Ensure we are on the right branch.
+	logger.Info("yieldCommitAndPush: checking out branch", "branch", branch)
 	if _, err := run("checkout", branch); err != nil {
 		if _, err2 := run("checkout", "-b", branch); err2 != nil {
+			logger.Error("yieldCommitAndPush: git checkout -b failed", "branch", branch, "error", err2)
 			return fmt.Errorf("git checkout -b %s: %w", branch, err2)
 		}
 	}
 
-	// Stage everything.
-	_, _ = run("add", ".")
+	// Stage only files the agent explicitly wrote or edited.
+	// Fall back to `git add .` if no file list is available (shouldn't happen).
+	logger.Info("yieldCommitAndPush: staging changes", "files", editedFiles)
+	if len(editedFiles) > 0 {
+		args := append([]string{"add", "--"}, editedFiles...)
+		_, _ = run(args...)
+	} else {
+		_, _ = run("add", ".")
+	}
 
 	// Commit — detect "nothing to commit" and surface it as errNoChanges so the
 	// caller can skip PR creation rather than pushing an empty branch.
+	logger.Info("yieldCommitAndPush: committing")
 	out, err := run("commit", "-m", "WIP: automated partial implementation")
 	if err != nil {
 		if strings.Contains(out, "nothing to commit") {
+			logger.Info("yieldCommitAndPush: nothing to commit, skipping push")
 			return errNoChanges
 		}
+		logger.Error("yieldCommitAndPush: git commit failed", "error", err, "output", out)
 		return fmt.Errorf("git commit: %w (output: %s)", err, out)
 	}
 
 	// Push — the remote URL already has the token embedded.
+	logger.Info("yieldCommitAndPush: pushing branch", "branch", branch)
 	if out, err := run("push", "-u", "origin", branch); err != nil {
+		logger.Error("yieldCommitAndPush: git push failed", "branch", branch, "error", err, "output", out)
 		return fmt.Errorf("git push: %w (output: %s)", err, out)
 	}
+	logger.Info("yieldCommitAndPush: pushed successfully", "branch", branch)
 	return nil
 }
 

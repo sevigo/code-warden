@@ -96,7 +96,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	workspaceRegistry := provideWorkspaceRegistry(logger)
 	job := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger, workspaceRegistry)
 	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
-	serverServer := server.NewServerWithStore(ctx, configConfig, jobDispatcher, store, service, repoManager, client, logger)
+	serverServer := server.NewServerWithStore(ctx, configConfig, jobDispatcher, job, store, service, repoManager, client, logger)
 	globalmcpServer, err := provideGlobalMCPServer(ctx, configConfig, logger, workspaceRegistry, store, vectorStore, service)
 	if err != nil {
 		cleanup()

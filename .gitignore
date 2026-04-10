@@ -42,3 +42,7 @@ llm_context.md
 .claude/
 .opencode/
 CLAUDE.md
+
+# Agent workspace artifacts — never commit these
+agent.log
+trace.jsonl
