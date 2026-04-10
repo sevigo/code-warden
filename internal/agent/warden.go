@@ -336,7 +336,7 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "implement")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
-		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, false, plan)),
+		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, false, plan, ws.projectContext)),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
@@ -373,8 +373,8 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 // buildImplementSystemPrompt returns the system prompt for the implement loop.
 // Publish tools are intentionally omitted — the model has no reason to
 // attempt pushing before the review is complete.
-func (o *Orchestrator) buildImplementSystemPrompt(issue Issue, workspaceDir string, _ bool, plan string) string {
-	return fmt.Sprintf(`You are an expert software engineer implementing GitHub issue #%d.
+func (o *Orchestrator) buildImplementSystemPrompt(issue Issue, workspaceDir string, _ bool, plan string, projectContext string) string {
+	base := fmt.Sprintf(`You are an expert software engineer implementing GitHub issue #%d.
 
 ## Task
 Title: %s
@@ -417,6 +417,12 @@ Working directory: %s
 
 %s`,
 		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, plan)
+
+	if projectContext != "" {
+		base += "\n\n## Project Conventions\n\n" + projectContext
+	}
+
+	return base
 }
 
 // buildPublishSystemPrompt returns the system prompt for the publish loop.

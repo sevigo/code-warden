@@ -12,11 +12,12 @@ import (
 
 // agentWorkspace holds the prepared workspace state for a session.
 type agentWorkspace struct {
-	dir       string
-	logPath   string
-	tracePath string // absolute path to trace.jsonl (empty if tracing disabled)
-	logFile   *os.File
-	traceFile *os.File // JSONL conversation trace for post-mortem debugging (nil = not opened)
+	dir            string
+	logPath        string
+	tracePath      string // absolute path to trace.jsonl (empty if tracing disabled)
+	logFile        *os.File
+	traceFile      *os.File // JSONL conversation trace for post-mortem debugging (nil = not opened)
+	projectContext string   // crawled AGENTS.md + skills content for system prompt injection
 }
 
 // prepareAgentWorkspace creates the workspace directory, clones the project,
@@ -83,12 +84,19 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 	// for compile checks instead. 30-120s LSP startup is not worth it
 	// when the model can verify with `make lint` / `make test`.
 
+	// Crawl project-specific conventions (AGENTS.md, .code-warden/skills/).
+	projectContext := crawlProjectContext(workspaceDir)
+	if projectContext != "" {
+		o.logger.Info("workspace: loaded project context", "chars", len(projectContext))
+	}
+
 	return &agentWorkspace{
-		dir:       workspaceDir,
-		logPath:   logPath,
-		tracePath: tracePath,
-		logFile:   logFile,
-		traceFile: traceFile,
+		dir:            workspaceDir,
+		logPath:        logPath,
+		tracePath:      tracePath,
+		logFile:        logFile,
+		traceFile:      traceFile,
+		projectContext: projectContext,
 	}, nil
 }
 
