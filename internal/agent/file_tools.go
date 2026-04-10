@@ -194,20 +194,18 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	}
 	original := string(data)
 
-	count := strings.Count(original, oldStr)
-	if count == 0 {
-		return nil, fmt.Errorf("edit_file: old_string not found in %s", relPath)
+	updated, usedFuzzy, err := applyEdit(original, oldStr, newStr)
+	if err != nil {
+		return nil, fmt.Errorf("edit_file: %w", err)
 	}
-	if count > 1 {
-		return nil, fmt.Errorf("edit_file: old_string appears %d times in %s; provide more context to make it unique", count, relPath)
-	}
-
-	updated := strings.Replace(original, oldStr, newStr, 1)
 	if err := os.WriteFile(abs, []byte(updated), 0o644); err != nil { //nolint:gosec // G306: 0644 is intentional for source files
 		return nil, fmt.Errorf("edit_file: write: %w", err)
 	}
 
 	result := map[string]any{"ok": true, "path": relPath}
+	if usedFuzzy {
+		result["fuzzy_match"] = true
+	}
 	return result, nil
 }
 

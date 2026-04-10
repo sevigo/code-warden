@@ -237,7 +237,10 @@ func NewService(
 		HyDECache:      newTTLCache(30*time.Minute, 500),
 		Logger:         logger.With("component", "context_builder"),
 	}
-	r.contextBuilder = contextpkg.NewBuilder(contextCfg)
+	r.contextBuilder = contextpkg.NewCachingBuilder(
+		contextpkg.NewBuilder(contextCfg),
+		contextpkg.NewContextCache(30*time.Minute, 64),
+	)
 
 	reviewCfg := reviewpkg.Config{
 		VectorStore:            vs,

@@ -66,7 +66,8 @@ type qdrantVectorStore struct {
 	cfg          *config.Config
 	qdrantOpts   []qdrant.Option
 	scopedMu     sync.RWMutex
-	scopedStores map[string]*scopedVectorStore // cache for scoped stores
+	scopedStores map[string]*scopedVectorStore
+	queryCache   *queryCache
 }
 
 // QdrantStoreOption defines a functional option for configuring the Qdrant vector store.
@@ -114,6 +115,7 @@ func NewQdrantVectorStore(cfg *config.Config, logger *slog.Logger, opts ...Qdran
 		batchConfig:  defaultConfig,
 		cfg:          cfg,
 		scopedStores: make(map[string]*scopedVectorStore),
+		queryCache:   newQueryCache(10*time.Minute, 512),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -490,6 +492,7 @@ func (q *qdrantVectorStore) ForRepo(collectionName, embedderModel string) Scoped
 		parent:         q,
 		collectionName: collectionName,
 		embedderModel:  embedderModel,
+		queryCache:     q.queryCache,
 	}
 
 	// Store in cache with write lock
@@ -510,6 +513,7 @@ type scopedVectorStore struct {
 	parent         *qdrantVectorStore
 	collectionName string
 	embedderModel  string
+	queryCache     *queryCache
 }
 
 // Ensure scopedVectorStore implements ScopedVectorStore
@@ -541,14 +545,20 @@ func (s *scopedVectorStore) AddDocuments(ctx context.Context, docs []schema.Docu
 	return ids, nil
 }
 
-// SimilaritySearch delegates to the parent's generic generic interface.
+// SimilaritySearch delegates to the parent's generic interface with query caching.
 func (s *scopedVectorStore) SimilaritySearch(ctx context.Context, query string, numDocs int, opts ...vectorstores.Option) ([]schema.Document, error) {
-	// Append collection name to opts
-	opts = append(opts, vectorstores.WithCollectionName(s.collectionName))
+	if docs, ok := s.queryCache.get(s.collectionName, query, numDocs); ok {
+		return docs, nil
+	}
 
-	// We call the parent's generic SimilaritySearch, which DOES accept opts.
-	// Note: s.parent.SimilaritySearch also extracts collection name from opts, so we are good.
-	return s.parent.SimilaritySearch(ctx, query, numDocs, opts...)
+	opts = append(opts, vectorstores.WithCollectionName(s.collectionName))
+	docs, err := s.parent.SimilaritySearch(ctx, query, numDocs, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	s.queryCache.set(s.collectionName, query, numDocs, docs)
+	return docs, nil
 }
 
 // SimilaritySearchWithScores delegates to the underlying store.
