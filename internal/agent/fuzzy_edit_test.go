@@ -194,3 +194,104 @@ func TestFuzzyFindText_FuzzyFallback(t *testing.T) {
 		t.Error("should have used fuzzy matching")
 	}
 }
+
+// ── applyMultiEdit ────────────────────────────────────────────────────────────
+
+func TestApplyMultiEdit_SingleEdit(t *testing.T) {
+	content := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
+	result, fuzzy, err := applyMultiEdit(content, []editPair{
+		{OldStr: "println(\"hello\")", NewStr: "println(\"world\")"},
+	})
+	assert.NoError(t, err)
+	assert.False(t, fuzzy)
+	assert.Contains(t, result, "println(\"world\")")
+	assert.NotContains(t, result, "println(\"hello\")")
+}
+
+func TestApplyMultiEdit_TwoEdits(t *testing.T) {
+	content := "const A = 1\nconst B = 2\nconst C = 3\n"
+	result, fuzzy, err := applyMultiEdit(content, []editPair{
+		{OldStr: "A = 1", NewStr: "A = 10"},
+		{OldStr: "C = 3", NewStr: "C = 30"},
+	})
+	assert.NoError(t, err)
+	assert.False(t, fuzzy)
+	assert.Contains(t, result, "A = 10")
+	assert.Contains(t, result, "B = 2") // unchanged
+	assert.Contains(t, result, "C = 30")
+}
+
+func TestApplyMultiEdit_ReverseOrderApplied(t *testing.T) {
+	// Edit at start of file + edit at end; both must be applied even though
+	// the first edit shifts byte positions of everything after it.
+	content := "START\nMIDDLE\nEND\n"
+	result, _, err := applyMultiEdit(content, []editPair{
+		{OldStr: "START", NewStr: "BEGINNING"},
+		{OldStr: "END", NewStr: "FINISH"},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "BEGINNING\nMIDDLE\nFINISH\n", result)
+}
+
+func TestApplyMultiEdit_OverlapError(t *testing.T) {
+	content := "abcdef"
+	// "abc" and "cde" overlap at 'c'
+	_, _, err := applyMultiEdit(content, []editPair{
+		{OldStr: "abc", NewStr: "X"},
+		{OldStr: "cde", NewStr: "Y"},
+	})
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "overlap")
+}
+
+func TestApplyMultiEdit_NotFoundError(t *testing.T) {
+	content := "hello world"
+	_, _, err := applyMultiEdit(content, []editPair{
+		{OldStr: "nonexistent", NewStr: "x"},
+	})
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "not found")
+}
+
+func TestApplyMultiEdit_AmbiguousMatchError(t *testing.T) {
+	content := "x\nx\n"
+	_, _, err := applyMultiEdit(content, []editPair{
+		{OldStr: "x", NewStr: "y"},
+	})
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "2 times")
+}
+
+func TestApplyMultiEdit_FuzzySmartQuotes(t *testing.T) {
+	// File has ASCII quotes; LLM sends smart quotes in old_string.
+	content := "msg := \"hello\"\n"
+	oldText := "msg := \u201Chello\u201D\n" // smart double quotes
+	result, fuzzy, err := applyMultiEdit(content, []editPair{
+		{OldStr: oldText, NewStr: "msg := \"goodbye\"\n"},
+	})
+	assert.NoError(t, err)
+	assert.True(t, fuzzy)
+	assert.Contains(t, result, "goodbye")
+}
+
+func TestApplyMultiEdit_EmptyEdits(t *testing.T) {
+	content := "unchanged"
+	result, fuzzy, err := applyMultiEdit(content, nil)
+	assert.NoError(t, err)
+	assert.False(t, fuzzy)
+	assert.Equal(t, content, result)
+}
+
+func TestApplyMultiEdit_FuzzyOneEditMissedOtherExact(t *testing.T) {
+	// First edit needs fuzzy (smart quote); second is exact.
+	// Both must still be applied in normalised space.
+	content := "A = 1\nB = 2\n"
+	result, fuzzy, err := applyMultiEdit(content, []editPair{
+		{OldStr: "A\u00A0=\u00A01", NewStr: "A = 10"}, // NBSP spaces → fuzzy
+		{OldStr: "B = 2", NewStr: "B = 20"},
+	})
+	assert.NoError(t, err)
+	assert.True(t, fuzzy)
+	assert.Contains(t, result, "A = 10")
+	assert.Contains(t, result, "B = 20")
+}

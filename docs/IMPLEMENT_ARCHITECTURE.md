@@ -193,19 +193,44 @@ The compaction hook fires when `tokens.Input + tokens.Output > 128_000 * 0.70`:
 ```
 buildCompactionHook(session) → func(ctx, msgs, tokens) []schema.MessageContent
   if used < threshold: return nil  ← no-op, loop continues unchanged
-  
-  build plain-text transcript of msgs[1:]  ← exclude system prompt
-  call LLM with summarization prompt (max 400 words)
-  
+
+  previousSummary := extract prior "## Context Summary" from msgs[1] (if any)
+
+  build plain-text transcript of newMsgs (messages after the prior summary)
+  call LLM with summarization prompt (iterative: update summary vs. fresh start)
+    max 400 words; if previousSummary != "": "Update this summary: …" prompt
+
+  extract file ops from newMsgs:
+    - parse tool result messages for read_file / write_file / edit_file paths
+    - merge with file lists already in previousSummary (<read-files>/<modified-files> XML)
+    - append formatFileOps(allRead, allMod) to the new summary
+
+  find tail boundary via findTailStart(msgs, 8):
+    - walks backward from end until landing on a ChatMessageTypeHuman message
+    - ensures tool-result messages are never orphaned from the AI turn that called them
+
   rebuild history:
-    [0] system prompt           (preserved verbatim)
-    [1] "## Context Summary…"  (LLM summary)
-    [2..5] last 4 messages     (current iteration context)
-  
+    [0] system prompt                     (preserved verbatim)
+    [1] "## Context Summary\n…<read-files>…<modified-files>…"
+    [2..] msgs[tailStart:]                (≥8 messages from last clean turn boundary)
+
   return compacted  ← goframe replaces messages, increments result.Compactions
 ```
 
-If the summarization call fails, the hook returns `nil` and the loop continues with the full history (graceful degradation).
+**Iterative summarization** — if `msgs[1]` already contains a prior summary the hook
+asks the LLM to update rather than re-summarise from scratch. This keeps each
+compaction cheap and avoids losing early context (e.g. the original task description).
+
+**File footprint tracking** — `<read-files>` and `<modified-files>` XML blocks are
+appended to every summary and merged cumulatively. On re-compaction the agent always
+knows which files it has touched in the current session.
+
+**Turn boundary safety** — `findTailStart` ensures the preserved tail always begins on
+a human message, so a `tool` role result is never the first message in the compacted
+history (which would confuse the LLM about the origin of the result).
+
+If the summarization call fails, the hook returns `nil` and the loop continues with the
+full history (graceful degradation).
 
 The hook is wired via `goframeagent.WithLoopCompactionHook` added in goframe v0.36.6.
 
@@ -282,10 +307,10 @@ Tools used by the implement loop (see `internal/mcp/tools/` and `internal/agent/
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | Read a file, optionally paginated |
-| `write_file` | Create or overwrite (triggers LSP diagnostics) |
-| `edit_file` | Exact-string replace (triggers LSP diagnostics) |
-| `list_dir` | List directory contents |
+| `read_file` | Read a file, optionally paginated; returns `{content, lines, path}` |
+| `write_file` | Create or overwrite; returns `{ok, path, bytes}` (triggers LSP diagnostics) |
+| `edit_file` | Exact-string replace with fuzzy fallback; returns `{ok, path, diff}` (triggers LSP diagnostics) — supports single `{old_string, new_string}` or atomic multi-edit `{edits:[…]}` |
+| `list_dir` | List directory entries with name, type, size |
 
 ### LSP (live compiler feedback)
 
