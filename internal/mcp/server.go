@@ -546,12 +546,12 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 	}
 
 	res, err := s.registry.Execute(ctx, name, args)
-	
+
 	// Record successful calls for rate limiting
 	if err == nil && s.rateCheck != nil {
 		s.rateCheck.RecordCall(name)
 	}
-	
+
 	return res, err
 }
 
