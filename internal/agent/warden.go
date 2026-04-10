@@ -464,17 +464,26 @@ var compactionExplorationTools = map[string]bool{
 	"get_callees":      true,
 }
 
+// compactionMaxOutputLen is the maximum length of any single tool result or
+// assistant message that gets included in the compaction transcript. Anything
+// beyond this is truncated with a marker. This mirrors Pi's approach of
+// truncating tool results to ~2000 chars during summarization to prevent
+// large search_code or read_file outputs from overflowing the summary context.
+const compactionMaxOutputLen = 2000
+
 // compactionFilterText replaces the output of exploration tool calls with a
-// short placeholder. Write-side and verification tool outputs are passed through
-// unchanged. The heuristic is simple: if the text starts with a known tool
-// prefix (as JSON-serialised by goframe's tool-result formatting), strip it.
+// short placeholder and truncates large tool outputs to fit within the
+// compaction context budget. Write-side and verification tool outputs are
+// truncated rather than omitted entirely.
 func compactionFilterText(text string) string {
 	for name := range compactionExplorationTools {
-		// goframe formats tool results as: `tool_name: <JSON output>`
 		prefix := name + ":"
 		if strings.HasPrefix(text, prefix) {
 			return prefix + " [output omitted during compaction]"
 		}
+	}
+	if len(text) > compactionMaxOutputLen {
+		return text[:compactionMaxOutputLen] + "\n... [truncated during compaction]"
 	}
 	return text
 }
