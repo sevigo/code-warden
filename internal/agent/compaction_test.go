@@ -15,15 +15,15 @@ func TestFindTailStart_StartsOnHumanMessage(t *testing.T) {
 	// Build a message slice that ends with tool-role messages.
 	// The tail should walk back past them to the last human message.
 	msgs := []schema.MessageContent{
-		schema.NewSystemMessage("system"),    // 0 — system prompt
-		schema.NewHumanMessage("task"),       // 1
-		schema.NewAIMessage("thinking"),      // 2
-		schema.NewHumanMessage("user msg"),   // 3  ← expected tail start
-		schema.NewAIMessage("tool request"),  // 4
+		schema.NewSystemMessage("system"),     // 0 — system prompt
+		schema.NewHumanMessage("task"),        // 1
+		schema.NewAIMessage("thinking"),       // 2
+		schema.NewHumanMessage("user msg"),    // 3  ← expected tail start
+		schema.NewAIMessage("tool request"),   // 4
 		schema.NewToolResultMessage("t", "r"), // 5  role=tool
-		schema.NewAIMessage("tool request2"), // 6
+		schema.NewAIMessage("tool request2"),  // 6
 		schema.NewToolResultMessage("t", "r"), // 7  role=tool
-		schema.NewAIMessage("final"),         // 8
+		schema.NewAIMessage("final"),          // 8
 	}
 	// minTail=4 → ideal start = len(9)-4 = 5, but msgs[5] is tool-role.
 	// Should walk back to msgs[3] (human).

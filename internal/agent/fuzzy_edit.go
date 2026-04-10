@@ -140,28 +140,39 @@ type editPair struct {
 // NFKC-normalised form of the entire file — characters outside the edited
 // regions (smart quotes, ligatures, special spaces) are converted to their
 // ASCII equivalents. Acceptable for code; may alter documentation.
-func applyMultiEdit(content string, edits []editPair) (result string, usedFuzzy bool, err error) {
+// matchResult holds the resolved position of a single edit in the working content.
+// found must be true before index/matchLen are meaningful; a zero-value struct
+// is intentionally an unresolved match to avoid confusion with a real match at
+// byte offset 0.
+type matchResult struct {
+	found    bool
+	index    int
+	matchLen int
+}
+
+// applyMultiEdit applies multiple (old→new) replacements atomically.
+// If any pair requires fuzzy matching the entire content is normalised first,
+// ensuring all replacements operate in a consistent character space.
+// Replacements are applied in descending position order so earlier indices
+// are not shifted by later writes.
+//
+// Rules (mirroring Pi's applyEditsToNormalizedContent):
+//   - Each OldStr must match exactly once (error if 0 or >1 occurrences).
+//   - No two matches may overlap (error if they do).
+//
+// WARNING: When fuzzy matching is used the returned content is the
+// NFKC-normalised form of the entire file — characters outside the edited
+// regions (smart quotes, ligatures, special spaces) are converted to their
+// ASCII equivalents. Acceptable for code; may alter documentation.
+func applyMultiEdit(content string, edits []editPair) (string, bool, error) {
 	if len(edits) == 0 {
 		return content, false, nil
 	}
 
-	// Phase 1: attempt exact matches for all edits, note if any need fuzzy.
-	type matchResult struct {
-		index    int
-		matchLen int
-	}
-	matches := make([]matchResult, len(edits))
-	needsFuzzy := false
-
-	for i, e := range edits {
-		cnt := strings.Count(content, e.OldStr)
-		if cnt == 1 {
-			matches[i] = matchResult{strings.Index(content, e.OldStr), len(e.OldStr)}
-		} else if cnt > 1 {
-			return "", false, fmt.Errorf("edit_file: edits[%d] old_string appears %d times; provide more context to make it unique", i, cnt)
-		} else {
-			needsFuzzy = true
-		}
+	// Phase 1: attempt exact matches; note whether any edit requires fuzzy.
+	matches, needsFuzzy, err := exactMatches(content, edits)
+	if err != nil {
+		return "", false, err
 	}
 
 	// Phase 2: if any edit missed exactly, normalise the entire content and
@@ -169,41 +180,83 @@ func applyMultiEdit(content string, edits []editPair) (result string, usedFuzzy 
 	working := content
 	if needsFuzzy {
 		working = normalizeForFuzzyMatch(content)
-		usedFuzzy = true
-		for i, e := range edits {
-			if matches[i].index != 0 || matches[i].matchLen != 0 {
-				// Re-find in normalised space (was exact in original space but
-				// the index is now invalid; normalisation may change byte offsets).
-				matches[i] = matchResult{}
-			}
-			normOld := normalizeForFuzzyMatch(e.OldStr)
-			cnt := strings.Count(working, normOld)
-			if cnt == 0 {
-				return "", false, fmt.Errorf("edit_file: edits[%d] old_string not found (tried exact match and fuzzy normalization)", i)
-			}
-			if cnt > 1 {
-				return "", false, fmt.Errorf("edit_file: edits[%d] old_string appears %d times after normalization; provide more context to make it unique", i, cnt)
-			}
-			matches[i] = matchResult{strings.Index(working, normOld), len(normOld)}
+		matches, err = fuzzyMatches(working, edits)
+		if err != nil {
+			return "", false, err
 		}
-	} else {
-		// All exact — re-index in original content (already done above).
 	}
 
 	// Phase 3: validate no overlapping ranges.
+	if err := validateNoOverlaps(matches); err != nil {
+		return "", false, err
+	}
+
+	// Phase 4: sort by position descending and apply in that order.
+	order := descendingOrder(matches)
+	out := working
+	for _, i := range order {
+		m := matches[i]
+		out = out[:m.index] + edits[i].NewStr + out[m.index+m.matchLen:]
+	}
+	return out, needsFuzzy, nil
+}
+
+// exactMatches tries an exact string count for each edit.
+// Returns matches (zero-value for misses), whether any edit needs fuzzy, and
+// any hard error (e.g. ambiguous match).
+func exactMatches(content string, edits []editPair) ([]matchResult, bool, error) {
+	matches := make([]matchResult, len(edits))
+	needsFuzzy := false
+	for i, e := range edits {
+		switch cnt := strings.Count(content, e.OldStr); {
+		case cnt == 1:
+			matches[i] = matchResult{found: true, index: strings.Index(content, e.OldStr), matchLen: len(e.OldStr)}
+		case cnt > 1:
+			return nil, false, fmt.Errorf("edit_file: edits[%d] old_string appears %d times; provide more context to make it unique", i, cnt)
+		default: // cnt == 0
+			needsFuzzy = true
+		}
+	}
+	return matches, needsFuzzy, nil
+}
+
+// fuzzyMatches re-resolves all edit positions in the already-normalised working
+// content. Every edit is normalised and searched; missing or ambiguous matches
+// are hard errors.
+func fuzzyMatches(working string, edits []editPair) ([]matchResult, error) {
+	matches := make([]matchResult, len(edits))
+	for i, e := range edits {
+		normOld := normalizeForFuzzyMatch(e.OldStr)
+		cnt := strings.Count(working, normOld)
+		switch {
+		case cnt == 0:
+			return nil, fmt.Errorf("edit_file: edits[%d] old_string not found (tried exact match and fuzzy normalization)", i)
+		case cnt > 1:
+			return nil, fmt.Errorf("edit_file: edits[%d] old_string appears %d times after normalization; provide more context to make it unique", i, cnt)
+		}
+		matches[i] = matchResult{found: true, index: strings.Index(working, normOld), matchLen: len(normOld)}
+	}
+	return matches, nil
+}
+
+// validateNoOverlaps returns an error if any two match ranges intersect.
+func validateNoOverlaps(matches []matchResult) error {
 	for i := range matches {
 		iEnd := matches[i].index + matches[i].matchLen
 		for j := i + 1; j < len(matches); j++ {
 			jEnd := matches[j].index + matches[j].matchLen
 			if matches[i].index < jEnd && matches[j].index < iEnd {
-				return "", false, fmt.Errorf("edit_file: edits[%d] and edits[%d] overlap", i, j)
+				return fmt.Errorf("edit_file: edits[%d] and edits[%d] overlap", i, j)
 			}
 		}
 	}
+	return nil
+}
 
-	// Phase 4: sort by position descending, apply in that order.
-	// Use a simple insertion sort — edit count is always small.
-	order := make([]int, len(edits))
+// descendingOrder returns indices sorted by match position descending so
+// replacements can be applied without shifting earlier indices.
+func descendingOrder(matches []matchResult) []int {
+	order := make([]int, len(matches))
 	for i := range order {
 		order[i] = i
 	}
@@ -212,20 +265,7 @@ func applyMultiEdit(content string, edits []editPair) (result string, usedFuzzy 
 			order[j], order[j-1] = order[j-1], order[j]
 		}
 	}
-
-	out := working
-	newStrFor := func(i int) string {
-		if needsFuzzy {
-			return edits[i].NewStr // newStr is always applied verbatim
-		}
-		return edits[i].NewStr
-	}
-	for _, i := range order {
-		m := matches[i]
-		out = out[:m.index] + newStrFor(i) + out[m.index+m.matchLen:]
-	}
-
-	return out, usedFuzzy, nil
+	return order
 }
 
 // applyEdit performs a single text replacement using exact-then-fuzzy matching.

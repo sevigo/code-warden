@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,14 @@ var publishToolNames = map[string]bool{
 // before the implement loop is told to stop and request human review.
 // This prevents endless ping-pong when reviewer and coder keep disagreeing.
 const maxReviewRounds = 10
+
+// editFileName and writeFileName are the canonical tool names used in
+// compaction helpers. Defined as constants to satisfy goconst and to make
+// any future renames a single-point change.
+const (
+	editFileName  = "edit_file"
+	writeFileName = "write_file"
+)
 
 // reviewCapTool wraps the review_code MCP tool and enforces maxReviewRounds.
 // After the cap is reached every subsequent call returns a synthetic verdict
@@ -562,19 +571,26 @@ func compactionFilterText(text string) string {
 // the AI turn that requested it.
 //
 // It walks backwards from the ideal cut point (len(msgs)-minTail) until it
-// lands on a human message. Stops at index 2 to always leave room for
-// msgs[0] (system prompt) and the new summary human message.
+// lands on a human message. The minimum index is 1 (msgs[0] is always the
+// system prompt and is never included in the tail — it is prepended separately
+// by the caller).
 func findTailStart(msgs []schema.MessageContent, minTail int) int {
 	n := len(msgs)
 	if n <= minTail+1 {
 		return 1 // not enough to compact — keep everything after system prompt
 	}
 	start := n - minTail
-	for start > 2 && msgs[start].Role != schema.ChatMessageTypeHuman {
+	for start > 1 && msgs[start].Role != schema.ChatMessageTypeHuman {
 		start--
 	}
 	return start
 }
+
+// goframeToolResultPrefix is the prefix goframe prepends to every tool result
+// message: "Tool '<name>' returned: <json>". extractPathFromToolResult depends
+// on this format; if goframe changes it, file tracking will silently return
+// empty paths (safe degradation, not a crash).
+const goframeToolResultPrefix = "returned: "
 
 // extractFileOpsFromMsgs parses ToolResultContent parts in the message history
 // and returns two sorted, deduplicated file lists:
@@ -588,9 +604,14 @@ func findTailStart(msgs []schema.MessageContent, minTail int) int {
 // so we strip the prefix and unmarshal the JSON to read the "path" field.
 // read_file results also include "path" (added in this PR).
 func extractFileOpsFromMsgs(msgs []schema.MessageContent) (readFiles, modifiedFiles []string) {
-	readSet := make(map[string]struct{})
-	modSet := make(map[string]struct{})
+	readSet, modSet := collectFileOpSets(msgs)
+	return fileOpSetsToLists(readSet, modSet)
+}
 
+// collectFileOpSets walks the message history and returns two sets of file paths.
+func collectFileOpSets(msgs []schema.MessageContent) (readSet, modSet map[string]struct{}) {
+	readSet = make(map[string]struct{})
+	modSet = make(map[string]struct{})
 	for _, m := range msgs {
 		if m.Role != schema.ChatMessageTypeTool {
 			continue
@@ -600,22 +621,29 @@ func extractFileOpsFromMsgs(msgs []schema.MessageContent) (readFiles, modifiedFi
 			if !ok {
 				continue
 			}
-			switch trc.ToolName {
-			case "read_file", "write_file", "edit_file":
-				path := extractPathFromToolResult(trc.Content)
-				if path == "" {
-					continue
-				}
-				if trc.ToolName == "read_file" {
-					readSet[path] = struct{}{}
-				} else {
-					modSet[path] = struct{}{}
-				}
-			}
+			recordFileOp(trc, readSet, modSet)
 		}
 	}
+	return readSet, modSet
+}
 
-	// read-only = read − modified
+// recordFileOp adds a path to the appropriate set based on the tool name.
+func recordFileOp(trc schema.ToolResultContent, readSet, modSet map[string]struct{}) {
+	switch trc.ToolName {
+	case "read_file":
+		if p := extractPathFromToolResult(trc.Content); p != "" {
+			readSet[p] = struct{}{}
+		}
+	case writeFileName, editFileName:
+		if p := extractPathFromToolResult(trc.Content); p != "" {
+			modSet[p] = struct{}{}
+		}
+	}
+}
+
+// fileOpSetsToLists converts raw read/mod sets into sorted, deduplicated lists
+// where readFiles contains only paths not also in modSet.
+func fileOpSetsToLists(readSet, modSet map[string]struct{}) (readFiles, modifiedFiles []string) {
 	for p := range readSet {
 		if _, modified := modSet[p]; !modified {
 			readFiles = append(readFiles, p)
@@ -624,15 +652,15 @@ func extractFileOpsFromMsgs(msgs []schema.MessageContent) (readFiles, modifiedFi
 	for p := range modSet {
 		modifiedFiles = append(modifiedFiles, p)
 	}
-	sortStrings(readFiles)
-	sortStrings(modifiedFiles)
+	sort.Strings(readFiles)
+	sort.Strings(modifiedFiles)
 	return readFiles, modifiedFiles
 }
 
 // extractPathFromToolResult extracts the "path" field from a goframe tool
 // result string of the form "Tool '<name>' returned: <json>".
 func extractPathFromToolResult(content string) string {
-	_, jsonPart, found := strings.Cut(content, "returned: ")
+	_, jsonPart, found := strings.Cut(content, goframeToolResultPrefix)
 	if !found {
 		return ""
 	}
@@ -661,13 +689,13 @@ func parseFileTagsFromSummary(summary string) (readFiles, modifiedFiles []string
 //	</tag>
 func parseXMLBlock(s, tag string) []string {
 	open := "<" + tag + ">"
-	close := "</" + tag + ">"
+	closeTag := "</" + tag + ">"
 	start := strings.Index(s, open)
 	if start == -1 {
 		return nil
 	}
 	start += len(open)
-	end := strings.Index(s[start:], close)
+	end := strings.Index(s[start:], closeTag)
 	if end == -1 {
 		return nil
 	}
@@ -724,17 +752,8 @@ func mergeFileLists(a, b []string) []string {
 	for s := range seen {
 		out = append(out, s)
 	}
-	sortStrings(out)
+	sort.Strings(out)
 	return out
-}
-
-// sortStrings sorts a string slice in place.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
 
 // buildCompactionHook returns a goframe WithLoopCompactionHook callback that

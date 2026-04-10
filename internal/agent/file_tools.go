@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
+
 	"github.com/sevigo/code-warden/internal/mcp"
 	"github.com/sevigo/code-warden/internal/mcp/tools"
 )
@@ -202,37 +203,9 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 		return nil, fmt.Errorf("path is required")
 	}
 
-	// Resolve edit pairs from either convention.
-	var pairs []editPair
-	if rawEdits, ok := args["edits"]; ok {
-		// Multi-edit: edits: [{old_string, new_string}, ...]
-		list, ok := rawEdits.([]any)
-		if !ok {
-			return nil, fmt.Errorf("edits must be an array")
-		}
-		for i, item := range list {
-			m, ok := item.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("edits[%d] must be an object", i)
-			}
-			oldStr, _ := m["old_string"].(string)
-			newStr, _ := m["new_string"].(string)
-			if oldStr == "" {
-				return nil, fmt.Errorf("edits[%d].old_string is required", i)
-			}
-			pairs = append(pairs, editPair{OldStr: oldStr, NewStr: newStr})
-		}
-		if len(pairs) == 0 {
-			return nil, fmt.Errorf("edits array is empty")
-		}
-	} else {
-		// Single replacement: old_string / new_string.
-		oldStr, ok := args["old_string"].(string)
-		if !ok {
-			return nil, fmt.Errorf("old_string is required (or provide edits array)")
-		}
-		newStr, _ := args["new_string"].(string)
-		pairs = []editPair{{OldStr: oldStr, NewStr: newStr}}
+	pairs, err := parseEditPairs(args)
+	if err != nil {
+		return nil, err
 	}
 
 	abs, err := safeJoin(root, relPath)
@@ -273,8 +246,51 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 // field. Large rewrites are truncated with a marker.
 const diffMaxBytes = 4000
 
+// parseEditPairs resolves the edit specification from tool args.
+// Accepts two calling conventions:
+//   - edits: [{old_string, new_string}, ...]  (multi-edit array)
+//   - old_string / new_string flat keys       (single replacement, backwards-compat)
+func parseEditPairs(args map[string]any) ([]editPair, error) {
+	if rawEdits, ok := args["edits"]; ok {
+		return parseEditsArray(rawEdits)
+	}
+	oldStr, ok := args["old_string"].(string)
+	if !ok {
+		return nil, fmt.Errorf("old_string is required (or provide edits array)")
+	}
+	newStr, _ := args["new_string"].(string)
+	return []editPair{{OldStr: oldStr, NewStr: newStr}}, nil
+}
+
+// parseEditsArray decodes the multi-edit array format.
+func parseEditsArray(rawEdits any) ([]editPair, error) {
+	list, ok := rawEdits.([]any)
+	if !ok {
+		return nil, fmt.Errorf("edits must be an array")
+	}
+	pairs := make([]editPair, 0, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("edits[%d] must be an object", i)
+		}
+		oldStr, _ := m["old_string"].(string)
+		newStr, _ := m["new_string"].(string)
+		if oldStr == "" {
+			return nil, fmt.Errorf("edits[%d].old_string is required", i)
+		}
+		pairs = append(pairs, editPair{OldStr: oldStr, NewStr: newStr})
+	}
+	if len(pairs) == 0 {
+		return nil, fmt.Errorf("edits array is empty")
+	}
+	return pairs, nil
+}
+
 // buildUnifiedDiff returns a unified diff string between original and updated,
 // or an empty string if the diff cannot be produced.
+// Truncation is done at a newline boundary to avoid splitting mid-line (and
+// to sidestep any multi-byte UTF-8 boundary issues at the byte limit).
 func buildUnifiedDiff(original, updated, path string) string {
 	ud := difflib.UnifiedDiff{
 		A:        difflib.SplitLines(original),
@@ -288,7 +304,12 @@ func buildUnifiedDiff(original, updated, path string) string {
 		return ""
 	}
 	if len(s) > diffMaxBytes {
-		return s[:diffMaxBytes] + "\n... [diff truncated]"
+		// Truncate at the last newline before the byte limit.
+		cut := strings.LastIndexByte(s[:diffMaxBytes], '\n') + 1
+		if cut <= 0 {
+			cut = diffMaxBytes
+		}
+		return s[:cut] + "... [diff truncated]"
 	}
 	return s
 }
