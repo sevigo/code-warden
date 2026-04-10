@@ -104,6 +104,8 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 		return j.runReReview(ctx, event)
 	case core.ImplementIssue:
 		return j.runImplementIssue(ctx, event)
+	case core.ReIndex:
+		return j.runReIndex(ctx, event)
 	default:
 		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
@@ -155,6 +157,56 @@ func (j *ReviewJob) startJobRun(ctx context.Context, jobType string, event *core
 			j.logger.Warn("failed to update job run", "id", jobID, "error", updateErr)
 		}
 	}
+}
+
+// runReIndex handles a background RAG index refresh triggered by a push
+// to the default branch. No review is performed — only the vector store
+// is updated to keep the index current.
+func (j *ReviewJob) runReIndex(ctx context.Context, event *core.GitHubEvent) (retErr error) {
+	j.logger.Info("🔄 Starting RAG re-index", "repo", event.RepoFullName, "sha", event.HeadSHA)
+	finish := j.startJobRun(ctx, "reindex", event, "webhook:push")
+	defer func() { finish(ctx, retErr) }()
+
+	// 1. Create GitHub client for the installation (needed for token resolution)
+	_, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	if err != nil {
+		retErr = fmt.Errorf("failed to create GitHub client for re-index: %w", err)
+		return retErr
+	}
+
+	// 2. Sync the repo to the latest default branch state
+	mutex := j.getRepoMutex(event.RepoFullName)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	updateResult, syncErr := j.repoMgr.SyncRepo(ctx, event, ghToken)
+	if syncErr != nil {
+		retErr = fmt.Errorf("failed to sync repo for re-index: %w", syncErr)
+		return retErr
+	}
+
+	repo, repoErr := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if repoErr != nil || repo == nil {
+		retErr = fmt.Errorf("failed to retrieve repository record for re-index %s: %w", event.RepoFullName, repoErr)
+		return retErr
+	}
+
+	// 3. Update the vector store only when the default branch has new commits
+	if updateResult.IsInitialClone || updateResult.DefaultBranchChanged {
+		repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
+		if vsErr := j.updateVectorStoreAndSHA(ctx, repoConfig, repo, updateResult); vsErr != nil {
+			retErr = vsErr
+			return retErr
+		}
+	} else {
+		j.logger.Info("default branch unchanged — no Qdrant update needed",
+			"repo", event.RepoFullName,
+			"default_branch_sha", updateResult.DefaultBranchSHA,
+		)
+	}
+
+	j.logger.Info("RAG re-index completed successfully", "repo", event.RepoFullName)
+	return nil
 }
 
 // runImplementIssue handles the `/implement` command on issues.

@@ -20,6 +20,8 @@ const (
 	ReReview
 	// ImplementIssue indicates an autonomous agent should implement the issue.
 	ImplementIssue
+	// ReIndex indicates a background RAG index refresh (no review output).
+	ReIndex
 )
 
 // GitHubEvent represents a simplified, internal view of a GitHub webhook event.
@@ -221,4 +223,40 @@ func parseImplementInstructions(commentBody string) string {
 	instructions = strings.TrimSpace(instructions)
 
 	return sanitizeInstructions(instructions)
+}
+
+// EventFromPushEvent transforms a GitHub PushEvent into a GitHubEvent for
+// background RAG re-indexing. It only processes pushes to the repository's
+// default branch; pushes to feature branches return an error.
+func EventFromPushEvent(event *github.PushEvent) (*GitHubEvent, error) {
+	repo := event.GetRepo()
+	if repo == nil || repo.GetOwner() == nil || repo.GetOwner().GetLogin() == "" || repo.GetName() == "" {
+		return nil, fmt.Errorf("repository or owner information is missing from the push event")
+	}
+
+	// Only process pushes to the default branch
+	ref := event.GetRef() // e.g. "refs/heads/main"
+	defaultBranch := repo.GetDefaultBranch()
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+	expectedRef := "refs/heads/" + defaultBranch
+	if ref != expectedRef {
+		return nil, fmt.Errorf("push is not to the default branch (ref=%s, expected=%s)", ref, expectedRef)
+	}
+
+	if event.GetInstallation() == nil || event.GetInstallation().GetID() == 0 {
+		return nil, fmt.Errorf("installation ID is missing from the push event")
+	}
+
+	return &GitHubEvent{
+		Type:           ReIndex,
+		RepoOwner:      repo.GetOwner().GetLogin(),
+		RepoName:       repo.GetName(),
+		RepoFullName:   repo.GetFullName(),
+		RepoCloneURL:   repo.GetCloneURL(),
+		Language:       repo.GetLanguage(),
+		InstallationID: event.GetInstallation().GetID(),
+		HeadSHA:        event.GetAfter(), // the new HEAD SHA after the push
+	}, nil
 }
