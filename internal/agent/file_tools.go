@@ -102,7 +102,9 @@ func (t *readFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 }
 
 // writeFileTool writes (or creates) a file in the agent workspace.
-type writeFileTool struct{}
+type writeFileTool struct {
+	Formatter *Formatter
+}
 
 func (t *writeFileTool) Name() string { return "write_file" }
 
@@ -151,14 +153,26 @@ func (t *writeFileTool) Execute(ctx context.Context, args map[string]any) (any, 
 		return nil, fmt.Errorf("write_file: %w", err)
 	}
 
-	result := map[string]any{"ok": true, "path": relPath, "bytes": len(content)}
+	// Auto-format the written file if a formatter is available, then re-read
+	// so the diff the LLM sees matches what's on disk.
+	written := content
+	if t.Formatter != nil {
+		t.Formatter.Format(ctx, root, abs)
+		if formatted, readErr := os.ReadFile(abs); readErr == nil {
+			written = string(formatted)
+		}
+	}
+
+	result := map[string]any{"ok": true, "path": relPath, "bytes": len(written)}
 	return result, nil
 }
 
 // editFileTool replaces text in a file. Accepts either a single old_string/new_string
 // pair (backwards-compatible) or an edits array for atomic multi-replacement.
 // Mirrors Pi's edit tool semantics.
-type editFileTool struct{}
+type editFileTool struct {
+	Formatter *Formatter
+}
 
 func (t *editFileTool) Name() string { return "edit_file" }
 
@@ -260,6 +274,7 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 			return handlePartialEdit(editContext{
 				abs: abs, relPath: relPath, original: original, working: updated,
 				lineEnding: lineEnding, hasBOM: hasBOM, usedFuzzy: usedFuzzy,
+				formatter: t.Formatter, workspaceRoot: root, ctx: ctx,
 			}, pe, err)
 		}
 		return nil, fmt.Errorf("edit_file: %w", err)
@@ -270,6 +285,14 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	updated = prependBOM(updated, hasBOM)
 	if err := os.WriteFile(abs, []byte(updated), 0o644); err != nil { //nolint:gosec // G306: 0644 is intentional for source files
 		return nil, fmt.Errorf("edit_file: write: %w", err)
+	}
+
+	// Auto-format the written file and re-read so the diff is accurate.
+	if t.Formatter != nil {
+		t.Formatter.Format(ctx, root, abs)
+		if formatted, readErr := os.ReadFile(abs); readErr == nil {
+			updated = string(formatted)
+		}
 	}
 
 	result := map[string]any{"ok": true, "path": relPath}
@@ -422,11 +445,12 @@ func (t *listDirTool) Execute(ctx context.Context, args map[string]any) (any, er
 }
 
 // fileTools returns all workspace file manipulation tools.
-func fileTools() []mcp.Tool {
+// The formatter is used to auto-format Go files after write/edit; pass nil to disable.
+func fileTools(formatter *Formatter) []mcp.Tool {
 	return []mcp.Tool{
 		&readFileTool{},
-		&writeFileTool{},
-		&editFileTool{},
+		&writeFileTool{Formatter: formatter},
+		&editFileTool{Formatter: formatter},
 		&listDirTool{},
 	}
 }
@@ -464,6 +488,9 @@ func parseIntArg(args map[string]any, key string) int {
 type editContext struct {
 	abs, relPath, original, working, lineEnding string
 	hasBOM, usedFuzzy                           bool
+	formatter                                   *Formatter
+	workspaceRoot                               string
+	ctx                                         context.Context
 }
 
 func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (map[string]any, error) {
@@ -482,17 +509,37 @@ func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (ma
 	}
 
 	// Only write to disk if at least one edit succeeded.
-	if appliedCount > 0 {
-		partialResult := restoreLineEndings(ctx.working, ctx.lineEnding)
-		partialResult = prependBOM(partialResult, ctx.hasBOM)
-		if writeErr := os.WriteFile(ctx.abs, []byte(partialResult), 0o644); writeErr != nil { //nolint:gosec // G306: 0644 is intentional for source files
-			return nil, fmt.Errorf("edit_file: partial edit write failed: %w", writeErr)
-		}
-		diffStr := buildUnifiedDiff(ctx.original, partialResult, ctx.relPath)
-		if diffStr != "" {
-			result["diff"] = diffStr
-		}
+	if appliedCount == 0 {
+		return result, nil
+	}
+
+	partialResult := restoreLineEndings(ctx.working, ctx.lineEnding)
+	partialResult = prependBOM(partialResult, ctx.hasBOM)
+	if writeErr := os.WriteFile(ctx.abs, []byte(partialResult), 0o644); writeErr != nil { //nolint:gosec // G306: 0644 is intentional for source files
+		return nil, fmt.Errorf("edit_file: partial edit write failed: %w", writeErr)
+	}
+
+	// Auto-format the partially-edited file.
+	partialResult = formatAndReadback(ctx.ctx, ctx.formatter, ctx.workspaceRoot, ctx.abs, partialResult)
+
+	diffStr := buildUnifiedDiff(ctx.original, partialResult, ctx.relPath)
+	if diffStr != "" {
+		result["diff"] = diffStr
 	}
 
 	return result, nil
+}
+
+// formatAndReadback runs the auto-formatter on the given file and re-reads it.
+// Returns the (possibly formatted) content, or the original content if formatting
+// didn't change the file or the formatter is nil.
+func formatAndReadback(ctx context.Context, formatter *Formatter, workspaceRoot, absPath, current string) string {
+	if formatter == nil {
+		return current
+	}
+	formatter.Format(ctx, workspaceRoot, absPath)
+	if formatted, readErr := os.ReadFile(absPath); readErr == nil {
+		return string(formatted)
+	}
+	return current
 }

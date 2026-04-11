@@ -239,3 +239,18 @@ Main branch requires status checks (lint, test, build) but no PR approval. Direc
 1. Create tool struct in `internal/agent/` implementing the `mcp.Tool` interface
 2. Add to `searchTools()` or `fileTools()` helper function
 3. Tool is automatically registered in planner, implement, and native agent loops
+
+### Adding Per-Write Formatting for a New Language
+
+The agent has two formatting mechanisms:
+
+1. **Per-write formatting** (Go only): `internal/agent/formatter.go` runs `goimports` or `gofmt` on `.go` files after every `write_file`/`edit_file`. This is reserved for Go because `goimports` resolves imports without an LSP — uniquely saving iterations. To add per-write formatting for another language:
+   - Add the extension and formatter specs to `defaultFormatters` in `formatter.go`
+   - Per-write formatters are alternative chains (first matching binary wins), not sequential passes
+   - Keep it simple: one binary, one pass. Sequential multi-pass formatting (like `ruff format` then `ruff check --fix`) is too complex for per-write hooks
+
+2. **Batch format before review** (any language): configured in `.code-warden.yml` via `format_command`. The agent runs this once between the edit and review phases. This is the right mechanism for multi-language projects:
+   ```yaml
+   format_command: "npm run format"  # or "ruff format ." or "cargo fmt"
+   ```
+   To add support in code: the `format_command` field is in `internal/core/repo_config.go`, and the batch format is triggered in `internal/agent/warden.go` via `formatProject()`.

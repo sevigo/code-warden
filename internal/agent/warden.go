@@ -247,9 +247,15 @@ func (o *Orchestrator) runImplementPhase(
 		changedFiles = modifiedFiles(editResult.ToolCalls)
 	}
 
+	// ── Batch format ──────────────────────────────────────────────────────────
+	// Run the project's format_command once before review (e.g. "npm run format").
+	// This is configured in .code-warden.yml and is separate from per-write
+	// Go formatting (which runs inside write_file/edit_file via the Formatter).
+	formatNote := o.formatProject(ctx, ws)
+
 	// ── Review+fix loop ─────────────────────────────────────────────────────
 	tracker.setPhase("reviewing")
-	return o.runReviewPhase(ctx, session, agentLLM, ws, branch, tracker, editIters, editObs, changedFiles)
+	return o.runReviewPhase(ctx, session, agentLLM, ws, branch, tracker, editIters, editObs, changedFiles, formatNote)
 }
 
 // runReviewPhase runs the review+fix loop after the edit loop completes.
@@ -266,6 +272,7 @@ func (o *Orchestrator) runReviewPhase(
 	editIters int,
 	editObs *loopObserver,
 	changedFiles []string,
+	formatNote string,
 ) (iterations int, obs *loopObserver, verdict string, ok bool) {
 	o.logger.Info("warden: starting review+fix loop",
 		"session_id", session.ID, "changed_files", len(changedFiles),
@@ -281,7 +288,7 @@ func (o *Orchestrator) runReviewPhase(
 	reviewTask := goframeagent.Task{
 		ID:          session.ID + "-review",
 		Description: fmt.Sprintf("Review and fix implementation for GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
-		Context:     o.buildReviewTaskContext(session.Issue, branch, changedFiles),
+		Context:     o.buildReviewTaskContext(session.Issue, branch, changedFiles, formatNote),
 		Priority:    5,
 	}
 
@@ -420,8 +427,8 @@ func (o *Orchestrator) buildEditLoop(agentLLM llms.Model, session *Session, ws *
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools (no LSP — agent uses run_command for compile checks).
-	for _, t := range fileTools() {
+	// File tools — auto-format Go files after write/edit (unless disabled by repo config).
+	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig)) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
@@ -462,8 +469,8 @@ func (o *Orchestrator) buildReviewLoop(agentLLM llms.Model, session *Session, ws
 		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools (for fixing issues found during review).
-	for _, t := range fileTools() {
+	// File tools — auto-format Go files after write/edit (unless disabled by repo config).
+	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig)) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
@@ -552,6 +559,7 @@ Working directory: %s
 
 ## Rules
 - Paths are relative to the working directory.
+- Files are auto-formatted on write (goimports or gofmt for .go files). Other languages use the project's format_command before review.
 - Always run lint and tests after making changes.
 - Do NOT call review_code — it is not available in this phase. Review will happen automatically in the next phase.
 - Do not attempt to push or open a PR.
@@ -619,6 +627,7 @@ Working directory: %s
 
 ## Rules
 - Paths are relative to the working directory.
+- Files are auto-formatted on write (goimports or gofmt for .go files). Other languages use the project's format_command before review.
 - You MUST call review_code at least once. Do not finish without calling it.
 - Always run lint and tests before calling review_code.
 - Your work here is done ONLY when review_code returns APPROVE. Do not attempt to push or open a PR.
@@ -635,7 +644,7 @@ Working directory: %s
 
 // buildReviewTaskContext returns the task context for the review+fix loop.
 // It lists the changed files so the review agent knows what was modified.
-func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, changedFiles []string) string {
+func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, changedFiles []string, formatNote string) string {
 	ctx := fmt.Sprintf("Review and verify the implementation for GitHub issue #%d (%s).\nBranch: %s",
 		issue.Number, issue.Title, branch)
 	if len(changedFiles) > 0 {
@@ -645,6 +654,9 @@ func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, change
 		}
 	}
 	ctx += "\n\nCall review_code to verify your changes. Fix any issues found, then re-verify and re-review until APPROVE."
+	if formatNote != "" {
+		ctx += "\n\n" + formatNote
+	}
 	return ctx
 }
 
@@ -1270,6 +1282,19 @@ func (o *Orchestrator) getGitDiffStat(workspaceDir string) string {
 		stat = stat[:4000] + "\n... (truncated)"
 	}
 	return stat
+}
+
+// formatProject runs the project's format_command once before the review phase.
+// The command is configured in .code-warden.yml (e.g. "npm run format", "ruff format .").
+// No-op if no format_command is set. Controlled independently of DisableFormatOnWrite.
+// Returns a human-readable note for the review context if formatting ran, or "".
+func (o *Orchestrator) formatProject(ctx context.Context, ws *agentWorkspace) string {
+	if o.repoConfig == nil || o.repoConfig.FormatCommand == "" {
+		return ""
+	}
+	formatter := NewFormatter(o.logger)
+	formatter.FormatProject(ctx, ws.dir, o.repoConfig.FormatCommand)
+	return fmt.Sprintf("Note: project format command ran before review (\"%s\"). Some files may have formatting changes you did not make.", o.repoConfig.FormatCommand)
 }
 
 // yieldCommitAndPush stages all pending changes, commits, and pushes the branch.
