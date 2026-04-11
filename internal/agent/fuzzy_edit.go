@@ -194,7 +194,7 @@ type matchResult struct {
 	matchLen int
 }
 
-// applyMultiEdit applies multiple (old→new) replacements atomically.
+// applyMultiEdit applies multiple (old→new) replacements.
 // If any pair requires fuzzy matching the entire content is normalised first,
 // ensuring all replacements operate in a consistent character space.
 // Replacements are applied in descending position order so earlier indices
@@ -203,6 +203,10 @@ type matchResult struct {
 // Rules (mirroring Pi's applyEditsToNormalizedContent):
 //   - Each OldStr must match exactly once (error if 0 or >1 occurrences).
 //   - No two matches may overlap (error if they do).
+//
+// If some edits match but others fail, the successful edits are still applied
+// and the returned error lists the failed edit indices. The caller can decide
+// whether to keep the partial result.
 //
 // WARNING: When fuzzy matching is used the returned content is the
 // NFKC-normalised form of the entire file — characters outside the edited
@@ -230,19 +234,60 @@ func applyMultiEdit(content string, edits []editPair) (string, bool, error) {
 		}
 	}
 
-	// Phase 3: validate no overlapping ranges.
-	if err := validateNoOverlaps(matches); err != nil {
+	// Phase 3: separate successful and failed matches.
+	var succeeded []int
+	var failedIndices []int
+	for i, m := range matches {
+		if m.found {
+			succeeded = append(succeeded, i)
+		} else {
+			failedIndices = append(failedIndices, i)
+		}
+	}
+
+	// Phase 4: validate no overlapping ranges among succeeded matches.
+	succeededMatches := make([]matchResult, 0, len(succeeded))
+	for _, i := range succeeded {
+		succeededMatches = append(succeededMatches, matches[i])
+	}
+	if err := validateNoOverlaps(succeededMatches); err != nil {
 		return "", false, err
 	}
 
-	// Phase 4: sort by position descending and apply in that order.
-	order := descendingOrder(matches)
+	// Phase 5: sort by position descending and apply in that order.
+	order := descendingOrder(succeededMatches)
 	out := working
-	for _, i := range order {
-		m := matches[i]
-		out = out[:m.index] + edits[i].NewStr + out[m.index+m.matchLen:]
+	for _, idx := range order {
+		// idx is an index into succeededMatches, which corresponds to
+		// succeeded[idx] in the original edits slice. We need the original
+		// edit index to look up the match and replacement.
+		origIdx := succeeded[idx]
+		m := matches[origIdx]
+		out = out[:m.index] + edits[origIdx].NewStr + out[m.index+m.matchLen:]
 	}
+
+	if len(failedIndices) > 0 {
+		return out, needsFuzzy, &partialEditError{
+			FailedIndices: failedIndices,
+			TotalEdits:    len(edits),
+		}
+	}
+
 	return out, needsFuzzy, nil
+}
+
+// partialEditError is returned when some edits in a multi-edit batch
+// succeeded but others failed. The caller can inspect FailedIndices to know
+// which edits were not applied. The returned content contains all successful
+// edits already applied.
+type partialEditError struct {
+	FailedIndices []int
+	TotalEdits    int
+}
+
+func (e *partialEditError) Error() string {
+	return fmt.Sprintf("edit_file: applied %d of %d edits; edits at indices %v not found",
+		e.TotalEdits-len(e.FailedIndices), e.TotalEdits, e.FailedIndices)
 }
 
 // exactMatches tries an exact string count for each edit.
@@ -265,8 +310,9 @@ func exactMatches(content string, edits []editPair) ([]matchResult, bool, error)
 }
 
 // fuzzyMatches re-resolves all edit positions in the already-normalised working
-// content. Every edit is normalised and searched; missing or ambiguous matches
-// are hard errors.
+// content. Ambiguous matches (more than one occurrence) are hard errors.
+// Missing matches return a zero-value matchResult (found=false) so the caller
+// can apply partial edits.
 func fuzzyMatches(working string, edits []editPair) ([]matchResult, error) {
 	matches := make([]matchResult, len(edits))
 	for i, e := range edits {
@@ -274,11 +320,13 @@ func fuzzyMatches(working string, edits []editPair) ([]matchResult, error) {
 		cnt := strings.Count(working, normOld)
 		switch {
 		case cnt == 0:
-			return nil, fmt.Errorf("edit_file: edits[%d] old_string not found (tried exact match and fuzzy normalization)", i)
+			// Not found — leave as zero-value (found=false). Caller decides
+			// whether to proceed with partial edits.
 		case cnt > 1:
 			return nil, fmt.Errorf("edit_file: edits[%d] old_string appears %d times after normalization; provide more context to make it unique", i, cnt)
+		default:
+			matches[i] = matchResult{found: true, index: strings.Index(working, normOld), matchLen: len(normOld)}
 		}
-		matches[i] = matchResult{found: true, index: strings.Index(working, normOld), matchLen: len(normOld)}
 	}
 	return matches, nil
 }
@@ -314,6 +362,10 @@ func descendingOrder(matches []matchResult) []int {
 
 // applyEdit performs a single text replacement using exact-then-fuzzy matching.
 // It delegates to applyMultiEdit with a one-element slice.
+//
+// Note: when the edit is not found, applyMultiEdit returns a partialEditError
+// (with FailedIndices=[0]). Callers that need to distinguish "not found" from
+// other errors should check for *partialEditError via errors.As.
 //
 // WARNING: When fuzzy matching is used, the returned content is the
 // NFKC-normalized form of the entire file. This means characters outside

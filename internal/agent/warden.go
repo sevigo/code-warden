@@ -417,13 +417,13 @@ Working directory: %s
 - list_dir(path?) — list directory contents
 
 **Verification**:
-- run_command(command) — run whitelisted commands: "make lint", "make test"
+- run_command(command) — run whitelisted commands: "make build", "make lint", "make test"
 - review_code — request an automated code review of your changes
 
 ## Workflow
 1. **Explore** — use grep / search_code / get_symbol / read_file to understand the code. Prefer grep for exact pattern search, search_code for semantic discovery.
 2. **Implement** — use write_file / edit_file. Prefer edit_file for targeted changes.
-3. **Verify** — run_command("make lint"), then run_command("make test"). Fix failures.
+3. **Verify** — run_command("make build"), then run_command("make lint"), then run_command("make test"). Fix failures.
 4. **Review** — call review_code. If REQUEST_CHANGES, fix and re-verify. Repeat until APPROVE.
 
 ## Rules

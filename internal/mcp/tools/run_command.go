@@ -23,7 +23,11 @@ const (
 
 // defaultVerifyCommands are the commands used when no verify_commands are
 // configured in .code-warden.yml.
-var defaultVerifyCommands = []string{"make lint", "make test"}
+var defaultVerifyCommands = []string{
+	"make build",
+	"make lint",
+	"make test",
+}
 
 // RunCommand executes a whitelisted shell command in the session workspace and
 // returns stdout, stderr, and the exit code.  Only commands listed in
@@ -48,19 +52,20 @@ func (t *RunCommand) Name() string {
 }
 
 func (t *RunCommand) Description() string {
-	return `Run a whitelisted verification command in the project workspace.
+	allowed := t.allowedCommands()
+	return fmt.Sprintf(`Run a whitelisted verification command in the project workspace.
 
-Only commands defined in the repository's verify_commands configuration are
-allowed (defaults: "make lint", "make test").
+Allowed commands: %s.
 
-Use this tool to verify that the code compiles and all tests pass before
-calling review_code or create_pull_request.
+Use "make build" after editing files to verify they compile and all
+imports/exports are correct. Use "make lint" and "make test" for full
+verification before calling review_code.
 
 Returns stdout, stderr, exit_code, and a boolean success field.
 
 Note: commands are split on whitespace; quoted arguments with spaces are not
 supported. Whitelist entries should use simple space-separated tokens only
-(e.g. "make test" not "go test -run 'My Test'").`
+(e.g. "make test" not "go test -run 'My Test'").`, strings.Join(allowed, ", "))
 }
 
 func (t *RunCommand) ParametersSchema() map[string]any {

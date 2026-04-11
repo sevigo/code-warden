@@ -33,11 +33,13 @@ const (
 
 type PromptManager struct {
 	prompts map[PromptKey]*template.Template
+	raw     map[PromptKey]string
 }
 
 func NewPromptManager() (*PromptManager, error) {
 	pm := &PromptManager{
 		prompts: make(map[PromptKey]*template.Template),
+		raw:     make(map[PromptKey]string),
 	}
 
 	files, err := promptFiles.ReadDir("prompts")
@@ -64,6 +66,7 @@ func NewPromptManager() (*PromptManager, error) {
 		}
 
 		pm.prompts[key] = tmpl
+		pm.raw[key] = string(content)
 	}
 
 	return pm, nil
@@ -75,6 +78,19 @@ func (pm *PromptManager) Get(key PromptKey) (*template.Template, error) {
 		return nil, fmt.Errorf("no prompt found for key '%s'", key)
 	}
 	return tmpl, nil
+}
+
+// Raw returns the un-rendered template source for a prompt key.
+// Use this (instead of Render) when the template will be rendered by an
+// external system (e.g. goframe's LLMReranker) that provides its own data
+// at runtime. Render(key, nil) is explicitly NOT what you want for this
+// case — it replaces all {{.Field}} placeholders with "<no value>".
+func (pm *PromptManager) Raw(key PromptKey) (string, error) {
+	s, ok := pm.raw[key]
+	if !ok {
+		return "", fmt.Errorf("no prompt found for key '%s'", key)
+	}
+	return s, nil
 }
 
 func (pm *PromptManager) Render(key PromptKey, data any) (string, error) {

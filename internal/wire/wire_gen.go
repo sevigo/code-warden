@@ -398,16 +398,12 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logg
 		return nil, fmt.Errorf("failed to create reranker LLM: %w", err)
 	}
 
-	const RerankPromptKey = "rerank_precision"
-
-	prompt, err := promptMgr.Render("rerank_precision", nil)
+	prompt, err := promptMgr.Raw("rerank_precision")
 	if err != nil {
-		logger2.
-			Debug("Loaded rerank prompt", "prompt_len", len(prompt))
+		logger2.Warn("failed to load rerank prompt, using default", "error", err)
+		return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3)), nil
 	}
 
-	if prompt != "" {
-		return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3), llms.WithPrompt(prompt)), nil
-	}
-	return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3)), nil
+	logger2.Debug("Loaded rerank prompt", "prompt_len", len(prompt))
+	return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3), llms.WithPrompt(prompt)), nil
 }
