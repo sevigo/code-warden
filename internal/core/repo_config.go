@@ -83,6 +83,10 @@ type RepoConfig struct {
 	// CommandTimeoutSeconds is the per-command timeout for run_command in seconds.
 	// Defaults to 300 (5 minutes) when zero. Increase for repos with long test suites.
 	CommandTimeoutSeconds int `yaml:"command_timeout_seconds"`
+
+	// DisableAutoFormat disables post-write formatting. Set to true for repos
+	// that manage formatting through their own CI pipeline or pre-commit hooks.
+	DisableAutoFormat bool `yaml:"disable_auto_format"`
 }
 
 // DefaultRepoConfig returns a config with default values.

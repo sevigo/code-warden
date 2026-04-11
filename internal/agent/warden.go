@@ -420,8 +420,12 @@ func (o *Orchestrator) buildEditLoop(agentLLM llms.Model, session *Session, ws *
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools (no LSP — agent uses run_command for compile checks).
-	for _, t := range fileTools() {
+	// File tools — auto-format after write/edit (unless disabled by repo config).
+	formatter := NewFormatter(o.logger)
+	if o.repoConfig != nil && o.repoConfig.DisableAutoFormat {
+		formatter = nil
+	}
+	for _, t := range fileTools(formatter, o.logger) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
@@ -462,8 +466,12 @@ func (o *Orchestrator) buildReviewLoop(agentLLM llms.Model, session *Session, ws
 		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools (for fixing issues found during review).
-	for _, t := range fileTools() {
+	// File tools — auto-format after write/edit (unless disabled by repo config).
+	reviewFormatter := NewFormatter(o.logger)
+	if o.repoConfig != nil && o.repoConfig.DisableAutoFormat {
+		reviewFormatter = nil
+	}
+	for _, t := range fileTools(reviewFormatter, o.logger) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
@@ -552,6 +560,7 @@ Working directory: %s
 
 ## Rules
 - Paths are relative to the working directory.
+- Files are auto-formatted on write (goimports/.go, ruff format+check/.py, prettier/.ts/.js, rustfmt/.rs). No need to call a formatter manually.
 - Always run lint and tests after making changes.
 - Do NOT call review_code — it is not available in this phase. Review will happen automatically in the next phase.
 - Do not attempt to push or open a PR.
@@ -619,6 +628,7 @@ Working directory: %s
 
 ## Rules
 - Paths are relative to the working directory.
+- Files are auto-formatted on write (goimports/.go, ruff format+check/.py, prettier/.ts/.js, rustfmt/.rs). No need to call a formatter manually.
 - You MUST call review_code at least once. Do not finish without calling it.
 - Always run lint and tests before calling review_code.
 - Your work here is done ONLY when review_code returns APPROVE. Do not attempt to push or open a PR.

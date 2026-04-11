@@ -172,7 +172,8 @@ func (o *Orchestrator) buildNativeLoopWithObs(obs *loopObserver) loopBuilderFn {
 		}
 
 		// File tools for native agent — needed for read/write/edit/list operations.
-		for _, t := range fileTools() {
+		// Auto-formatting disabled in in-process mode (no Formatter configured).
+		for _, t := range fileTools(nil, nil) {
 			wrapped := &contextInjectingTool{
 				inner:       t,
 				projectRoot: ws.dir,

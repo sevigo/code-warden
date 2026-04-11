@@ -27,6 +27,7 @@ var defaultVerifyCommands = []string{
 	"make build",
 	"make lint",
 	"make test",
+	"make fmt",
 }
 
 // RunCommand executes a whitelisted shell command in the session workspace and
