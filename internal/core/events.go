@@ -265,13 +265,13 @@ func PushEventFromGitHub(event *github.PushEvent) (*GitHubEvent, error) {
 	headSHA := event.GetAfter() // the SHA after the push
 
 	return &GitHubEvent{
-		Type:             ReIndex,
-		RepoOwner:        repo.GetOwner().GetLogin(),
-		RepoName:         repo.GetName(),
-		RepoFullName:     repo.GetFullName(),
-		RepoCloneURL:     repo.GetCloneURL(),
-		Language:         repo.GetLanguage(),
-		InstallationID:   event.GetInstallation().GetID(),
-		HeadSHA:          headSHA,
+		Type:           ReIndex,
+		RepoOwner:      repo.GetOwner().GetLogin(),
+		RepoName:       repo.GetName(),
+		RepoFullName:   repo.GetFullName(),
+		RepoCloneURL:   repo.GetCloneURL(),
+		Language:       repo.GetLanguage(),
+		InstallationID: event.GetInstallation().GetID(),
+		HeadSHA:        headSHA,
 	}, nil
 }
