@@ -153,11 +153,14 @@ func (t *writeFileTool) Execute(ctx context.Context, args map[string]any) (any, 
 		return nil, fmt.Errorf("write_file: %w", err)
 	}
 
-	// Auto-format the written file if a formatter is available.
+	// Auto-format the written file if a formatter is available, then re-read
+	// so the diff the LLM sees matches what's on disk.
 	written := content
-	t.Formatter.Format(ctx, root, abs)
-	if formatted, readErr := os.ReadFile(abs); readErr == nil {
-		written = string(formatted)
+	if t.Formatter != nil {
+		t.Formatter.Format(ctx, root, abs)
+		if formatted, readErr := os.ReadFile(abs); readErr == nil {
+			written = string(formatted)
+		}
 	}
 
 	result := map[string]any{"ok": true, "path": relPath, "bytes": len(written)}
@@ -271,7 +274,7 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 			return handlePartialEdit(editContext{
 				abs: abs, relPath: relPath, original: original, working: updated,
 				lineEnding: lineEnding, hasBOM: hasBOM, usedFuzzy: usedFuzzy,
-				formatter: t.Formatter, workspaceRoot: root,
+				formatter: t.Formatter, workspaceRoot: root, ctx: ctx,
 			}, pe, err)
 		}
 		return nil, fmt.Errorf("edit_file: %w", err)
@@ -285,9 +288,11 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	}
 
 	// Auto-format the written file and re-read so the diff is accurate.
-	t.Formatter.Format(ctx, root, abs)
-	if formatted, readErr := os.ReadFile(abs); readErr == nil {
-		updated = string(formatted)
+	if t.Formatter != nil {
+		t.Formatter.Format(ctx, root, abs)
+		if formatted, readErr := os.ReadFile(abs); readErr == nil {
+			updated = string(formatted)
+		}
 	}
 
 	result := map[string]any{"ok": true, "path": relPath}
@@ -485,6 +490,7 @@ type editContext struct {
 	hasBOM, usedFuzzy                           bool
 	formatter                                   *Formatter
 	workspaceRoot                               string
+	ctx                                         context.Context
 }
 
 func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (map[string]any, error) {
@@ -514,7 +520,7 @@ func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (ma
 	}
 
 	// Auto-format the partially-edited file.
-	partialResult = formatAndReadback(ctx.formatter, ctx.workspaceRoot, ctx.abs, ctx.relPath, partialResult)
+	partialResult = formatAndReadback(ctx.ctx, ctx.formatter, ctx.workspaceRoot, ctx.abs, partialResult)
 
 	diffStr := buildUnifiedDiff(ctx.original, partialResult, ctx.relPath)
 	if diffStr != "" {
@@ -527,8 +533,11 @@ func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (ma
 // formatAndReadback runs the auto-formatter on the given file and re-reads it.
 // Returns the (possibly formatted) content, or the original content if formatting
 // didn't change the file or the formatter is nil.
-func formatAndReadback(formatter *Formatter, workspaceRoot, absPath, _ string, current string) string {
-	formatter.Format(context.Background(), workspaceRoot, absPath)
+func formatAndReadback(ctx context.Context, formatter *Formatter, workspaceRoot, absPath, current string) string {
+	if formatter == nil {
+		return current
+	}
+	formatter.Format(ctx, workspaceRoot, absPath)
 	if formatted, readErr := os.ReadFile(absPath); readErr == nil {
 		return string(formatted)
 	}

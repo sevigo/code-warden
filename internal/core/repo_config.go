@@ -84,9 +84,11 @@ type RepoConfig struct {
 	// Defaults to 300 (5 minutes) when zero. Increase for repos with long test suites.
 	CommandTimeoutSeconds int `yaml:"command_timeout_seconds"`
 
-	// DisableAutoFormat disables post-write formatting. Set to true for repos
-	// that manage formatting through their own CI pipeline or pre-commit hooks.
-	DisableAutoFormat bool `yaml:"disable_auto_format"`
+	// DisableFormatOnWrite disables per-write formatting (goimports/gofmt for Go).
+	// This is independent of the batch format_command, which runs before review
+	// as long as format_command is set. A project might disable per-write
+	// formatting (e.g. their IDE already does it) but still want batch formatting.
+	DisableFormatOnWrite bool `yaml:"disable_format_on_write"`
 
 	// FormatCommand is a shell command to run once before the review phase to
 	// format all modified files (e.g. "npm run format", "ruff format .").

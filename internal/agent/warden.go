@@ -251,11 +251,11 @@ func (o *Orchestrator) runImplementPhase(
 	// Run the project's format_command once before review (e.g. "npm run format").
 	// This is configured in .code-warden.yml and is separate from per-write
 	// Go formatting (which runs inside write_file/edit_file via the Formatter).
-	o.formatProject(ctx, ws)
+	formatNote := o.formatProject(ctx, ws)
 
 	// ── Review+fix loop ─────────────────────────────────────────────────────
 	tracker.setPhase("reviewing")
-	return o.runReviewPhase(ctx, session, agentLLM, ws, branch, tracker, editIters, editObs, changedFiles)
+	return o.runReviewPhase(ctx, session, agentLLM, ws, branch, tracker, editIters, editObs, changedFiles, formatNote)
 }
 
 // runReviewPhase runs the review+fix loop after the edit loop completes.
@@ -272,6 +272,7 @@ func (o *Orchestrator) runReviewPhase(
 	editIters int,
 	editObs *loopObserver,
 	changedFiles []string,
+	formatNote string,
 ) (iterations int, obs *loopObserver, verdict string, ok bool) {
 	o.logger.Info("warden: starting review+fix loop",
 		"session_id", session.ID, "changed_files", len(changedFiles),
@@ -287,7 +288,7 @@ func (o *Orchestrator) runReviewPhase(
 	reviewTask := goframeagent.Task{
 		ID:          session.ID + "-review",
 		Description: fmt.Sprintf("Review and fix implementation for GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
-		Context:     o.buildReviewTaskContext(session.Issue, branch, changedFiles),
+		Context:     o.buildReviewTaskContext(session.Issue, branch, changedFiles, formatNote),
 		Priority:    5,
 	}
 
@@ -643,7 +644,7 @@ Working directory: %s
 
 // buildReviewTaskContext returns the task context for the review+fix loop.
 // It lists the changed files so the review agent knows what was modified.
-func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, changedFiles []string) string {
+func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, changedFiles []string, formatNote string) string {
 	ctx := fmt.Sprintf("Review and verify the implementation for GitHub issue #%d (%s).\nBranch: %s",
 		issue.Number, issue.Title, branch)
 	if len(changedFiles) > 0 {
@@ -653,6 +654,9 @@ func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, change
 		}
 	}
 	ctx += "\n\nCall review_code to verify your changes. Fix any issues found, then re-verify and re-review until APPROVE."
+	if formatNote != "" {
+		ctx += "\n\n" + formatNote
+	}
 	return ctx
 }
 
@@ -1282,13 +1286,15 @@ func (o *Orchestrator) getGitDiffStat(workspaceDir string) string {
 
 // formatProject runs the project's format_command once before the review phase.
 // The command is configured in .code-warden.yml (e.g. "npm run format", "ruff format .").
-// No-op if no format_command is set or auto-format is disabled.
-func (o *Orchestrator) formatProject(ctx context.Context, ws *agentWorkspace) {
-	if o.repoConfig == nil || o.repoConfig.FormatCommand == "" || o.repoConfig.DisableAutoFormat {
-		return
+// No-op if no format_command is set. Controlled independently of DisableFormatOnWrite.
+// Returns a human-readable note for the review context if formatting ran, or "".
+func (o *Orchestrator) formatProject(ctx context.Context, ws *agentWorkspace) string {
+	if o.repoConfig == nil || o.repoConfig.FormatCommand == "" {
+		return ""
 	}
 	formatter := NewFormatter(o.logger)
 	formatter.FormatProject(ctx, ws.dir, o.repoConfig.FormatCommand)
+	return fmt.Sprintf("Note: project format command ran before review (\"%s\"). Some files may have formatting changes you did not make.", o.repoConfig.FormatCommand)
 }
 
 // yieldCommitAndPush stages all pending changes, commits, and pushes the branch.

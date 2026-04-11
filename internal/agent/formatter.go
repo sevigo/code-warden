@@ -24,9 +24,11 @@ func NewFormatter(logger *slog.Logger) *Formatter {
 	return &Formatter{logger: logger}
 }
 
-// newFormatterFromConfig creates a Formatter unless DisableAutoFormat is set.
+// newFormatterFromConfig creates a Formatter unless per-write formatting is
+// disabled by the repo config. The batch format_command is independent and
+// controlled by its own field.
 func newFormatterFromConfig(logger *slog.Logger, cfg *core.RepoConfig) *Formatter {
-	if cfg != nil && cfg.DisableAutoFormat {
+	if cfg != nil && cfg.DisableFormatOnWrite {
 		return nil
 	}
 	return NewFormatter(logger)
@@ -50,7 +52,7 @@ func (f *Formatter) Format(ctx context.Context, workspaceRoot, filePath string) 
 		if _, err := exec.LookPath(binary); err != nil {
 			continue
 		}
-		f.runSpec(ctx, binary, []string{"-w", filePath}, workspaceRoot, filePath)
+		f.runSpec(ctx, binary, []string{"-w", filePath}, workspaceRoot)
 		return
 	}
 	f.logger.Debug("auto-format: no Go formatter available", "path", filePath)
@@ -64,14 +66,15 @@ func (f *Formatter) FormatProject(ctx context.Context, workspaceRoot, command st
 	if f == nil || command == "" {
 		return
 	}
-	parts := strings.SplitN(command, " ", 2)
-	binary := parts[0]
-	args := parts[1:]
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return
+	}
 
 	fmtCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(fmtCtx, binary, args...)
+	cmd := exec.CommandContext(fmtCtx, parts[0], parts[1:]...) //nolint:gosec // G204: command from repo config
 	cmd.Dir = workspaceRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -83,7 +86,7 @@ func (f *Formatter) FormatProject(ctx context.Context, workspaceRoot, command st
 }
 
 // runSpec executes a single formatter pass with a scoped 30-second timeout.
-func (f *Formatter) runSpec(ctx context.Context, binary string, args []string, workspaceRoot, filePath string) {
+func (f *Formatter) runSpec(ctx context.Context, binary string, args []string, workspaceRoot string) {
 	fmtCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -92,8 +95,8 @@ func (f *Formatter) runSpec(ctx context.Context, binary string, args []string, w
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		f.logger.Warn("auto-format: formatter failed",
-			"binary", binary, "path", filePath, "error", err, "output", string(out))
+			"binary", binary, "args", args, "error", err, "output", string(out))
 		return
 	}
-	f.logger.Debug("auto-format: formatted", "binary", binary, "path", filePath)
+	f.logger.Debug("auto-format: formatted", "binary", binary, "args", args)
 }
