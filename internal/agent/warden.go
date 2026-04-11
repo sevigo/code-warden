@@ -272,7 +272,7 @@ func (o *Orchestrator) runReviewPhase(
 		"budget", reservedReviewIterations)
 
 	reviewObs := newLoopObserver(o.logger, session.ID, "review")
-	reviewLoop, err := o.buildReviewLoop(agentLLM, session, ws, "", changedFiles, tracker, reviewObs, reservedReviewIterations)
+	reviewLoop, err := o.buildReviewLoop(agentLLM, session, ws, changedFiles, tracker, reviewObs, reservedReviewIterations)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build review loop: %v", err))
 		return 0, nil, "", false
@@ -446,7 +446,7 @@ func (o *Orchestrator) buildEditLoop(agentLLM llms.Model, session *Session, ws *
 // buildReviewLoop builds the agent loop for the review+fix phase. It has
 // review_code (capped at maxReviewRounds), file tools, search tools, and
 // run_command — everything needed to review, diagnose, and fix issues.
-func (o *Orchestrator) buildReviewLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, _ string, changedFiles []string, tracker *progressTracker, obs *loopObserver, maxIter int) (*goframeagent.AgentLoop, error) {
+func (o *Orchestrator) buildReviewLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, changedFiles []string, tracker *progressTracker, obs *loopObserver, maxIter int) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
@@ -623,9 +623,8 @@ Working directory: %s
 - Always run lint and tests before calling review_code.
 - Your work here is done ONLY when review_code returns APPROVE. Do not attempt to push or open a PR.
 - Keep changes minimal and focused on the issue.
-
-%s`,
-		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, filesList, projectContext)
+`,
+		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, filesList)
 
 	if projectContext != "" {
 		base += "\n\n## Project Conventions\n\n" + projectContext
@@ -1158,7 +1157,7 @@ func (o *Orchestrator) yieldDraftPR(
 
 	// ── Create draft PR ─────────────────────────────────────────────────────
 	prURL := ""
-	prBody := o.buildDraftPRBody(ws.dir, branch, iterations, editedFiles, session)
+	prBody := o.buildDraftPRBody(ws.dir, iterations, editedFiles, session)
 	if o.ghClient != nil {
 		pr, err := o.ghClient.CreatePullRequest(ctx, session.Issue.RepoOwner, session.Issue.RepoName, gh.PullRequestOptions{
 			Title: fmt.Sprintf("WIP: %s (draft — needs human review)", session.Issue.Title),
@@ -1215,7 +1214,7 @@ func (o *Orchestrator) yieldDraftPR(
 
 // buildDraftPRBody generates a descriptive PR body using git diff --stat and
 // the list of edited files. Falls back to a generic message when git is unavailable.
-func (o *Orchestrator) buildDraftPRBody(workspaceDir, branch string, iterations int, editedFiles []string, session *Session) string {
+func (o *Orchestrator) buildDraftPRBody(workspaceDir string, iterations int, editedFiles []string, session *Session) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "## Draft PR — #%d: %s\n\n", session.Issue.Number, session.Issue.Title)
@@ -1223,7 +1222,7 @@ func (o *Orchestrator) buildDraftPRBody(workspaceDir, branch string, iterations 
 	b.WriteString("This draft contains partial work ready for human review.\n\n")
 
 	// Try to get a diff stat summary.
-	diffStat := o.getGitDiffStat(workspaceDir, branch)
+	diffStat := o.getGitDiffStat(workspaceDir)
 	if diffStat != "" {
 		b.WriteString("### Changes\n\n```\n" + diffStat + "\n```\n\n")
 	}
@@ -1242,16 +1241,21 @@ func (o *Orchestrator) buildDraftPRBody(workspaceDir, branch string, iterations 
 
 // getGitDiffStat runs git diff --stat against the base branch and returns the
 // output. Returns empty string on any error.
-func (o *Orchestrator) getGitDiffStat(workspaceDir, _ string) string {
+func (o *Orchestrator) getGitDiffStat(workspaceDir string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "-C", workspaceDir, "diff", "--stat", "main...HEAD")
+	baseBranch := o.config.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "-C", workspaceDir, "diff", "--stat", baseBranch+"...HEAD")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		o.logger.Debug("warden: git diff --stat failed, trying against origin/main",
+		o.logger.Debug("warden: git diff --stat failed, trying against origin/"+baseBranch,
 			"error", err, "output", string(out))
-		cmd = exec.CommandContext(ctx, "git", "-C", workspaceDir, "diff", "--stat", "origin/main...HEAD")
+		cmd = exec.CommandContext(ctx, "git", "-C", workspaceDir, "diff", "--stat", "origin/"+baseBranch+"...HEAD")
 		out, err = cmd.CombinedOutput()
 		if err != nil {
 			o.logger.Debug("warden: git diff --stat against origin/main also failed",
