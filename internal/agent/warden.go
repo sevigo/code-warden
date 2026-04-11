@@ -226,7 +226,10 @@ func (o *Orchestrator) runImplementPhase(
 	tracker.setPhase("editing")
 	o.logger.Info("warden: starting edit loop", "session_id", session.ID, "budget", editBudget)
 	editResult, editErr := editLoop.Run(ctx, editTask, nil)
-	editIters := editResult.Iterations
+	editIters := 0
+	if editResult != nil {
+		editIters = editResult.Iterations
+	}
 
 	if editErr != nil && !errors.Is(editErr, goframeagent.ErrMaxIterations) {
 		o.logger.Error("warden: edit loop failed",
@@ -239,16 +242,37 @@ func (o *Orchestrator) runImplementPhase(
 			"session_id", session.ID, "iterations", editIters)
 	}
 
-	changedFiles := modifiedFiles(editResult.ToolCalls)
+	changedFiles := []string{}
+	if editResult != nil {
+		changedFiles = modifiedFiles(editResult.ToolCalls)
+	}
 
 	// ── Review+fix loop ─────────────────────────────────────────────────────
+	tracker.setPhase("reviewing")
+	return o.runReviewPhase(ctx, session, agentLLM, ws, branch, tracker, editIters, editObs, changedFiles)
+}
+
+// runReviewPhase runs the review+fix loop after the edit loop completes.
+// It has review_code, file tools, search tools, and run_command — everything
+// needed to review, diagnose, and fix issues. Returns (total iterations,
+// observer, verdict, ok). Calls failSession on error.
+func (o *Orchestrator) runReviewPhase(
+	ctx context.Context,
+	session *Session,
+	agentLLM llms.Model,
+	ws *agentWorkspace,
+	branch string,
+	tracker *progressTracker,
+	editIters int,
+	editObs *loopObserver,
+	changedFiles []string,
+) (iterations int, obs *loopObserver, verdict string, ok bool) {
 	o.logger.Info("warden: starting review+fix loop",
 		"session_id", session.ID, "changed_files", len(changedFiles),
 		"budget", reservedReviewIterations)
 
-	tracker.setPhase("reviewing")
 	reviewObs := newLoopObserver(o.logger, session.ID, "review")
-	reviewLoop, err := o.buildReviewLoop(agentLLM, session, ws, branch, changedFiles, tracker, reviewObs, reservedReviewIterations)
+	reviewLoop, err := o.buildReviewLoop(agentLLM, session, ws, "", changedFiles, tracker, reviewObs, reservedReviewIterations)
 	if err != nil {
 		o.failSession(ctx, session, fmt.Sprintf("build review loop: %v", err))
 		return 0, nil, "", false
@@ -262,7 +286,10 @@ func (o *Orchestrator) runImplementPhase(
 	}
 
 	reviewResult, reviewErr := reviewLoop.Run(ctx, reviewTask, nil)
-	reviewIters := reviewResult.Iterations
+	reviewIters := 0
+	if reviewResult != nil {
+		reviewIters = reviewResult.Iterations
+	}
 	totalIters := editIters + reviewIters
 
 	// Merge token counts from both loops.
@@ -279,7 +306,11 @@ func (o *Orchestrator) runImplementPhase(
 
 	v, _, _ := o.mcpServer.GetReviewBySession(session.ID)
 	if v != "APPROVE" {
-		allChangedFiles := mergeFileLists(changedFiles, modifiedFiles(reviewResult.ToolCalls))
+		reviewFiles := []string{}
+		if reviewResult != nil {
+			reviewFiles = modifiedFiles(reviewResult.ToolCalls)
+		}
+		allChangedFiles := mergeFileLists(changedFiles, reviewFiles)
 		o.logger.Warn("warden: review loop ended without APPROVE, yielding draft PR",
 			"session_id", session.ID,
 			"verdict", v,
