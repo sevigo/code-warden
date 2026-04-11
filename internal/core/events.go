@@ -20,6 +20,10 @@ const (
 	ReReview
 	// ImplementIssue indicates an autonomous agent should implement the issue.
 	ImplementIssue
+	// ReIndex indicates a background re-index of the vector store triggered by
+	// a push to the default branch. No review is performed — only the RAG index
+	// is refreshed so that future agent sessions reason against current code.
+	ReIndex
 )
 
 // GitHubEvent represents a simplified, internal view of a GitHub webhook event.
@@ -221,4 +225,53 @@ func parseImplementInstructions(commentBody string) string {
 	instructions = strings.TrimSpace(instructions)
 
 	return sanitizeInstructions(instructions)
+}
+
+// PushEventFromGitHub transforms a GitHub PushEvent into a GitHubEvent for
+// background RAG re-indexing. It only accepts pushes that target the
+// repository's default branch — pushes to feature branches are ignored.
+func PushEventFromGitHub(event *github.PushEvent) (*GitHubEvent, error) {
+	if event == nil {
+		return nil, fmt.Errorf("push event is nil")
+	}
+
+	repo := event.GetRepo()
+	if repo == nil || repo.GetOwner() == nil || repo.GetOwner().GetLogin() == "" || repo.GetName() == "" {
+		return nil, fmt.Errorf("repository or owner information is missing from push event")
+	}
+
+	if event.GetInstallation() == nil || event.GetInstallation().GetID() == 0 {
+		return nil, fmt.Errorf("installation ID is missing from push event")
+	}
+
+	// Only process pushes to the default branch.
+	ref := event.GetRef() // e.g. "refs/heads/main"
+	if ref == "" {
+		return nil, fmt.Errorf("ref is missing from push event")
+	}
+
+	// The push event's ref looks like "refs/heads/main". Extract the branch name
+	// and compare it to the repository's default branch.
+	defaultBranch := repo.GetDefaultBranch()
+	if defaultBranch == "" {
+		defaultBranch = "main" // sensible fallback
+	}
+
+	branchName := strings.TrimPrefix(ref, "refs/heads/")
+	if branchName != defaultBranch {
+		return nil, fmt.Errorf("push is to %q, not the default branch %q — ignoring", branchName, defaultBranch)
+	}
+
+	headSHA := event.GetAfter() // the SHA after the push
+
+	return &GitHubEvent{
+		Type:             ReIndex,
+		RepoOwner:        repo.GetOwner().GetLogin(),
+		RepoName:         repo.GetName(),
+		RepoFullName:     repo.GetFullName(),
+		RepoCloneURL:     repo.GetCloneURL(),
+		Language:         repo.GetLanguage(),
+		InstallationID:   event.GetInstallation().GetID(),
+		HeadSHA:          headSHA,
+	}, nil
 }

@@ -52,6 +52,8 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	switch e := event.(type) {
 	case *github.IssueCommentEvent:
 		h.handleIssueComment(r.Context(), w, e)
+	case *github.PushEvent:
+		h.handlePushEvent(r.Context(), w, e)
 	default:
 		h.logger.Debug("ignoring unhandled webhook event type", "type", github.WebHookType(r))
 		_, _ = fmt.Fprint(w, "Event type not handled")
@@ -121,6 +123,29 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 	h.logger.Info("review job dispatched successfully", "repo", reviewEvent.RepoFullName, "pr", reviewEvent.PRNumber)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprint(w, "Review job accepted")
+}
+
+// handlePushEvent processes a push event to the repository's default branch
+// by enqueuing a background RAG re-index job. Pushes to feature branches are
+// silently ignored.
+func (h *WebhookHandler) handlePushEvent(ctx context.Context, w http.ResponseWriter, event *github.PushEvent) {
+	reindexEvent, err := core.PushEventFromGitHub(event)
+	if err != nil {
+		// Not an error — most pushes are to feature branches and should be skipped.
+		h.logger.Debug("ignoring push event", "reason", err.Error())
+		_, _ = fmt.Fprint(w, "Push event ignored")
+		return
+	}
+
+	if err := h.dispatcher.Dispatch(ctx, reindexEvent); err != nil {
+		h.logger.Error("failed to dispatch re-index job", "error", err, "repo", reindexEvent.RepoFullName)
+		http.Error(w, "Failed to start re-index job", http.StatusInternalServerError)
+		return
+	}
+
+	h.logger.Info("re-index job dispatched successfully", "repo", reindexEvent.RepoFullName, "sha", reindexEvent.HeadSHA)
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = fmt.Fprint(w, "Re-index job accepted")
 }
 
 // handleCancelCommand checks if body is a /cancel command and cancels the session.

@@ -104,6 +104,8 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 		return j.runReReview(ctx, event)
 	case core.ImplementIssue:
 		return j.runImplementIssue(ctx, event)
+	case core.ReIndex:
+		return j.runReIndex(ctx, event)
 	default:
 		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
@@ -125,6 +127,67 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) er
 	err := j.executeReReviewWorkflow(ctx, event)
 	finish(ctx, err)
 	return err
+}
+
+// runReIndex handles a push to the default branch by re-indexing the RAG vector
+// store. No review or PR comment is produced — this is purely a background index
+// refresh to keep Qdrant in sync with main.
+func (j *ReviewJob) runReIndex(ctx context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("📇 Starting RAG Re-Index", "repo", event.RepoFullName, "sha", event.HeadSHA)
+	finish := j.startJobRun(ctx, "reindex", event, "webhook:push")
+	err := j.executeReIndex(ctx, event)
+	finish(ctx, err)
+	return err
+}
+
+// executeReIndex syncs the default branch and updates the vector store if the SHA
+// has changed since the last index run. It is a silent background operation — no
+// GitHub status or comment is posted.
+func (j *ReviewJob) executeReIndex(ctx context.Context, event *core.GitHubEvent) error {
+	// Acquire the repo mutex to prevent concurrent git operations.
+	mutex := j.getRepoMutex(event.RepoFullName)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// 1. Create a GitHub client for token resolution (needed by SyncRepo).
+	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub client: %w", err)
+	}
+	_ = ghClient // not needed for indexing, only for token resolution
+
+	// 2. Sync the repo (clone or pull the default branch).
+	updateResult, err := j.repoMgr.SyncRepo(ctx, event, ghToken)
+	if err != nil {
+		return fmt.Errorf("failed to sync repo for re-index: %w", err)
+	}
+
+	// 3. If the default branch hasn't changed, nothing to do.
+	if !updateResult.IsInitialClone && !updateResult.DefaultBranchChanged {
+		j.logger.Info("default branch unchanged — skipping RAG re-index",
+			"repo", event.RepoFullName,
+			"sha", updateResult.DefaultBranchSHA,
+		)
+		return nil
+	}
+
+	// 4. Load repo record and config.
+	repo, err := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if err != nil {
+		return fmt.Errorf("failed to get repo record for re-index: %w", err)
+	}
+	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
+
+	// 5. Update the vector store.
+	if err := j.updateVectorStoreAndSHA(ctx, repoConfig, repo, updateResult); err != nil {
+		return fmt.Errorf("failed to update vector store for re-index: %w", err)
+	}
+
+	j.logger.Info("📇 RAG Re-Index completed successfully",
+		"repo", event.RepoFullName,
+		"sha", updateResult.DefaultBranchSHA,
+	)
+	return nil
 }
 
 // startJobRun records a job as "running" and returns a function to finalize it.
