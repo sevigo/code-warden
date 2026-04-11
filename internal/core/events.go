@@ -20,6 +20,8 @@ const (
 	ReReview
 	// ImplementIssue indicates an autonomous agent should implement the issue.
 	ImplementIssue
+	// Reindex indicates a push to the default branch triggered a RAG re-index.
+	Reindex
 )
 
 // GitHubEvent represents a simplified, internal view of a GitHub webhook event.
@@ -202,6 +204,47 @@ func ImplementEventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEve
 		IssueBody:        event.GetIssue().GetBody(),
 		UserInstructions: instructions,
 		Commenter:        event.GetComment().GetUser().GetLogin(),
+	}, nil
+}
+
+// EventFromPushEvent creates a GitHubEvent from a GitHub PushEvent.
+// It only processes pushes to the repository's default branch.
+// The ref is expected in the format "refs/heads/<branch>".
+func EventFromPushEvent(event *github.PushEvent) (*GitHubEvent, error) {
+	if event == nil || event.GetRepo() == nil {
+		return nil, fmt.Errorf("push event or repo is nil")
+	}
+
+	repo := event.GetRepo()
+	if repo.GetOwner() == nil || repo.GetOwner().GetLogin() == "" || repo.GetName() == "" {
+		return nil, fmt.Errorf("repository or owner information is missing from the push event")
+	}
+
+	if event.GetInstallation() == nil || event.GetInstallation().GetID() == 0 {
+		return nil, fmt.Errorf("installation ID is missing from the push event")
+	}
+
+	// Only process pushes to the default branch.
+	// The Ref field is in the format "refs/heads/<branch>".
+	ref := event.GetRef()
+	defaultBranch := repo.GetDefaultBranch()
+	if ref == "" || defaultBranch == "" {
+		return nil, fmt.Errorf("ref or default branch is empty")
+	}
+	if ref != "refs/heads/"+defaultBranch {
+		return nil, fmt.Errorf("push to non-default branch %q (default is %q), ignoring", ref, defaultBranch)
+	}
+
+	return &GitHubEvent{
+		Type:           Reindex,
+		RepoOwner:      repo.GetOwner().GetLogin(),
+		RepoName:       repo.GetName(),
+		RepoFullName:   repo.GetFullName(),
+		RepoCloneURL:   repo.GetCloneURL(),
+		Language:       repo.GetLanguage(),
+		InstallationID: event.GetInstallation().GetID(),
+		HeadSHA:        event.GetHead(),
+		Commenter:      event.GetSender().GetLogin(),
 	}, nil
 }
 

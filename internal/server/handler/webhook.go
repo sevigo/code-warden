@@ -52,10 +52,35 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	switch e := event.(type) {
 	case *github.IssueCommentEvent:
 		h.handleIssueComment(r.Context(), w, e)
+	case *github.PushEvent:
+		h.handlePushEvent(r.Context(), w, e)
 	default:
 		h.logger.Debug("ignoring unhandled webhook event type", "type", github.WebHookType(r))
 		_, _ = fmt.Fprint(w, "Event type not handled")
 	}
+}
+
+func (h *WebhookHandler) handlePushEvent(ctx context.Context, w http.ResponseWriter, event *github.PushEvent) {
+	pushEvent, err := core.EventFromPushEvent(event)
+	if err != nil {
+		repoName := ""
+		if event != nil && event.GetRepo() != nil {
+			repoName = event.GetRepo().GetFullName()
+		}
+		h.logger.Debug("ignoring push event", "reason", err.Error(), "repo", repoName)
+		_, _ = fmt.Fprint(w, "Push event ignored")
+		return
+	}
+
+	if err := h.dispatcher.Dispatch(ctx, pushEvent); err != nil {
+		h.logger.Error("failed to dispatch reindex job", "error", err, "repo", pushEvent.RepoFullName)
+		http.Error(w, "Failed to start reindex job", http.StatusInternalServerError)
+		return
+	}
+
+	h.logger.Info("reindex job dispatched successfully", "repo", pushEvent.RepoFullName, "sha", pushEvent.HeadSHA)
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = fmt.Fprint(w, "Reindex job accepted")
 }
 
 func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.ResponseWriter, event *github.IssueCommentEvent) {

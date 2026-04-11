@@ -104,6 +104,8 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 		return j.runReReview(ctx, event)
 	case core.ImplementIssue:
 		return j.runImplementIssue(ctx, event)
+	case core.Reindex:
+		return j.runReindex(ctx, event)
 	default:
 		return fmt.Errorf("unknown review type: %v", event.Type)
 	}
@@ -125,6 +127,68 @@ func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) er
 	err := j.executeReReviewWorkflow(ctx, event)
 	finish(ctx, err)
 	return err
+}
+
+// runReindex handles a push to the default branch by re-indexing the repository
+// in Qdrant. No review is performed — the goal is to keep the RAG index current
+// so subsequent agent sessions reason against up-to-date code.
+func (j *ReviewJob) runReindex(ctx context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("🔁 Starting RAG re-index", "repo", event.RepoFullName, "sha", event.HeadSHA)
+
+	finish := j.startJobRun(ctx, "reindex", event, "webhook:push")
+	err := j.executeReindexWorkflow(ctx, event)
+	finish(ctx, err)
+	return err
+}
+
+// executeReindexWorkflow syncs the repo and updates the Qdrant index if the
+// default branch has advanced. It is a lightweight subset of the review
+// workflow — no PR diff, no LLM call, no GitHub comment.
+func (j *ReviewJob) executeReindexWorkflow(ctx context.Context, event *core.GitHubEvent) error {
+	// 1. Create a GitHub installation client for token resolution.
+	ghClient, ghToken, err := github.CreateInstallationClient(ctx, j.cfg, event.InstallationID, j.logger)
+	if err != nil {
+		return fmt.Errorf("reindex: failed to create GitHub client: %w", err)
+	}
+	// ghClient is not used further but validates the installation.
+	_ = ghClient
+
+	// 2. Sync the repository under the repo mutex (same pattern as review jobs).
+	mutex := j.getRepoMutex(event.RepoFullName)
+	mutex.Lock()
+
+	updateResult, syncErr := j.repoMgr.SyncRepo(ctx, event, ghToken)
+	if syncErr != nil {
+		mutex.Unlock()
+		return fmt.Errorf("reindex: failed to sync repository: %w", syncErr)
+	}
+
+	repo, repoErr := j.repoMgr.GetRepoRecord(ctx, event.RepoFullName)
+	if repoErr != nil || repo == nil {
+		mutex.Unlock()
+		return fmt.Errorf("reindex: failed to get repo record for %s: %w", event.RepoFullName, repoErr)
+	}
+
+	// 3. Update vector store only when the default branch has new commits.
+	if updateResult.IsInitialClone || updateResult.DefaultBranchChanged {
+		repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
+		if vsErr := j.updateVectorStoreAndSHA(ctx, repoConfig, repo, updateResult); vsErr != nil {
+			mutex.Unlock()
+			return vsErr
+		}
+		j.logger.Info("reindex: Qdrant index updated",
+			"repo", event.RepoFullName,
+			"default_branch_sha", updateResult.DefaultBranchSHA,
+		)
+	} else {
+		j.logger.Info("reindex: default branch unchanged — skipping Qdrant update",
+			"repo", event.RepoFullName,
+			"sha", updateResult.DefaultBranchSHA,
+		)
+	}
+
+	mutex.Unlock()
+	return nil
 }
 
 // startJobRun records a job as "running" and returns a function to finalize it.
