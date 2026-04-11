@@ -34,6 +34,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/agent/lsp"
 	gh "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/mcp"
 )
 
@@ -458,10 +459,14 @@ Your task is to publish the changes:
 1. Call push_branch to push branch "%s" to the remote.
 2. Call create_pull_request to open a draft pull request referencing issue #%d.
 
+When calling push_branch, provide a descriptive commit_message that references the
+issue number and title, for example: "Implement #%d: <short summary>". Do NOT use
+generic messages like "Automated commit".
+
 Available tools: push_branch, create_pull_request.
 
 Do not make any code changes. Do not review. Just push and open the PR.`,
-		issue.Number, issue.Title, branch, issue.Number)
+		issue.Number, issue.Title, branch, issue.Number, issue.Number)
 }
 
 // compactionThreshold is the fraction of input tokens (relative to a conservative
@@ -655,7 +660,7 @@ func (o *Orchestrator) yieldDraftPR(
 	// ── Commit + push ───────────────────────────────────────────────────────
 	// The workspace remote already has the GitHub token embedded in its URL
 	// (set by prepareAgentWorkspace), so no token injection is needed here.
-	pushErr := yieldCommitAndPush(ctx, ws.dir, branch, editedFiles, o.logger)
+	pushErr := yieldCommitAndPush(ctx, ws.dir, branch, editedFiles, session.Issue.Number, session.Issue.Title, o.logger)
 	if pushErr != nil && !strings.Contains(pushErr.Error(), errNoChanges.Error()) {
 		o.logger.Warn("warden: yieldDraftPR: push failed, session will still be marked draft",
 			"session_id", session.ID, "error", pushErr)
@@ -730,7 +735,7 @@ func (o *Orchestrator) yieldDraftPR(
 // Returns errNoChanges when the workspace is clean (nothing to commit or push).
 // The workspace remote URL already contains authentication (set up by
 // prepareAgentWorkspace), so no explicit token injection is needed.
-func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string, editedFiles []string, logger *slog.Logger) error {
+func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string, editedFiles []string, issueNumber int, issueTitle string, logger *slog.Logger) error {
 	run := func(args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = workspaceDir
@@ -760,14 +765,18 @@ func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string, edited
 	// Commit — detect "nothing to commit" and surface it as errNoChanges so the
 	// caller can skip PR creation rather than pushing an empty branch.
 	logger.Info("yieldCommitAndPush: committing")
-	out, err := run("commit", "-m", "WIP: automated partial implementation")
+	commitMsg := gitutil.SanitizeCommitMsg(
+		fmt.Sprintf("WIP: #%d — %s", issueNumber, issueTitle),
+		"WIP: automated partial implementation",
+	)
+	out, err := run("commit", "-m", commitMsg)
 	if err != nil {
 		if strings.Contains(out, "nothing to commit") {
 			logger.Info("yieldCommitAndPush: nothing to commit, skipping push")
 			return errNoChanges
 		}
 		logger.Error("yieldCommitAndPush: git commit failed", "error", err, "output", out)
-		return fmt.Errorf("git commit: %w (output: %s)", err, out)
+		return fmt.Errorf("git commit failed: %w (output: %s)", err, out)
 	}
 
 	// Push — the remote URL already has the token embedded.

@@ -45,6 +45,10 @@ func (t *PushBranch) ParametersSchema() map[string]any {
 				"type":        "string",
 				"description": "The branch name to push (e.g., 'agent/issue-123')",
 			},
+			"commit_message": map[string]any{
+				"type":        "string",
+				"description": "Custom commit message. Should reference the issue number and title, e.g. 'Implement #123: Fix bug in X'. If omitted, defaults to 'Automated commit from code-warden agent'.",
+			},
 			"force": map[string]any{
 				"type":        "boolean",
 				"description": "Whether to force push",
@@ -65,6 +69,7 @@ func (t *PushBranch) Execute(ctx context.Context, args map[string]any) (any, err
 	}
 
 	force, _ := args["force"].(bool)
+	commitMsg, _ := args["commit_message"].(string)
 	projectRoot := ProjectRootFromContext(ctx)
 	if projectRoot == "" {
 		projectRoot = t.ProjectRoot
@@ -75,7 +80,7 @@ func (t *PushBranch) Execute(ctx context.Context, args map[string]any) (any, err
 	if err := t.ensureBranch(ctx, projectRoot, branch); err != nil {
 		return nil, err
 	}
-	if err := t.commitPendingChanges(ctx, projectRoot); err != nil {
+	if err := t.commitPendingChanges(ctx, projectRoot, commitMsg); err != nil {
 		return nil, err
 	}
 	output, err := t.pushToOrigin(ctx, projectRoot, branch, force)
@@ -124,7 +129,7 @@ func (t *PushBranch) ensureBranch(ctx context.Context, projectRoot, branch strin
 // commitPendingChanges stages and commits any uncommitted changes.
 // If a review was performed (ReviewTracker returns non-nil slice), only those
 // files are staged. If no review was performed (nil result), all changes are staged.
-func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot string) error {
+func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot, commitMsg string) error {
 	hasChanges, err := t.hasUncommittedChanges(ctx, projectRoot)
 	if err != nil || !hasChanges {
 		return err
@@ -132,10 +137,10 @@ func (t *PushBranch) commitPendingChanges(ctx context.Context, projectRoot strin
 
 	reviewedFiles := t.getReviewedFiles(ctx)
 	if reviewedFiles == nil {
-		return t.stageAllAndCommit(ctx, projectRoot)
+		return t.stageAllAndCommit(ctx, projectRoot, commitMsg)
 	}
 
-	return t.stageReviewedAndCommit(ctx, projectRoot, reviewedFiles)
+	return t.stageReviewedAndCommit(ctx, projectRoot, commitMsg, reviewedFiles)
 }
 
 // hasUncommittedChanges checks if there are any uncommitted changes.
@@ -159,18 +164,18 @@ func (t *PushBranch) getReviewedFiles(ctx context.Context) []string {
 }
 
 // stageAllAndCommit stages all changes and creates a commit.
-func (t *PushBranch) stageAllAndCommit(ctx context.Context, projectRoot string) error {
+func (t *PushBranch) stageAllAndCommit(ctx context.Context, projectRoot, commitMsg string) error {
 	t.Logger.Warn("push_branch: no review found, staging all changes (review_code should be called first)")
 	addCmd := exec.CommandContext(ctx, "git", "add", ".")
 	addCmd.Dir = projectRoot
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add changes: %w (output: %s)", err, string(out))
 	}
-	return t.createCommit(ctx, projectRoot)
+	return t.createCommit(ctx, projectRoot, commitMsg)
 }
 
 // stageReviewedAndCommit stages only reviewed files and creates a commit.
-func (t *PushBranch) stageReviewedAndCommit(ctx context.Context, projectRoot string, files []string) error {
+func (t *PushBranch) stageReviewedAndCommit(ctx context.Context, projectRoot, commitMsg string, files []string) error {
 	if len(files) == 0 {
 		t.Logger.Info("push_branch: review completed but no files to commit")
 		return nil
@@ -189,7 +194,7 @@ func (t *PushBranch) stageReviewedAndCommit(ctx context.Context, projectRoot str
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add reviewed files: %w (output: %s)", err, string(out))
 	}
-	return t.createCommit(ctx, projectRoot)
+	return t.createCommit(ctx, projectRoot, commitMsg)
 }
 
 // validateFilePaths filters out suspicious file paths (absolute paths, path traversal).
@@ -206,8 +211,9 @@ func (t *PushBranch) validateFilePaths(files []string) []string {
 }
 
 // createCommit creates a commit with the staged changes.
-func (t *PushBranch) createCommit(ctx context.Context, projectRoot string) error {
-	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", "Automated commit from code-warden agent")
+func (t *PushBranch) createCommit(ctx context.Context, projectRoot, commitMsg string) error {
+	commitMsg = gitutil.SanitizeCommitMsg(commitMsg, "Automated commit from code-warden agent")
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", commitMsg)
 	commitCmd.Dir = projectRoot
 	out, err := commitCmd.CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "nothing to commit") {
