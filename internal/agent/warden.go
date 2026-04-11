@@ -51,6 +51,11 @@ var publishToolNames = map[string]bool{
 // This prevents endless ping-pong when reviewer and coder keep disagreeing.
 const maxReviewRounds = 10
 
+// reservedReviewIterations is the number of iterations reserved for the
+// review+fix loop. The edit loop gets (totalBudget - reservedReviewIterations)
+// iterations, ensuring the agent always has room to call review_code.
+const reservedReviewIterations = 15
+
 // editFileName and writeFileName are the canonical tool names used in
 // compaction helpers. Defined as constants to satisfy goconst and to make
 // any future renames a single-point change.
@@ -159,7 +164,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	tracker.start(ctx)
 	defer tracker.stop()
 
-	o.logger.Info("🛠️  IMPLEMENTATION: Starting warden agent (phased)",
+	o.logger.Info("🛠️  IMPLEMENTATION: Starting warden agent (phased: edit → review → publish)",
 		"session_id", session.ID,
 		"working_dir", ws.dir,
 		"timeout", o.config.Timeout,
@@ -169,10 +174,11 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	// ── Planning phase ───────────────────────────────────────────────────────
 	tracker.setPhase("planning")
 	plan := o.buildPlan(ctx, agentLLM, session, ws, tracker)
-	o.logger.Info("warden: planning complete, starting implement loop", "session_id", session.ID)
+	o.logger.Info("warden: planning complete, starting edit loop", "session_id", session.ID)
 
-	// ── Loop 1: Implement ────────────────────────────────────────────────────
-	tracker.setPhase("implementing")
+	// ── Loop 1: Edit + Review ──────────────────────────────────────────────
+	// runImplementPhase now splits into edit loop → review loop internally,
+	// guaranteeing review_code is always called.
 	implIter, implObs, verdict, ok := o.runImplementPhase(ctx, session, agentLLM, ws, branch, plan, tracker)
 	if !ok {
 		return
@@ -183,10 +189,12 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	o.runPublishPhase(ctx, session, agentLLM, ws, branch, verdict, implIter, implObs, tracker)
 }
 
-// runImplementPhase builds and runs the implement loop. Returns the iteration
-// count, observer (for token accumulation), final verdict, and whether to continue
-// to the publish phase.
-// Returns (0, nil, "", false) and calls failSession on any error.
+// runImplementPhase runs two sequential loops: an edit loop (no review_code)
+// followed by a review+fix loop (with review_code). The edit loop explores and
+// modifies files; the review loop verifies changes and fixes issues raised by
+// the reviewer. Splitting guarantees the agent always calls review_code even if
+// the edit budget is fully consumed.
+// Returns (total iterations, observer, verdict, ok). Calls failSession on error.
 func (o *Orchestrator) runImplementPhase(
 	ctx context.Context,
 	session *Session,
@@ -195,47 +203,94 @@ func (o *Orchestrator) runImplementPhase(
 	branch, plan string,
 	tracker *progressTracker,
 ) (iterations int, obs *loopObserver, verdict string, ok bool) {
-	implObs := newLoopObserver(o.logger, session.ID, "implement")
-	implLoop, err := o.buildImplementLoop(agentLLM, session, ws, plan, tracker, implObs)
+	totalBudget := max(o.config.MaxIterations*15, 50)
+	editBudget := totalBudget - reservedReviewIterations
+	if editBudget < 10 {
+		editBudget = 10
+	}
+
+	editObs := newLoopObserver(o.logger, session.ID, "edit")
+	editLoop, err := o.buildEditLoop(agentLLM, session, ws, plan, tracker, editObs, editBudget)
 	if err != nil {
-		o.failSession(ctx, session, fmt.Sprintf("build implement loop: %v", err))
+		o.failSession(ctx, session, fmt.Sprintf("build edit loop: %v", err))
 		return 0, nil, "", false
 	}
 
-	implTask := goframeagent.Task{
+	editTask := goframeagent.Task{
 		ID:          session.ID + "-impl",
 		Description: fmt.Sprintf("Implement GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
 		Context:     o.buildNativeTaskContext(session.Issue, branch),
 		Priority:    5,
 	}
 
-	o.logger.Info("warden: starting implement loop", "session_id", session.ID)
-	implResult, implErr := implLoop.Run(ctx, implTask, nil)
-	if implErr != nil && !errors.Is(implErr, goframeagent.ErrMaxIterations) {
-		o.logger.Error("warden: implement loop failed",
-			"session_id", session.ID, "iterations", implResult.Iterations, "error", implErr)
-		o.failSession(ctx, session, fmt.Sprintf("implement loop: %v", implErr))
+	tracker.setPhase("editing")
+	o.logger.Info("warden: starting edit loop", "session_id", session.ID, "budget", editBudget)
+	editResult, editErr := editLoop.Run(ctx, editTask, nil)
+	editIters := editResult.Iterations
+
+	if editErr != nil && !errors.Is(editErr, goframeagent.ErrMaxIterations) {
+		o.logger.Error("warden: edit loop failed",
+			"session_id", session.ID, "iterations", editIters, "error", editErr)
+		o.failSession(ctx, session, fmt.Sprintf("edit loop: %v", editErr))
 		return 0, nil, "", false
 	}
-	if implErr != nil {
-		o.logger.Warn("warden: implement loop hit max iterations, yielding draft PR",
-			"session_id", session.ID, "iterations", implResult.Iterations)
+	if errors.Is(editErr, goframeagent.ErrMaxIterations) {
+		o.logger.Warn("warden: edit loop hit max iterations, transitioning to review",
+			"session_id", session.ID, "iterations", editIters)
+	}
+
+	changedFiles := modifiedFiles(editResult.ToolCalls)
+
+	// ── Review+fix loop ─────────────────────────────────────────────────────
+	o.logger.Info("warden: starting review+fix loop",
+		"session_id", session.ID, "changed_files", len(changedFiles),
+		"budget", reservedReviewIterations)
+
+	tracker.setPhase("reviewing")
+	reviewObs := newLoopObserver(o.logger, session.ID, "review")
+	reviewLoop, err := o.buildReviewLoop(agentLLM, session, ws, branch, changedFiles, tracker, reviewObs, reservedReviewIterations)
+	if err != nil {
+		o.failSession(ctx, session, fmt.Sprintf("build review loop: %v", err))
+		return 0, nil, "", false
+	}
+
+	reviewTask := goframeagent.Task{
+		ID:          session.ID + "-review",
+		Description: fmt.Sprintf("Review and fix implementation for GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
+		Context:     o.buildReviewTaskContext(session.Issue, branch, changedFiles),
+		Priority:    5,
+	}
+
+	reviewResult, reviewErr := reviewLoop.Run(ctx, reviewTask, nil)
+	reviewIters := reviewResult.Iterations
+	totalIters := editIters + reviewIters
+
+	// Merge token counts from both loops.
+	var totalIn, totalOut float64
+	totalIn = editObs.totalIn + reviewObs.totalIn
+	totalOut = editObs.totalOut + reviewObs.totalOut
+
+	if reviewErr != nil && !errors.Is(reviewErr, goframeagent.ErrMaxIterations) {
+		o.logger.Error("warden: review loop failed",
+			"session_id", session.ID, "iterations", reviewIters, "error", reviewErr)
+		o.failSession(ctx, session, fmt.Sprintf("review loop: %v", reviewErr))
+		return 0, nil, "", false
 	}
 
 	v, _, _ := o.mcpServer.GetReviewBySession(session.ID)
 	if v != "APPROVE" {
-		o.logger.Warn("warden: implement loop ended without APPROVE, yielding draft PR",
+		allChangedFiles := mergeFileLists(changedFiles, modifiedFiles(reviewResult.ToolCalls))
+		o.logger.Warn("warden: review loop ended without APPROVE, yielding draft PR",
 			"session_id", session.ID,
 			"verdict", v,
-			"iterations", implResult.Iterations,
+			"edit_iterations", editIters,
+			"review_iterations", reviewIters,
 		)
-		o.yieldDraftPR(ctx, session, ws, branch, implResult.Iterations,
-			implResult.Tokens.Input, implResult.Tokens.Output,
-			modifiedFiles(implResult.ToolCalls))
+		o.yieldDraftPR(ctx, session, ws, branch, totalIters, totalIn, totalOut, allChangedFiles)
 		return 0, nil, "", false
 	}
 
-	return implResult.Iterations, implObs, v, true
+	return totalIters, editObs, v, true
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -317,24 +372,21 @@ func (o *Orchestrator) runPublishPhase(
 	)
 }
 
-// buildImplementLoop builds the agent loop for the implement phase.
-// All MCP tools EXCEPT push_branch and create_pull_request are included,
-// plus file tools and LSP tools. plan is the output of the planning phase
-// and is embedded in the system prompt to give the model a head start.
-func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, plan string, tracker *progressTracker, obs *loopObserver) (*goframeagent.AgentLoop, error) {
+// buildEditLoop builds the agent loop for the editing phase. It has all tools
+// EXCEPT review_code and publish tools. The edit phase focuses on understanding
+// the codebase, making changes, and running verification — but not review.
+// review_code is withheld so the agent doesn't waste review rounds before the
+// code is ready.
+func (o *Orchestrator) buildEditLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, plan string, tracker *progressTracker, obs *loopObserver, maxIter int) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
-	// MCP tools — exclude publish tools; wrap review_code with the cap.
+	// MCP tools — exclude publish tools AND review_code (reserved for review loop).
 	for _, t := range o.mcpServer.Tools() {
-		if publishToolNames[t.Name()] {
-			continue // reserved for publish loop
+		if publishToolNames[t.Name()] || t.Name() == "review_code" {
+			continue
 		}
-		tool := mcp.Tool(t) //nolint:unconvert // mcp.Tool is an interface; explicit for clarity
-		if t.Name() == "review_code" {
-			tool = &reviewCapTool{inner: t}
-		}
-		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	// File tools (no LSP — agent uses run_command for compile checks).
@@ -348,11 +400,52 @@ func (o *Orchestrator) buildImplementLoop(agentLLM llms.Model, session *Session,
 	}
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
-	maxIter := max(o.config.MaxIterations*15, 50)
 
-	loopLogger := o.logger.With("session_id", session.ID, "phase", "implement")
+	loopLogger := o.logger.With("session_id", session.ID, "phase", "edit")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
-		goframeagent.WithLoopSystemPrompt(o.buildImplementSystemPrompt(session.Issue, ws.dir, false, plan, ws.projectContext)),
+		goframeagent.WithLoopSystemPrompt(o.buildEditSystemPrompt(session.Issue, ws.dir, plan, ws.projectContext)),
+		goframeagent.WithLoopMaxIterations(maxIter),
+		goframeagent.WithLoopGovernance(governance),
+		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
+		goframeagent.WithLoopLogger(loopLogger),
+		goframeagent.WithLoopObserver(obs),
+	)
+}
+
+// buildReviewLoop builds the agent loop for the review+fix phase. It has
+// review_code (capped at maxReviewRounds), file tools, search tools, and
+// run_command — everything needed to review, diagnose, and fix issues.
+func (o *Orchestrator) buildReviewLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, _ string, changedFiles []string, tracker *progressTracker, obs *loopObserver, maxIter int) (*goframeagent.AgentLoop, error) {
+	registry := goframeagent.NewRegistry()
+	allowedTools := make(map[string]bool)
+
+	// MCP tools — exclude publish tools; wrap review_code with the cap.
+	for _, t := range o.mcpServer.Tools() {
+		if publishToolNames[t.Name()] {
+			continue
+		}
+		tool := mcp.Tool(t) //nolint:unconvert // mcp.Tool is an interface; explicit for clarity
+		if t.Name() == "review_code" {
+			tool = &reviewCapTool{inner: t}
+		}
+		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
+	}
+
+	// File tools (for fixing issues found during review).
+	for _, t := range fileTools() {
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
+	}
+
+	// Search tools (for understanding context during review).
+	for _, t := range searchTools() {
+		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
+	}
+
+	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
+
+	loopLogger := o.logger.With("session_id", session.ID, "phase", "review")
+	return goframeagent.NewAgentLoop(agentLLM, registry,
+		goframeagent.WithLoopSystemPrompt(o.buildReviewSystemPrompt(session.Issue, ws.dir, changedFiles, ws.projectContext)),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
@@ -386,10 +479,11 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 	)
 }
 
-// buildImplementSystemPrompt returns the system prompt for the implement loop.
-// Publish tools are intentionally omitted — the model has no reason to
-// attempt pushing before the review is complete.
-func (o *Orchestrator) buildImplementSystemPrompt(issue Issue, workspaceDir string, _ bool, plan string, projectContext string) string {
+// buildEditSystemPrompt returns the system prompt for the edit loop.
+// review_code and publish tools are intentionally omitted — the agent
+// explores, implements, and verifies in this phase. Review happens in a
+// separate loop so it is always reached regardless of edit budget.
+func (o *Orchestrator) buildEditSystemPrompt(issue Issue, workspaceDir string, plan string, projectContext string) string {
 	base := fmt.Sprintf(`You are an expert software engineer implementing GitHub issue #%d.
 
 ## Task
@@ -419,18 +513,17 @@ Working directory: %s
 
 **Verification**:
 - run_command(command) — run whitelisted commands: "make build", "make lint", "make test"
-- review_code — request an automated code review of your changes
 
 ## Workflow
 1. **Explore** — use grep / search_code / get_symbol / read_file to understand the code. Prefer grep for exact pattern search, search_code for semantic discovery.
 2. **Implement** — use write_file / edit_file. Prefer edit_file for targeted changes.
 3. **Verify** — run_command("make build"), then run_command("make lint"), then run_command("make test"). Fix failures.
-4. **Review** — call review_code. If REQUEST_CHANGES, fix and re-verify. Repeat until APPROVE.
 
 ## Rules
 - Paths are relative to the working directory.
-- Always run lint and tests before calling review_code.
-- Your work here is done when review_code returns APPROVE. Do not attempt to push or open a PR.
+- Always run lint and tests after making changes.
+- Do NOT call review_code — it is not available in this phase. Review will happen automatically in the next phase.
+- Do not attempt to push or open a PR.
 - Keep changes minimal and focused on the issue.
 
 %s`,
@@ -441,6 +534,88 @@ Working directory: %s
 	}
 
 	return base
+}
+
+// buildReviewSystemPrompt returns the system prompt for the review+fix loop.
+// The agent has review_code, file tools, and search tools. It must call
+// review_code, fix any issues raised, and repeat until APPROVE.
+func (o *Orchestrator) buildReviewSystemPrompt(issue Issue, workspaceDir string, changedFiles []string, projectContext string) string {
+	filesList := ""
+	if len(changedFiles) > 0 {
+		filesList = "\n\n## Files Changed in Edit Phase\n\nThe following files were modified during the implementation phase:\n"
+		for _, f := range changedFiles {
+			filesList += "- " + f + "\n"
+		}
+	}
+
+	base := fmt.Sprintf(`You are reviewing and fixing the implementation for GitHub issue #%d.
+
+## Task
+Title: %s
+Description:
+%s
+
+## Workspace
+Working directory: %s
+%s
+
+## Available Tools
+
+**Code exploration** (repository-indexed, read-only):
+- search_code(query) — semantic search over the codebase
+- get_symbol(name) — find a symbol definition
+- get_structure() — project structure overview
+- get_arch_context(dir) — architecture summary for a directory
+- find_usages(symbol), get_callers(fn), get_callees(fn)
+- grep(pattern, path?, glob?, ignore_case?) — search file contents by regex/literal
+- find(pattern, path?) — find files by glob pattern
+
+**File operations** (workspace-scoped, paths relative to working directory):
+- read_file(path, offset?, limit?) — read a file, optionally paginated
+- write_file(path, content) — create or overwrite a file
+- edit_file(path, old_string, new_string) — replace an exact string; or use edits for multiple atomic replacements
+- list_dir(path?) — list directory contents
+
+**Verification & Review**:
+- run_command(command) — run whitelisted commands: "make build", "make lint", "make test"
+- review_code — request an automated code review of your changes
+
+## Workflow
+1. **Review** — call review_code. This is your PRIMARY task — you MUST call review_code.
+2. **Fix** — if review returns REQUEST_CHANGES, read the relevant files, fix the issues, and re-verify.
+3. **Re-verify** — run_command("make build"), then run_command("make lint"), then run_command("make test"). Fix failures.
+4. **Re-review** — call review_code again after fixing. Repeat until APPROVE.
+
+## Rules
+- Paths are relative to the working directory.
+- You MUST call review_code at least once. Do not finish without calling it.
+- Always run lint and tests before calling review_code.
+- Your work here is done ONLY when review_code returns APPROVE. Do not attempt to push or open a PR.
+- Keep changes minimal and focused on the issue.
+
+%s`,
+		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, filesList, projectContext)
+
+	if projectContext != "" {
+		base += "\n\n## Project Conventions\n\n" + projectContext
+	}
+
+	return base
+}
+
+// buildReviewTaskContext returns the task context for the review+fix loop.
+// It lists the changed files so the review agent knows what was modified.
+func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, changedFiles []string) string {
+	ctx := fmt.Sprintf("Review and verify the implementation for GitHub issue #%d (%s).\nBranch: %s",
+		issue.Number, issue.Title, branch)
+	if len(changedFiles) > 0 {
+		ctx += "\n\nChanged files:\n"
+		for _, f := range changedFiles {
+			ctx += "- " + f + "\n"
+		}
+	}
+	ctx += "\n\nCall review_code to verify your changes. Fix any issues found, then re-verify and re-review until APPROVE."
+	return ctx
 }
 
 // buildPublishSystemPrompt returns the system prompt for the publish loop.
@@ -952,16 +1127,11 @@ func (o *Orchestrator) yieldDraftPR(
 
 	// ── Create draft PR ─────────────────────────────────────────────────────
 	prURL := ""
+	prBody := o.buildDraftPRBody(ws.dir, branch, iterations, editedFiles, session)
 	if o.ghClient != nil {
 		pr, err := o.ghClient.CreatePullRequest(ctx, session.Issue.RepoOwner, session.Issue.RepoName, gh.PullRequestOptions{
 			Title: fmt.Sprintf("WIP: %s (draft — needs human review)", session.Issue.Title),
-			Body: fmt.Sprintf(
-				"## Draft — automatic yield\n\n"+
-					"The implementation agent could not achieve an APPROVE verdict after %d iterations.\n"+
-					"Partial work has been pushed to branch `%s` for human review.\n\n"+
-					"Closes #%d",
-				iterations, branch, session.Issue.Number,
-			),
+			Body:  prBody,
 			Head:  branch,
 			Base:  baseBranch,
 			Draft: true,
@@ -993,16 +1163,78 @@ func (o *Orchestrator) yieldDraftPR(
 	o.persistSessionCompleted(ctx, session, result)
 
 	body := fmt.Sprintf(
-		"⚠️ **Draft PR created** — session `%s`\n\n"+
+		"**Draft PR created** — session `%s`\n\n"+
 			"The agent made partial progress but could not reach an APPROVE verdict after %d iterations.\n",
 		session.ID, iterations,
 	)
+	if len(editedFiles) > 0 {
+		body += "\n**Changed files:**\n"
+		for _, f := range editedFiles {
+			body += "- `" + f + "`\n"
+		}
+		body += "\n"
+	}
 	if prURL != "" {
-		body += fmt.Sprintf("\n**Draft PR:** %s\n\nA human can review the partial work, continue on branch `%s`, or close the draft.", prURL, branch)
+		body += fmt.Sprintf("**Draft PR:** %s\n\nA human can review the partial work, continue on branch `%s`, or close the draft.", prURL, branch)
 	} else {
-		body += fmt.Sprintf("\nBranch `%s` was pushed with partial changes. Open a draft PR manually to continue.", branch)
+		body += fmt.Sprintf("Branch `%s` was pushed with partial changes. Open a draft PR manually to continue.", branch)
 	}
 	o.postIssueComment(ctx, session.Issue, body)
+}
+
+// buildDraftPRBody generates a descriptive PR body using git diff --stat and
+// the list of edited files. Falls back to a generic message when git is unavailable.
+func (o *Orchestrator) buildDraftPRBody(workspaceDir, branch string, iterations int, editedFiles []string, session *Session) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "## Draft PR — #%d: %s\n\n", session.Issue.Number, session.Issue.Title)
+	fmt.Fprintf(&b, "The implementation agent could not achieve an APPROVE verdict after %d iterations.\n", iterations)
+	b.WriteString("This draft contains partial work ready for human review.\n\n")
+
+	// Try to get a diff stat summary.
+	diffStat := o.getGitDiffStat(workspaceDir, branch)
+	if diffStat != "" {
+		b.WriteString("### Changes\n\n```\n" + diffStat + "\n```\n\n")
+	}
+
+	if len(editedFiles) > 0 {
+		b.WriteString("### Modified Files\n\n")
+		for _, f := range editedFiles {
+			b.WriteString("- `" + f + "`\n")
+		}
+		b.WriteString("\n")
+	}
+
+	fmt.Fprintf(&b, "Closes #%d", session.Issue.Number)
+	return b.String()
+}
+
+// getGitDiffStat runs git diff --stat against the base branch and returns the
+// output. Returns empty string on any error.
+func (o *Orchestrator) getGitDiffStat(workspaceDir, _ string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "-C", workspaceDir, "diff", "--stat", "main...HEAD")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		o.logger.Debug("warden: git diff --stat failed, trying against origin/main",
+			"error", err, "output", string(out))
+		cmd = exec.CommandContext(ctx, "git", "-C", workspaceDir, "diff", "--stat", "origin/main...HEAD")
+		out, err = cmd.CombinedOutput()
+		if err != nil {
+			o.logger.Debug("warden: git diff --stat against origin/main also failed",
+				"error", err, "output", string(out))
+			return ""
+		}
+	}
+
+	stat := strings.TrimSpace(string(out))
+	// Limit to prevent excessively large PR bodies.
+	if len(stat) > 4000 {
+		stat = stat[:4000] + "\n... (truncated)"
+	}
+	return stat
 }
 
 // yieldCommitAndPush stages all pending changes, commits, and pushes the branch.
