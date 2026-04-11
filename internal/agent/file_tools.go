@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,7 +104,6 @@ func (t *readFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 // writeFileTool writes (or creates) a file in the agent workspace.
 type writeFileTool struct {
 	Formatter *Formatter
-	Logger    *slog.Logger
 }
 
 func (t *writeFileTool) Name() string { return "write_file" }
@@ -157,13 +155,9 @@ func (t *writeFileTool) Execute(ctx context.Context, args map[string]any) (any, 
 
 	// Auto-format the written file if a formatter is available.
 	written := content
-	if t.Formatter != nil {
-		if fmtErr := t.Formatter.Format(ctx, root, abs); fmtErr != nil {
-			t.Logger.Warn("auto-format: skipped", "path", relPath, "err", fmtErr)
-		}
-		if formatted, readErr := os.ReadFile(abs); readErr == nil {
-			written = string(formatted)
-		}
+	t.Formatter.Format(ctx, root, abs)
+	if formatted, readErr := os.ReadFile(abs); readErr == nil {
+		written = string(formatted)
 	}
 
 	result := map[string]any{"ok": true, "path": relPath, "bytes": len(written)}
@@ -175,7 +169,6 @@ func (t *writeFileTool) Execute(ctx context.Context, args map[string]any) (any, 
 // Mirrors Pi's edit tool semantics.
 type editFileTool struct {
 	Formatter *Formatter
-	Logger    *slog.Logger
 }
 
 func (t *editFileTool) Name() string { return "edit_file" }
@@ -278,7 +271,7 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 			return handlePartialEdit(editContext{
 				abs: abs, relPath: relPath, original: original, working: updated,
 				lineEnding: lineEnding, hasBOM: hasBOM, usedFuzzy: usedFuzzy,
-				formatter: t.Formatter, logger: t.Logger, workspaceRoot: root,
+				formatter: t.Formatter, workspaceRoot: root,
 			}, pe, err)
 		}
 		return nil, fmt.Errorf("edit_file: %w", err)
@@ -291,14 +284,10 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 		return nil, fmt.Errorf("edit_file: write: %w", err)
 	}
 
-	// Auto-format the written file if a formatter is available.
-	if t.Formatter != nil {
-		if fmtErr := t.Formatter.Format(ctx, root, abs); fmtErr != nil {
-			t.Logger.Warn("auto-format: skipped", "path", relPath, "err", fmtErr)
-		}
-		if formatted, readErr := os.ReadFile(abs); readErr == nil {
-			updated = string(formatted)
-		}
+	// Auto-format the written file and re-read so the diff is accurate.
+	t.Formatter.Format(ctx, root, abs)
+	if formatted, readErr := os.ReadFile(abs); readErr == nil {
+		updated = string(formatted)
 	}
 
 	result := map[string]any{"ok": true, "path": relPath}
@@ -451,20 +440,12 @@ func (t *listDirTool) Execute(ctx context.Context, args map[string]any) (any, er
 }
 
 // fileTools returns all workspace file manipulation tools.
-// The formatter is used to auto-format files after write/edit; pass nil to disable.
-func fileTools(formatter *Formatter, logger *slog.Logger) []mcp.Tool {
-	if formatter == nil {
-		return []mcp.Tool{
-			&readFileTool{},
-			&writeFileTool{},
-			&editFileTool{},
-			&listDirTool{},
-		}
-	}
+// The formatter is used to auto-format Go files after write/edit; pass nil to disable.
+func fileTools(formatter *Formatter) []mcp.Tool {
 	return []mcp.Tool{
 		&readFileTool{},
-		&writeFileTool{Formatter: formatter, Logger: logger},
-		&editFileTool{Formatter: formatter, Logger: logger},
+		&writeFileTool{Formatter: formatter},
+		&editFileTool{Formatter: formatter},
 		&listDirTool{},
 	}
 }
@@ -503,7 +484,6 @@ type editContext struct {
 	abs, relPath, original, working, lineEnding string
 	hasBOM, usedFuzzy                           bool
 	formatter                                   *Formatter
-	logger                                      *slog.Logger
 	workspaceRoot                               string
 }
 
@@ -534,7 +514,7 @@ func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (ma
 	}
 
 	// Auto-format the partially-edited file.
-	partialResult = formatAndReadback(ctx.formatter, ctx.logger, ctx.workspaceRoot, ctx.abs, ctx.relPath, partialResult)
+	partialResult = formatAndReadback(ctx.formatter, ctx.workspaceRoot, ctx.abs, ctx.relPath, partialResult)
 
 	diffStr := buildUnifiedDiff(ctx.original, partialResult, ctx.relPath)
 	if diffStr != "" {
@@ -545,15 +525,10 @@ func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (ma
 }
 
 // formatAndReadback runs the auto-formatter on the given file and re-reads it.
-// Returns the (possibly formatted) content, or the original content if the
-// formatter is nil or fails.
-func formatAndReadback(formatter *Formatter, logger *slog.Logger, workspaceRoot, absPath, relPath, current string) string {
-	if formatter == nil {
-		return current
-	}
-	if fmtErr := formatter.Format(context.Background(), workspaceRoot, absPath); fmtErr != nil {
-		logger.Warn("auto-format: skipped", "path", relPath, "err", fmtErr)
-	}
+// Returns the (possibly formatted) content, or the original content if formatting
+// didn't change the file or the formatter is nil.
+func formatAndReadback(formatter *Formatter, workspaceRoot, absPath, _ string, current string) string {
+	formatter.Format(context.Background(), workspaceRoot, absPath)
 	if formatted, readErr := os.ReadFile(absPath); readErr == nil {
 		return string(formatted)
 	}

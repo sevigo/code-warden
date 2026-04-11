@@ -247,6 +247,12 @@ func (o *Orchestrator) runImplementPhase(
 		changedFiles = modifiedFiles(editResult.ToolCalls)
 	}
 
+	// ── Batch format ──────────────────────────────────────────────────────────
+	// Run the project's format_command once before review (e.g. "npm run format").
+	// This is configured in .code-warden.yml and is separate from per-write
+	// Go formatting (which runs inside write_file/edit_file via the Formatter).
+	o.formatProject(ctx, ws)
+
 	// ── Review+fix loop ─────────────────────────────────────────────────────
 	tracker.setPhase("reviewing")
 	return o.runReviewPhase(ctx, session, agentLLM, ws, branch, tracker, editIters, editObs, changedFiles)
@@ -420,12 +426,8 @@ func (o *Orchestrator) buildEditLoop(agentLLM llms.Model, session *Session, ws *
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools — auto-format after write/edit (unless disabled by repo config).
-	formatter := NewFormatter(o.logger)
-	if o.repoConfig != nil && o.repoConfig.DisableAutoFormat {
-		formatter = nil
-	}
-	for _, t := range fileTools(formatter, o.logger) {
+	// File tools — auto-format Go files after write/edit (unless disabled by repo config).
+	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig)) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
@@ -466,12 +468,8 @@ func (o *Orchestrator) buildReviewLoop(agentLLM llms.Model, session *Session, ws
 		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools — auto-format after write/edit (unless disabled by repo config).
-	reviewFormatter := NewFormatter(o.logger)
-	if o.repoConfig != nil && o.repoConfig.DisableAutoFormat {
-		reviewFormatter = nil
-	}
-	for _, t := range fileTools(reviewFormatter, o.logger) {
+	// File tools — auto-format Go files after write/edit (unless disabled by repo config).
+	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig)) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
@@ -560,7 +558,7 @@ Working directory: %s
 
 ## Rules
 - Paths are relative to the working directory.
-- Files are auto-formatted on write (goimports/.go, ruff format+check/.py, prettier/.ts/.js, rustfmt/.rs). No need to call a formatter manually.
+- Files are auto-formatted on write (goimports or gofmt for .go files). Other languages use the project's format_command before review.
 - Always run lint and tests after making changes.
 - Do NOT call review_code — it is not available in this phase. Review will happen automatically in the next phase.
 - Do not attempt to push or open a PR.
@@ -628,7 +626,7 @@ Working directory: %s
 
 ## Rules
 - Paths are relative to the working directory.
-- Files are auto-formatted on write (goimports/.go, ruff format+check/.py, prettier/.ts/.js, rustfmt/.rs). No need to call a formatter manually.
+- Files are auto-formatted on write (goimports or gofmt for .go files). Other languages use the project's format_command before review.
 - You MUST call review_code at least once. Do not finish without calling it.
 - Always run lint and tests before calling review_code.
 - Your work here is done ONLY when review_code returns APPROVE. Do not attempt to push or open a PR.
@@ -1280,6 +1278,17 @@ func (o *Orchestrator) getGitDiffStat(workspaceDir string) string {
 		stat = stat[:4000] + "\n... (truncated)"
 	}
 	return stat
+}
+
+// formatProject runs the project's format_command once before the review phase.
+// The command is configured in .code-warden.yml (e.g. "npm run format", "ruff format .").
+// No-op if no format_command is set or auto-format is disabled.
+func (o *Orchestrator) formatProject(ctx context.Context, ws *agentWorkspace) {
+	if o.repoConfig == nil || o.repoConfig.FormatCommand == "" || o.repoConfig.DisableAutoFormat {
+		return
+	}
+	formatter := NewFormatter(o.logger)
+	formatter.FormatProject(ctx, ws.dir, o.repoConfig.FormatCommand)
 }
 
 // yieldCommitAndPush stages all pending changes, commits, and pushes the branch.

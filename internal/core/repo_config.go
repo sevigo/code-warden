@@ -87,6 +87,11 @@ type RepoConfig struct {
 	// DisableAutoFormat disables post-write formatting. Set to true for repos
 	// that manage formatting through their own CI pipeline or pre-commit hooks.
 	DisableAutoFormat bool `yaml:"disable_auto_format"`
+
+	// FormatCommand is a shell command to run once before the review phase to
+	// format all modified files (e.g. "npm run format", "ruff format .").
+	// If empty, no batch formatting is performed.
+	FormatCommand string `yaml:"format_command"`
 }
 
 // DefaultRepoConfig returns a config with default values.

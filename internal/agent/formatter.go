@@ -7,37 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sevigo/code-warden/internal/core"
 )
 
-// formatterSpec describes a single formatter pass: the binary name and a
-// function that builds its argument list for a given file path.
-type formatterSpec struct {
-	binary string
-	args   func(filePath string) []string
-}
-
-// defaultFormatters maps file extensions to ordered lists of formatter specs.
-// The first spec whose binary is found on PATH wins (e.g. goimports before gofmt).
-var defaultFormatters = map[string][]formatterSpec{
-	".go": {
-		{binary: "goimports", args: func(f string) []string { return []string{"-w", f} }},
-		{binary: "gofmt", args: func(f string) []string { return []string{"-w", f} }},
-	},
-	".py": {
-		{binary: "ruff", args: func(f string) []string { return []string{"format", f} }},
-		{binary: "ruff", args: func(f string) []string { return []string{"check", "--fix", "--select", "I,F401", f} }},
-	},
-	".ts":   {{binary: "prettier", args: func(f string) []string { return []string{"--write", f} }}},
-	".tsx":  {{binary: "prettier", args: func(f string) []string { return []string{"--write", f} }}},
-	".js":   {{binary: "prettier", args: func(f string) []string { return []string{"--write", f} }}},
-	".jsx":  {{binary: "prettier", args: func(f string) []string { return []string{"--write", f} }}},
-	".rs":   {{binary: "rustfmt", args: func(f string) []string { return []string{f} }}},
-	".java": {{binary: "google-java-format", args: func(f string) []string { return []string{"--replace", f} }}},
-}
-
-// Formatter runs language-specific formatters on files after they are written
-// by the agent. If a formatter binary is not installed it is silently skipped.
-// Errors are logged but never propagated to callers — formatting is best-effort.
+// Formatter runs language-specific formatters on files written by the agent.
+// Only Go files are auto-formatted per-write (goimports resolves imports without
+// an LSP — a unique capability). All other formatting is handled by a batch
+// format_command run once before the review phase (configured in .code-warden.yml).
 type Formatter struct {
 	logger *slog.Logger
 }
@@ -47,42 +24,76 @@ func NewFormatter(logger *slog.Logger) *Formatter {
 	return &Formatter{logger: logger}
 }
 
-// Format runs the appropriate formatter for filePath's extension.
-// The cmd is executed with workspaceRoot as its working directory so that
-// project-local config files (.prettierrc, pyproject.toml, etc.) are respected.
-// Returns nil if no formatter is available or the formatter succeeds.
-// Returns an error only if something unexpected happens (context cancelled, etc.).
-func (f *Formatter) Format(ctx context.Context, workspaceRoot, filePath string) error {
-	if f == nil || f.logger == nil {
+// newFormatterFromConfig creates a Formatter unless DisableAutoFormat is set.
+func newFormatterFromConfig(logger *slog.Logger, cfg *core.RepoConfig) *Formatter {
+	if cfg != nil && cfg.DisableAutoFormat {
 		return nil
+	}
+	return NewFormatter(logger)
+}
+
+// Format runs the appropriate formatter for filePath's extension.
+// For Go files: try goimports first (resolves imports), fall back to gofmt.
+// All other extensions are skipped — formatting for those is handled by the
+// batch format_command before the review phase.
+// Nil receiver is a no-op.
+func (f *Formatter) Format(ctx context.Context, workspaceRoot, filePath string) {
+	if f == nil {
+		return
 	}
 	ext := strings.ToLower(filepath.Ext(filePath))
-	specs, ok := defaultFormatters[ext]
-	if !ok {
-		return nil
+	if ext != ".go" {
+		return
 	}
 
-	for _, spec := range specs {
-		if _, err := exec.LookPath(spec.binary); err != nil {
+	for _, binary := range []string{"goimports", "gofmt"} {
+		if _, err := exec.LookPath(binary); err != nil {
 			continue
 		}
-
-		args := spec.args(filePath)
-		formatCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		cmd := exec.CommandContext(formatCtx, spec.binary, args...) //nolint:gosec // G204: binary is from our hardcoded map, not user input
-		cmd.Dir = workspaceRoot
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			f.logger.Warn("auto-format: formatter failed",
-				"binary", spec.binary, "path", filePath, "error", err, "output", string(out))
-			return err
-		}
-		f.logger.Debug("auto-format: formatted", "binary", spec.binary, "path", filePath)
-		return nil
+		f.runSpec(ctx, binary, []string{"-w", filePath}, workspaceRoot, filePath)
+		return
 	}
+	f.logger.Debug("auto-format: no Go formatter available", "path", filePath)
+}
 
-	f.logger.Debug("auto-format: no formatter found", "ext", ext, "path", filePath)
-	return nil
+// FormatProject runs a single batch format command on the workspace root.
+// This is called once between the edit and review phases, using the project's
+// own format_command from .code-warden.yml (e.g. "npm run format", "ruff format .").
+// Nil receiver or empty command is a no-op.
+func (f *Formatter) FormatProject(ctx context.Context, workspaceRoot, command string) {
+	if f == nil || command == "" {
+		return
+	}
+	parts := strings.SplitN(command, " ", 2)
+	binary := parts[0]
+	args := parts[1:]
+
+	fmtCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(fmtCtx, binary, args...)
+	cmd.Dir = workspaceRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		f.logger.Warn("auto-format: project format command failed",
+			"command", command, "error", err, "output", string(out))
+		return
+	}
+	f.logger.Info("auto-format: project formatted", "command", command)
+}
+
+// runSpec executes a single formatter pass with a scoped 30-second timeout.
+func (f *Formatter) runSpec(ctx context.Context, binary string, args []string, workspaceRoot, filePath string) {
+	fmtCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(fmtCtx, binary, args...)
+	cmd.Dir = workspaceRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		f.logger.Warn("auto-format: formatter failed",
+			"binary", binary, "path", filePath, "error", err, "output", string(out))
+		return
+	}
+	f.logger.Debug("auto-format: formatted", "binary", binary, "path", filePath)
 }
