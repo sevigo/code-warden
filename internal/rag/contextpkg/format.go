@@ -292,8 +292,6 @@ func (b *builderImpl) generateSparseVectorFunc(stageName string) func(ctx contex
 		for _, q := range queries {
 			if isValidQueryForSparse(q) {
 				validQueries = append(validQueries, q)
-			} else {
-				b.cfg.Logger.Debug("skipping invalid query for sparse vector generation", "stage", stageName, "query", truncateForLog(q, 50))
 			}
 		}
 
