@@ -52,6 +52,8 @@ func (h *WebhookHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	switch e := event.(type) {
 	case *github.IssueCommentEvent:
 		h.handleIssueComment(r.Context(), w, e)
+	case *github.PushEvent:
+		h.handlePush(r.Context(), w, e)
 	default:
 		h.logger.Debug("ignoring unhandled webhook event type", "type", github.WebHookType(r))
 		_, _ = fmt.Fprint(w, "Event type not handled")
