@@ -247,11 +247,14 @@ func TestApplyMultiEdit_OverlapError(t *testing.T) {
 
 func TestApplyMultiEdit_NotFoundError(t *testing.T) {
 	content := "hello world"
-	_, _, err := applyMultiEdit(content, []editPair{
+	result, _, err := applyMultiEdit(content, []editPair{
 		{OldStr: "nonexistent", NewStr: "x"},
 	})
 	assert.Error(t, err)
-	assert.ErrorContains(t, err, "not found")
+	var pe *partialEditError
+	assert.ErrorAs(t, err, &pe)
+	assert.Equal(t, []int{0}, pe.FailedIndices)
+	assert.Equal(t, content, result, "content should be unchanged when all edits fail")
 }
 
 func TestApplyMultiEdit_AmbiguousMatchError(t *testing.T) {
@@ -261,6 +264,57 @@ func TestApplyMultiEdit_AmbiguousMatchError(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "2 times")
+}
+
+func TestApplyMultiEdit_PartialEdit(t *testing.T) {
+	content := "const A = 1\nconst B = 2\nconst C = 3\n"
+	result, fuzzy, err := applyMultiEdit(content, []editPair{
+		{OldStr: "A = 1", NewStr: "A = 10"},  // found
+		{OldStr: "nonexistent", NewStr: "X"}, // not found
+		{OldStr: "C = 3", NewStr: "C = 30"},  // found
+	})
+	assert.Error(t, err)
+	var pe *partialEditError
+	assert.ErrorAs(t, err, &pe)
+	assert.Equal(t, []int{1}, pe.FailedIndices)
+	assert.Equal(t, 3, pe.TotalEdits)
+	assert.True(t, fuzzy, "fuzzy mode activated because one edit missed exactly")
+	assert.Contains(t, result, "A = 10")
+	assert.Contains(t, result, "C = 30")
+	assert.Contains(t, result, "B = 2") // unchanged
+}
+
+func TestApplyMultiEdit_PartialEdit_AllFail(t *testing.T) {
+	content := "hello world"
+	result, _, err := applyMultiEdit(content, []editPair{
+		{OldStr: "nonexistent", NewStr: "x"},
+		{OldStr: "also_missing", NewStr: "y"},
+	})
+	assert.Error(t, err)
+	var pe *partialEditError
+	assert.ErrorAs(t, err, &pe)
+	assert.Equal(t, []int{0, 1}, pe.FailedIndices)
+	assert.Equal(t, content, result, "content unchanged when all edits fail")
+}
+
+func TestApplyMultiEdit_PartialEdit_WithFuzzy(t *testing.T) {
+	content := "A \u00A0= 1\nB = 2\n" // NBSP in file content
+	result, fuzzy, err := applyMultiEdit(content, []editPair{
+		{OldStr: "A \u00A0= 1", NewStr: "A = 10"}, // NBSP in old_string → fuzzy match
+		{OldStr: "Z_missing", NewStr: "X"},        // not found even with fuzzy
+	})
+	assert.Error(t, err)
+	var pe *partialEditError
+	assert.ErrorAs(t, err, &pe)
+	assert.Equal(t, []int{1}, pe.FailedIndices)
+	assert.True(t, fuzzy)
+	assert.Contains(t, result, "A = 10")
+	assert.Contains(t, result, "B = 2")
+}
+
+func TestPartialEditError_Message(t *testing.T) {
+	pe := &partialEditError{FailedIndices: []int{2, 5}, TotalEdits: 7}
+	assert.Equal(t, "edit_file: applied 5 of 7 edits; edits at indices [2 5] not found", pe.Error())
 }
 
 func TestApplyMultiEdit_FuzzySmartQuotes(t *testing.T) {

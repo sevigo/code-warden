@@ -80,7 +80,7 @@ func (o *Orchestrator) prepareAgentWorkspace(ctx context.Context, session *Sessi
 		traceFile = nil
 	}
 
-	// Start LSP manager removed — agent uses run_command("go build ./...")
+	// Start LSP manager removed — agent uses run_command("make build")
 	// for compile checks instead. 30-120s LSP startup is not worth it
 	// when the model can verify with `make lint` / `make test`.
 

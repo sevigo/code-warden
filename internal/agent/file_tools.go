@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -254,6 +255,10 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 
 	updated, usedFuzzy, err := applyMultiEdit(working, normalizedPairs)
 	if err != nil {
+		var pe *partialEditError
+		if errors.As(err, &pe) {
+			return handlePartialEdit(abs, relPath, original, updated, lineEnding, hasBOM, usedFuzzy, pe, err)
+		}
 		return nil, fmt.Errorf("edit_file: %w", err)
 	}
 
@@ -449,4 +454,30 @@ func parseIntArg(args map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+func handlePartialEdit(abs, relPath, original, working, lineEnding string, hasBOM, usedFuzzy bool, pe *partialEditError, origErr error) (map[string]any, error) {
+	partialResult := restoreLineEndings(working, lineEnding)
+	partialResult = prependBOM(partialResult, hasBOM)
+	if writeErr := os.WriteFile(abs, []byte(partialResult), 0o644); writeErr != nil { //nolint:gosec // G306: 0644 is intentional for source files
+		return nil, fmt.Errorf("edit_file: partial edit write failed: %w", writeErr)
+	}
+
+	diffStr := buildUnifiedDiff(original, partialResult, relPath)
+	result := map[string]any{
+		"ok":            false,
+		"path":          relPath,
+		"partial":       true,
+		"applied_edits": pe.TotalEdits - len(pe.FailedIndices),
+		"failed_edits":  pe.FailedIndices,
+		"total_edits":   pe.TotalEdits,
+		"error":         origErr.Error(),
+	}
+	if usedFuzzy {
+		result["fuzzy_match"] = true
+	}
+	if diffStr != "" {
+		result["diff"] = diffStr
+	}
+	return result, nil
 }

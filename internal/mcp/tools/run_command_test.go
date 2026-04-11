@@ -13,16 +13,16 @@ import (
 func TestRunCommand_Whitelist(t *testing.T) {
 	dir := t.TempDir()
 	tool := &RunCommand{
-		RepoConfig:  &core.RepoConfig{VerifyCommands: []string{"make lint", "make test"}},
+		RepoConfig:  &core.RepoConfig{VerifyCommands: []string{"make build", "make lint", "make test"}},
 		ProjectRoot: dir,
 		Logger:      slog.Default(),
 	}
 
-	allowed := []string{"make lint", "make test"}
+	allowed := []string{"make lint", "make test", "make build"}
 	rejected := []string{
 		"make lint; rm -rf /",
 		"sh -c 'rm -rf /'",
-		"make build",
+		"go build ./...",
 		"",
 	}
 
