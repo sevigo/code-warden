@@ -363,6 +363,10 @@ func descendingOrder(matches []matchResult) []int {
 // applyEdit performs a single text replacement using exact-then-fuzzy matching.
 // It delegates to applyMultiEdit with a one-element slice.
 //
+// Note: when the edit is not found, applyMultiEdit returns a partialEditError
+// (with FailedIndices=[0]). Callers that need to distinguish "not found" from
+// other errors should check for *partialEditError via errors.As.
+//
 // WARNING: When fuzzy matching is used, the returned content is the
 // NFKC-normalized form of the entire file. This means characters outside
 // the edited region (smart quotes, ligatures, special spaces) will be

@@ -52,9 +52,10 @@ func (t *RunCommand) Name() string {
 }
 
 func (t *RunCommand) Description() string {
-	return `Run a whitelisted verification command in the project workspace.
+	allowed := t.allowedCommands()
+	return fmt.Sprintf(`Run a whitelisted verification command in the project workspace.
 
-Allowed commands: make build, make lint, make test.
+Allowed commands: %s.
 
 Use "make build" after editing files to verify they compile and all
 imports/exports are correct. Use "make lint" and "make test" for full
@@ -64,7 +65,7 @@ Returns stdout, stderr, exit_code, and a boolean success field.
 
 Note: commands are split on whitespace; quoted arguments with spaces are not
 supported. Whitelist entries should use simple space-separated tokens only
-(e.g. "make test" not "go test -run 'My Test'").`
+(e.g. "make test" not "go test -run 'My Test'").`, strings.Join(allowed, ", "))
 }
 
 func (t *RunCommand) ParametersSchema() map[string]any {

@@ -257,7 +257,10 @@ func (t *editFileTool) Execute(ctx context.Context, args map[string]any) (any, e
 	if err != nil {
 		var pe *partialEditError
 		if errors.As(err, &pe) {
-			return handlePartialEdit(abs, relPath, original, updated, lineEnding, hasBOM, usedFuzzy, pe, err)
+			return handlePartialEdit(editContext{
+				abs: abs, relPath: relPath, original: original, working: updated,
+				lineEnding: lineEnding, hasBOM: hasBOM, usedFuzzy: usedFuzzy,
+			}, pe, err)
 		}
 		return nil, fmt.Errorf("edit_file: %w", err)
 	}
@@ -456,28 +459,40 @@ func parseIntArg(args map[string]any, key string) int {
 	}
 }
 
-func handlePartialEdit(abs, relPath, original, working, lineEnding string, hasBOM, usedFuzzy bool, pe *partialEditError, origErr error) (map[string]any, error) {
-	partialResult := restoreLineEndings(working, lineEnding)
-	partialResult = prependBOM(partialResult, hasBOM)
-	if writeErr := os.WriteFile(abs, []byte(partialResult), 0o644); writeErr != nil { //nolint:gosec // G306: 0644 is intentional for source files
-		return nil, fmt.Errorf("edit_file: partial edit write failed: %w", writeErr)
-	}
+// editContext holds file metadata needed to restore line endings and BOM
+// after a partial edit, and to generate a diff for the LLM.
+type editContext struct {
+	abs, relPath, original, working, lineEnding string
+	hasBOM, usedFuzzy                           bool
+}
 
-	diffStr := buildUnifiedDiff(original, partialResult, relPath)
+func handlePartialEdit(ctx editContext, pe *partialEditError, origErr error) (map[string]any, error) {
+	appliedCount := pe.TotalEdits - len(pe.FailedIndices)
 	result := map[string]any{
 		"ok":            false,
-		"path":          relPath,
+		"path":          ctx.relPath,
 		"partial":       true,
-		"applied_edits": pe.TotalEdits - len(pe.FailedIndices),
+		"applied_edits": appliedCount,
 		"failed_edits":  pe.FailedIndices,
 		"total_edits":   pe.TotalEdits,
 		"error":         origErr.Error(),
 	}
-	if usedFuzzy {
+	if ctx.usedFuzzy {
 		result["fuzzy_match"] = true
 	}
-	if diffStr != "" {
-		result["diff"] = diffStr
+
+	// Only write to disk if at least one edit succeeded.
+	if appliedCount > 0 {
+		partialResult := restoreLineEndings(ctx.working, ctx.lineEnding)
+		partialResult = prependBOM(partialResult, ctx.hasBOM)
+		if writeErr := os.WriteFile(ctx.abs, []byte(partialResult), 0o644); writeErr != nil { //nolint:gosec // G306: 0644 is intentional for source files
+			return nil, fmt.Errorf("edit_file: partial edit write failed: %w", writeErr)
+		}
+		diffStr := buildUnifiedDiff(ctx.original, partialResult, ctx.relPath)
+		if diffStr != "" {
+			result["diff"] = diffStr
+		}
 	}
+
 	return result, nil
 }

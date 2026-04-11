@@ -39,6 +39,11 @@ func TestPromptManager_Raw_NotFound(t *testing.T) {
 	}
 }
 
+// TestPromptManager_Render_WithNilProducesNoValue verifies that
+// Render(key, nil) replaces template variables with "<no value>". This is
+// intentional — templates that need runtime data must use Raw() instead.
+// This test documents the behavior to prevent accidental misuse of Render
+// for templates consumed by external renderers (e.g. goframe reranker).
 func TestPromptManager_Render_WithNilProducesNoValue(t *testing.T) {
 	pm, err := NewPromptManager()
 	if err != nil {

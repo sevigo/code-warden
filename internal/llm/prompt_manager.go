@@ -80,6 +80,11 @@ func (pm *PromptManager) Get(key PromptKey) (*template.Template, error) {
 	return tmpl, nil
 }
 
+// Raw returns the un-rendered template source for a prompt key.
+// Use this (instead of Render) when the template will be rendered by an
+// external system (e.g. goframe's LLMReranker) that provides its own data
+// at runtime. Render(key, nil) is explicitly NOT what you want for this
+// case — it replaces all {{.Field}} placeholders with "<no value>".
 func (pm *PromptManager) Raw(key PromptKey) (string, error) {
 	s, ok := pm.raw[key]
 	if !ok {
