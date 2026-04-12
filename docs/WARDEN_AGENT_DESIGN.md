@@ -61,47 +61,69 @@ mutate state.
 returns a minimal plan and the implement loop continues. Planning failure never
 blocks implementation.
 
-**Cap:** 5 iterations. The planner should read a handful of files and produce a plan,
-not implement anything.
+**Cap:** `plan_iterations` (default 8). The planner should read a handful of files
+and produce a plan, not implement anything.
 
-### Phase 2 — Implement
+### Phase 2 — Edit (Implement)
 
-**Goal:** Write and verify code until `review_code` returns APPROVE.
+**Goal:** Write and verify code against `make build`, `make lint`, `make test`.
+`review_code` is deliberately withheld — review happens in the separate
+orchestrator-driven phase so it always runs regardless of the edit budget.
 
 **Tool selection:**
-RAG tools (`search_code`, `get_symbol`) are best for semantic exploration ("find things related to X").
-Search tools (`grep`, `find`) are best for exact pattern search ("find all usages of `handleAuth`") and file
-discovery ("find all `*_test.go` files"). The agent uses `run_command("go build ./...")` for compile checks
-instead of LSP, which was removed to avoid 30–120 seconds of startup per session.
+RAG tools (`search_code`, `get_symbol`) are best for semantic exploration.
+Search tools (`grep`, `find`) are best for exact pattern search and file discovery.
+`run_command` runs `make build/lint/test` for verification.
 
 **Verification ladder (cheapest first):**
-1. `write_file` / `edit_file` return gopls diagnostics automatically.
-2. `run_command("make lint")` — fast, catches style errors.
-3. `run_command("make test")` — slower, catches regressions.
-4. `review_code` — LLM-as-judge with full RAG context.
+1. `run_command("make build")` — fast compile check.
+2. `run_command("make lint")` — style errors.
+3. `run_command("make test")` — regression check.
 
-**Iteration cap:**
-`max(config.MaxIterations * 15, 50)`. With `MaxIterations: 3` the cap is 50 loop
-steps — enough for multi-file changes with several review cycles.
+**Iteration cap:** `edit_iterations` (default 50).
 
 **Compaction:**
 The compaction hook fires at 70% of a 128K token ceiling. It summarises the
-conversation history to ≤400 words, then rebuilds the history as:
-`[system prompt] + [summary] + [last 4 messages]`.
-The 128K ceiling is conservative: models support 198K+ but we leave headroom for
-tool outputs in the current iteration.
+conversation history to ≤400 words and rebuilds history as:
+`[system prompt] + [summary] + [last 8 messages from a clean turn boundary]`.
 
-### Phase 3 — Publish
+### Phase 3 — Review (Orchestrator-Driven State Machine)
+
+**Goal:** Validate the implementation using the proven RAG review pipeline.
+Iterate (up to `review_rounds`) until the reviewer approves or the budget is
+exhausted.
+
+**Design rationale:**
+The review phase is run by Go code, not an LLM agent. Two root causes made
+the previous LLM-driven approach broken by construction:
+1. `review_code` required a `diff` parameter the agent couldn't produce
+   (run_command whitelist has no git commands).
+2. The review loop started cold with nil history, causing the agent to
+   re-explore rather than review.
+
+**Per round:**
+1. Go runs `git diff HEAD` to get the full workspace diff.
+2. Go calls `review.Executor.Execute()` — the same RAG pipeline used by `/review`.
+3. Verdict is recorded via `RecordReviewBySession` for PR enforcement.
+4. `APPROVE` → move to Phase 4.
+5. `REQUEST_CHANGES` → spawn a focused fix loop (`fix_iterations`, default 8)
+   with the exact findings (file:line, severity, suggested fix) as task context.
+   The fix loop has NO MCP exploration tools — it only reads/writes the
+   specific reported files.
+
+**Draft PR fallback:** If `review_rounds` are exhausted without APPROVE,
+`yieldDraftPR()` opens a draft PR for human review.
+
+### Phase 4 — Publish
 
 **Goal:** Push the branch and open a draft PR. Nothing else.
 
-**Tools:** `push_branch` and `create_pull_request` only. The model cannot call any
-code-reading or code-writing tool here — there is nothing to explore.
+**Tools:** `push_branch` and `create_pull_request` only.
 
-**Cap:** 5 iterations. Push + PR creation should complete in 1–2 turns.
+**Cap:** `publish_iterations` (default 8). Push + PR creation should complete in 1–2 turns.
 
-**Gate:** The publish loop only runs if `GetReviewBySession` returns `"APPROVE"`. A
-completed-without-APPROVE loop is treated as a failure (`failSession`).
+**Gate:** Phase 4 only runs after the orchestrator records an APPROVE verdict.
+`create_pull_request` enforces this via `GetReviewBySession`.
 
 ---
 

@@ -10,11 +10,11 @@ When a GitHub issue comment contains `/implement`, Code-Warden:
 
 1. Spawns a `Session` and persists it to PostgreSQL.
 2. Clones the repository to an isolated workspace.
-3. Runs the **Warden phased loop** (plan → implement → publish).
+3. Runs the **Warden phased loop** (plan → edit → review → publish).
 4. Posts real-time GitHub progress comments throughout.
 5. Opens a draft PR once the implementation is approved.
 
-The harness is entirely in-process: no external agent binary needed. 
+The harness is entirely in-process: no external agent binary needed.
 Tools are called as direct Go function calls inside `goframe.AgentLoop`.
 
 ---
@@ -40,7 +40,7 @@ runAgent  dispatches by mode:
 
 ---
 
-## Warden Agent — Three-Phase Loop
+## Warden Agent — Four-Phase Architecture
 
 ```
 runWardenAgent(ctx, session, branch)
@@ -49,8 +49,7 @@ runWardenAgent(ctx, session, branch)
 │    ├── git clone projectRoot → /tmp/code-warden-agents/<id>
 │    ├── git remote set-url origin  (with token for push)
 │    ├── RegisterWorkspace(session.ID, dir)  ← MCP routing
-│    ├── open agent.log
-│    └── lsp.NewManager().Start()  ← gopls + language servers
+│    └── open agent.log + trace file
 │
 ├─ persistSessionRunning(branch)
 │
@@ -62,31 +61,49 @@ runWardenAgent(ctx, session, branch)
 │   tools: search_code, get_symbol, get_structure, get_arch_context,
 │          find_usages, get_callers, get_callees, read_file, list_dir,
 │          grep, find
-│     max_iterations: 5
-│     output: markdown "## Implementation Plan" injected into implement prompt
+│     max_iterations: plan_iterations (default 8)
+│     output: markdown "## Implementation Plan" injected into edit prompt
 │
-├─ ── Phase 2: Implement ─────────────────────────────────────────────
-│   tracker.setPhase("implementing")
-│   buildImplementLoop()
-│     tools: ALL MCP tools except push_branch / create_pull_request
+├─ ── Phase 2: Edit (implement) ──────────────────────────────────────
+│   tracker.setPhase("editing")
+│   buildEditLoop()
+│     tools: ALL MCP tools except push_branch / create_pull_request / review_code
 │            + read_file, write_file, edit_file, list_dir  (file tools)
-│            + grep, find  (search tools — exact pattern search and file discovery)
-│            + run_command  (shell commands for lint/test verification)
-│     max_iterations: max(MaxIterations*15, 50)
-│     compactionHook: fires at 70% of 128K tokens, summarises history
+│            + grep, find  (search tools)
+│            + run_command  (make build/lint/test)
+│     max_iterations: edit_iterations (default 50)
+│     compactionHook: fires at 70% of 128K tokens
 │
 │   loop.Run()  →  Think → call tools → Observe → repeat
-│     agent explores, writes code, runs lint/tests, calls review_code
-│     loop exits when agent produces a final response (no more tool calls)
+│     agent explores codebase, writes code, runs lint/tests
+│     review_code is NOT available here — review happens in Phase 3
 │
-│   HARD GATE: GetReviewBySession(session.ID) must be "APPROVE"
-│              → if not: failSession()
+├─ ── Phase 3: Review state machine (orchestrator-driven) ───────────
+│   tracker.setPhase("reviewing (round N/M)")
+│   Go code runs up to review_rounds (default 10) rounds:
 │
-├─ ── Phase 3: Publish ───────────────────────────────────────────────
+│   for round := 1; round <= maxRounds; round++ {
+│     diff = git diff HEAD           ← Go runs this directly
+│     result = review.Executor.Execute(diff)   ← proven RAG pipeline
+│     RecordReviewBySession(verdict, diffHash)
+│
+│     if verdict == "APPROVE" → break → go to Phase 4
+│
+│     buildFixLoop()   ← restricted tool set (no MCP exploration)
+│       tools: run_command, read_file, write_file, edit_file, list_dir,
+│              grep, find
+│       max_iterations: fix_iterations (default 8)
+│       task context: exact review findings (file:line, severity, comment,
+│                     suggested fix) — no codebase exploration needed
+│     fixLoop.Run()
+│   }
+│   if never APPROVE → yieldDraftPR()  ← human fallback
+│
+├─ ── Phase 4: Publish ───────────────────────────────────────────────
 │   tracker.setPhase("publishing")
 │   buildPublishLoop()
 │     tools: push_branch, create_pull_request  ONLY
-│     max_iterations: 5
+│     max_iterations: publish_iterations (default 8)
 │
 │   loop.Run()  →  push branch → open draft PR
 │
@@ -99,25 +116,42 @@ runWardenAgent(ctx, session, branch)
 
 ---
 
-## LSP Removal
+## Why the Review Phase is Orchestrator-Driven (Not LLM-Driven)
 
-The Language Server Protocol client was removed from agent sessions. It added 30–120 seconds of startup time per session and required per-language server binaries on the host. The agent now uses `grep` for exact pattern search, `find` for file discovery, and `run_command("go build ./...")` for compile checks — which is faster and works for any language without pre-installed language servers.
+The review phase is run entirely by Go code, not by an LLM agent loop. This was a deliberate architectural choice to fix two root causes:
 
-The LSP package (`internal/agent/lsp/`) still exists for non-agent use but is no longer started during workspace preparation.
+**Root cause 1 — `review_code` required a diff the agent couldn't obtain.**
+The `review_code` MCP tool schema has `"required": ["diff"]`. The `run_command`
+whitelist only allows `make build/lint/test` — no git commands. Even if the agent
+tried to call `review_code`, the call would fail or stall because it had no way
+to produce a diff.
+
+**Root cause 2 — Cold-start with nil history.**
+The previous design passed `nil` history to `reviewLoop.Run()`. The review agent
+started with 2 messages (system prompt + task) and no memory of what the edit loop
+did. In practice it spent all 15 iterations re-exploring the codebase — never
+reaching `review_code`.
+
+**The fix:** Go runs `git diff HEAD` directly, calls the proven `review.Executor`
+(the same RAG pipeline used by the `/review` PR command), and feeds the exact
+review findings to a small "fix loop". The review is guaranteed to run regardless
+of edit-loop behavior. The fix loop only reads/writes specific reported files —
+no codebase re-exploration.
 
 ---
 
 ## Phase-Based Tool Scoping
 
-Tools are assigned to loops architecturally — the model literally cannot call a publish tool during implementation.
+Tools are assigned to loops architecturally — the model literally cannot call an
+out-of-phase tool. `publishToolNames` and the `review_code` exclusion in
+`buildEditLoop` are the single source of truth.
 
 | Phase | Loop | Tools available |
 |-------|------|----------------|
 | Plan | `buildPlannerLoop` | `search_code`, `get_symbol`, `get_structure`, `get_arch_context`, `find_usages`, `get_callers`, `get_callees`, `read_file`, `list_dir`, `grep`, `find` |
-| Implement | `buildImplementLoop` | All MCP tools except `push_branch` / `create_pull_request`, plus file tools (`read_file`, `write_file`, `edit_file`, `list_dir`), search tools (`grep`, `find`), and `run_command` |
+| Edit | `buildEditLoop` | All MCP tools except `push_branch`, `create_pull_request`, `review_code`; plus file tools (`read_file`, `write_file`, `edit_file`, `list_dir`), search tools (`grep`, `find`), `run_command` |
+| Fix (per round) | `buildFixLoop` | `run_command`, `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `find` — NO MCP exploration tools |
 | Publish | `buildPublishLoop` | `push_branch`, `create_pull_request` **only** |
-
-`publishToolNames` is the single source of truth for what is withheld during implementation (see `warden.go`).
 
 ---
 
@@ -141,7 +175,7 @@ progressTool (wraps every registered tool)
 ```
 
 GitHub receives a progress comment every 30 seconds showing:
-- Current phase (planning / implementing / publishing)
+- Current phase (planning / editing / reviewing round N/M / publishing)
 - Total tool calls so far
 - Last 6 tool names with ✓/✗ status
 
@@ -149,7 +183,7 @@ GitHub receives a progress comment every 30 seconds showing:
 
 ## Context Compaction
 
-Long implement loops (GLM-5.1 / MiniMax M2.7 run 30–100+ iterations) accumulate conversation history that can approach the model's context window.
+Long edit loops accumulate conversation history that can approach the model's context window.
 
 The compaction hook fires when `tokens.Input + tokens.Output > 128_000 * 0.70`:
 
@@ -165,9 +199,7 @@ buildCompactionHook(session) → func(ctx, msgs, tokens) []schema.MessageContent
 
    extract file ops from newMsgs:
      - parse tool result messages for read_file / write_file / edit_file paths
-     - also parse grep and find results to track explored files
      - merge with file lists already in previousSummary (<read-files>/<modified-files> XML)
-     - append formatFileOps(allRead, allMod) to the new summary
 
   find tail boundary via findTailStart(msgs, 8):
     - walks backward from end until landing on a ChatMessageTypeHuman message
@@ -182,27 +214,23 @@ buildCompactionHook(session) → func(ctx, msgs, tokens) []schema.MessageContent
 ```
 
 **Iterative summarization** — if `msgs[1]` already contains a prior summary the hook
-asks the LLM to update rather than re-summarise from scratch. This keeps each
-compaction cheap and avoids losing early context (e.g. the original task description).
+asks the LLM to update rather than re-summarise from scratch.
 
 **File footprint tracking** — `<read-files>` and `<modified-files>` XML blocks are
-appended to every summary and merged cumulatively. On re-compaction the agent always
-knows which files it has touched in the current session.
+appended to every summary and merged cumulatively.
 
 **Turn boundary safety** — `findTailStart` ensures the preserved tail always begins on
 a human message, so a `tool` role result is never the first message in the compacted
-history (which would confuse the LLM about the origin of the result).
+history.
 
 If the summarization call fails, the hook returns `nil` and the loop continues with the
 full history (graceful degradation).
-
-The hook is wired via `goframeagent.WithLoopCompactionHook` added in goframe v0.36.6.
 
 ---
 
 ## Session Persistence (`internal/storage/agent_session.go`)
 
-Every session is persisted to the `agent_sessions` PostgreSQL table defined in `agent_schema.sql`.
+Every session is persisted to the `agent_sessions` PostgreSQL table.
 
 ### State transitions
 
@@ -213,48 +241,9 @@ Every session is persisted to the `agent_sessions` PostgreSQL table defined in `
 | `postSessionCompleted` called | `completed` | `persistSessionCompleted` |
 | `failSession` called | `failed` | `persistSessionFailed` |
 
-All persist calls are nil-safe: when `store == nil` (tests, DB unavailable) they log a warning and return — the session continues normally.
-
-### Schema (abbreviated)
-
-```sql
-CREATE TABLE agent_sessions (
-    id            UUID PRIMARY KEY,
-    task_type     VARCHAR(50),     -- "implement"
-    repo_owner    VARCHAR(255),
-    repo_name     VARCHAR(255),
-    branch        VARCHAR(255),
-    issue_number  INTEGER,
-    status        VARCHAR(50),     -- pending|running|completed|failed
-    created_at    TIMESTAMPTZ,
-    updated_at    TIMESTAMPTZ,     -- updated via trigger
-    completed_at  TIMESTAMPTZ,
-    task_inputs   JSONB,           -- issue title + body excerpt
-    result        JSONB,           -- Result struct (PR URL, verdict, iterations)
-    error         TEXT,
-    iterations    INTEGER,
-    final_verdict VARCHAR(50)      -- APPROVE | REQUEST_CHANGES | COMMENT
-);
-```
-
-### Store interface
-
-`storage.AgentSessionStore` is embedded in `storage.Store`:
-
-```go
-type AgentSessionStore interface {
-    CreateAgentSession(ctx, *AgentSession) error
-    UpdateAgentSession(ctx, *AgentSession) error
-    GetAgentSession(ctx, id string) (*AgentSession, error)
-    ListAgentSessions(ctx, owner, repo string, limit int) ([]*AgentSession, error)
-}
-```
-
 ---
 
 ## MCP Tools Reference
-
-Tools used by the implement loop (see `internal/mcp/tools/` and `internal/agent/file_tools.go`):
 
 ### Code exploration (RAG-backed, read-only)
 
@@ -271,58 +260,30 @@ Tools used by the implement loop (see `internal/mcp/tools/` and `internal/agent/
 
 | Tool | Description |
 |------|-------------|
-| `grep` | Search file contents by pattern (regex or literal). Uses ripgrep with grep fallback. Returns `file:line: content` format with match count and truncation hints. |
-| `find` | Find files by glob pattern (e.g. `*.go`, `**/*_test.go`). Pure Go, skips `.git`/`node_modules`/`vendor`. Returns workspace-relative paths with truncation hints. |
+| `grep` | Search file contents by pattern (regex or literal). Uses ripgrep with grep fallback. |
+| `find` | Find files by glob pattern (e.g. `*.go`, `**/*_test.go`). Pure Go, skips `.git`/`node_modules`/`vendor`. |
 
 ### File operations (workspace-scoped)
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | Read a file, optionally paginated; returns `{content, lines, path}`. When truncated, includes `total_lines`, `truncated`, and `hint` with the offset to read next. |
+| `read_file` | Read a file, optionally paginated; returns `{content, lines, path}`. Includes `hint` with next offset when truncated. |
 | `write_file` | Create or overwrite; returns `{ok, path, bytes}` |
-| `edit_file` | Exact-string replace with fuzzy fallback and CRLF/BOM handling; returns `{ok, path, diff, fuzzy_match?}`. Supports single `{old_string, new_string}` or atomic multi-edit `{edits:[{old_string, new_string}, ...]}`. Returns a unified diff (≤4 KB) for verification without a follow-up `read_file`. |
+| `edit_file` | Exact-string replace with fuzzy fallback and CRLF/BOM handling; returns `{ok, path, diff, fuzzy_match?}`. Supports single `{old_string, new_string}` or atomic multi-edit `{edits:[…]}`. |
 | `list_dir` | List directory entries with name, type, size |
 
 ### Verification
 
 | Tool | Description |
 |------|-------------|
-| `run_command` | Run whitelisted commands (`make lint`, `make test`) |
-| `review_code` | RAG-based code review returning APPROVE / REQUEST_CHANGES |
+| `run_command` | Run whitelisted commands (`make build`, `make lint`, `make test`) |
 
-### Publish (Phase 3 only)
+### Publish (Phase 4 only)
 
 | Tool | Description |
 |------|-------------|
 | `push_branch` | Commit pending changes and push to origin |
-| `create_pull_request` | Open a draft PR (requires prior APPROVE) |
-
----
-
-## Key Types
-
-```go
-// internal/agent/orchestrator.go
-type Result struct {
-    PRNumber     int
-    PRURL        string
-    Branch       string
-    FilesChanged []string
-    Verdict      string  // "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
-    Iterations   int     // implement + publish combined
-}
-
-// internal/agent/session.go
-type Session struct {
-    ID          string
-    Issue       Issue
-    status      SessionStatus   // pending | running | completed | failed | cancelled
-    StartedAt   time.Time
-    CompletedAt time.Time
-    Result      *Result
-    // ...
-}
-```
+| `create_pull_request` | Open a draft PR (requires prior APPROVE recorded by orchestrator) |
 
 ---
 
@@ -334,18 +295,19 @@ agent:
   mode: warden                          # "warden" (phased) | "native" (legacy single-loop)
   model: "glm-4-9b"                    # Override LLM for implementation (empty = use review LLM)
   timeout: 60m                          # Hard session timeout
-  max_iterations: 3                     # implement loop cap = max(this*10, 30)
   max_concurrent_sessions: 3
   working_dir: "/tmp/code-warden-agents"
 
-ai:
-  llm_provider: ollama
-  generator_model: glm-4-9b            # Used for implementation when agent.model is unset
-  embedder_model: nomic-embed-text
+  # Per-phase iteration budgets (0 = use built-in default)
+  plan_iterations: 8      # Planning loop — read-only exploration
+  edit_iterations: 50     # Edit/implement loop — main coding budget
+  review_rounds: 10       # Max orchestrator-driven review+fix cycles
+  fix_iterations: 8       # Fix loop iterations per review round
+  publish_iterations: 8   # Publish loop — push branch + open PR
 ```
 
 **Model resolution order for the implement loop:**
-1. `agent.model` (if set and different from review model)
+1. `agent.model` (if set)
 2. `ragService.GeneratorLLM()` (the review model)
 
 ---
@@ -354,7 +316,7 @@ ai:
 
 | Mode | Description | When to use |
 |------|-------------|-------------|
-| `warden` | Three-phase loop: plan → implement → publish. LSP, progress tracking, compaction, PostgreSQL persistence. | Production |
+| `warden` | Four-phase loop: plan → edit → review (orchestrator) → publish. Progress tracking, compaction, PostgreSQL persistence. | Production |
 | `native` | Single-phase in-process loop. All tools available at once, no planning, no compaction. | Simpler tasks, debugging |
 
 ---
@@ -365,5 +327,5 @@ ai:
 |-------|--------|
 | Sessions lost on server restart | **Mitigated** — `agent_sessions` table persists key state; full recovery (re-attach workspace) not yet implemented |
 | No auto-review on agent PRs | Open — human reviewers must manually `/review` agent-created PRs |
-| Single language server per extension | LSP manager starts one server per language; multi-root workspaces not supported |
 | Compaction ceiling is fixed at 128K | Models support 198K+; ceiling is conservative to leave room for tool outputs |
+| Review executor uses single-model mode | `ComparisonModels` is always nil in the agent; consensus review not yet wired |
