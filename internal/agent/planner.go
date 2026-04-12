@@ -110,7 +110,7 @@ func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, w
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "plan")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildPlannerSystemPrompt(session.Issue, ws.dir)),
-		goframeagent.WithLoopMaxIterations(8), // explore (≤6 iters) + compose plan (1-2 iters)
+		goframeagent.WithLoopMaxIterations(o.config.effectivePlanIterations()),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopLogger(loopLogger),
 	)

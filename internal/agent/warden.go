@@ -48,15 +48,6 @@ var publishToolNames = map[string]bool{
 	"create_pull_request": true,
 }
 
-// maxReviewRounds is the maximum number of orchestrator-driven review+fix
-// cycles before we give up and yield a draft PR for human review.
-const maxReviewRounds = 10
-
-// fixIterationsPerRound is the LLM iteration budget for each fix loop.
-// Each review round that returns REQUEST_CHANGES spawns a fresh fix loop
-// with this many iterations to address the reported issues.
-const fixIterationsPerRound = 8
-
 // editFileName and writeFileName are the canonical tool names used in
 // compaction helpers. Defined as constants to satisfy goconst and to make
 // any future renames a single-point change.
@@ -168,7 +159,7 @@ func (o *Orchestrator) runImplementPhase(
 	branch, plan string,
 	tracker *progressTracker,
 ) (iterations int, obs *loopObserver, verdict string, ok bool) {
-	editBudget := max(o.config.MaxIterations, 50)
+	editBudget := o.config.effectiveEditIterations()
 
 	editObs := newLoopObserver(o.logger, session.ID, "edit")
 	editLoop, err := o.buildEditLoop(agentLLM, session, ws, plan, tracker, editObs, editBudget)
@@ -247,10 +238,11 @@ func (o *Orchestrator) runReviewPhase(
 	changedFiles []string,
 	formatNote string,
 ) (iterations int, obs *loopObserver, verdict string, ok bool) {
+	maxRounds := o.config.effectiveReviewRounds()
 	o.logger.Info("warden: starting orchestrator-driven review phase",
 		"session_id", session.ID,
 		"changed_files", len(changedFiles),
-		"max_rounds", maxReviewRounds,
+		"max_rounds", maxRounds,
 	)
 
 	executor := reviewpkg.NewExecutor(o.ragService, reviewpkg.Config{
@@ -264,8 +256,8 @@ func (o *Orchestrator) runReviewPhase(
 	// Use a session-scoped context so review tracking is scoped to this session.
 	sessionCtx := tools.WithSessionID(ctx, session.ID)
 
-	for round := 1; round <= maxReviewRounds; round++ {
-		tracker.setPhase(fmt.Sprintf("reviewing (round %d/%d)", round, maxReviewRounds))
+	for round := 1; round <= maxRounds; round++ {
+		tracker.setPhase(fmt.Sprintf("reviewing (round %d/%d)", round, maxRounds))
 
 		// Step 1: get the diff of all workspace changes since the last commit.
 		// The edit loop edits files directly without committing, so git diff HEAD
@@ -310,11 +302,7 @@ func (o *Orchestrator) runReviewPhase(
 
 		// Step 3: record the review result so create_pull_request can enforce it.
 		o.mcpServer.RecordReviewBySession(sessionCtx, result.Review.Verdict, result.DiffHash)
-		fileNames := make([]string, len(parsedFiles))
-		for i, f := range parsedFiles {
-			fileNames[i] = f.Filename
-		}
-		o.mcpServer.RecordReviewFiles(sessionCtx, fileNames)
+		o.mcpServer.RecordReviewFiles(sessionCtx, changedFileNames(parsedFiles))
 
 		if lastVerdict == core.VerdictApprove {
 			break
@@ -497,7 +485,7 @@ func (o *Orchestrator) buildFixLoop(agentLLM llms.Model, session *Session, ws *a
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "fix")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildFixSystemPrompt(ws.dir, ws.projectContext)),
-		goframeagent.WithLoopMaxIterations(fixIterationsPerRound),
+		goframeagent.WithLoopMaxIterations(o.config.effectiveFixIterations()),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
 		goframeagent.WithLoopLogger(loopLogger),
@@ -523,7 +511,7 @@ func (o *Orchestrator) buildPublishLoop(agentLLM llms.Model, session *Session, w
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "publish")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildPublishSystemPrompt(session.Issue, branch)),
-		goframeagent.WithLoopMaxIterations(8), // push + PR creation
+		goframeagent.WithLoopMaxIterations(o.config.effectivePublishIterations()),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopLogger(loopLogger),
 		goframeagent.WithLoopObserver(obs),
@@ -1029,6 +1017,15 @@ func formatFileOps(readFiles, modifiedFiles []string) string {
 		b.WriteString("</modified-files>")
 	}
 	return b.String()
+}
+
+// changedFileNames extracts the Filename field from a slice of ChangedFile.
+func changedFileNames(files []gh.ChangedFile) []string {
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.Filename
+	}
+	return names
 }
 
 // mergeFileLists merges two slices, returning a sorted, deduplicated result.
