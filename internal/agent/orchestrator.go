@@ -61,6 +61,73 @@ type Config struct {
 	MCPTimeout            time.Duration `yaml:"mcp_timeout"`
 	InProcessOnly         bool          `yaml:"in_process_only"`
 	BaseBranch            string        `yaml:"base_branch"`
+
+	// Per-phase iteration budgets (warden mode).
+	// Zero means "use the built-in default".
+
+	// PlanIterations is the max iterations for the planning loop (read-only exploration).
+	PlanIterations int `yaml:"plan_iterations"`
+
+	// EditIterations is the max iterations for the edit/implement loop.
+	EditIterations int `yaml:"edit_iterations"`
+
+	// ReviewRounds is the max number of orchestrator-driven review+fix cycles.
+	ReviewRounds int `yaml:"review_rounds"`
+
+	// FixIterations is the max iterations for each fix loop spawned per review round.
+	FixIterations int `yaml:"fix_iterations"`
+
+	// PublishIterations is the max iterations for the publish loop (push + PR).
+	PublishIterations int `yaml:"publish_iterations"`
+}
+
+// Default budget values used when the corresponding Config field is zero.
+const (
+	defaultPlanIterations    = 8
+	defaultEditIterations    = 50
+	defaultReviewRounds      = 10
+	defaultFixIterations     = 8
+	defaultPublishIterations = 8
+)
+
+// effectivePlanIterations returns the configured value or the built-in default.
+func (c *Config) effectivePlanIterations() int {
+	if c.PlanIterations > 0 {
+		return c.PlanIterations
+	}
+	return defaultPlanIterations
+}
+
+// effectiveEditIterations returns the configured value or the built-in default.
+func (c *Config) effectiveEditIterations() int {
+	if c.EditIterations > 0 {
+		return c.EditIterations
+	}
+	return defaultEditIterations
+}
+
+// effectiveReviewRounds returns the configured value or the built-in default.
+func (c *Config) effectiveReviewRounds() int {
+	if c.ReviewRounds > 0 {
+		return c.ReviewRounds
+	}
+	return defaultReviewRounds
+}
+
+// effectiveFixIterations returns the configured value or the built-in default.
+func (c *Config) effectiveFixIterations() int {
+	if c.FixIterations > 0 {
+		return c.FixIterations
+	}
+	return defaultFixIterations
+}
+
+// effectivePublishIterations returns the configured value or the built-in default.
+func (c *Config) effectivePublishIterations() int {
+	if c.PublishIterations > 0 {
+		return c.PublishIterations
+	}
+	return defaultPublishIterations
 }
 
 // Constants for agent orchestration
@@ -83,6 +150,7 @@ func DefaultConfig() Config {
 		MCPAddr:               "127.0.0.1:8081",
 		MCPTimeout:            5 * time.Minute,
 		WorkingDir:            "/tmp/code-warden-agents",
+		// Budget fields default to zero; effectiveXxx() methods supply the actual defaults.
 	}
 }
 

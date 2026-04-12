@@ -189,7 +189,7 @@ func (o *Orchestrator) buildNativeLoopWithObs(obs *loopObserver) loopBuilderFn {
 
 		governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
 
-		maxIter := max(o.config.MaxIterations*15, 50)
+		maxIter := o.config.effectiveEditIterations()
 
 		opts := []goframeagent.NativeLoopOption{
 			goframeagent.WithLoopSystemPrompt(o.buildNativeSystemPrompt(session.Issue, ws.dir)),

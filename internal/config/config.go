@@ -72,6 +72,23 @@ type AgentConfig struct {
 
 	// BaseBranch is the target base branch for pull requests (default: "main").
 	BaseBranch string `mapstructure:"base_branch"`
+
+	// Per-phase iteration budgets for warden mode (0 = use built-in default).
+
+	// PlanIterations is the max iterations for the planning loop (default: 8).
+	PlanIterations int `mapstructure:"plan_iterations"`
+
+	// EditIterations is the max iterations for the edit/implement loop (default: 50).
+	EditIterations int `mapstructure:"edit_iterations"`
+
+	// ReviewRounds is the max number of orchestrator-driven review+fix cycles (default: 10).
+	ReviewRounds int `mapstructure:"review_rounds"`
+
+	// FixIterations is the max iterations for each per-round fix loop (default: 8).
+	FixIterations int `mapstructure:"fix_iterations"`
+
+	// PublishIterations is the max iterations for the publish loop (default: 8).
+	PublishIterations int `mapstructure:"publish_iterations"`
 }
 
 // GetTimeout parses and returns the timeout duration.
@@ -544,6 +561,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
 	v.SetDefault("agent.mcp_timeout", "5m")
 	v.SetDefault("agent.working_dir", "")
+	v.SetDefault("agent.plan_iterations", 0)    // 0 = use built-in default (8)
+	v.SetDefault("agent.edit_iterations", 0)    // 0 = use built-in default (50)
+	v.SetDefault("agent.review_rounds", 0)      // 0 = use built-in default (10)
+	v.SetDefault("agent.fix_iterations", 0)     // 0 = use built-in default (8)
+	v.SetDefault("agent.publish_iterations", 0) // 0 = use built-in default (8)
 }
 
 func (c *Config) Validate() error {
