@@ -4,7 +4,7 @@ package agent
 // before the implement loop and produces a structured implementation plan.
 //
 // The planner gets a minimal tool set (search + read, no write/edit/publish),
-// a tight iteration cap (max 5), and a prompt that asks for a plan in a
+// an iteration cap (max 8: ~6 for exploration + 1-2 to compose the plan), and a prompt that asks for a plan in a
 // specific markdown format. The resulting plan text is injected into the
 // implement loop's system prompt so the model starts with a clear roadmap.
 //
@@ -110,7 +110,7 @@ func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, w
 	loopLogger := o.logger.With("session_id", session.ID, "phase", "plan")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
 		goframeagent.WithLoopSystemPrompt(o.buildPlannerSystemPrompt(session.Issue, ws.dir)),
-		goframeagent.WithLoopMaxIterations(5), // tight cap — explore, then plan
+		goframeagent.WithLoopMaxIterations(8), // explore (≤6 iters) + compose plan (1-2 iters)
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopLogger(loopLogger),
 	)

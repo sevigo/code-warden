@@ -77,31 +77,38 @@ func TestFormatter_Format_PrefersGoimports(t *testing.T) {
 	}
 }
 
-func TestFormatter_FormatProject_EmptyCommand(_ *testing.T) {
+func TestFormatter_FormatProject_NilReceiverReturnsFalse(t *testing.T) {
 	var f *Formatter
-	f.FormatProject(context.Background(), "/tmp", "")
+	if f.FormatProject(context.Background(), "/tmp", "echo hi") {
+		t.Error("nil receiver should return false")
+	}
 }
 
-func TestFormatter_FormatProject_MultiWordCommand(t *testing.T) {
+func TestFormatter_FormatProject_EmptyCommandReturnsFalse(t *testing.T) {
+	f := NewFormatter(slog.Default())
+	if f.FormatProject(context.Background(), "/tmp", "") {
+		t.Error("empty command should return false")
+	}
+}
+
+func TestFormatter_FormatProject_SuccessReturnsTrue(t *testing.T) {
 	if _, err := exec.LookPath("echo"); err != nil {
 		t.Skip("echo not available")
 	}
 	f := NewFormatter(slog.Default())
-	dir := t.TempDir()
-	testFile := filepath.Join(dir, "hello.txt")
-	if err := os.WriteFile(testFile, []byte("before\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if !f.FormatProject(context.Background(), t.TempDir(), "echo formatted") {
+		t.Error("successful command should return true")
 	}
-	// Use a multi-word command that strings.Fields splits correctly.
-	// "touch" with a path that has spaces would also work, but "echo" is simpler.
-	f.FormatProject(context.Background(), dir, "echo formatted")
-	// The command should execute without error; we just verify it doesn't crash.
 }
 
-func TestStringsFieldsSplitsMultiWordCommand(t *testing.T) {
-	parts := strings.Fields("npm run format")
-	if len(parts) != 3 || parts[0] != "npm" || parts[1] != "run" || parts[2] != "format" {
-		t.Errorf("strings.Fields splits incorrectly: %v", parts)
+func TestFormatter_FormatProject_FailureReturnsFalse(t *testing.T) {
+	f := NewFormatter(slog.Default())
+	// "false" exits with code 1 on all Unix systems.
+	if _, err := exec.LookPath("false"); err != nil {
+		t.Skip("false not available")
+	}
+	if f.FormatProject(context.Background(), t.TempDir(), "false") {
+		t.Error("failing command should return false")
 	}
 }
 

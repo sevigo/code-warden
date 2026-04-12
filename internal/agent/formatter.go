@@ -61,14 +61,15 @@ func (f *Formatter) Format(ctx context.Context, workspaceRoot, filePath string) 
 // FormatProject runs a single batch format command on the workspace root.
 // This is called once between the edit and review phases, using the project's
 // own format_command from .code-warden.yml (e.g. "npm run format", "ruff format .").
-// Nil receiver or empty command is a no-op.
-func (f *Formatter) FormatProject(ctx context.Context, workspaceRoot, command string) {
+// Nil receiver or empty command is a no-op. Returns true only when the command
+// succeeds, so callers can decide whether to notify the LLM about formatting changes.
+func (f *Formatter) FormatProject(ctx context.Context, workspaceRoot, command string) bool {
 	if f == nil || command == "" {
-		return
+		return false
 	}
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
-		return
+		return false
 	}
 
 	fmtCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -80,9 +81,10 @@ func (f *Formatter) FormatProject(ctx context.Context, workspaceRoot, command st
 	if err != nil {
 		f.logger.Warn("auto-format: project format command failed",
 			"command", command, "error", err, "output", string(out))
-		return
+		return false
 	}
 	f.logger.Info("auto-format: project formatted", "command", command)
+	return true
 }
 
 // runSpec executes a single formatter pass with a scoped 30-second timeout.

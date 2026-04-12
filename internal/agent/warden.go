@@ -1,21 +1,21 @@
 package agent
 
-// warden.go — "pi" / "warden" agent mode.
+// warden.go — "warden" agent mode: plan → edit → review → publish.
 //
-// Runs two sequential agent loops with minimal, phase-appropriate tool sets:
+//  Loop 1 — Plan (read-only, max 8 iterations):
+//    Explores the codebase and produces a structured implementation plan.
 //
-//  Loop 1 — Implement:
-//    search_code, file tools (read/write/edit/list_dir), search tools (grep/find),
-//    run_command, review_code
-//    (no push_branch / create_pull_request)
-//    Terminates when review_code returns APPROVE or max iterations reached.
+//  Loop 2 — Edit (all tools except review_code and publish tools):
+//    Implements changes, verifies with make build/lint/test.
 //
-//  Loop 2 — Publish (only if Loop 1 produced APPROVE):
-//    push_branch, create_pull_request
-//    Max 5 iterations — focused task, should complete in 1-2 turns.
+//  Review state machine (orchestrator-driven, not agent-driven):
+//    The Go orchestrator runs the proven RAG code review directly (same pipeline
+//    as the /review command), then spawns a restricted "fix loop" if changes are
+//    requested. This guarantees the review always runs and solves the diff-acquisition
+//    problem (the LLM had no way to produce the diff required by review_code).
 //
-// Keeping publish tools out of the implement loop means the model never
-// attempts to push or open a PR before the code has been reviewed and approved.
+//  Loop 3 — Publish (only if review returns APPROVE):
+//    push_branch + create_pull_request
 
 import (
 	"context"
@@ -27,16 +27,18 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	goframeagent "github.com/sevigo/goframe/agent"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/schema"
 
+	"github.com/sevigo/code-warden/internal/core"
 	gh "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
-	"github.com/sevigo/code-warden/internal/mcp"
+	"github.com/sevigo/code-warden/internal/mcp/tools"
+	ragreview "github.com/sevigo/code-warden/internal/rag/review"
+	reviewpkg "github.com/sevigo/code-warden/internal/review"
 )
 
 // publishToolNames are withheld from the implement loop and reserved for the
@@ -46,15 +48,14 @@ var publishToolNames = map[string]bool{
 	"create_pull_request": true,
 }
 
-// maxReviewRounds is the maximum number of times the agent may call review_code
-// before the implement loop is told to stop and request human review.
-// This prevents endless ping-pong when reviewer and coder keep disagreeing.
+// maxReviewRounds is the maximum number of orchestrator-driven review+fix
+// cycles before we give up and yield a draft PR for human review.
 const maxReviewRounds = 10
 
-// reservedReviewIterations is the number of iterations reserved for the
-// review+fix loop. The edit loop gets (totalBudget - reservedReviewIterations)
-// iterations, ensuring the agent always has room to call review_code.
-const reservedReviewIterations = 15
+// fixIterationsPerRound is the LLM iteration budget for each fix loop.
+// Each review round that returns REQUEST_CHANGES spawns a fresh fix loop
+// with this many iterations to address the reported issues.
+const fixIterationsPerRound = 8
 
 // editFileName and writeFileName are the canonical tool names used in
 // compaction helpers. Defined as constants to satisfy goconst and to make
@@ -63,39 +64,6 @@ const (
 	editFileName  = "edit_file"
 	writeFileName = "write_file"
 )
-
-// reviewCapTool wraps the review_code MCP tool and enforces maxReviewRounds.
-// After the cap is reached every subsequent call returns a synthetic verdict
-// instructing the agent to stop rather than continuing to cycle.
-type reviewCapTool struct {
-	inner mcp.Tool
-	mu    sync.Mutex
-	calls int
-}
-
-func (r *reviewCapTool) Name() string                     { return r.inner.Name() }
-func (r *reviewCapTool) Description() string              { return r.inner.Description() }
-func (r *reviewCapTool) ParametersSchema() map[string]any { return r.inner.ParametersSchema() }
-
-func (r *reviewCapTool) Execute(ctx context.Context, args map[string]any) (any, error) {
-	r.mu.Lock()
-	r.calls++
-	n := r.calls
-	r.mu.Unlock()
-
-	if n > maxReviewRounds {
-		return map[string]any{
-			"verdict": "HUMAN_REVIEW_REQUIRED",
-			"message": fmt.Sprintf(
-				"Maximum automated review rounds (%d) reached without APPROVE. "+
-					"Stop implementation and leave a comment asking for human review. "+
-					"Do not call review_code again.",
-				maxReviewRounds,
-			),
-		}, nil
-	}
-	return r.inner.Execute(ctx, args)
-}
 
 // runWardenAgent runs the two-phase warden loop: implement then publish.
 func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, branch string) {
@@ -176,9 +144,8 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	plan := o.buildPlan(ctx, agentLLM, session, ws, tracker)
 	o.logger.Info("warden: planning complete, starting edit loop", "session_id", session.ID)
 
-	// ── Loop 1: Edit + Review ──────────────────────────────────────────────
-	// runImplementPhase now splits into edit loop → review loop internally,
-	// guaranteeing review_code is always called.
+	// ── Loop 1: Edit + Review state machine ──────────────────────────────────
+	// runImplementPhase runs the edit loop then the orchestrator-driven review.
 	implIter, implObs, verdict, ok := o.runImplementPhase(ctx, session, agentLLM, ws, branch, plan, tracker)
 	if !ok {
 		return
@@ -189,11 +156,9 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 	o.runPublishPhase(ctx, session, agentLLM, ws, branch, verdict, implIter, implObs, tracker)
 }
 
-// runImplementPhase runs two sequential loops: an edit loop (no review_code)
-// followed by a review+fix loop (with review_code). The edit loop explores and
-// modifies files; the review loop verifies changes and fixes issues raised by
-// the reviewer. Splitting guarantees the agent always calls review_code even if
-// the edit budget is fully consumed.
+// runImplementPhase runs the edit loop then the orchestrator-driven review
+// state machine. The edit loop gets the full iteration budget; the review phase
+// is handled by Go (not the LLM), so no iterations need to be reserved for it.
 // Returns (total iterations, observer, verdict, ok). Calls failSession on error.
 func (o *Orchestrator) runImplementPhase(
 	ctx context.Context,
@@ -203,11 +168,7 @@ func (o *Orchestrator) runImplementPhase(
 	branch, plan string,
 	tracker *progressTracker,
 ) (iterations int, obs *loopObserver, verdict string, ok bool) {
-	totalBudget := max(o.config.MaxIterations*15, 50)
-	editBudget := totalBudget - reservedReviewIterations
-	if editBudget < 10 {
-		editBudget = 10
-	}
+	editBudget := max(o.config.MaxIterations, 50)
 
 	editObs := newLoopObserver(o.logger, session.ID, "edit")
 	editLoop, err := o.buildEditLoop(agentLLM, session, ws, plan, tracker, editObs, editBudget)
@@ -258,10 +219,22 @@ func (o *Orchestrator) runImplementPhase(
 	return o.runReviewPhase(ctx, session, agentLLM, ws, branch, tracker, editIters, editObs, changedFiles, formatNote)
 }
 
-// runReviewPhase runs the review+fix loop after the edit loop completes.
-// It has review_code, file tools, search tools, and run_command — everything
-// needed to review, diagnose, and fix issues. Returns (total iterations,
-// observer, verdict, ok). Calls failSession on error.
+// runReviewPhase runs the orchestrator-driven review+fix state machine.
+//
+// Unlike the previous LLM-driven approach (where the agent was expected to call
+// review_code and provide a git diff it had no way to obtain), the orchestrator
+// now runs the proven RAG code review directly — the same pipeline used by the
+// /review PR command. The LLM is only involved in targeted fix loops when the
+// reviewer requests changes.
+//
+// Flow per round:
+//  1. Go runs "git diff HEAD" to get all workspace changes.
+//  2. Go calls review.Executor.Execute → verdict + suggestions.
+//  3. Verdict recorded for PR enforcement (create_pull_request checks this).
+//  4. APPROVE → return immediately.
+//  5. REQUEST_CHANGES → spawn a restricted "fix loop" whose only job is to
+//     fix the specific issues listed in the review findings. No codebase
+//     exploration — the fix loop gets the review text as its task context.
 func (o *Orchestrator) runReviewPhase(
 	ctx context.Context,
 	session *Session,
@@ -274,61 +247,103 @@ func (o *Orchestrator) runReviewPhase(
 	changedFiles []string,
 	formatNote string,
 ) (iterations int, obs *loopObserver, verdict string, ok bool) {
-	o.logger.Info("warden: starting review+fix loop",
-		"session_id", session.ID, "changed_files", len(changedFiles),
-		"budget", reservedReviewIterations)
+	o.logger.Info("warden: starting orchestrator-driven review phase",
+		"session_id", session.ID,
+		"changed_files", len(changedFiles),
+		"max_rounds", maxReviewRounds,
+	)
 
-	reviewObs := newLoopObserver(o.logger, session.ID, "review")
-	reviewLoop, err := o.buildReviewLoop(agentLLM, session, ws, changedFiles, tracker, reviewObs, reservedReviewIterations)
-	if err != nil {
-		o.failSession(ctx, session, fmt.Sprintf("build review loop: %v", err))
-		return 0, nil, "", false
-	}
+	executor := reviewpkg.NewExecutor(o.ragService, reviewpkg.Config{
+		ComparisonModels: nil, // single-model only for agent speed
+		ReviewsDir:       o.config.ReviewsDir,
+		Logger:           o.logger,
+	})
 
-	reviewTask := goframeagent.Task{
-		ID:          session.ID + "-review",
-		Description: fmt.Sprintf("Review and fix implementation for GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
-		Context:     o.buildReviewTaskContext(session.Issue, branch, changedFiles, formatNote),
-		Priority:    5,
-	}
+	totalFixIters := 0
+	lastVerdict := ""
+	// Use a session-scoped context so review tracking is scoped to this session.
+	sessionCtx := tools.WithSessionID(ctx, session.ID)
 
-	reviewResult, reviewErr := reviewLoop.Run(ctx, reviewTask, nil)
-	reviewIters := 0
-	if reviewResult != nil {
-		reviewIters = reviewResult.Iterations
-	}
-	totalIters := editIters + reviewIters
+	for round := 1; round <= maxReviewRounds; round++ {
+		tracker.setPhase(fmt.Sprintf("reviewing (round %d/%d)", round, maxReviewRounds))
 
-	// Merge token counts from both loops.
-	var totalIn, totalOut float64
-	totalIn = editObs.totalIn + reviewObs.totalIn
-	totalOut = editObs.totalOut + reviewObs.totalOut
-
-	if reviewErr != nil && !errors.Is(reviewErr, goframeagent.ErrMaxIterations) {
-		o.logger.Error("warden: review loop failed",
-			"session_id", session.ID, "iterations", reviewIters, "error", reviewErr)
-		o.failSession(ctx, session, fmt.Sprintf("review loop: %v", reviewErr))
-		return 0, nil, "", false
-	}
-
-	v, _, _ := o.mcpServer.GetReviewBySession(session.ID)
-	if v != "APPROVE" {
-		reviewFiles := []string{}
-		if reviewResult != nil {
-			reviewFiles = modifiedFiles(reviewResult.ToolCalls)
+		// Step 1: get the diff of all workspace changes since the last commit.
+		// The edit loop edits files directly without committing, so git diff HEAD
+		// captures all changes made since the workspace was cloned.
+		diff := o.getWorkspaceDiff(ctx, ws.dir)
+		if diff == "" {
+			o.logger.Warn("warden: no diff detected in workspace, skipping review",
+				"session_id", session.ID, "round", round)
+			lastVerdict = core.VerdictApprove
+			break
 		}
-		allChangedFiles := mergeFileLists(changedFiles, reviewFiles)
-		o.logger.Warn("warden: review loop ended without APPROVE, yielding draft PR",
-			"session_id", session.ID,
-			"verdict", v,
-			"edit_iterations", editIters,
-			"review_iterations", reviewIters,
+
+		// Step 2: run the proven RAG-based code review.
+		o.logger.Info("warden: running code review",
+			"session_id", session.ID, "round", round, "diff_bytes", len(diff))
+		parsedFiles := ragreview.ParseDiff(diff)
+		event := &core.GitHubEvent{
+			PRTitle:      fmt.Sprintf("Implement #%d: %s", session.Issue.Number, session.Issue.Title),
+			PRBody:       session.Issue.Body,
+			RepoFullName: session.Issue.RepoOwner + "/" + session.Issue.RepoName,
+			HeadSHA:      "agent-workspace",
+		}
+		result, err := executor.Execute(ctx, reviewpkg.Params{
+			RepoConfig:   o.repoConfig,
+			Repo:         o.repo,
+			Event:        event,
+			Diff:         diff,
+			ChangedFiles: parsedFiles,
+		})
+		if err != nil {
+			o.logger.Error("warden: code review failed",
+				"session_id", session.ID, "round", round, "error", err)
+			o.failSession(ctx, session, fmt.Sprintf("code review round %d: %v", round, err))
+			return 0, nil, "", false
+		}
+
+		lastVerdict = result.Review.Verdict
+		o.logger.Info("warden: review complete",
+			"session_id", session.ID, "round", round,
+			"verdict", lastVerdict, "confidence", result.Review.Confidence,
 		)
-		o.yieldDraftPR(ctx, session, ws, branch, totalIters, totalIn, totalOut, allChangedFiles)
+
+		// Step 3: record the review result so create_pull_request can enforce it.
+		o.mcpServer.RecordReviewBySession(sessionCtx, result.Review.Verdict, result.DiffHash)
+		fileNames := make([]string, len(parsedFiles))
+		for i, f := range parsedFiles {
+			fileNames[i] = f.Filename
+		}
+		o.mcpServer.RecordReviewFiles(sessionCtx, fileNames)
+
+		if lastVerdict == core.VerdictApprove {
+			break
+		}
+
+		// Step 4: reviewer requested changes — run a focused fix loop.
+		addedIters, addedFiles, fixErr := o.runFixRound(ctx, agentLLM, session, ws, tracker, editObs, round, result.Review, formatNote)
+		if fixErr != nil {
+			o.failSession(ctx, session, fixErr.Error())
+			return 0, nil, "", false
+		}
+		totalFixIters += addedIters
+		changedFiles = mergeFileLists(changedFiles, addedFiles)
+	}
+
+	totalIters := editIters + totalFixIters
+
+	if lastVerdict != core.VerdictApprove {
+		o.logger.Warn("warden: exhausted review rounds without APPROVE, yielding draft PR",
+			"session_id", session.ID,
+			"verdict", lastVerdict,
+			"edit_iterations", editIters,
+			"fix_iterations", totalFixIters,
+		)
+		o.yieldDraftPR(ctx, session, ws, branch, totalIters, editObs.totalIn, editObs.totalOut, changedFiles)
 		return 0, nil, "", false
 	}
 
-	return totalIters, editObs, v, true
+	return totalIters, editObs, lastVerdict, true
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -450,41 +465,39 @@ func (o *Orchestrator) buildEditLoop(agentLLM llms.Model, session *Session, ws *
 	)
 }
 
-// buildReviewLoop builds the agent loop for the review+fix phase. It has
-// review_code (capped at maxReviewRounds), file tools, search tools, and
-// run_command — everything needed to review, diagnose, and fix issues.
-func (o *Orchestrator) buildReviewLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, changedFiles []string, tracker *progressTracker, obs *loopObserver, maxIter int) (*goframeagent.AgentLoop, error) {
+// buildFixLoop builds the restricted agent loop for fixing review findings.
+// This loop is spawned per review round when the reviewer returns REQUEST_CHANGES.
+// Tool set is intentionally minimal: no MCP exploration tools (no search_code,
+// get_symbol, etc.) — the fix context already contains the specific issues to fix.
+// Only run_command, file tools, and grep/find are available.
+func (o *Orchestrator) buildFixLoop(agentLLM llms.Model, session *Session, ws *agentWorkspace, tracker *progressTracker, obs *loopObserver) (*goframeagent.AgentLoop, error) {
 	registry := goframeagent.NewRegistry()
 	allowedTools := make(map[string]bool)
 
-	// MCP tools — exclude publish tools; wrap review_code with the cap.
+	// From MCP: only run_command (for make build/lint/test). No review_code,
+	// no exploration tools (search_code, get_symbol, get_structure, etc.).
 	for _, t := range o.mcpServer.Tools() {
-		if publishToolNames[t.Name()] {
-			continue
+		if t.Name() == "run_command" {
+			registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
+			break
 		}
-		tool := mcp.Tool(t) //nolint:unconvert // mcp.Tool is an interface; explicit for clarity
-		if t.Name() == "review_code" {
-			tool = &reviewCapTool{inner: t}
-		}
-		registerTool(registry, allowedTools, tool, ws, session.ID, tracker, o.logger)
 	}
 
-	// File tools — auto-format Go files after write/edit (unless disabled by repo config).
+	// File tools — read/write/edit/list_dir with auto-formatting.
 	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig)) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
-	// Search tools (for understanding context during review).
+	// Search tools (grep + find) — useful for locating the specific line to fix.
 	for _, t := range searchTools() {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	governance := goframeagent.NewGovernance(&goframeagent.PermissionCheck{Allowed: allowedTools})
-
-	loopLogger := o.logger.With("session_id", session.ID, "phase", "review")
+	loopLogger := o.logger.With("session_id", session.ID, "phase", "fix")
 	return goframeagent.NewAgentLoop(agentLLM, registry,
-		goframeagent.WithLoopSystemPrompt(o.buildReviewSystemPrompt(session.Issue, ws.dir, changedFiles, ws.projectContext)),
-		goframeagent.WithLoopMaxIterations(maxIter),
+		goframeagent.WithLoopSystemPrompt(o.buildFixSystemPrompt(ws.dir, ws.projectContext)),
+		goframeagent.WithLoopMaxIterations(fixIterationsPerRound),
 		goframeagent.WithLoopGovernance(governance),
 		goframeagent.WithLoopCompactionHook(o.buildCompactionHook(session, ws.traceFile, agentLLM)),
 		goframeagent.WithLoopLogger(loopLogger),
@@ -575,89 +588,136 @@ Working directory: %s
 	return base
 }
 
-// buildReviewSystemPrompt returns the system prompt for the review+fix loop.
-// The agent has review_code, file tools, and search tools. It must call
-// review_code, fix any issues raised, and repeat until APPROVE.
-func (o *Orchestrator) buildReviewSystemPrompt(issue Issue, workspaceDir string, changedFiles []string, projectContext string) string {
-	filesList := ""
-	if len(changedFiles) > 0 {
-		filesList = "\n\n## Files Changed in Edit Phase\n\nThe following files were modified during the implementation phase:\n"
-		for _, f := range changedFiles {
-			filesList += "- " + f + "\n"
-		}
+// runFixRound spawns a focused fix loop for a single review round.
+// It returns the number of LLM iterations consumed, any new modified files,
+// and a non-nil error only for fatal failures (not ErrMaxIterations).
+func (o *Orchestrator) runFixRound(
+	ctx context.Context,
+	agentLLM llms.Model,
+	session *Session,
+	ws *agentWorkspace,
+	tracker *progressTracker,
+	editObs *loopObserver,
+	round int,
+	review *core.StructuredReview,
+	formatNote string,
+) (iterations int, changedFiles []string, err error) {
+	o.logger.Info("warden: reviewer requested changes, starting fix loop",
+		"session_id", session.ID, "round", round,
+		"suggestions", len(review.Suggestions),
+	)
+	fixObs := newLoopObserver(o.logger, session.ID, fmt.Sprintf("fix-%d", round))
+	fixLoop, buildErr := o.buildFixLoop(agentLLM, session, ws, tracker, fixObs)
+	if buildErr != nil {
+		return 0, nil, fmt.Errorf("build fix loop round %d: %w", round, buildErr)
 	}
 
-	base := fmt.Sprintf(`You are reviewing and fixing the implementation for GitHub issue #%d.
+	fixTask := goframeagent.Task{
+		ID:          fmt.Sprintf("%s-fix-%d", session.ID, round),
+		Description: fmt.Sprintf("Fix code review findings (round %d) for issue #%d", round, session.Issue.Number),
+		Context:     o.buildFixTaskContext(round, review, formatNote),
+		Priority:    5,
+	}
 
-## Task
-Title: %s
-Description:
-%s
+	fixResult, fixErr := fixLoop.Run(ctx, fixTask, nil)
+	if fixResult != nil {
+		iterations = fixResult.Iterations
+		editObs.totalIn += fixObs.totalIn
+		editObs.totalOut += fixObs.totalOut
+		changedFiles = modifiedFiles(fixResult.ToolCalls)
+	}
+	if fixErr != nil && !errors.Is(fixErr, goframeagent.ErrMaxIterations) {
+		return iterations, changedFiles, fmt.Errorf("fix loop round %d: %w", round, fixErr)
+	}
+	return iterations, changedFiles, nil
+}
+
+// getWorkspaceDiff returns the full git diff of all changes made since the
+// workspace was cloned (git diff HEAD). Returns empty string on error or when
+// there are no changes.
+func (o *Orchestrator) getWorkspaceDiff(ctx context.Context, workspaceDir string) string {
+	cmd := exec.CommandContext(ctx, "git", "diff", "HEAD")
+	cmd.Dir = workspaceDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		o.logger.Warn("warden: git diff HEAD failed",
+			"workspace", workspaceDir, "error", err, "output", string(out))
+		return ""
+	}
+	return string(out)
+}
+
+// buildFixSystemPrompt returns the system prompt for a focused fix loop.
+// The fixer is given the specific review findings and must fix them — it must
+// not re-explore the codebase. Tools are intentionally restricted: only
+// run_command (make build/lint/test), file read/write/edit, and grep/find.
+func (o *Orchestrator) buildFixSystemPrompt(workspaceDir string, projectContext string) string {
+	base := fmt.Sprintf(`You are a code fixer. A code review has just been run and returned REQUEST_CHANGES.
+Your task is to fix the specific issues listed in the task context — nothing more.
 
 ## Workspace
 Working directory: %s
-%s
 
 ## Available Tools
-
-**Code exploration** (repository-indexed, read-only):
-- search_code(query) — semantic search over the codebase
-- get_symbol(name) — find a symbol definition
-- get_structure() — project structure overview
-- get_arch_context(dir) — architecture summary for a directory
-- find_usages(symbol), get_callers(fn), get_callees(fn)
-- grep(pattern, path?, glob?, ignore_case?) — search file contents by regex/literal
-- find(pattern, path?) — find files by glob pattern
 
 **File operations** (workspace-scoped, paths relative to working directory):
 - read_file(path, offset?, limit?) — read a file, optionally paginated
 - write_file(path, content) — create or overwrite a file
-- edit_file(path, old_string, new_string) — replace an exact string; or use edits for multiple atomic replacements
+- edit_file(path, old_string, new_string) — replace an exact string; or use edits:[{old_string, new_string}, ...] for multiple atomic replacements
 - list_dir(path?) — list directory contents
 
-**Verification & Review**:
+**Search** (for locating the exact line to fix):
+- grep(pattern, path?, glob?, ignore_case?) — search file contents by regex
+- find(pattern, path?) — find files by glob pattern
+
+**Verification**:
 - run_command(command) — run whitelisted commands: "make build", "make lint", "make test"
-- review_code — request an automated code review of your changes
 
 ## Workflow
-1. **Review** — call review_code. This is your PRIMARY task — you MUST call review_code.
-2. **Fix** — if review returns REQUEST_CHANGES, read the relevant files, fix the issues, and re-verify.
-3. **Re-verify** — run_command("make build"), then run_command("make lint"), then run_command("make test"). Fix failures.
-4. **Re-review** — call review_code again after fixing. Repeat until APPROVE.
+1. Read ONLY the specific files mentioned in the review findings.
+2. Apply the minimal fix for each reported issue.
+3. Run make build, make lint, make test. Fix any failures.
+4. Stop. Do not explore beyond the reported issues.
 
 ## Rules
-- Paths are relative to the working directory.
-- Files are auto-formatted on write (goimports or gofmt for .go files). Other languages use the project's format_command before review.
-- You MUST call review_code at least once. Do not finish without calling it.
-- Always run lint and tests before calling review_code.
-- Your work here is done ONLY when review_code returns APPROVE. Do not attempt to push or open a PR.
-- Keep changes minimal and focused on the issue.
-`,
-		issue.Number, issue.Title, truncateString(issue.Body, 2000), workspaceDir, filesList)
+- Do not explore the codebase beyond what is needed to fix the reported issues.
+- Do not call review_code — the orchestrator will run the next review round.
+- Do not push or open a PR.
+- Keep changes minimal and focused on the reported issues.`, workspaceDir)
 
 	if projectContext != "" {
 		base += "\n\n## Project Conventions\n\n" + projectContext
 	}
-
 	return base
 }
 
-// buildReviewTaskContext returns the task context for the review+fix loop.
-// It lists the changed files so the review agent knows what was modified.
-func (o *Orchestrator) buildReviewTaskContext(issue Issue, branch string, changedFiles []string, formatNote string) string {
-	ctx := fmt.Sprintf("Review and verify the implementation for GitHub issue #%d (%s).\nBranch: %s",
-		issue.Number, issue.Title, branch)
-	if len(changedFiles) > 0 {
-		ctx += "\n\nChanged files:\n"
-		for _, f := range changedFiles {
-			ctx += "- " + f + "\n"
+// buildFixTaskContext formats the review findings as task context for the fix loop.
+// It lists each suggestion so the fixer knows exactly what to fix.
+func (o *Orchestrator) buildFixTaskContext(round int, review *core.StructuredReview, formatNote string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Code review round %d returned REQUEST_CHANGES.\n\n", round)
+	if review != nil && review.Summary != "" {
+		fmt.Fprintf(&b, "## Review Summary\n%s\n\n", review.Summary)
+	}
+	if review != nil && len(review.Suggestions) > 0 {
+		b.WriteString("## Issues to Fix\n")
+		for i, s := range review.Suggestions {
+			loc := s.FilePath
+			if s.LineNumber > 0 {
+				loc = fmt.Sprintf("%s:%d", s.FilePath, s.LineNumber)
+			}
+			fmt.Fprintf(&b, "%d. [%s] %s — %s\n", i+1, s.Severity, loc, s.Comment)
+			if s.CodeSuggestion != "" {
+				fmt.Fprintf(&b, "   Suggested fix: %s\n", s.CodeSuggestion)
+			}
 		}
+		b.WriteByte('\n')
 	}
-	ctx += "\n\nCall review_code to verify your changes. Fix any issues found, then re-verify and re-review until APPROVE."
+	b.WriteString("Fix the issues above, verify with make build/lint/test, then stop.")
 	if formatNote != "" {
-		ctx += "\n\n" + formatNote
+		b.WriteString("\n\n" + formatNote)
 	}
-	return ctx
+	return b.String()
 }
 
 // buildPublishSystemPrompt returns the system prompt for the publish loop.
@@ -1293,7 +1353,9 @@ func (o *Orchestrator) formatProject(ctx context.Context, ws *agentWorkspace) st
 		return ""
 	}
 	formatter := NewFormatter(o.logger)
-	formatter.FormatProject(ctx, ws.dir, o.repoConfig.FormatCommand)
+	if !formatter.FormatProject(ctx, ws.dir, o.repoConfig.FormatCommand) {
+		return ""
+	}
 	return fmt.Sprintf("Note: project format command ran before review (\"%s\"). Some files may have formatting changes you did not make.", o.repoConfig.FormatCommand)
 }
 
