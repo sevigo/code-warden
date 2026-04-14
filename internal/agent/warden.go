@@ -255,13 +255,20 @@ func (o *Orchestrator) runReviewPhase(
 	lastVerdict := ""
 
 	for round := 1; round <= maxRounds; round++ {
-		verdict, reviewResult, ok := o.runReviewRound(
+		verdict, reviewResult, roundErr := o.runReviewRound(
 			ctx, session, ws, round, maxRounds,
 			executor, tracker,
 		)
-		if !ok {
-			// Empty diff after edit loop — yield a draft PR instead of approving nothing.
-			o.yieldDraftPR(ctx, session, ws, branch, editIters+totalFixIters, editObs.totalIn, editObs.totalOut, changedFiles)
+		if roundErr != nil {
+			if errors.Is(roundErr, errEmptyDiff) {
+				// No workspace changes after the edit loop — yield a draft PR
+				// instead of approving nothing.
+				o.yieldDraftPR(ctx, session, ws, branch, editIters+totalFixIters, editObs.totalIn, editObs.totalOut, changedFiles)
+			} else {
+				// Git or review executor failure — fail the session without
+				// attempting to push unreviewed code.
+				o.failSession(ctx, session, roundErr.Error())
+			}
 			return 0, nil, "", false
 		}
 		lastVerdict = verdict
@@ -306,8 +313,12 @@ func (o *Orchestrator) runReviewPhase(
 }
 
 // runReviewRound executes a single review round: gets the workspace diff and
-// runs the RAG review. Returns the verdict and review result. ok is false when
-// the round should abort (git error, empty diff, or review failure).
+// runs the RAG review. Returns the verdict and review result on success.
+//
+// On failure it returns a non-nil error without calling failSession — the
+// caller is responsible for deciding how to handle each error type:
+//   - errors.Is(err, errEmptyDiff): no workspace changes → yield a draft PR
+//   - any other error: an actual failure → fail the session
 func (o *Orchestrator) runReviewRound(
 	ctx context.Context,
 	session *Session,
@@ -315,7 +326,7 @@ func (o *Orchestrator) runReviewRound(
 	round, maxRounds int,
 	executor *reviewpkg.Executor,
 	tracker *progressTracker,
-) (verdict string, review *core.StructuredReview, ok bool) {
+) (verdict string, review *core.StructuredReview, err error) {
 	sessionCtx := tools.WithSessionID(ctx, session.ID)
 	tracker.setPhase(fmt.Sprintf("reviewing (round %d/%d)", round, maxRounds))
 
@@ -323,13 +334,12 @@ func (o *Orchestrator) runReviewRound(
 	if diffErr != nil {
 		o.logger.Error("warden: git diff HEAD failed",
 			"session_id", session.ID, "round", round, "error", diffErr)
-		o.failSession(ctx, session, fmt.Sprintf("git diff failed in review round %d: %v", round, diffErr))
-		return "", nil, false
+		return "", nil, fmt.Errorf("git diff failed in review round %d: %w", round, diffErr)
 	}
 	if diff == "" {
 		o.logger.Warn("warden: no diff detected in workspace after edit loop",
 			"session_id", session.ID, "round", round)
-		return "", nil, false
+		return "", nil, errEmptyDiff
 	}
 
 	o.logger.Info("warden: running code review",
@@ -341,18 +351,17 @@ func (o *Orchestrator) runReviewRound(
 		RepoFullName: session.Issue.RepoOwner + "/" + session.Issue.RepoName,
 		HeadSHA:      "agent-workspace",
 	}
-	result, err := executor.Execute(ctx, reviewpkg.Params{
+	result, execErr := executor.Execute(ctx, reviewpkg.Params{
 		RepoConfig:   o.repoConfig,
 		Repo:         o.repo,
 		Event:        event,
 		Diff:         diff,
 		ChangedFiles: parsedFiles,
 	})
-	if err != nil {
+	if execErr != nil {
 		o.logger.Error("warden: code review failed",
-			"session_id", session.ID, "round", round, "error", err)
-		o.failSession(ctx, session, fmt.Sprintf("code review round %d: %v", round, err))
-		return "", nil, false
+			"session_id", session.ID, "round", round, "error", execErr)
+		return "", nil, fmt.Errorf("code review round %d: %w", round, execErr)
 	}
 
 	verdict = result.Review.Verdict
@@ -363,7 +372,7 @@ func (o *Orchestrator) runReviewRound(
 	o.mcpServer.RecordReviewBySession(sessionCtx, result.Review.Verdict, result.DiffHash)
 	o.mcpServer.RecordReviewFiles(sessionCtx, changedFileNames(parsedFiles))
 
-	return verdict, result.Review, true
+	return verdict, result.Review, nil
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -1195,6 +1204,11 @@ func (o *Orchestrator) compactMessages(ctx context.Context, llm llms.Model, msgs
 // uncommitted changes to push. The caller should skip PR creation and post
 // a "no changes were made" comment instead.
 var errNoChanges = fmt.Errorf("no changes to commit")
+
+// errEmptyDiff is returned by runReviewRound when git diff HEAD produces no
+// output. The caller should yield a draft PR rather than fail the session —
+// the agent may have made partial changes that are worth preserving.
+var errEmptyDiff = fmt.Errorf("no diff detected in workspace")
 
 // yieldDraftPR is called when the implement loop ends without an APPROVE verdict.
 // Instead of silently failing, it commits any pending changes, pushes the branch,
