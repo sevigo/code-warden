@@ -133,17 +133,21 @@ func TestCompactionFilterText(t *testing.T) {
 		input     string
 		wantStrip bool
 	}{
-		{"read_file: {\"content\": \"...\"}", true},
-		{"search_code: {\"results\": []}", true},
-		{"list_dir: {\"entries\": []}", true},
-		{"write_file: {\"ok\": true}", false},
-		{"edit_file: {\"ok\": true}", false},
-		{"review_code: {\"verdict\": \"APPROVE\"}", false},
-		{"run_command: {\"output\": \"ok\"}", false},
+		// goframe formats tool results as "Tool '<name>' returned: <json>"
+		{"Tool 'read_file' returned: {\"content\": \"...\"}", true},
+		{"Tool 'search_code' returned: {\"results\": []}", true},
+		{"Tool 'list_dir' returned: {\"entries\": []}", true},
+		{"Tool 'grep' returned: {\"matches\": []}", true},
+		{"Tool 'find' returned: {\"files\": []}", true},
+		{"Tool 'get_symbol' returned: {\"name\": \"foo\"}", true},
+		{"Tool 'write_file' returned: {\"ok\": true}", false},
+		{"Tool 'edit_file' returned: {\"ok\": true}", false},
+		{"Tool 'review_code' returned: {\"verdict\": \"APPROVE\"}", false},
+		{"Tool 'run_command' returned: {\"output\": \"ok\"}", false},
 		{"some random assistant message", false},
 		// Coordinate LSP tools were removed from the explorer set;
 		// lsp_diagnostics is also not stripped (it belongs to verification).
-		{"lsp_diagnostics: {\"ok\": true}", false},
+		{"Tool 'lsp_diagnostics' returned: {\"ok\": true}", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.input[:min(20, len(tc.input))], func(t *testing.T) {
