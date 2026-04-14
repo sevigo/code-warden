@@ -253,63 +253,41 @@ func (o *Orchestrator) runReviewPhase(
 
 	totalFixIters := 0
 	lastVerdict := ""
-	// Use a session-scoped context so review tracking is scoped to this session.
-	sessionCtx := tools.WithSessionID(ctx, session.ID)
 
 	for round := 1; round <= maxRounds; round++ {
-		tracker.setPhase(fmt.Sprintf("reviewing (round %d/%d)", round, maxRounds))
-
-		// Step 1: get the diff of all workspace changes since the last commit.
-		// The edit loop edits files directly without committing, so git diff HEAD
-		// captures all changes made since the workspace was cloned.
-		diff := o.getWorkspaceDiff(ctx, ws.dir)
-		if diff == "" {
-			o.logger.Warn("warden: no diff detected in workspace, skipping review",
-				"session_id", session.ID, "round", round)
-			lastVerdict = core.VerdictApprove
-			break
-		}
-
-		// Step 2: run the proven RAG-based code review.
-		o.logger.Info("warden: running code review",
-			"session_id", session.ID, "round", round, "diff_bytes", len(diff))
-		parsedFiles := ragreview.ParseDiff(diff)
-		event := &core.GitHubEvent{
-			PRTitle:      fmt.Sprintf("Implement #%d: %s", session.Issue.Number, session.Issue.Title),
-			PRBody:       session.Issue.Body,
-			RepoFullName: session.Issue.RepoOwner + "/" + session.Issue.RepoName,
-			HeadSHA:      "agent-workspace",
-		}
-		result, err := executor.Execute(ctx, reviewpkg.Params{
-			RepoConfig:   o.repoConfig,
-			Repo:         o.repo,
-			Event:        event,
-			Diff:         diff,
-			ChangedFiles: parsedFiles,
-		})
-		if err != nil {
-			o.logger.Error("warden: code review failed",
-				"session_id", session.ID, "round", round, "error", err)
-			o.failSession(ctx, session, fmt.Sprintf("code review round %d: %v", round, err))
+		verdict, reviewResult, roundErr := o.runReviewRound(
+			ctx, session, ws, round, maxRounds,
+			executor, tracker,
+		)
+		if roundErr != nil {
+			if errors.Is(roundErr, errEmptyDiff) {
+				// No workspace changes after the edit loop — yield a draft PR
+				// instead of approving nothing.
+				o.yieldDraftPR(ctx, session, ws, branch, editIters+totalFixIters, editObs.totalIn, editObs.totalOut, changedFiles)
+			} else {
+				// Git or review executor failure — fail the session without
+				// attempting to push unreviewed code.
+				o.failSession(ctx, session, roundErr.Error())
+			}
 			return 0, nil, "", false
 		}
-
-		lastVerdict = result.Review.Verdict
-		o.logger.Info("warden: review complete",
-			"session_id", session.ID, "round", round,
-			"verdict", lastVerdict, "confidence", result.Review.Confidence,
-		)
-
-		// Step 3: record the review result so create_pull_request can enforce it.
-		o.mcpServer.RecordReviewBySession(sessionCtx, result.Review.Verdict, result.DiffHash)
-		o.mcpServer.RecordReviewFiles(sessionCtx, changedFileNames(parsedFiles))
+		lastVerdict = verdict
 
 		if lastVerdict == core.VerdictApprove {
 			break
 		}
 
-		// Step 4: reviewer requested changes — run a focused fix loop.
-		addedIters, addedFiles, fixErr := o.runFixRound(ctx, agentLLM, session, ws, tracker, editObs, round, result.Review, formatNote)
+		// COMMENT means the reviewer left observations but did not request
+		// changes. There is nothing to fix, but the code is not explicitly
+		// approved either — break out and yield a draft PR.
+		if lastVerdict == core.VerdictComment {
+			o.logger.Info("warden: review verdict COMMENT, skipping fix round",
+				"session_id", session.ID, "round", round)
+			break
+		}
+
+		// Reviewer requested changes — run a focused fix loop.
+		addedIters, addedFiles, fixErr := o.runFixRound(ctx, agentLLM, session, ws, tracker, editObs, round, reviewResult, formatNote)
 		if fixErr != nil {
 			o.failSession(ctx, session, fixErr.Error())
 			return 0, nil, "", false
@@ -332,6 +310,69 @@ func (o *Orchestrator) runReviewPhase(
 	}
 
 	return totalIters, editObs, lastVerdict, true
+}
+
+// runReviewRound executes a single review round: gets the workspace diff and
+// runs the RAG review. Returns the verdict and review result on success.
+//
+// On failure it returns a non-nil error without calling failSession — the
+// caller is responsible for deciding how to handle each error type:
+//   - errors.Is(err, errEmptyDiff): no workspace changes → yield a draft PR
+//   - any other error: an actual failure → fail the session
+func (o *Orchestrator) runReviewRound(
+	ctx context.Context,
+	session *Session,
+	ws *agentWorkspace,
+	round, maxRounds int,
+	executor *reviewpkg.Executor,
+	tracker *progressTracker,
+) (verdict string, review *core.StructuredReview, err error) {
+	sessionCtx := tools.WithSessionID(ctx, session.ID)
+	tracker.setPhase(fmt.Sprintf("reviewing (round %d/%d)", round, maxRounds))
+
+	diff, diffErr := o.getWorkspaceDiff(ctx, ws.dir)
+	if diffErr != nil {
+		o.logger.Error("warden: git diff HEAD failed",
+			"session_id", session.ID, "round", round, "error", diffErr)
+		return "", nil, fmt.Errorf("git diff failed in review round %d: %w", round, diffErr)
+	}
+	if diff == "" {
+		o.logger.Warn("warden: no diff detected in workspace after edit loop",
+			"session_id", session.ID, "round", round)
+		return "", nil, errEmptyDiff
+	}
+
+	o.logger.Info("warden: running code review",
+		"session_id", session.ID, "round", round, "diff_bytes", len(diff))
+	parsedFiles := ragreview.ParseDiff(diff)
+	event := &core.GitHubEvent{
+		PRTitle:      fmt.Sprintf("Implement #%d: %s", session.Issue.Number, session.Issue.Title),
+		PRBody:       session.Issue.Body,
+		RepoFullName: session.Issue.RepoOwner + "/" + session.Issue.RepoName,
+		HeadSHA:      "agent-workspace",
+	}
+	result, execErr := executor.Execute(ctx, reviewpkg.Params{
+		RepoConfig:   o.repoConfig,
+		Repo:         o.repo,
+		Event:        event,
+		Diff:         diff,
+		ChangedFiles: parsedFiles,
+	})
+	if execErr != nil {
+		o.logger.Error("warden: code review failed",
+			"session_id", session.ID, "round", round, "error", execErr)
+		return "", nil, fmt.Errorf("code review round %d: %w", round, execErr)
+	}
+
+	verdict = result.Review.Verdict
+	o.logger.Info("warden: review complete",
+		"session_id", session.ID, "round", round,
+		"verdict", verdict, "confidence", result.Review.Confidence,
+	)
+	o.mcpServer.RecordReviewBySession(sessionCtx, result.Review.Verdict, result.DiffHash)
+	o.mcpServer.RecordReviewFiles(sessionCtx, changedFileNames(parsedFiles))
+
+	return verdict, result.Review, nil
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -621,18 +662,17 @@ func (o *Orchestrator) runFixRound(
 }
 
 // getWorkspaceDiff returns the full git diff of all changes made since the
-// workspace was cloned (git diff HEAD). Returns empty string on error or when
-// there are no changes.
-func (o *Orchestrator) getWorkspaceDiff(ctx context.Context, workspaceDir string) string {
+// workspace was cloned (git diff HEAD). Returns empty string when there are no
+// changes. Returns a non-nil error when the git command itself fails (e.g.
+// corrupt repo, missing git binary).
+func (o *Orchestrator) getWorkspaceDiff(ctx context.Context, workspaceDir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "diff", "HEAD")
 	cmd.Dir = workspaceDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		o.logger.Warn("warden: git diff HEAD failed",
-			"workspace", workspaceDir, "error", err, "output", string(out))
-		return ""
+		return "", fmt.Errorf("git diff HEAD: %w (output: %s)", err, string(out))
 	}
-	return string(out)
+	return string(out), nil
 }
 
 // buildFixSystemPrompt returns the system prompt for a focused fix loop.
@@ -834,9 +874,12 @@ func extractPreviousSummary(msgs []schema.MessageContent) (previousSummary strin
 // truncated rather than omitted entirely.
 func compactionFilterText(text string) string {
 	for name := range compactionExplorationTools {
-		prefix := name + ":"
+		// goframe formats tool results as "Tool '<name>' returned: <json>".
+		// Match on "Tool '<name>'" prefix to strip exploration outputs during
+		// compaction, regardless of what follows the tool name.
+		prefix := "Tool '" + name + "'"
 		if strings.HasPrefix(text, prefix) {
-			return prefix + " [output omitted during compaction]"
+			return name + ": [output omitted during compaction]"
 		}
 	}
 	if len(text) > compactionMaxOutputLen {
@@ -1162,6 +1205,11 @@ func (o *Orchestrator) compactMessages(ctx context.Context, llm llms.Model, msgs
 // a "no changes were made" comment instead.
 var errNoChanges = fmt.Errorf("no changes to commit")
 
+// errEmptyDiff is returned by runReviewRound when git diff HEAD produces no
+// output. The caller should yield a draft PR rather than fail the session —
+// the agent may have made partial changes that are worth preserving.
+var errEmptyDiff = fmt.Errorf("no diff detected in workspace")
+
 // yieldDraftPR is called when the implement loop ends without an APPROVE verdict.
 // Instead of silently failing, it commits any pending changes, pushes the branch,
 // and opens a draft PR so a human can pick up where the agent left off.
@@ -1209,14 +1257,14 @@ func (o *Orchestrator) yieldDraftPR(
 	// The workspace remote already has the GitHub token embedded in its URL
 	// (set by prepareAgentWorkspace), so no token injection is needed here.
 	pushErr := yieldCommitAndPush(ctx, ws.dir, branch, editedFiles, session.Issue.Number, session.Issue.Title, o.logger)
-	if pushErr != nil && !strings.Contains(pushErr.Error(), errNoChanges.Error()) {
+	if pushErr != nil && !errors.Is(pushErr, errNoChanges) {
 		o.logger.Warn("warden: yieldDraftPR: push failed, session will still be marked draft",
 			"session_id", session.ID, "error", pushErr)
 	}
 
 	// When the agent made no file changes at all, a draft PR would be empty and
 	// confusing. Skip PR creation and fall through to a descriptive failure comment.
-	if pushErr != nil && strings.Contains(pushErr.Error(), errNoChanges.Error()) {
+	if errors.Is(pushErr, errNoChanges) {
 		o.logger.Info("warden: no changes to push, marking session failed instead of creating empty draft",
 			"session_id", session.ID)
 		o.failSession(ctx, session, fmt.Sprintf(
@@ -1382,9 +1430,17 @@ func yieldCommitAndPush(ctx context.Context, workspaceDir, branch string, edited
 	logger.Info("yieldCommitAndPush: staging changes", "files", editedFiles)
 	if len(editedFiles) > 0 {
 		args := append([]string{"add", "--"}, editedFiles...)
-		_, _ = run(args...)
+		if addOut, addErr := run(args...); addErr != nil {
+			logger.Error("yieldCommitAndPush: git add failed",
+				"files", editedFiles, "error", addErr, "output", addOut)
+			return fmt.Errorf("git add %v: %w (output: %s)", editedFiles, addErr, addOut)
+		}
 	} else {
-		_, _ = run("add", ".")
+		if addOut, addErr := run("add", "."); addErr != nil {
+			logger.Error("yieldCommitAndPush: git add . failed",
+				"error", addErr, "output", addOut)
+			return fmt.Errorf("git add .: %w (output: %s)", addErr, addOut)
+		}
 	}
 
 	// Commit — detect "nothing to commit" and surface it as errNoChanges so the
