@@ -1257,14 +1257,14 @@ func (o *Orchestrator) yieldDraftPR(
 	// The workspace remote already has the GitHub token embedded in its URL
 	// (set by prepareAgentWorkspace), so no token injection is needed here.
 	pushErr := yieldCommitAndPush(ctx, ws.dir, branch, editedFiles, session.Issue.Number, session.Issue.Title, o.logger)
-	if pushErr != nil && !strings.Contains(pushErr.Error(), errNoChanges.Error()) {
+	if pushErr != nil && !errors.Is(pushErr, errNoChanges) {
 		o.logger.Warn("warden: yieldDraftPR: push failed, session will still be marked draft",
 			"session_id", session.ID, "error", pushErr)
 	}
 
 	// When the agent made no file changes at all, a draft PR would be empty and
 	// confusing. Skip PR creation and fall through to a descriptive failure comment.
-	if pushErr != nil && strings.Contains(pushErr.Error(), errNoChanges.Error()) {
+	if errors.Is(pushErr, errNoChanges) {
 		o.logger.Info("warden: no changes to push, marking session failed instead of creating empty draft",
 			"session_id", session.ID)
 		o.failSession(ctx, session, fmt.Sprintf(
