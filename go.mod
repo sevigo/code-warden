@@ -16,7 +16,7 @@ require (
 	github.com/google/wire v0.6.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.11.1
-	github.com/sevigo/goframe v0.37.0
+	github.com/sevigo/goframe v0.38.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
@@ -110,7 +110,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
-	github.com/ollama/ollama v0.20.5 // indirect
+	github.com/ollama/ollama v0.20.7 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0
