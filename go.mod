@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/fatih/color v1.18.0
 	github.com/go-chi/chi/v5 v5.2.2
-	github.com/go-git/go-git/v5 v5.17.2
+	github.com/go-git/go-git/v5 v5.18.0
 	github.com/golang-migrate/migrate/v4 v4.18.3
 	github.com/google/go-github/v73 v73.0.0
 	github.com/google/wire v0.6.0
