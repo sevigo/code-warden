@@ -3,88 +3,17 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/sevigo/code-warden)](https://goreportcard.com/report/github.com/sevigo/code-warden)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**A self-hosted GitHub App that reviews pull requests with full understanding of your codebase — not just the diff.**
+A self-hosted GitHub App that reviews pull requests with full codebase context — not just the diff.
 
----
+Why does that matter? Most AI review tools only see what changed. They don't know that `UserService` already exists in another package, that your team avoids a certain pattern, or that this change breaks three callers downstream. Code-Warden retrieves architectural context, resolves definitions, traces downstream impact, and includes commit history before the LLM ever sees the diff.
 
-## Why Code-Warden Exists
-
-Most AI code review tools read only the diff. They catch obvious mistakes, but they don't know that `UserService` is already implemented elsewhere, that your team agreed to avoid a certain pattern, or that the change you just made will break three other callers downstream.
-
-Code-Warden was built to close that gap. Before generating a review, it retrieves architectural context, resolves type and function definitions, traces downstream impact through a dependency graph, and includes the PR's commit history as signal. The LLM receives a complete picture — not a fragment.
-
-It runs entirely on your infrastructure. Your code never leaves.
-
----
-
-## What Makes It Different
-
-| Approach | Typical AI review tool | Code-Warden |
-|---|---|---|
-| Input to LLM | Diff only | Diff + codebase context |
-| Symbol resolution | None | Exact Qdrant filter on definitions |
-| Downstream impact | None | Dependency graph traversal |
-| Architecture context | None | Pre-computed directory summaries |
-| Search | Dense vectors | Hybrid (dense + code-aware sparse) |
-| Review confidence | Single model | Consensus across multiple models |
-| Privacy | Code sent to vendor | Fully self-hosted |
-| Implementation | Manual | `/implement` — agent writes the code |
-
----
-
-## How It Works
-
-When a user comments `/review` on a pull request:
-
-1. **Sync** — repo is cloned or incrementally updated; changed files are re-indexed into Qdrant
-2. **Context** — five retrieval stages run in parallel:
-   - *Architectural* — high-level module summaries for the directories touched
-   - *HyDE* — hypothetical document embeddings to find semantically similar code
-   - *Impact* — which other parts of the codebase call or import the changed symbols
-   - *Description* — code related to the PR title, body, and commit messages
-   - *Definitions* — exact type/function definitions for every symbol in the diff
-3. **Review** — context + diff + custom instructions go to the LLM (or multiple models in consensus mode)
-4. **Post** — severity-rated findings posted as inline GitHub comments with line-specific suggestions
-
-The `/rereview` command runs a follow-up pass that compares the new diff against the original findings and reports what was fixed, what was missed, and what is new.
-
-The `/implement` command goes further: an autonomous agent reads the issue, explores the codebase via MCP tools, writes the code, runs lint and tests, reviews its own work, and opens a pull request.
-
----
-
-## Features
-
-**Reviews**
-- Context-aware: retrieves relevant code before the LLM sees the diff
-- Consensus mode: query multiple models in parallel, synthesize into one review
-- Re-review: validate whether previous findings were addressed
-- Structured output: severity badges (🔴 critical · 🟠 warning · 🟡 suggestion) with inline comments
-
-**Indexing**
-- Incremental: only re-indexes files changed in the diff
-- Hybrid search: dense embeddings + code-aware sparse vectors (camelCase/snake_case tokenization)
-- Code-aware chunking: preserves function boundaries and propagates file-level metadata
-- Multi-language AST parsing: extracts definitions, imports, and structure
-
-**Agent (`/implement`)**
-- Reads GitHub issue, plans, and implements changes in an isolated workspace
-- Uses MCP tools: `search_code`, `get_symbol`, `get_arch_context`, `review_code`, `push_branch`
-- Internal self-review loop before committing
-- Only reviewed files are included in the PR
-
-**Infrastructure**
-- Self-hosted: Ollama (local) or cloud LLMs via proxy
-- PostgreSQL for job history and review storage
-- Qdrant for vector storage
-- Configurable per repository via `.code-warden.yml`
+Everything runs on your infrastructure. Your code never leaves.
 
 ---
 
 ## Quick Start
 
-### Demo mode — 5 minutes, no GitHub App needed
-
-Review a real pull request with just a GitHub personal access token:
+### Demo mode (5 minutes, no GitHub App needed)
 
 ```sh
 git clone https://github.com/sevigo/code-warden
@@ -93,11 +22,9 @@ cp .env.example .env        # add your GitHub PAT to GITHUB_TOKEN
 make demo PR=https://github.com/owner/repo/pull/42
 ```
 
-The CLI clones the repo, indexes it into a local Qdrant instance, and prints findings to the terminal. No webhook, no GitHub App, no public URL required.
+Clones the repo, indexes it into local Qdrant, prints findings to the terminal. No webhook, no GitHub App, no public URL.
 
-### Full server — 15 minutes, includes web UI
-
-Everything running in Docker with a web dashboard at `localhost:8080`:
+### Full server (15 minutes, includes web UI)
 
 ```sh
 git clone https://github.com/sevigo/code-warden
@@ -105,7 +32,7 @@ cd code-warden
 make quickstart             # guided interactive setup
 ```
 
-The wizard checks prerequisites, configures `.env`, detects your GPU, and starts all services. On first run it pulls two local models (~1.6 GB): the embedder and fast model. The code review generator (`kimi-k2.5`) is an Ollama cloud model — no GPU or large download needed. Open `http://localhost:8080` when it finishes.
+Starts everything in Docker with a web dashboard at `localhost:8080`. The wizard checks prerequisites, configures `.env`, detects your GPU, and pulls two local models (~1.6 GB). The review model (`kimi-k2.5`) runs as an Ollama cloud model — no GPU needed for that.
 
 **GPU support** (optional — CPU works fine for demos):
 ```sh
@@ -116,7 +43,7 @@ docker compose -f docker-compose.demo.yml -f docker-compose.gpu.yml up -d
 docker compose -f docker-compose.demo.yml -f docker-compose.amd.yml up -d
 ```
 
-**Useful commands:**
+**Handy commands:**
 ```sh
 make demo-logs    # tail server logs
 make demo-down    # stop all services
@@ -125,6 +52,54 @@ make pull-models  # pull models to host Ollama (outside Docker)
 ```
 
 **Prerequisites:** Docker, Go 1.22+
+
+---
+
+## How It Works
+
+When someone comments `/review` on a PR:
+
+1. **Sync** — clone or update the repo, re-index changed files into Qdrant
+2. **Context retrieval** — five parallel stages:
+   - *Architectural* — directory-level summaries for touched paths
+   - *HyDE* — hypothetical document embeddings for semantic search
+   - *Impact* — callers and importers of changed symbols
+   - *Description* — code related to the PR title, body, and commits
+   - *Definitions* — exact type/function definitions for every symbol in the diff
+3. **Review** — context + diff + custom instructions go to the LLM (or multiple models in consensus mode)
+4. **Post** — severity-rated findings as inline GitHub comments
+
+`/rereview` runs a follow-up pass comparing the new diff against previous findings — what was fixed, what was missed, what's new.
+
+`/implement` goes further: an agent reads the issue, explores the codebase via MCP tools, writes code, runs lint and tests, reviews its own work, and opens a PR.
+
+---
+
+## Features
+
+**Reviews**
+- Context-aware — retrieves relevant code before the LLM sees the diff
+- Consensus mode — multiple models in parallel, synthesized into one review
+- Re-review — checks whether previous findings were addressed
+- Structured output — severity badges (🔴 critical · 🟠 warning · 🟡 suggestion) with inline comments
+
+**Indexing**
+- Incremental — only re-indexes files that changed in the diff
+- Hybrid search — dense embeddings + code-aware sparse vectors
+- Code-aware chunking — preserves function boundaries, propagates file-level metadata
+- Multi-language AST — extracts definitions, imports, and structure
+
+**Agent (`/implement`)**
+- Reads a GitHub issue, plans, and implements changes in an isolated workspace
+- MCP tools: `search_code`, `get_symbol`, `get_arch_context`, `review_code`, `push_branch`
+- Self-review loop before committing
+- Only reviewed files are included in the PR
+
+**Infrastructure**
+- Self-hosted — Ollama (local) or cloud LLMs via proxy
+- PostgreSQL for job history and review storage
+- Qdrant for vector storage
+- Per-repository config via `.code-warden.yml`
 
 ---
 
@@ -147,7 +122,7 @@ GITHUB_WEBHOOK_SECRET=your-secret
 GITHUB_PRIVATE_KEY_PATH=keys/app.private-key.pem
 ```
 
-Or set them in `config.yaml`:
+Or in `config.yaml`:
 
 ```yaml
 github:
@@ -173,8 +148,7 @@ ai:
     - "deepseek-v3.1:671b-cloud"
   enable_reranking: true
   enable_hybrid_search: true
-  sparse_vector_name: "code_sparse"
-  context_token_budget: 16000      # RAG context budget (tokens)
+  context_token_budget: 16000
 ```
 
 ### Per-repository (`.code-warden.yml`)
@@ -189,7 +163,7 @@ exclude_dirs:
   - node_modules
 ```
 
-Full configuration reference: [config.yaml.example](config.yaml.example)
+Full reference: [config.yaml.example](config.yaml.example)
 
 ---
 
@@ -211,27 +185,19 @@ export CW_GITHUB_TOKEN="ghp_xxx"
 
 ## Terminal UI (Onboarding Assistant)
 
-Code-Warden includes an interactive terminal UI for exploring and querying indexed repositories — useful for developer onboarding, code exploration, and debugging.
+Interactive terminal UI for exploring and querying indexed repositories — useful for developer onboarding, code exploration, and debugging.
 
 ```sh
-# Build and run the terminal UI
 make build-terminal
 ./bin/warden-term
-
-# Or run directly
-go run ./cmd/terminal/main.go
 ```
 
 ### Themes
 
-The terminal UI supports multiple color themes. Set via flag or environment variable:
-
 ```sh
-# Available themes: cyan, matrix, amber, cyberpunk, ice, dracula, fire
+# Available: cyan, matrix, amber, cyberpunk, ice, dracula, fire
 ./bin/warden-term --theme matrix
 CODE_WARDEN_THEME=dracula ./bin/warden-term
-
-# List all themes
 ./bin/warden-term --list-themes
 ```
 
@@ -240,48 +206,18 @@ CODE_WARDEN_THEME=dracula ./bin/warden-term
 | Command | Description |
 |---------|-------------|
 | `/add [name] [path]` | Register and index a local repository |
-| `/list`, `/ls` | List all registered repositories |
-| `/select [name]` | Set the active repository for questions |
-| `/rescan [name?]` | Re-scan a repo for updates (defaults to selected) |
+| `/list`, `/ls` | List registered repositories |
+| `/select [name]` | Set active repository |
+| `/rescan [name?]` | Re-scan for updates |
 | `/new`, `/reset` | Start a new conversation |
 | `/help`, `/h` | Show available commands |
-| `/exit`, `/quit` | Exit the application |
+| `/exit`, `/quit` | Exit |
 
-### Usage
+1. `/add my-project /path/to/repo`
+2. `/select my-project`
+3. Ask questions freely: `How does authentication work?`, `What's the pattern for adding a new endpoint?`
 
-1. **Register a repository**: `/add my-project /path/to/repo`
-2. **Select it**: `/select my-project`
-3. **Ask questions freely**: `How does authentication work?`, `What's the pattern for adding a new API endpoint?`
-
-The terminal uses the RAG pipeline to retrieve relevant code context before answering. Answers are informed by architectural summaries, function definitions, and dependency relationships — not just keyword matches.
-
----
-
-## Where This Is Going
-
-Code-Warden is actively developed. See [TODO.md](TODO.md) for the full roadmap. Highlights:
-
-**GitHub interactions**
-- `/review focus=security` — scoped reviews by category
-- `/explain <symbol>` — look up a symbol in the index
-- `/feedback wrong` on a review comment — marks it as a false positive; suppressed in future reviews
-- Auto re-index on PR merge and push to default branch
-- Auto-trigger review when review is requested on a PR
-
-**Feedback loop**
-- Store accept/ignore/wrong signals per finding
-- Suppress recurring false positives automatically (written to `.code-warden.yml`)
-- Track acceptance rate per finding category over time to tune future reviews
-
-**Web UI**
-- Repository status page (last indexed SHA, job history)
-- Review explorer: browse past reviews, filter by severity and category
-- Analytics dashboard: acceptance rate trends, most common findings, index freshness
-
-**Planned commands**
-- `/suggest` — generate a concrete code fix for a flagged issue
-- `/ask <question>` — free-form RAG-powered question about the codebase
-- `/why <snippet>` — explain why code was written this way (git blame + RAG)
+The terminal uses the RAG pipeline to retrieve relevant code before answering — architectural summaries, function definitions, and dependency relationships, not just keyword matches.
 
 ---
 
@@ -289,26 +225,18 @@ Code-Warden is actively developed. See [TODO.md](TODO.md) for the full roadmap. 
 
 | Document | Description |
 |---|---|
-| [docs/SETUP.md](docs/SETUP.md) | Step-by-step deployment and first-run guide |
+| [docs/SETUP.md](docs/SETUP.md) | Deployment and first-run guide |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component relationships and system design |
-| [docs/RAG_ARCHITECTURE.md](docs/RAG_ARCHITECTURE.md) | 6-stage RAG pipeline in detail |
-| [docs/INDEXING.md](docs/INDEXING.md) | Chunk types, metadata schema, debugging retrieval |
-| [docs/IMPLEMENT_ARCHITECTURE.md](docs/IMPLEMENT_ARCHITECTURE.md) | Agent orchestration and `/implement` flow |
+| [docs/INDEXING.md](docs/INDEXING.md) | Chunk types, metadata, debugging retrieval |
+| [docs/IMPLEMENT_ARCHITECTURE.md](docs/IMPLEMENT_ARCHITECTURE.md) | `/implement` flow and agent design |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and fixes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
-| [TODO.md](TODO.md) | Full product roadmap |
 
 ---
 
 ## Built On
 
-Code-Warden is built on [GoFrame](https://github.com/sevigo/goframe), a Go RAG framework providing LLM chains, Qdrant vector store integration, code-aware text splitting, multi-language AST parsing, and hybrid sparse/dense search.
-
----
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Code-Warden is built on [GoFrame](https://github.com/sevigo/goframe), a Go RAG framework that provides LLM chains, Qdrant integration, code-aware text splitting, multi-language AST parsing, and hybrid sparse/dense search.
 
 ## License
 

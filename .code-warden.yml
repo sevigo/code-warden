@@ -36,7 +36,7 @@ exclude_dirs:
   - ".github"     # CI configuration
   - "ui"
   - "data"
-  - ".opencode"
+
   - "node_modules"
 
 # File extensions to exclude from indexing.
