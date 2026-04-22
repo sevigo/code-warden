@@ -8,8 +8,8 @@ import (
 )
 
 // normalizeForFuzzyMatch applies progressive transformations to make
-// LLM-generated text match file content despite minor formatting differences.
-// Ported from Pi's edit-diff.ts to handle:
+// AI-generated text match file content despite minor formatting differences.
+// Handles:
 //   - Unicode NFKC normalization (smart quotes, ligatures, etc.)
 //   - Trailing whitespace per line
 //   - Smart single/double quotes → ASCII

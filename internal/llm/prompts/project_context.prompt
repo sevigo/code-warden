@@ -4,7 +4,7 @@ Below are architectural summaries for various directories in the repository:
 
 {{.Summaries}}
 
-Your goal is to create a CLAUDE.md-style document that helps an AI agent understand how to work effectively within this codebase.
+Your goal is to create a project context document that helps an AI agent understand how to work effectively within this codebase.
 
 IMPORTANT: Only report facts that are explicitly stated in the summaries above. If information is not available, write "Not specified" rather than guessing.
 

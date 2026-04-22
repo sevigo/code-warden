@@ -34,14 +34,8 @@ go.work.sum
 .env
 config.yaml
 warden-terminal.log
-llm_context.md
 *_test_results*
-.claude/settings.local.json
-
 .agent/
-.claude/
-CLAUDE.md
-.opencode/
 
 # Agent workspace artifacts — never commit these
 agent.log

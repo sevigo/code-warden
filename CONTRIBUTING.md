@@ -122,7 +122,7 @@ Examples:
 ```
 feat: add /explain command for symbol lookup via RAG
 fix: resolve stale LSP cache causing false positives in client.go
-docs: update RAG_ARCHITECTURE with test coverage stage
+docs: update INDEXING.md with new chunk type
 chore: upgrade goframe to v0.36.0
 ```
 

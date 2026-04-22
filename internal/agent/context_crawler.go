@@ -14,13 +14,13 @@ import (
 //   - AGENTS.md or .code-warden/SYSTEM.md at the repo root
 //   - .code-warden/skills/*.md (workflow definitions)
 //
-// This follows the Pi/Claude Code convention for repository-local agent
+// This follows the emerging convention for repository-local agent
 // instructions, giving repo owners a natural way to steer agent behavior
 // without modifying the server deployment.
 func crawlProjectContext(workspaceDir string) string {
 	var sections []string
 
-	// Check for AGENTS.md at repo root (Pi/Claude Code convention)
+	// Check for AGENTS.md at repo root (standard agent convention)
 	if agents, err := readMarkdownFile(filepath.Join(workspaceDir, "AGENTS.md")); err == nil && agents != "" {
 		sections = append(sections, fmt.Sprintf("## AGENTS.md\n\n%s", agents))
 	}

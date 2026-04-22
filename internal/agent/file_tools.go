@@ -169,7 +169,6 @@ func (t *writeFileTool) Execute(ctx context.Context, args map[string]any) (any, 
 
 // editFileTool replaces text in a file. Accepts either a single old_string/new_string
 // pair (backwards-compatible) or an edits array for atomic multi-replacement.
-// Mirrors Pi's edit tool semantics.
 type editFileTool struct {
 	Formatter *Formatter
 }
