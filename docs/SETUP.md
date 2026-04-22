@@ -1,7 +1,5 @@
 # Setup Guide
 
----
-
 ## Quick Demo (5 minutes, no GitHub App)
 
 Review a real PR with just a GitHub PAT:
@@ -26,33 +24,24 @@ See the [README](../README.md#quick-start) for GPU support and useful commands.
 
 ## Full Production Setup
 
-This guide walks through deploying Code-Warden from scratch — GitHub App creation, infrastructure, configuration, and first review.
-
-## Prerequisites
-
-- Go 1.22+
-- Docker & Docker Compose
-- A GitHub account with permission to create GitHub Apps in your organization (or personal account)
-- Ollama running locally or accessible via network (for local LLM inference)
+Prerequisites: Go 1.22+, Docker & Docker Compose, a GitHub account with permission to create GitHub Apps, and Ollama running locally or accessible via network.
 
 ---
 
-## Step 1: Create the GitHub App
+### Step 1: Create the GitHub App
 
 Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App** (or for an org: **Org Settings → Developer settings → GitHub Apps**).
 
-### Basic settings
+**Basic settings:**
 
 | Field | Value |
 |---|---|
-| GitHub App name | `code-warden` (or any name you prefer) |
+| GitHub App name | `code-warden` (or whatever you prefer) |
 | Homepage URL | Your server URL, e.g. `https://code-warden.example.com` |
 | Webhook URL | `https://your-host/webhook` |
 | Webhook secret | Generate a random string — you'll need it in config |
 
-### Permissions
-
-Under **Repository permissions**:
+**Permissions** (under Repository permissions):
 
 | Permission | Access |
 |---|---|
@@ -61,32 +50,24 @@ Under **Repository permissions**:
 | Metadata | Read |
 | Pull requests | Read & Write |
 
-### Subscribe to events
+**Subscribe to events:** Issue comment, Issues, Pull request, Push
 
-Check the following webhook events:
+**After creating:**
 
-- [x] Issue comment
-- [x] Issues
-- [x] Pull request
-- [x] Push
-
-### After creating
-
-1. Note the **App ID** shown at the top of the app settings page
-2. Scroll to the bottom → **Private keys** → **Generate a private key**
-3. Download the `.pem` file — save it as `keys/code-warden-app.private-key.pem`
+1. Note the **App ID** at the top of the app settings page
+2. Scroll to **Private keys** → **Generate a private key**
+3. Download the `.pem` file → save as `keys/code-warden-app.private-key.pem`
 4. Go to **Install App** → install it on the repositories you want reviewed
 
 ---
 
-## Step 2: Clone and configure
+### Step 2: Clone and configure
 
 ```sh
 git clone https://github.com/sevigo/code-warden
 cd code-warden
 cp config.yaml.example config.yaml
 mkdir -p keys
-# Move your downloaded private key here:
 mv ~/Downloads/your-app.private-key.pem keys/code-warden-app.private-key.pem
 ```
 
@@ -94,22 +75,22 @@ Edit `config.yaml`:
 
 ```yaml
 github:
-  app_id: 12345                          # From GitHub App settings
-  webhook_secret: "your-webhook-secret"  # The secret you set in Step 1
+  app_id: 12345
+  webhook_secret: "your-webhook-secret"
   private_key_path: "keys/code-warden-app.private-key.pem"
 
 ai:
   llm_provider: "ollama"
   ollama_host: "http://localhost:11434"
-  generator_model: "qwen2.5-coder:7b"   # Main review model
-  embedder_model: "nomic-embed-text"     # Embedding model
-  fast_model: "qwen2.5-coder:1.5b"      # Fast model for HyDE and validation
+  generator_model: "qwen2.5-coder:7b"
+  embedder_model: "nomic-embed-text"
+  fast_model: "qwen2.5-coder:1.5b"
   enable_reranking: true
   reranker_model: "qwen2.5-coder:1.5b"
 
 storage:
   qdrant_host: "localhost:6334"
-  repo_path: "/path/to/data/repos"       # Where repos will be cloned
+  repo_path: "/path/to/data/repos"
 
 database:
   host: "localhost"
@@ -121,17 +102,14 @@ database:
 
 ---
 
-## Step 3: Start infrastructure
+### Step 3: Start infrastructure
 
 ```sh
-# Start Qdrant and PostgreSQL
 docker-compose up -d
-
-# Verify both are running
-docker-compose ps
+docker-compose ps   # verify both Qdrant and PostgreSQL are running
 ```
 
-Pull the Ollama models you configured:
+Pull the Ollama models:
 
 ```sh
 ollama pull nomic-embed-text
@@ -139,7 +117,7 @@ ollama pull qwen2.5-coder:7b
 ollama pull qwen2.5-coder:1.5b
 ```
 
-Or if using the Docker Compose Ollama setup:
+Or if using Docker Compose Ollama:
 
 ```sh
 docker-compose -f docker-compose.setup.yml up --build
@@ -147,20 +125,16 @@ docker-compose -f docker-compose.setup.yml up --build
 
 ---
 
-## Step 4: Build and run
+### Step 4: Build and run
 
 ```sh
 make build
 ./bin/code-warden
 ```
 
-You should see log output confirming:
-- Database connected
-- Qdrant connected
-- MCP server listening (if agent is enabled)
-- HTTP server listening on port 8080
+You should see logs confirming: database connected, Qdrant connected, MCP server listening, HTTP server on port 8080.
 
-For development, run directly without building:
+For development:
 
 ```sh
 go run ./cmd/server/main.go
@@ -168,15 +142,13 @@ go run ./cmd/server/main.go
 
 ---
 
-## Step 5: Expose the webhook (local development)
+### Step 5: Expose the webhook (local development)
 
 GitHub needs to reach your webhook URL. For local development, use a tunnel:
 
 ```sh
-# Using ngrok:
 ngrok http 8080
-
-# Or using bore:
+# or:
 bore local 8080 --to bore.pub
 ```
 
@@ -184,21 +156,18 @@ Update the **Webhook URL** in your GitHub App settings to the tunnel URL + `/web
 
 ---
 
-## Step 6: Initial prescan
+### Step 6: Initial prescan
 
-Before reviews can work, Code-Warden needs to index the repository into Qdrant. This happens automatically on the first `/review` command, but for large repos you should run it manually first:
+Before reviews work, Code-Warden needs to index the repository into Qdrant. This happens automatically on the first `/review`, but for large repos you should run it manually first:
 
 ```sh
-# Clone the target repo locally (if not already cloned)
 git clone https://github.com/your-org/your-repo /path/to/data/repos/your-org/your-repo
-
-# Run full prescan
 ./bin/warden-cli prescan /path/to/data/repos/your-org/your-repo
 ```
 
-Prescan is resumable — if it's interrupted, re-run the same command and it will continue from where it stopped.
+Prescan is resumable — if interrupted, re-run the same command and it picks up where it left off.
 
-For incremental updates after prescan is complete:
+For incremental updates after prescan:
 
 ```sh
 ./bin/warden-cli update /path/to/data/repos/your-org/your-repo
@@ -206,7 +175,7 @@ For incremental updates after prescan is complete:
 
 ---
 
-## Step 7: Trigger a review
+### Step 7: Trigger a review
 
 1. Open a pull request in a repository where the GitHub App is installed
 2. Comment `/review` on the PR
@@ -216,23 +185,27 @@ For incremental updates after prescan is complete:
 
 ## Agent Setup (Optional)
 
-To enable the `/implement` command (autonomous issue implementation), see [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md).
+To enable `/implement`, see [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md).
 
 ---
 
 ## Verifying the setup
 
 **Qdrant collections created?**
+
 ```sh
 curl http://localhost:6333/collections
 ```
+
 After the first prescan you should see a collection named after the repository.
 
 **Webhook receiving events?**
+
 Check your GitHub App → **Advanced** → **Recent Deliveries** to see incoming webhook calls and their response codes.
 
 **Reviews posting?**
-Check the server logs — look for `generating review` and `posted review comment` log lines.
+
+Check the server logs — look for `generating review` and `posted review comment` lines.
 
 ---
 

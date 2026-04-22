@@ -1,39 +1,28 @@
 # Contributing to Code-Warden
 
-Contributions are welcome — bug fixes, new features, documentation improvements, and test coverage.
+Bug fixes, features, docs, and tests are all welcome.
 
 ---
 
 ## Getting started
 
-### Local stack
-
 ```sh
-# Clone
 git clone https://github.com/sevigo/code-warden
 cd code-warden
-
-# Start Qdrant and PostgreSQL
-docker-compose up -d
-
-# Copy and edit config
+docker-compose up -d          # Qdrant + PostgreSQL
 cp config.yaml.example config.yaml
-
-# Build
 make build
-
-# Run
 ./bin/code-warden
 ```
 
-For a full setup including GitHub App configuration, see [docs/SETUP.md](docs/SETUP.md).
+For full setup including GitHub App configuration, see [docs/SETUP.md](docs/SETUP.md).
 
 ### Running tests and lint
 
 ```sh
 make test        # Run all tests
-make test-race   # Run with race detector (catches concurrency bugs)
-make lint        # Run golangci-lint
+make test-race   # Run with race detector
+make lint        # golangci-lint
 ```
 
 Run a specific package:
@@ -43,7 +32,7 @@ go test -v ./internal/rag/...
 go test -run TestTokenizer ./internal/...
 ```
 
-All tests must pass and lint must return zero issues before submitting a PR.
+All tests and lint must pass before submitting a PR.
 
 ---
 
@@ -72,8 +61,7 @@ All tests must pass and lint must return zero issues before submitting a PR.
 1. Create `internal/rag/contextpkg/<stage>.go`
 2. Implement your retrieval logic returning `[]schema.Document`
 3. Add it to the parallel stage runner in `internal/rag/contextpkg/builder.go`
-4. Add a corresponding section in [docs/RAG_ARCHITECTURE.md](docs/RAG_ARCHITECTURE.md)
-5. Write tests in `internal/rag/contextpkg/<stage>_test.go`
+4. Write tests in `internal/rag/contextpkg/<stage>_test.go`
 
 ### Adding a new MCP tool
 
@@ -88,14 +76,12 @@ All tests must pass and lint must return zero issues before submitting a PR.
    ```
 2. Register it in `internal/mcp/server.go`
 3. Add input validation (length limits, type assertions)
-4. Document it in [docs/IMPLEMENT_ARCHITECTURE.md](docs/IMPLEMENT_ARCHITECTURE.md)
 
 ### Adding a new GitHub command
 
-1. Parse the new command in the webhook handler (`internal/github/`)
+1. Parse the command in the webhook handler (`internal/github/`)
 2. Add the event type to `internal/core/events.go`
 3. Add the job handler in `internal/jobs/review.go`
-4. Add the command to the commands table in [TODO.md](TODO.md) if it's not yet implemented
 
 ### Adding a new prompt
 
@@ -114,7 +100,7 @@ All tests must pass and lint must return zero issues before submitting a PR.
 
 ## Dependency injection
 
-Code-Warden uses [Google Wire](https://github.com/google/wire) for compile-time dependency injection. If you add a new service:
+Code-Warden uses [Google Wire](https://github.com/google/wire) for compile-time DI. If you add a new service:
 
 1. Add a provider function (constructor) for your service
 2. Register it in `internal/wire/wire.go`
@@ -123,8 +109,6 @@ Code-Warden uses [Google Wire](https://github.com/google/wire) for compile-time 
 ---
 
 ## Commit messages
-
-Use the conventional commits format:
 
 ```
 <type>: <short summary>
@@ -154,4 +138,4 @@ Keep the first line under 72 characters.
 - Update relevant documentation in `docs/`
 - Ensure `make test` and `make lint` pass
 
-For large changes, open an issue first to discuss the approach before investing significant time.
+For large changes, open an issue first to discuss the approach.
