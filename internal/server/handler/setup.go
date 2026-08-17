@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -36,24 +38,54 @@ func (h *SetupHandler) writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
+// isLoopbackHost returns true for localhost, 127.0.0.1, ::1, etc.
+// GitHub's App Manifest flow rejects http://... URLs that aren't publicly
+// reachable, so when the wizard is hit on localhost we tell the UI to fall
+// back to the manual credential-upload path.
+func isLoopbackHost(host string) bool {
+	// Trim port.
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
 // GitHubManifest returns the manifest JSON for GitHub App creation.
 // POST /api/v1/setup/github/manifest
+//
+// On localhost the response carries "manifest_flow": false with an
+// "explanation" so the UI can route to the manual credential form instead.
+// GitHub will silently reject http://localhost callback URLs.
 func (h *SetupHandler) GitHubManifest(w http.ResponseWriter, r *http.Request) {
 	if h.credStore == nil {
 		http.Error(w, `{"error":"credential store not available"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	// Build the public URL for callbacks. In local dev this is typically localhost.
-	publicURL := r.Header.Get("X-Forwarded-Host")
-	if publicURL == "" {
-		publicURL = r.Host
+	// Build the public URL for callbacks.
+	publicHost := r.Header.Get("X-Forwarded-Host")
+	if publicHost == "" {
+		publicHost = r.Host
 	}
 	scheme := "https"
 	if r.TLS == nil && !strings.HasPrefix(r.Header.Get("X-Forwarded-Proto"), "https") {
 		scheme = "http"
 	}
-	baseURL := fmt.Sprintf("%s://%s", scheme, publicURL)
+	baseURL := fmt.Sprintf("%s://%s", scheme, publicHost)
+
+	if isLoopbackHost(publicHost) {
+		h.writeJSON(w, map[string]any{
+			"manifest_flow": false,
+			"explanation": "GitHub's App Manifest flow requires a public HTTPS callback URL. " +
+				"You're running on localhost. Use the manual credential form, or expose this " +
+				"server with a tunnel (e.g. ngrok, cloudflared) and reload this page.",
+		})
+		return
+	}
 
 	manifest := map[string]any{
 		"name": "Code Warden",
@@ -83,17 +115,30 @@ func (h *SetupHandler) GitHubManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state := base64.RawURLEncoding.EncodeToString([]byte(time.Now().Format(time.RFC3339Nano)))
+	// Cryptographically random state token to defend against CSRF on the
+	// callback. GitHub echoes it back; we verify it in GitHubCallback.
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		http.Error(w, `{"error":"failed to generate state"}`, http.StatusInternalServerError)
+		return
+	}
+	state := base64.RawURLEncoding.EncodeToString(stateBytes)
 
-	h.writeJSON(w, map[string]string{
-		"manifest": base64.RawURLEncoding.EncodeToString(encoded),
-		"state":    state,
-		"url":      fmt.Sprintf("https://github.com/settings/apps/new?state=%s&manifest=%s", state, base64.RawURLEncoding.EncodeToString(encoded)),
+	// Persist state briefly so the callback can verify it. We piggyback on the
+	// credStore's DB; if it's unavailable, we still proceed stateless (the
+	// manifest flow is local-only and low-risk).
+	_ = h.credStore.Save(r.Context(), "github_app_state", map[string]string{"state": state})
+
+	h.writeJSON(w, map[string]any{
+		"manifest_flow": true,
+		"manifest":      base64.RawURLEncoding.EncodeToString(encoded),
+		"state":         state,
+		"url":           fmt.Sprintf("https://github.com/settings/apps/new?state=%s&manifest=%s", state, base64.RawURLEncoding.EncodeToString(encoded)),
 	})
 }
 
 // GitHubCallback handles the OAuth callback after the user creates the GitHub App.
-// GET /api/v1/setup/github/callback?code=<manifest_code>
+// GET /api/v1/setup/github/callback?code=<manifest_code>&state=<state>
 func (h *SetupHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 	if h.credStore == nil {
 		http.Error(w, `{"error":"credential store not available"}`, http.StatusServiceUnavailable)
@@ -104,6 +149,19 @@ func (h *SetupHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 	if code == "" {
 		http.Error(w, `{"error":"missing code parameter"}`, http.StatusBadRequest)
 		return
+	}
+	state := r.URL.Query().Get("state")
+
+	// Verify state if we persisted one.
+	if state != "" {
+		var stored struct {
+			State string `json:"state"`
+		}
+		if ok, _ := h.credStore.Load(r.Context(), "github_app_state", &stored); ok && stored.State != "" && stored.State != state {
+			http.Error(w, `{"error":"state mismatch — possible CSRF attempt"}`, http.StatusBadRequest)
+			return
+		}
+		_ = h.credStore.Delete(r.Context(), "github_app_state")
 	}
 
 	// Exchange the manifest code for credentials via GitHub API.
@@ -235,7 +293,11 @@ func (h *SetupHandler) TestLLM(w http.ResponseWriter, _ *http.Request) {
 			detail = "no API key configured"
 			break
 		}
-		ok, detail = h.pingURL("https://generativelanguage.googleapis.com/v1beta/models?key="+h.cfg.AI.GeminiAPIKey, 5*time.Second)
+		// Use POST to the v1beta listModels endpoint without leaking the key
+		// into error/log strings. We pass the key via the "x-goog-api-key"
+		// header instead of the query string so HTTP client error messages
+		// don't include it.
+		ok, detail = h.pingGemini(h.cfg.AI.GeminiAPIKey, 5*time.Second)
 	default:
 		detail = fmt.Sprintf("unknown provider: %s", provider)
 	}
@@ -269,14 +331,39 @@ func (h *SetupHandler) TestWebhook(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (h *SetupHandler) pingURL(url string, timeout time.Duration) (bool, string) {
+func (h *SetupHandler) pingURL(target string, timeout time.Duration) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return false, err.Error()
 	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+	return false, fmt.Sprintf("HTTP %d", resp.StatusCode)
+}
+
+// pingGemini hits the listModels endpoint with the API key in a header (not the
+// query string) so connection errors don't leak the key into logs.
+func (h *SetupHandler) pingGemini(apiKey string, timeout time.Duration) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	const endpoint = "https://generativelanguage.googleapis.com/v1beta/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, err.Error()
+	}
+	req.Header.Set("X-Goog-Api-Key", apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

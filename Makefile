@@ -76,7 +76,11 @@ build-all: build build-ui
 ## Full server quickstart — starts all services in Docker, opens web UI.
 quickstart:
 	@[ -f .env ] || cp .env.example .env
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/quickstart.ps1
+else
 	@bash scripts/quickstart.sh
+endif
 
 ## Pull local Ollama models for demo (run on host Ollama, not Docker)
 ## Generator (kimi-k2.5) is a cloud model — no local download needed for it.

@@ -46,7 +46,10 @@ func BuildPackageChunks(ctx context.Context, fileDocs map[string][]schema.Docume
 	packageMap := make(map[string]*PackageInfo)
 
 	for filePath, docs := range fileDocs {
-		dir := filepath.Dir(filePath)
+		// Normalise to forward slashes so metadata is stable across Windows
+		// (filepath.Dir returns backslashes on Windows) and POSIX hosts.
+		filePath = filepath.ToSlash(filePath)
+		dir := filepath.ToSlash(filepath.Dir(filePath))
 		if dir == "." {
 			dir = "root"
 		}

@@ -54,9 +54,14 @@ func (h *DashboardHandler) writeJSON(w http.ResponseWriter, v any) {
 func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	configured := h.cfg.GitHub.AppID != 0
-	appName := "Code Warden"
-	if !configured {
-		appName = ""
+	appName := h.cfg.GitHub.AppName
+	if !configured || appName == "" {
+		// Fall back to a generic label only when we genuinely have no DB-stored name.
+		if !configured {
+			appName = ""
+		} else {
+			appName = "Code Warden"
+		}
 	}
 
 	dbStatus, dbLatency := h.pingDatabase(ctx)

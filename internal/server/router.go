@@ -47,11 +47,20 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, cance
 		// Short timeout for webhook delivery acknowledgement
 		r.With(middleware.Timeout(30*time.Second)).Post("/webhook/github", webhookHandler.Handle)
 
+		// Setup wizard endpoints — mounted unconditionally so the wizard is
+		// reachable even before storage/rag are wired (first-boot scenario).
+		// The handlers themselves return 503 if the credential store is nil.
+		setupHandler = handler.NewSetupHandler(cfg, logger)
+		r.With(middleware.Timeout(30*time.Second)).Post("/setup/github/manifest", setupHandler.GitHubManifest)
+		r.With(middleware.Timeout(30*time.Second)).Get("/setup/github/callback", setupHandler.GitHubCallback)
+		r.With(middleware.Timeout(10*time.Second)).Post("/setup/credentials", setupHandler.SaveCredentials)
+		r.With(middleware.Timeout(10*time.Second)).Post("/setup/test-llm", setupHandler.TestLLM)
+		r.With(middleware.Timeout(10*time.Second)).Post("/setup/test-webhook", setupHandler.TestWebhook)
+
 		// Web UI API routes
 		if store != nil {
 			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, gitClient, cfg, logger)
 			dashboardHandler = handler.NewDashboardHandler(cfg, store, logger)
-			setupHandler = handler.NewSetupHandler(cfg, logger)
 
 			// Fast endpoints — short timeout is fine
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos", webUIHandler.ListRepos)
@@ -76,13 +85,6 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, cance
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/reviews", dashboardHandler.ListReviews)
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/reviews/{prNumber}", dashboardHandler.GetReview)
 			r.With(middleware.Timeout(30*time.Second)).Post("/repos/{repoId}/reviews/{prNumber}/feedback", dashboardHandler.SubmitFeedback)
-
-			// Setup wizard endpoints
-			r.With(middleware.Timeout(30*time.Second)).Post("/setup/github/manifest", setupHandler.GitHubManifest)
-			r.With(middleware.Timeout(30*time.Second)).Get("/setup/github/callback", setupHandler.GitHubCallback)
-			r.With(middleware.Timeout(10*time.Second)).Post("/setup/credentials", setupHandler.SaveCredentials)
-			r.With(middleware.Timeout(10*time.Second)).Post("/setup/test-llm", setupHandler.TestLLM)
-			r.With(middleware.Timeout(10*time.Second)).Post("/setup/test-webhook", setupHandler.TestWebhook)
 		}
 	})
 

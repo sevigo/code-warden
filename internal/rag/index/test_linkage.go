@@ -199,34 +199,44 @@ func extractRustTestedSymbols(content string, symbols map[string]TestedSymbol) {
 
 // InferSourceFile infers the production source file from a test file path.
 // Example: "service_test.go" -> "service.go", "handler.test.ts" -> "handler.ts"
+// The returned path uses forward slashes regardless of host OS so callers
+// get a stable identifier across platforms.
 func InferSourceFile(testFile string) string {
-	dir := filepath.Dir(testFile)
+	// Normalise input first so the suffix checks below are reliable on Windows
+	// where callers may pass either separator.
+	testFile = filepath.ToSlash(testFile)
+	dir := filepath.ToSlash(filepath.Dir(testFile))
 	base := filepath.Base(testFile)
 	ext := filepath.Ext(base)
+
+	join := func(dir, name string) string {
+		if dir == "" || dir == "." {
+			return name
+		}
+		return dir + "/" + name
+	}
 
 	switch ext {
 	case ".go":
 		if strings.HasSuffix(base, "_test.go") {
 			sourceName := strings.TrimSuffix(base, "_test.go") + ".go"
-			return filepath.Join(dir, sourceName)
+			return join(dir, sourceName)
 		}
 		return testFile
 	case ".ts", ".tsx", ".js", ".jsx":
 		sourceName := strings.TrimSuffix(base, ext)
 		sourceName = strings.TrimSuffix(sourceName, ".test")
 		sourceName = strings.TrimSuffix(sourceName, ".spec")
-		return filepath.Join(dir, sourceName+ext)
+		return join(dir, sourceName+ext)
 	case ".py":
 		if strings.HasSuffix(base, "_test.py") {
 			sourceName := strings.TrimSuffix(base, "_test.py") + ".py"
-			return filepath.Join(dir, sourceName)
+			return join(dir, sourceName)
 		}
-		if strings.HasSuffix(base, "test_") {
-			if len(base) > 5 {
-				sourceName := base[5:]
-				return filepath.Join(dir, sourceName)
-			}
-		}
+		// "test_X.py" is a common Python convention but not one we rewrite —
+		// the source file name doesn't follow a deterministic rule (could be
+		// X.py, X_impl.py, etc.). Return unchanged so callers don't get a
+		// false-positive match.
 		return testFile
 	default:
 		return testFile

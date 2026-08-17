@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -94,7 +96,8 @@ func (t *grepTool) Execute(ctx context.Context, args map[string]any) (any, error
 	}
 
 	// Validate path stays within the workspace root.
-	if _, err := safeJoin(root, relPath); err != nil {
+	searchRoot, err := safeJoin(root, relPath)
+	if err != nil {
 		return nil, err
 	}
 
@@ -112,17 +115,7 @@ func (t *grepTool) Execute(ctx context.Context, args map[string]any) (any, error
 		"ignore_case", ignoreCase, "context", contextLines, "limit", limit,
 		"binary", t.binary)
 
-	cmdArgs := t.buildArgs(pattern, relPath, glob, ignoreCase, contextLines)
-	cmd := exec.CommandContext(ctx, t.binary, cmdArgs...) //nolint:gosec // binary is "rg" or "grep", relPath is safeJoin-validated
-	cmd.Dir = root                                        // paths in output are relative to workspace root
-
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = nil // exit code 1 from grep/rg means "no matches" — not an error
-
-	_ = cmd.Run() // non-zero exit is expected when no matches found
-
-	output := buf.String()
+	output := t.runGrep(ctx, root, searchRoot, relPath, pattern, glob, ignoreCase, contextLines)
 
 	// Apply line limit.
 	limitReached := false
@@ -175,9 +168,45 @@ func (t *grepTool) Execute(ctx context.Context, args map[string]any) (any, error
 	return result, nil
 }
 
-// buildArgs constructs the argument slice for rg or grep.
-func (t *grepTool) buildArgs(pattern, relPath, glob string, ignoreCase bool, contextLines int) []string {
-	if t.binary == "rg" {
+// runGrep executes the search using the configured external binary (rg or
+// grep) when available, and falls back to a pure-Go implementation otherwise.
+// The fallback makes the tool portable on systems without ripgrep/grep on
+// PATH (e.g. stock Windows hosts).
+func (t *grepTool) runGrep(ctx context.Context, root, searchRoot, relPath, pattern, glob string, ignoreCase bool, contextLines int) string {
+	// Resolve the binary fresh each call — LookPath is cheap and the PATH may
+	// have changed since construction (mainly relevant in tests).
+	binary := t.binary
+	if _, err := exec.LookPath(binary); err != nil {
+		binary = ""
+	}
+
+	if binary != "" {
+		cmdArgs := t.buildArgsFor(binary, pattern, relPath, glob, ignoreCase, contextLines)
+		cmd := exec.CommandContext(ctx, binary, cmdArgs...) //nolint:gosec // binary is "rg" or "grep", relPath is safeJoin-validated
+		cmd.Dir = root                                        // paths in output are relative to workspace root
+
+		var buf bytes.Buffer
+		cmd.Stdout = &buf
+		cmd.Stderr = nil // exit code 1 from grep/rg means "no matches" — not an error
+
+		if err := cmd.Run(); err == nil {
+			return buf.String()
+		}
+		// Non-zero exit doesn't necessarily mean "no matches" for rg/grep, but
+		// the output buffer is what we care about. If Run failed for a reason
+		// other than exit code 1 (e.g. binary not found mid-run), fall through
+		// to the pure-Go implementation.
+		if buf.Len() > 0 {
+			return buf.String()
+		}
+	}
+
+	return grepPureGo(root, searchRoot, pattern, glob, ignoreCase, contextLines)
+}
+
+// buildArgsFor dispatches to the binary-specific arg builder.
+func (t *grepTool) buildArgsFor(binary, pattern, relPath, glob string, ignoreCase bool, contextLines int) []string {
+	if binary == "rg" {
 		return buildRgArgs(pattern, relPath, glob, ignoreCase, contextLines)
 	}
 	return buildGrepArgs(pattern, relPath, glob, ignoreCase, contextLines)
@@ -401,4 +430,240 @@ func searchTools() []mcp.Tool {
 		newGrepTool(),
 		&findTool{},
 	}
+}
+
+// grepPureGo is a portable reimplementation of `grep -rn <pattern> <path>`
+// used as a fallback when neither rg nor grep is on PATH (e.g. stock Windows
+// hosts). It walks searchRoot, applies the optional --include glob, and emits
+// matching lines in the same "file:line: content" format the external tools
+// produce. Context lines (--context / -C) are emitted as the external tools
+// would: surrounding lines without a line-number prefix, separated from the
+// next match group by "--".
+func grepPureGo(root, searchRoot, pattern, glob string, ignoreCase bool, contextLines int) string {
+	re := compileGrepRegex(pattern, ignoreCase)
+
+	var out strings.Builder
+	walkFn := newGrepWalkFn(root, searchRoot, glob, re, contextLines, &out)
+	_ = filepath.WalkDir(searchRoot, walkFn)
+
+	return out.String()
+}
+
+// compileGrepRegex builds the regexp used by the pure-Go grep fallback. On
+// invalid regex syntax, it falls back to a literal substring search so the
+// tool still returns something useful instead of an empty result.
+func compileGrepRegex(pattern string, ignoreCase bool) *regexp.Regexp {
+	prefix := ""
+	if ignoreCase {
+		prefix = "(?i)"
+	}
+	if re, err := regexp.Compile(prefix + pattern); err == nil {
+		return re
+	}
+	return regexp.MustCompile(prefix + regexp.QuoteMeta(pattern))
+}
+
+// newGrepWalkFn returns a filepath.WalkDir callback that appends matching
+// lines (with optional context) to out.
+func newGrepWalkFn(root, searchRoot, glob string, re *regexp.Regexp, contextLines int, out *strings.Builder) fs.WalkDirFunc {
+	return func(absPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if skippedDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		return grepEmitFileMatches(root, searchRoot, absPath, glob, re, contextLines, out)
+	}
+}
+
+// grepEmitFileMatches processes a single file: applies the glob filter, reads
+// the file, finds matching lines, and writes them (with optional context) to
+// out. Returns nil so WalkDir continues.
+func grepEmitFileMatches(root, searchRoot, absPath, glob string, re *regexp.Regexp, contextLines int, out *strings.Builder) error {
+	relToSearch, relErr := filepath.Rel(searchRoot, absPath)
+	if relErr != nil {
+		return nil
+	}
+	relToSearch = filepath.ToSlash(relToSearch)
+
+	if glob != "" && !matchGlob(glob, relToSearch) {
+		return nil
+	}
+
+	// Display path is relative to the workspace root, matching rg/grep
+	// invoked with cmd.Dir=root.
+	relToRoot, relErr := filepath.Rel(root, absPath)
+	if relErr != nil {
+		return nil
+	}
+	displayPath := filepath.ToSlash(relToRoot)
+
+	content, readErr := readFileLines(absPath)
+	if readErr != nil {
+		return nil // skip binary/unreadable files, like grep would
+	}
+
+	matches := grepFileLines(content, re)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	writeMatchesWithContext(out, displayPath, content, matches, contextLines)
+	return nil
+}
+
+// grepFileLines returns the 0-based line indices where the regexp matches.
+// The ignoreCase flag is encoded into the regexp via the (?i) prefix at
+// compile time, so no per-line branching is needed here.
+func grepFileLines(lines []string, re *regexp.Regexp) []int {
+	var matches []int
+	for i, line := range lines {
+		if re.MatchString(line) {
+			matches = append(matches, i)
+		}
+	}
+	return matches
+}
+
+// writeMatchesWithContext emits matching lines in "file:line: content" format
+// and surrounding context lines (without the prefix) separated by "--" between
+// groups, mirroring grep -C / rg -C output.
+func writeMatchesWithContext(out *strings.Builder, displayPath string, lines []string, matches []int, contextLines int) {
+	groups := groupAdjacentMatches(matches, contextLines)
+	for gIdx, group := range groups {
+		if gIdx > 0 {
+			out.WriteString("--\n")
+		}
+		for _, ln := range group {
+			if ln < 0 || ln >= len(lines) {
+				continue
+			}
+			isMatch := false
+			for _, m := range matches {
+				if m == ln {
+					isMatch = true
+					break
+				}
+			}
+			if isMatch {
+				fmt.Fprintf(out, "%s:%d:%s\n", displayPath, ln+1, lines[ln])
+			} else {
+				fmt.Fprintf(out, "%s-%d-%s\n", displayPath, ln+1, lines[ln])
+			}
+		}
+	}
+}
+
+// groupAdjacentMatches expands each match by contextLines on either side and
+// merges overlapping expansions into contiguous groups.
+func groupAdjacentMatches(matches []int, contextLines int) [][]int {
+	if len(matches) == 0 {
+		return nil
+	}
+	var groups [][]int
+	current := expandMatch(matches[0], contextLines, 0, -1)
+	for _, m := range matches[1:] {
+		expanded := expandMatch(m, contextLines, 0, -1)
+		if expanded[0] <= current[len(current)-1]+1 {
+			// Merge: extend the current group.
+			current = mergeGroups(current, expanded)
+		} else {
+			groups = append(groups, current)
+			current = expanded
+		}
+	}
+	groups = append(groups, current)
+	return groups
+}
+
+func expandMatch(m, contextLines, lo, hi int) []int {
+	start := m - contextLines
+	if start < lo {
+		start = lo
+	}
+	end := m + contextLines
+	if hi >= 0 && end > hi {
+		end = hi
+	}
+	if end < start {
+		start = end
+	}
+	group := make([]int, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		group = append(group, i)
+	}
+	return group
+}
+
+func mergeGroups(a, b []int) []int {
+	seen := make(map[int]bool, len(a)+len(b))
+	merged := make([]int, 0, len(a)+len(b))
+	for _, i := range a {
+		if !seen[i] {
+			seen[i] = true
+			merged = append(merged, i)
+		}
+	}
+	for _, i := range b {
+		if !seen[i] {
+			seen[i] = true
+			merged = append(merged, i)
+		}
+	}
+	// Sort the merged slice.
+	for i := 1; i < len(merged); i++ {
+		for j := i; j > 0 && merged[j-1] > merged[j]; j-- {
+			merged[j-1], merged[j] = merged[j], merged[j-1]
+		}
+	}
+	return merged
+}
+
+// readFileLines reads a file and splits it into lines without a trailing empty
+// element. Binary or unreadable files return an error.
+func readFileLines(absPath string) ([]string, error) {
+	data, err := os.ReadFile(absPath) //nolint:gosec // path is safeJoin-validated
+	if err != nil {
+		return nil, err
+	}
+	if isBinary(data) {
+		return nil, fmt.Errorf("binary file")
+	}
+	// Normalise CRLF so the output doesn't include trailing \r on Windows.
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	lines := strings.Split(normalized, "\n")
+	// Drop a single trailing empty element from the final newline.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, nil
+}
+
+// isBinary returns true if the data contains a NUL byte or a high proportion
+// of non-text bytes in the first 512 bytes — a heuristic used by ripgrep and
+// git to skip binary files.
+func isBinary(data []byte) bool {
+	const sampleSize = 512
+	sample := data
+	if len(sample) > sampleSize {
+		sample = sample[:sampleSize]
+	}
+	nonText := 0
+	for _, b := range sample {
+		if b == 0 {
+			return true
+		}
+		if b < 0x07 || (b > 0x0D && b < 0x20) {
+			nonText++
+		}
+	}
+	return len(sample) > 0 && nonText*100/len(sample) > 30
 }

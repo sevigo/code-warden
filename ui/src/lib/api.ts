@@ -65,8 +65,56 @@ export interface SetupStatus {
   services: {
     database: { status: string; latency_ms: number }
     qdrant: { status: string; latency_ms: number }
+    llm?: { status: string; latency_ms: number; provider: string }
   }
   ready: boolean
+}
+
+export interface SetupGitHubManifestResponse {
+  manifest_flow: boolean
+  manifest?: string
+  state?: string
+  url?: string
+  explanation?: string
+}
+
+export interface SetupGitHubCallbackResponse {
+  success: boolean
+  app_id: number
+  app_name: string
+  message: string
+}
+
+export interface GitHubAppCredentials {
+  app_id: number
+  webhook_secret: string
+  private_key_pem: string
+  app_name?: string
+  installation_id?: number
+}
+
+export interface LLMCredentials {
+  provider: string
+  gemini_api_key?: string
+  ollama_api_key?: string
+}
+
+export interface SetupSaveCredentialsRequest {
+  github?: GitHubAppCredentials
+  llm?: LLMCredentials
+}
+
+export interface SetupTestLLMResponse {
+  status: string
+  provider: string
+  detail: string
+}
+
+export interface SetupTestWebhookResponse {
+  status: string
+  app_id: number
+  webhook_secret: boolean
+  message: string
 }
 
 export interface AppConfig {
@@ -220,6 +268,17 @@ export const api = {
 
   setup: {
     status: () => fetchApi<SetupStatus>('/setup/status'),
+    githubManifest: () =>
+      fetchApi<SetupGitHubManifestResponse>('/setup/github/manifest', { method: 'POST' }),
+    saveCredentials: (body: SetupSaveCredentialsRequest) =>
+      fetchApi<{ status: string }>('/setup/credentials', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    testLLM: () =>
+      fetchApi<SetupTestLLMResponse>('/setup/test-llm', { method: 'POST' }),
+    testWebhook: () =>
+      fetchApi<SetupTestWebhookResponse>('/setup/test-webhook', { method: 'POST' }),
   },
 
   config: {

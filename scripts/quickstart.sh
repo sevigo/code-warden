@@ -68,27 +68,10 @@ if [ ! -f .env ]; then
     info "Created .env from .env.example"
 fi
 
-# Check if GITHUB_TOKEN is still the placeholder
-if grep -q 'GITHUB_TOKEN=ghp_replace_me' .env 2>/dev/null; then
-    warn "GITHUB_TOKEN is not set in .env"
-    echo ""
-    echo "  You need a GitHub Personal Access Token for the server to authenticate."
-    echo "  Create one at: https://github.com/settings/tokens"
-    echo "  Required scopes: repo (or repo:read for private repos)"
-    echo ""
-    printf "  Paste your GitHub PAT (or press Enter to skip): "
-    read -r pat
-    if [ -n "$pat" ]; then
-        # Replace the placeholder value
-        sed -i.bak "s|GITHUB_TOKEN=ghp_replace_me|GITHUB_TOKEN=$pat|" .env
-        rm -f .env.bak
-        ok "GitHub PAT saved to .env"
-    else
-        warn "Skipped — set GITHUB_TOKEN in .env before connecting to GitHub"
-    fi
-else
-    ok "GITHUB_TOKEN is configured"
-fi
+# NOTE: GitHub and LLM credentials are now optional in .env — the setup wizard
+# at /setup will handle them after the server is up. We no longer prompt for a
+# GitHub PAT here.
+info "GitHub and LLM credentials will be configured via the setup wizard at http://localhost:8080/setup"
 
 # ── GPU detection ─────────────────────────────────────────────────────────────
 

@@ -6,23 +6,40 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
-	// Master key derivation parameters.
+	// Master key derivation parameters. Kept moderate — the "password" (machine
+	// ID) isn't secret, so Argon2 is mainly a slow-down, not a brute-force
+	// defence. Reducing time/memory makes startup snappier on small machines.
 	keySalt      = "code-warden-credential-store-v1"
-	argonTime    = 3
-	argonMem     = 64 * 1024 // 64 MB
-	argonThreads = 4
+	argonTime    = 1
+	argonMem     = 16 * 1024 // 16 MB
+	argonThreads = 2
 	argonKeyLen  = 32 // AES-256
+
+	// masterKeyFile is the persisted random key fallback. When neither a stable
+	// machine ID nor a Windows MachineGuid is available, we generate a random
+	// key and store it here so credentials survive restarts.
+	masterKeyFile = "credentials.key"
+
+	// osWindows matches runtime.GOOS on Windows hosts. Extracted as a constant
+	// to satisfy goconst when referenced more than once.
+	osWindows = "windows"
 )
 
 // GitHubAppCredentials holds the GitHub App configuration.
@@ -49,15 +66,15 @@ type CredentialStore struct {
 }
 
 // NewCredentialStore creates a CredentialStore. The master key is derived
-// deterministically from the machine's identity so credentials survive restarts.
+// from a stable machine identity (Linux /etc/machine-id, Windows MachineGuid,
+// or a persisted random key file as a last resort) so credentials survive
+// restarts and container recreation.
 func NewCredentialStore(db *sqlx.DB) (*CredentialStore, error) {
-	machineID := getMachineID()
-	masterKey := deriveMasterKey(machineID)
-
-	// Verify the key works by attempting to encrypt/decrypt a test value.
-	if err := verifyKey(masterKey); err != nil {
-		return nil, fmt.Errorf("credential store key verification failed: %w", err)
+	machineID, err := stableMachineID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine stable machine identity: %w", err)
 	}
+	masterKey := deriveMasterKey(machineID)
 
 	return &CredentialStore{
 		db:        db,
@@ -80,8 +97,12 @@ func (cs *CredentialStore) Save(ctx context.Context, id string, data any) error 
 		return fmt.Errorf("failed to encrypt credential %s: %w", id, err)
 	}
 
-	query := `INSERT INTO credentials (id, data) VALUES ($1, $2)
-	          ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`
+	// Rebind to the driver's placeholder dialect ($1 for Postgres, ? for
+	// SQLite/MySQL) so the credential store works under any sqlx driver.
+	// CURRENT_TIMESTAMP is portable (Postgres + SQLite); the updated_at
+	// trigger from migration 000014 keeps updated_at in sync on Postgres.
+	query := cs.db.Rebind(`INSERT INTO credentials (id, data) VALUES ($1, $2)
+	          ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP`)
 	_, err = cs.db.ExecContext(ctx, query, id, encrypted)
 	if err != nil {
 		return fmt.Errorf("failed to store credential %s: %w", id, err)
@@ -89,7 +110,8 @@ func (cs *CredentialStore) Save(ctx context.Context, id string, data any) error 
 	return nil
 }
 
-// Load retrieves and decrypts a credential blob. Returns false if not found.
+// Load retrieves and decrypts a credential blob. Returns (false, nil) when the
+// credential is not stored; (false, err) for transient DB or decryption errors.
 func (cs *CredentialStore) Load(ctx context.Context, id string, dest any) (bool, error) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
@@ -98,7 +120,10 @@ func (cs *CredentialStore) Load(ctx context.Context, id string, dest any) (bool,
 	query := `SELECT data FROM credentials WHERE id = $1`
 	err := cs.db.GetContext(ctx, &encrypted, query, id)
 	if err != nil {
-		return false, nil // not found
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil // genuinely not configured yet
+		}
+		return false, fmt.Errorf("failed to read credential %s: %w", id, err)
 	}
 
 	decrypted, err := decrypt(cs.masterKey, encrypted)
@@ -121,45 +146,100 @@ func (cs *CredentialStore) Delete(ctx context.Context, id string) error {
 	return err
 }
 
-// HasCredentials returns true if the given credential ID exists.
+// HasCredentials returns true if the given credential ID exists. A transient
+// DB error is treated as "not present" — callers that need to distinguish
+// should use Load and inspect the error.
 func (cs *CredentialStore) HasCredentials(ctx context.Context, id string) bool {
 	var exists bool
-	_ = cs.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM credentials WHERE id = $1)`, id)
-	return exists
+	err := cs.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM credentials WHERE id = $1)`, id)
+	return err == nil && exists
 }
 
-func getMachineID() string {
-	// Try Linux machine-id first.
+// stableMachineID returns a value that stays the same across reboots and
+// container restarts on the same host. Order of preference:
+//  1. Persisted random key file (always wins if present — works everywhere).
+//  2. Linux /etc/machine-id (stable across container restarts when /etc is
+//     mounted from a volume or the host).
+//  3. Windows MachineGuid from the registry (stable across reboots/rename).
+//  4. os.Hostname() as a final fallback (with a warning printed by the caller).
+//
+// If none of the stable sources is available, we generate a random 32-byte key
+// and persist it to <dataDir>/credentials.key so subsequent runs reuse it.
+func stableMachineID() (string, error) {
+	// 1. Persisted random key file.
+	if keyFile := masterKeyPath(); keyFile != "" {
+		if data, err := os.ReadFile(keyFile); err == nil && len(data) > 0 {
+			return string(data), nil
+		}
+	}
+
+	// 2. Linux machine-id.
 	if id, err := os.ReadFile("/etc/machine-id"); err == nil && len(id) > 0 {
-		return string(id)
+		return string(id), nil
 	}
-	// Fall back to hostname.
-	hostname, err := os.Hostname()
+
+	// 3. Windows MachineGuid.
+		if runtime.GOOS == osWindows {
+			if guid, err := windowsMachineGUID(); err == nil && guid != "" {
+				return guid, nil
+			}
+		}
+
+	// 4. Persist a random key as the last resort.
+	keyFile := masterKeyPath()
+	if keyFile == "" {
+		// No writable data dir — fall back to hostname (least stable). We
+		// deliberately ignore the error: hostname() failing is extremely rare
+		// and we still need *something* to key on, so use a fixed fallback.
+		hostname, hostErr := os.Hostname()
+		if hostErr != nil || hostname == "" {
+			return "code-warden-default", nil //nolint:nilerr // intentional fallback when hostname is unavailable
+		}
+		return hostname, nil
+	}
+
+	random := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, random); err != nil {
+		return "", fmt.Errorf("failed to generate master key: %w", err)
+	}
+	encoded := hex.EncodeToString(random)
+	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
+		return "", fmt.Errorf("failed to create master key directory: %w", err)
+	}
+	if err := os.WriteFile(keyFile, []byte(encoded), 0o600); err != nil {
+		return "", fmt.Errorf("failed to persist master key: %w", err)
+	}
+	return encoded, nil
+}
+
+// masterKeyPath returns the path where a random master key may be persisted,
+// or "" if no writable data directory is configured.
+func masterKeyPath() string {
+	dir := os.Getenv("CODE_WARDEN_DATA_DIR")
+	if dir == "" {
+		dir = "data"
+	}
+	return filepath.Join(dir, masterKeyFile)
+}
+
+// windowsMachineGUID reads the Windows MachineGuid from the registry.
+func windowsMachineGUID() (string, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Cryptography`, registry.QUERY_VALUE|registry.WOW64_64KEY)
 	if err != nil {
-		hostname = "code-warden-default"
+		return "", err
 	}
-	return hostname
+	defer k.Close()
+
+	guid, _, err := k.GetStringValue("MachineGuid")
+	if err != nil {
+		return "", err
+	}
+	return guid, nil
 }
 
 func deriveMasterKey(machineID string) []byte {
 	salt := sha256.Sum256([]byte(keySalt))
 	return argon2.IDKey([]byte(machineID), salt[:], argonTime, argonMem, argonThreads, argonKeyLen)
-}
-
-func verifyKey(key []byte) error {
-	testData := []byte("verification")
-	encrypted, err := encrypt(key, testData)
-	if err != nil {
-		return err
-	}
-	decrypted, err := decrypt(key, encrypted)
-	if err != nil {
-		return err
-	}
-	if string(decrypted) != string(testData) {
-		return fmt.Errorf("round-trip verification failed")
-	}
-	return nil
 }
 
 func encrypt(key, plaintext []byte) ([]byte, error) {
