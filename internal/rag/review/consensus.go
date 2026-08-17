@@ -97,8 +97,6 @@ func (s *Service) consensusReduceFunc(repoConfig *core.RepoConfig, event *core.G
 }
 
 // GenerateConsensusReview generates a consensus review from multiple LLM models.
-//
-//nolint:funlen // Complex consensus workflow requiring multiple stages
 func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, models []string, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
 	startTime := time.Now()
 	if repoConfig == nil {
@@ -112,52 +110,16 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 		return nil, "", fmt.Errorf("need at least 1 comparison model, got %d", len(models))
 	}
 
-	// Use context builder with impact tracking for profile calculation
-	contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, event.PRTitle+"\n"+event.PRBody)
-	contextString := contextResult.FullContext
-	definitionsContext := contextResult.DefinitionsContext
-	impactRadius := contextResult.ImpactRadius
-
-	// Detect duplications by generating embeddings for the exact added lines
-	if dupCtx := s.checkCodeDuplication(ctx, repo.QdrantCollectionName, changedFiles); dupCtx != "" {
-		contextString += "\n\n" + dupCtx
-	}
+	rc := s.buildReviewContext(ctx, repo, event, changedFiles, diff, event.PRTitle+"\n"+event.PRBody, false)
 
 	contextBuildTime := time.Since(startTime)
 
 	s.cfg.Logger.Info("stage started", "name", "ConsensusGathering", "models_count", len(models),
 		"context_build_time", contextBuildTime.String())
 	s.cfg.Logger.Debug("consensus context gathered",
-		"context_len", len(contextString),
-		"definitions_len", len(definitionsContext),
-		"impact_radius", impactRadius,
-	)
-
-	// Warn if no context was retrieved
-	contextWasEmpty := contextIsEmpty(contextString, definitionsContext)
-	if contextWasEmpty {
-		s.cfg.Logger.Warn("HIGH HALLUCINATION RISK: no context retrieved from vector store - consensus review will be based solely on diff",
-			"repo", event.RepoFullName,
-			"pr", event.PRNumber,
-			"changed_files", len(changedFiles),
-		)
-		contextString = "**WARNING: No repository context available. Reviews based solely on diff without repository context. Verify findings against actual codebase.**"
-		definitionsContext = "**WARNING: No type definitions resolved.**"
-	}
-
-	// Calculate review profile for consensus
-	linesAdded, linesDeleted := calculateLinesChanged(changedFiles)
-	changedFilePaths := extractFilenames(changedFiles)
-	testCoverage := core.HasTestCoverage(changedFilePaths)
-	docsOnly := core.IsDocsOnly(changedFilePaths)
-	complexity := core.CalculateProfile(linesAdded, linesDeleted, len(changedFiles), impactRadius, testCoverage, docsOnly, changedFilePaths)
-
-	s.cfg.Logger.Info("consensus review profile calculated",
-		"profile", complexity.Profile,
-		"score", complexity.Score,
-		"impact_radius", complexity.ImpactRadius,
-		"high_impact", complexity.HighImpact,
-		"high_risk", complexity.HighRisk,
+		"context_len", len(rc.FullContext),
+		"definitions_len", len(rc.DefinitionsContext),
+		"impact_radius", rc.ImpactRadius,
 	)
 
 	// Prepare for artifact saving
@@ -168,13 +130,13 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 	}
 
 	// Render profile instruction for consensus
-	profileInstruction, err := s.cfg.PromptMgr.Render("review_profile", complexity)
+	profileInstruction, err := s.cfg.PromptMgr.Render("review_profile", rc.Complexity)
 	if err != nil {
 		s.cfg.Logger.Warn("failed to render review profile for consensus, using default", "error", err)
 		profileInstruction = ""
 	}
 
-	promptData := s.buildReviewPromptDataWithProfile(event, repoConfig, contextString, definitionsContext, diff, changedFiles, profileInstruction)
+	promptData := s.buildReviewPromptDataWithProfile(event, repoConfig, rc.FullContext, rc.DefinitionsContext, diff, changedFiles, profileInstruction)
 
 	// Track model results for fallback
 	var modelResults []ComparisonResult
@@ -182,7 +144,7 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 
 	chain := chains.NewMapReduceChain(
 		s.consensusMapFunc(event, promptData, &modelResults, &modelResultsMu, reviewsDir, timestamp),
-		s.consensusReduceFunc(repoConfig, event, contextString, changedFiles, contextBuildTime, reviewsDir),
+		s.consensusReduceFunc(repoConfig, event, rc.FullContext, changedFiles, contextBuildTime, reviewsDir),
 		chains.WithMaxConcurrency[string, ComparisonResult, string](2),
 		chains.WithQuorum[string, ComparisonResult, string](s.cfg.ConsensusQuorum),
 	)
@@ -204,10 +166,10 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 		// Filter and validate suggestions with the same profile-specific pipeline
 		// used by the single-model path (dedup, line validation, severity ranking).
 		validator := NewSuggestionValidator(diff, changedFiles)
-		filter := NewFilterForProfile(complexity.Profile)
+		filter := NewFilterForProfile(rc.Complexity.Profile)
 		structuredReview = filter.FilterAndRank(structuredReview, validator, s.cfg.Logger.Info)
 		// Add disclaimer to summary if context was empty (mirroring GenerateReview)
-		if contextWasEmpty {
+		if rc.ContextEmpty {
 			structuredReview.Summary = "**Note:** This consensus review was generated without repository context. Verify findings against actual codebase.\n\n" + structuredReview.Summary
 		}
 	}
@@ -240,9 +202,9 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 	rawConsensus += disclaimer
 
 	// Add profile metadata to consensus result
-	structuredReview.ReviewProfile = string(complexity.Profile)
-	structuredReview.ComplexityScore = complexity.Score
-	structuredReview.ImpactRadius = complexity.ImpactRadius
+	structuredReview.ReviewProfile = string(rc.Complexity.Profile)
+	structuredReview.ComplexityScore = rc.Complexity.Score
+	structuredReview.ImpactRadius = rc.ImpactRadius
 
 	return structuredReview, rawConsensus, nil
 }

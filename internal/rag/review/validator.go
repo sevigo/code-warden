@@ -26,11 +26,13 @@ func NewSuggestionValidator(diffContent string, changedFiles []internalgithub.Ch
 	return &SuggestionValidator{
 		diffContent:  diffContent,
 		changedFiles: changedFiles,
-		fileLines:    buildFileLinesMap(changedFiles),
+		fileLines:    BuildValidLineMap(changedFiles),
 	}
 }
 
-func buildFileLinesMap(changedFiles []internalgithub.ChangedFile) map[string]map[int]struct{} {
+// BuildValidLineMap constructs the valid-line map from changed files' patches.
+// It is used by both the review pipeline and the jobs layer for suggestion validation.
+func BuildValidLineMap(changedFiles []internalgithub.ChangedFile) map[string]map[int]struct{} {
 	result := make(map[string]map[int]struct{})
 	for _, cf := range changedFiles {
 		lines, err := internalgithub.ParseValidLinesFromPatch(cf.Patch, nil)
@@ -47,12 +49,10 @@ func (v *SuggestionValidator) ValidateLineNumber(sug *core.Suggestion) bool {
 		return true
 	}
 
-	lines, exists := v.fileLines[sug.FilePath]
+	cleanPath := strings.TrimPrefix(sug.FilePath, "./")
+	lines, exists := v.fileLines[cleanPath]
 	if !exists {
-		lines, exists = v.fileLines["./"+sug.FilePath]
-		if !exists {
-			return false
-		}
+		return false
 	}
 
 	_, ok := lines[sug.LineNumber]
@@ -89,12 +89,10 @@ func (v *SuggestionValidator) ValidateSource(sug *core.Suggestion) bool {
 }
 
 func (v *SuggestionValidator) lineExistsInDiff(filename string, line int) bool {
-	lines, exists := v.fileLines[filename]
+	cleanPath := strings.TrimPrefix(filename, "./")
+	lines, exists := v.fileLines[cleanPath]
 	if !exists {
-		lines, exists = v.fileLines["./"+filename]
-		if !exists {
-			return false
-		}
+		return false
 	}
 	_, ok := lines[line]
 	return ok
@@ -223,7 +221,7 @@ func validateSourceCitation(sug *core.Suggestion, validator *SuggestionValidator
 }
 
 func makeDedupKey(sug *core.Suggestion) string {
-	return strings.ToLower(sug.FilePath + ":" + strconv.Itoa(sug.LineNumber) + ":" + categoryKey(sug.Comment) + ":" + sug.Category)
+	return strings.ToLower(sug.FilePath + ":" + strconv.Itoa(sug.LineNumber) + ":" + sug.Category)
 }
 
 func sortBySeverityAndConfidence(suggestions []core.Suggestion) {
@@ -234,17 +232,6 @@ func sortBySeverityAndConfidence(suggestions []core.Suggestion) {
 		}
 		return b.Confidence - a.Confidence
 	})
-}
-
-func categoryKey(comment string) string {
-	comment = strings.ToLower(comment)
-	keywords := []string{"nil", "error", "security", "bug", "memory", "concurrent", "performance", "style", "test", "doc"}
-	for _, kw := range keywords {
-		if strings.Contains(comment, kw) {
-			return kw
-		}
-	}
-	return "other"
 }
 
 func minInt(a, b int) int {
