@@ -219,7 +219,9 @@ type GitHubConfig struct {
 	AppID          int64  `mapstructure:"app_id"`
 	WebhookSecret  string `mapstructure:"webhook_secret"`
 	PrivateKeyPath string `mapstructure:"private_key_path"`
-	Token          string `mapstructure:"token"` // For CLI or preload
+	PrivateKeyPEM  string `mapstructure:"-"` // populated from DB, not config file
+	AppName        string `mapstructure:"-"` // populated from DB
+	Token          string `mapstructure:"token"`
 }
 
 type AIConfig struct {
@@ -668,8 +670,11 @@ func (c *Config) validateGitHub() error {
 	if c.GitHub.WebhookSecret == "" {
 		errs = append(errs, "github.webhook_secret is required")
 	}
-	if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
-		errs = append(errs, fmt.Sprintf("github private key not found at path: %s", c.GitHub.PrivateKeyPath))
+	// Accept either a PEM key in memory (DB-backed) or a key file on disk.
+	if c.GitHub.PrivateKeyPEM == "" {
+		if _, err := os.Stat(c.GitHub.PrivateKeyPath); os.IsNotExist(err) {
+			errs = append(errs, "github private key not found (set private_key_path or store credentials in DB)")
+		}
 	}
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
@@ -683,8 +688,11 @@ func (c *Config) ValidateForServer() error {
 	if err := c.Validate(); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if err := c.validateGitHub(); err != nil {
-		errs = append(errs, err.Error())
+	// In setup mode, GitHub is not yet configured — skip its validation.
+	if !c.IsSetupMode() {
+		if err := c.validateGitHub(); err != nil {
+			errs = append(errs, err.Error())
+		}
 	}
 	if err := c.Agent.Validate(); err != nil {
 		errs = append(errs, err.Error())
@@ -718,4 +726,40 @@ func (db *DBConfig) GetDSN() string {
 		db.Database,
 		db.SSLMode,
 	)
+}
+
+// IsSetupMode returns true when the server should show the setup wizard
+// instead of requiring full GitHub configuration at startup.
+func (c *Config) IsSetupMode() bool {
+	return c.GitHub.AppID == 0
+}
+
+// ApplyDBCredentials overrides config values with credentials stored in the DB.
+// This allows the setup wizard to configure the server without editing config files.
+func (c *Config) ApplyDBCredentials(github *GitHubAppCredentials, llm *LLMCredentials) {
+	if github != nil {
+		if github.AppID != 0 {
+			c.GitHub.AppID = github.AppID
+		}
+		if github.WebhookSecret != "" {
+			c.GitHub.WebhookSecret = github.WebhookSecret
+		}
+		if github.PrivateKeyPEM != "" {
+			c.GitHub.PrivateKeyPEM = github.PrivateKeyPEM
+		}
+		if github.AppName != "" {
+			c.GitHub.AppName = github.AppName
+		}
+	}
+	if llm != nil {
+		if llm.Provider != "" {
+			c.AI.LLMProvider = llm.Provider
+		}
+		if llm.GeminiAPIKey != "" {
+			c.AI.GeminiAPIKey = llm.GeminiAPIKey
+		}
+		if llm.OllamaAPIKey != "" {
+			c.AI.OllamaAPIKey = llm.OllamaAPIKey
+		}
+	}
 }

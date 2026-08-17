@@ -19,12 +19,15 @@ import (
 
 // NewRouter creates and configures a new HTTP router with middleware and API routes.
 func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
-	return NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, nil, logger)
+	r, _, _ := NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, nil, logger)
+	return r
 }
 
 // NewRouterWithStore creates a router with storage for web UI endpoints.
-func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *chi.Mux {
+func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) (*chi.Mux, *handler.DashboardHandler, *handler.SetupHandler) {
 	r := chi.NewRouter()
+	var dashboardHandler *handler.DashboardHandler
+	var setupHandler *handler.SetupHandler
 
 	// Configure middleware stack
 	r.Use(middleware.RequestID)
@@ -47,7 +50,8 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, cance
 		// Web UI API routes
 		if store != nil {
 			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, gitClient, cfg, logger)
-			dashboardHandler := handler.NewDashboardHandler(cfg, store, logger)
+			dashboardHandler = handler.NewDashboardHandler(cfg, store, logger)
+			setupHandler = handler.NewSetupHandler(cfg, logger)
 
 			// Fast endpoints — short timeout is fine
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos", webUIHandler.ListRepos)
@@ -72,6 +76,13 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, cance
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/reviews", dashboardHandler.ListReviews)
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/reviews/{prNumber}", dashboardHandler.GetReview)
 			r.With(middleware.Timeout(30*time.Second)).Post("/repos/{repoId}/reviews/{prNumber}/feedback", dashboardHandler.SubmitFeedback)
+
+			// Setup wizard endpoints
+			r.With(middleware.Timeout(30*time.Second)).Post("/setup/github/manifest", setupHandler.GitHubManifest)
+			r.With(middleware.Timeout(30*time.Second)).Get("/setup/github/callback", setupHandler.GitHubCallback)
+			r.With(middleware.Timeout(10*time.Second)).Post("/setup/credentials", setupHandler.SaveCredentials)
+			r.With(middleware.Timeout(10*time.Second)).Post("/setup/test-llm", setupHandler.TestLLM)
+			r.With(middleware.Timeout(10*time.Second)).Post("/setup/test-webhook", setupHandler.TestWebhook)
 		}
 	})
 
@@ -93,5 +104,5 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, cance
 		})
 	}
 
-	return r
+	return r, dashboardHandler, setupHandler
 }

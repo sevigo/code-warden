@@ -27,6 +27,14 @@ func run() error {
 	}
 	defer cleanup()
 
+	// Load credentials from DB (overrides config file / env values).
+	app.LoadCredentials()
+
+	// Wire the credential store into the server's setup handlers.
+	if app.CredentialStore != nil {
+		app.Server.SetCredentialStore(app.CredentialStore)
+	}
+
 	if err := app.Cfg.ValidateForServer(); err != nil {
 		return fmt.Errorf("server configuration validation failed: %w", err)
 	}

@@ -14,14 +14,27 @@ import (
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
+	"github.com/sevigo/code-warden/internal/server/handler"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
 // Server wraps an HTTP server with graceful shutdown capabilities.
 type Server struct {
-	ctx    context.Context
-	server *http.Server
-	logger *slog.Logger
+	ctx              context.Context
+	server           *http.Server
+	logger           *slog.Logger
+	dashboardHandler *handler.DashboardHandler
+	setupHandler     *handler.SetupHandler
+}
+
+// SetCredentialStore injects the credential store into the setup and dashboard handlers.
+func (s *Server) SetCredentialStore(cs *config.CredentialStore) {
+	if s.dashboardHandler != nil {
+		s.dashboardHandler.SetCredentialStore(cs)
+	}
+	if s.setupHandler != nil {
+		s.setupHandler.SetCredentialStore(cs)
+	}
 }
 
 // NewServer creates a new HTTP server with the given configuration and job dispatcher.
@@ -31,7 +44,7 @@ func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispa
 
 // NewServerWithStore creates a new HTTP server with storage for web UI endpoints.
 func NewServerWithStore(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *Server {
-	router := NewRouterWithStore(cfg, dispatcher, canceller, store, ragService, repoMgr, gitClient, logger)
+	router, dashboardHandler, setupHandler := NewRouterWithStore(cfg, dispatcher, canceller, store, ragService, repoMgr, gitClient, logger)
 
 	return &Server{
 		ctx: ctx,
@@ -39,10 +52,12 @@ func NewServerWithStore(ctx context.Context, cfg *config.Config, dispatcher core
 			Addr:         ":" + cfg.Server.Port,
 			Handler:      router,
 			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 15 * time.Minute, // LLM endpoints can take minutes
+			WriteTimeout: 15 * time.Minute,
 			IdleTimeout:  120 * time.Second,
 		},
-		logger: logger,
+		logger:           logger,
+		dashboardHandler: dashboardHandler,
+		setupHandler:     setupHandler,
 	}
 }
 
