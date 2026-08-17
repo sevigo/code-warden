@@ -182,8 +182,8 @@ func (t *grepTool) runGrep(ctx context.Context, root, searchRoot, relPath, patte
 
 	if binary != "" {
 		cmdArgs := t.buildArgsFor(binary, pattern, relPath, glob, ignoreCase, contextLines)
-		cmd := exec.CommandContext(ctx, binary, cmdArgs...) //nolint:gosec // binary is "rg" or "grep", relPath is safeJoin-validated
-		cmd.Dir = root                                        // paths in output are relative to workspace root
+		cmd := exec.CommandContext(ctx, binary, cmdArgs...)
+		cmd.Dir = root // paths in output are relative to workspace root
 
 		var buf bytes.Buffer
 		cmd.Stdout = &buf
@@ -485,11 +485,13 @@ func newGrepWalkFn(root, searchRoot, glob string, re *regexp.Regexp, contextLine
 
 // grepEmitFileMatches processes a single file: applies the glob filter, reads
 // the file, finds matching lines, and writes them (with optional context) to
-// out. Returns nil so WalkDir continues.
+// out. Returns nil so WalkDir continues. All per-file errors (unreadable,
+// binary, path resolution) are silently skipped — this mirrors grep's behavior
+// of skipping files it can't read rather than aborting the whole search.
 func grepEmitFileMatches(root, searchRoot, absPath, glob string, re *regexp.Regexp, contextLines int, out *strings.Builder) error {
-	relToSearch, relErr := filepath.Rel(searchRoot, absPath)
-	if relErr != nil {
-		return nil
+	relToSearch, err := filepath.Rel(searchRoot, absPath)
+	if err != nil {
+		return nil //nolint:nilerr // skip files we can't resolve — mirrors grep
 	}
 	relToSearch = filepath.ToSlash(relToSearch)
 
@@ -499,15 +501,15 @@ func grepEmitFileMatches(root, searchRoot, absPath, glob string, re *regexp.Rege
 
 	// Display path is relative to the workspace root, matching rg/grep
 	// invoked with cmd.Dir=root.
-	relToRoot, relErr := filepath.Rel(root, absPath)
-	if relErr != nil {
-		return nil
+	relToRoot, err := filepath.Rel(root, absPath)
+	if err != nil {
+		return nil //nolint:nilerr // skip files we can't resolve — mirrors grep
 	}
 	displayPath := filepath.ToSlash(relToRoot)
 
-	content, readErr := readFileLines(absPath)
-	if readErr != nil {
-		return nil // skip binary/unreadable files, like grep would
+	content, err := readFileLines(absPath)
+	if err != nil {
+		return nil //nolint:nilerr // skip binary/unreadable files, like grep would
 	}
 
 	matches := grepFileLines(content, re)
@@ -629,7 +631,7 @@ func mergeGroups(a, b []int) []int {
 // readFileLines reads a file and splits it into lines without a trailing empty
 // element. Binary or unreadable files return an error.
 func readFileLines(absPath string) ([]string, error) {
-	data, err := os.ReadFile(absPath) //nolint:gosec // path is safeJoin-validated
+	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return nil, err
 	}
