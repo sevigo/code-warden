@@ -1,8 +1,12 @@
-# scripts/quickstart.ps1 — Code-Warden guided setup wizard (Windows/PowerShell)
+# scripts/quickstart.ps1 - Code-Warden guided setup wizard (Windows/PowerShell)
 #
 # Idempotent: safe to run multiple times.
 # Run via:  make quickstart     (Windows auto-detects and calls this script)
 #       or:  pwsh ./scripts/quickstart.ps1
+#
+# This script is intentionally ASCII-only so it parses correctly under
+# Windows PowerShell 5.1 (powershell.exe) which reads files using the OEM
+# codepage, not UTF-8. Run it with PowerShell 7+ (pwsh) for the best experience.
 
 [CmdletBinding()]
 param()
@@ -13,13 +17,13 @@ $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $HealthURL  = 'http://localhost:8080/health'
 $Compose    = 'docker-compose.demo.yml'
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers -----------------------------------------------------------------
 
 function Info($msg)    { Write-Host "  > $msg" -ForegroundColor Cyan }
-function Ok($msg)       { Write-Host "  ✓ $msg" -ForegroundColor Green }
-function Warn($msg)     { Write-Host "  ! $msg" -ForegroundColor Yellow }
-function Err($msg)      { Write-Host "  ✗ $msg" -ForegroundColor Red }
-function Heading($msg)  { Write-Host "`n$msg" -ForegroundColor White }
+function Ok($msg)      { Write-Host "  [OK] $msg" -ForegroundColor Green }
+function Warn($msg)    { Write-Host "  ! $msg" -ForegroundColor Yellow }
+function Err($msg)     { Write-Host "  [X] $msg" -ForegroundColor Red }
+function Heading($msg) { Write-Host ""; Write-Host $msg -ForegroundColor White }
 
 function Check-Dep($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -30,14 +34,14 @@ function Check-Dep($name) {
     Ok "$name found"
 }
 
-# ── Banner ───────────────────────────────────────────────────────────────────
+# -- Banner ------------------------------------------------------------------
 
 Heading 'Code-Warden Quickstart'
 Write-Host '  Full server mode: PostgreSQL + Qdrant + Ollama + Code-Warden'
 Write-Host '  Web UI will be available at http://localhost:8080'
 Write-Host ''
 
-# ── Prerequisites ────────────────────────────────────────────────────────────
+# -- Prerequisites -----------------------------------------------------------
 
 Heading '1. Checking prerequisites...'
 Check-Dep docker
@@ -57,7 +61,7 @@ if ((Get-Command docker -ErrorAction SilentlyContinue) -and
 }
 Ok "Docker Compose found ($ComposeCmd)"
 
-# ── .env setup ───────────────────────────────────────────────────────────────
+# -- .env setup --------------------------------------------------------------
 
 Heading '2. Environment configuration...'
 
@@ -70,12 +74,12 @@ if (-not (Test-Path .env)) {
     Ok '.env already exists'
 }
 
-# NOTE: GitHub and LLM credentials are now optional in .env — the setup wizard
+# NOTE: GitHub and LLM credentials are now optional in .env -- the setup wizard
 # at /setup will handle them after the server is up. We no longer prompt for a
 # GitHub PAT here.
 Info 'GitHub and LLM credentials will be configured via the setup wizard at http://localhost:8080/setup'
 
-# ── GPU detection ────────────────────────────────────────────────────────────
+# -- GPU detection -----------------------------------------------------------
 
 Heading '3. GPU detection...'
 
@@ -86,17 +90,17 @@ if ($nvidia -and (& nvidia-smi) 2>$null) {
     $GpuOverride = @('-f', 'docker-compose.gpu.yml')
     Info 'Using NVIDIA GPU compose override for Ollama'
 } else {
-    Info 'No NVIDIA GPU detected — using CPU mode (Ollama runs on CPU)'
+    Info 'No NVIDIA GPU detected -- using CPU mode (Ollama runs on CPU)'
     Info 'Apple Silicon: Metal acceleration works automatically via the Ollama image'
 }
 
-# ── Build & start ────────────────────────────────────────────────────────────
+# -- Build & start -----------------------------------------------------------
 
 Heading '4. Starting services...'
 
 Info 'Building Code-Warden image and starting all containers...'
 Info 'First run pulls local Ollama models (~1.6 GB): embedder + fast model.'
-Info 'Generator (kimi-k2.5) is a cloud model — no local download needed.'
+Info 'Generator (kimi-k2.5) is a cloud model -- no local download needed.'
 Write-Host ''
 
 # Build the compose command and invoke it
@@ -110,7 +114,7 @@ if ($LASTEXITCODE -ne 0) { throw "docker compose up failed (exit $LASTEXITCODE)"
 
 Ok 'All containers started'
 
-# ── Wait for health ──────────────────────────────────────────────────────────
+# -- Wait for health ---------------------------------------------------------
 
 Heading '5. Waiting for server to be ready...'
 
@@ -148,7 +152,7 @@ if (-not $ready) {
 Write-Host ''
 Ok 'Server is healthy'
 
-# ── Done ─────────────────────────────────────────────────────────────────────
+# -- Done --------------------------------------------------------------------
 
 Heading '6. Setup complete!'
 Write-Host ''
