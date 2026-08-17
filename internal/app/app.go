@@ -82,15 +82,19 @@ func (a *App) LoadCredentials() {
 
 	ctx := context.Background()
 	var github config.GitHubAppCredentials
-	if ok, err := cs.Load(ctx, "github_app", &github); ok && err == nil {
+	if ok, err := cs.Load(ctx, "github_app", &github); ok {
 		a.Cfg.ApplyDBCredentials(&github, nil)
 		a.Logger.Info("loaded GitHub credentials from database")
+	} else if err != nil {
+		a.Logger.Warn("failed to load GitHub credentials from database", "error", err)
 	}
 
 	var llm config.LLMCredentials
-	if ok, err := cs.Load(ctx, "llm", &llm); ok && err == nil {
+	if ok, err := cs.Load(ctx, "llm", &llm); ok {
 		a.Cfg.ApplyDBCredentials(nil, &llm)
 		a.Logger.Info("loaded LLM credentials from database")
+	} else if err != nil {
+		a.Logger.Warn("failed to load LLM credentials from database", "error", err)
 	}
 }
 

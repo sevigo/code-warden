@@ -56,7 +56,7 @@ services:
     networks:
       - cw-demo-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,7 +73,7 @@ services:
     networks:
       - cw-demo-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 10
@@ -112,6 +112,11 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: cw-server
+    # Pin hostname so the credential store's machine identity is stable across
+    # `docker compose down`/`up`. Without this, os.Hostname() returns the short
+    # container ID, which changes every recreate — encrypted credentials saved
+    # in one run would be unrecoverable in the next.
+    hostname: cw-server
     ports:
       - "8080:8080"
     env_file:
@@ -121,6 +126,9 @@ services:
       AI_OLLAMA_HOST: http://ollama:11434
       DATABASE_HOST: db
       STORAGE_QDRANT_HOST: qdrant:6334
+      # Persist the credential master key in the data volume so it survives
+      # container recreation regardless of hostname behaviour.
+      CODE_WARDEN_DATA_DIR: /app/data
     volumes:
       - ./config.demo.yaml:/app/config.yaml:ro
       - ./keys:/app/keys:ro
