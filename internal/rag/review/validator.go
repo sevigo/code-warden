@@ -1,7 +1,6 @@
 package review
 
 import (
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,7 +19,7 @@ var severityRank = map[string]int{
 type SuggestionValidator struct {
 	diffContent  string
 	changedFiles []internalgithub.ChangedFile
-	fileLines    map[string]map[int]bool
+	fileLines    map[string]map[int]struct{}
 }
 
 func NewSuggestionValidator(diffContent string, changedFiles []internalgithub.ChangedFile) *SuggestionValidator {
@@ -31,38 +30,16 @@ func NewSuggestionValidator(diffContent string, changedFiles []internalgithub.Ch
 	}
 }
 
-func buildFileLinesMap(changedFiles []internalgithub.ChangedFile) map[string]map[int]bool {
-	result := make(map[string]map[int]bool)
+func buildFileLinesMap(changedFiles []internalgithub.ChangedFile) map[string]map[int]struct{} {
+	result := make(map[string]map[int]struct{})
 	for _, cf := range changedFiles {
-		lines := make(map[int]bool)
-		currentLine := 0
-		for _, line := range strings.Split(cf.Patch, "\n") {
-			if strings.HasPrefix(line, "@@") {
-				currentLine = parseHunkStartLine(line)
-				continue
-			}
-			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
-				lines[currentLine] = true
-			}
-			if !strings.HasPrefix(line, "-") {
-				currentLine++
-			}
+		lines, err := internalgithub.ParseValidLinesFromPatch(cf.Patch, nil)
+		if err != nil {
+			continue
 		}
 		result[cf.Filename] = lines
 	}
 	return result
-}
-
-func parseHunkStartLine(hunkLine string) int {
-	re := regexp.MustCompile(`@@ -\d+(?:,\d+)? \+(\d+)`)
-	matches := re.FindStringSubmatch(hunkLine)
-	if len(matches) > 1 {
-		line, err := strconv.Atoi(matches[1])
-		if err == nil {
-			return line
-		}
-	}
-	return 1
 }
 
 func (v *SuggestionValidator) ValidateLineNumber(sug *core.Suggestion) bool {
@@ -78,7 +55,8 @@ func (v *SuggestionValidator) ValidateLineNumber(sug *core.Suggestion) bool {
 		}
 	}
 
-	return lines[sug.LineNumber]
+	_, ok := lines[sug.LineNumber]
+	return ok
 }
 
 func (v *SuggestionValidator) ValidateSource(sug *core.Suggestion) bool {
@@ -118,7 +96,8 @@ func (v *SuggestionValidator) lineExistsInDiff(filename string, line int) bool {
 			return false
 		}
 	}
-	return lines[line]
+	_, ok := lines[line]
+	return ok
 }
 
 type SuggestionFilter struct {

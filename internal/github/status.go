@@ -257,14 +257,13 @@ func preprocessComment(comment string) string {
 }
 
 // shouldUseAlert determines if a severity level should use GitHub Alerts
-func shouldUseAlert(_ string) bool {
-	return false
-	// switch severity {
-	// case SeverityCritical, SeverityHigh:
-	//	return true
-	// default:
-	//	return false
-	// }
+func shouldUseAlert(severity string) bool {
+	switch severity {
+	case SeverityCritical, SeverityHigh:
+		return true
+	default:
+		return false
+	}
 }
 
 // splitTextAndCode separates text content from code blocks

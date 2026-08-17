@@ -201,6 +201,11 @@ func (s *Service) GenerateConsensusReview(ctx context.Context, repoConfig *core.
 		if err := s.validateStructuredReview(ctx, event, structuredReview); err != nil {
 			return nil, "", err
 		}
+		// Filter and validate suggestions with the same profile-specific pipeline
+		// used by the single-model path (dedup, line validation, severity ranking).
+		validator := NewSuggestionValidator(diff, changedFiles)
+		filter := NewFilterForProfile(complexity.Profile)
+		structuredReview = filter.FilterAndRank(structuredReview, validator, s.cfg.Logger.Info)
 		// Add disclaimer to summary if context was empty (mirroring GenerateReview)
 		if contextWasEmpty {
 			structuredReview.Summary = "**Note:** This consensus review was generated without repository context. Verify findings against actual codebase.\n\n" + structuredReview.Summary
