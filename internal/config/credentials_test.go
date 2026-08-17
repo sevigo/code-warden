@@ -198,7 +198,7 @@ func TestIsSetupMode(t *testing.T) {
 // step 2 wins, so we skip too. The test only runs where every stable source is
 // unavailable — which in practice means a Linux container without /etc/machine-id.
 func TestStableMachineID_PersistedKey(t *testing.T) {
-	if runtime.GOOS == osWindows {
+	if runtime.GOOS == "windows" {
 		t.Skip("skipping persisted-key test on Windows — registry MachineGuid wins first")
 	}
 	// Redirect CODE_WARDEN_DATA_DIR to a unique temp directory and ensure no
@@ -237,7 +237,7 @@ func TestStableMachineID_PersistedKey(t *testing.T) {
 // TestStableMachineID_WindowsRegistry verifies the Windows registry path is used
 // on Windows hosts (the common case for local dev).
 func TestStableMachineID_WindowsRegistry(t *testing.T) {
-	if runtime.GOOS != osWindows {
+	if runtime.GOOS != "windows" {
 		t.Skip("Windows-only test")
 	}
 	// Clear any persisted key so the registry path is exercised.

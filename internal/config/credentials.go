@@ -14,12 +14,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 
 	"github.com/jmoiron/sqlx"
 	"golang.org/x/crypto/argon2"
-	"golang.org/x/sys/windows/registry"
 )
 
 const (
@@ -36,10 +34,6 @@ const (
 	// machine ID nor a Windows MachineGuid is available, we generate a random
 	// key and store it here so credentials survive restarts.
 	masterKeyFile = "credentials.key"
-
-	// osWindows matches runtime.GOOS on Windows hosts. Extracted as a constant
-	// to satisfy goconst when referenced more than once.
-	osWindows = "windows"
 )
 
 // GitHubAppCredentials holds the GitHub App configuration.
@@ -178,12 +172,11 @@ func stableMachineID() (string, error) {
 		return string(id), nil
 	}
 
-	// 3. Windows MachineGuid.
-		if runtime.GOOS == osWindows {
-			if guid, err := windowsMachineGUID(); err == nil && guid != "" {
-				return guid, nil
-			}
-		}
+	// 3. Windows MachineGuid. windowsMachineGUID returns ("", nil) on
+	// non-Windows platforms, so this branch is effectively a no-op elsewhere.
+	if guid, err := windowsMachineGUID(); err == nil && guid != "" {
+		return guid, nil
+	}
 
 	// 4. Persist a random key as the last resort.
 	keyFile := masterKeyPath()
@@ -220,21 +213,6 @@ func masterKeyPath() string {
 		dir = "data"
 	}
 	return filepath.Join(dir, masterKeyFile)
-}
-
-// windowsMachineGUID reads the Windows MachineGuid from the registry.
-func windowsMachineGUID() (string, error) {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Cryptography`, registry.QUERY_VALUE|registry.WOW64_64KEY)
-	if err != nil {
-		return "", err
-	}
-	defer k.Close()
-
-	guid, _, err := k.GetStringValue("MachineGuid")
-	if err != nil {
-		return "", err
-	}
-	return guid, nil
 }
 
 func deriveMasterKey(machineID string) []byte {
