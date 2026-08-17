@@ -95,6 +95,10 @@ func (s *Service) checkCodeDuplication(ctx context.Context, collectionName strin
 
 	// Limit chunks to avoid blowing up the vector DB with thousands of queries on massive PRs.
 	if len(allChunks) > maxChunksToCheck {
+		s.cfg.Logger.Warn("truncating duplication check chunks",
+			"total", len(allChunks),
+			"checking", maxChunksToCheck,
+		)
 		allChunks = allChunks[:maxChunksToCheck]
 	}
 
@@ -152,38 +156,28 @@ func calculateLinesChanged(changedFiles []internalgithub.ChangedFile) (added, de
 	return added, deleted
 }
 
-// GenerateReview generates a structured code review using the RAG pipeline.
-//
-//nolint:funlen // Complex function that orchestrates the review pipeline
-func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
-	if repoConfig == nil {
-		repoConfig = core.DefaultRepoConfig()
-	}
+// reviewContext holds the shared context pipeline output used by both
+// single-model and consensus review paths.
+type reviewContext struct {
+	FullContext        string
+	DefinitionsContext string
+	ImpactRadius       int
+	Complexity         core.ComplexityScore
+	ContextEmpty       bool
+}
 
-	s.cfg.Logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber, "embedder", s.cfg.EmbedderModel)
-	if diff == "" {
-		s.cfg.Logger.Info("no code changes in pull request", "pr", event.PRNumber)
-		noChangesReview := &core.StructuredReview{
-			Summary:     "This pull request contains no code changes. Looks good to me!",
-			Suggestions: []core.Suggestion{},
-		}
-		return noChangesReview, noChangesReview.Summary, nil
-	}
-
-	// If changedFiles is empty (internal review), extract them from the diff
-	if len(changedFiles) == 0 {
-		changedFiles = ParseDiff(diff)
-		s.cfg.Logger.Info("extracted changed files from diff for internal review", "count", len(changedFiles))
-	}
-
-	// Use context builder with impact tracking
-	contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, buildPRDescription(event))
+// buildReviewContext constructs the shared context used by both review modes:
+// vector-store retrieval, duplication detection, empty-context warnings, and
+// complexity profile calculation. When runInvestigate is true it also performs
+// LLM-directed gap filling (single-model path only).
+func (s *Service) buildReviewContext(ctx context.Context, repo *storage.Repository, event *core.GitHubEvent, changedFiles []internalgithub.ChangedFile, diff string, prDescription string, runInvestigate bool) *reviewContext {
+	contextResult := s.cfg.BuildContextWithImpact(ctx, repo.QdrantCollectionName, s.cfg.EmbedderModel, repo.ClonePath, changedFiles, prDescription)
 	contextString := contextResult.FullContext
 	definitionsContext := contextResult.DefinitionsContext
 	impactRadius := contextResult.ImpactRadius
 
 	// Phase 2: LLM-directed gap filling (only when Phase 1 returned meaningful context)
-	if s.cfg.Investigate != nil && !contextIsEmpty(contextString, definitionsContext) {
+	if runInvestigate && s.cfg.Investigate != nil && !contextIsEmpty(contextString, definitionsContext) {
 		additionalContext := s.cfg.Investigate(ctx, repo.QdrantCollectionName, diff, contextString, definitionsContext)
 		if additionalContext != "" {
 			contextString += "\n\n" + additionalContext
@@ -193,7 +187,7 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 	// Detect duplications by generating embeddings for the exact added lines
 	duplicationContext := s.checkCodeDuplication(ctx, repo.QdrantCollectionName, changedFiles)
 	if duplicationContext != "" {
-		contextString = contextString + "\n\n" + duplicationContext
+		contextString += "\n\n" + duplicationContext
 	}
 
 	// Check for empty context to warn about hallucination risk
@@ -204,7 +198,6 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 			"pr", event.PRNumber,
 			"changed_files", len(changedFiles),
 		)
-		// Inject warning messages into context for the LLM
 		contextString = "**WARNING: No repository context available. Review based solely on the provided diff. Do not assume external code structure.**"
 		definitionsContext = "**WARNING: No type definitions resolved. Verify types are defined outside this diff.**"
 	}
@@ -227,14 +220,47 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 		"files_changed", len(changedFiles),
 	)
 
-	// Render profile instruction
-	profileInstruction, err := s.cfg.PromptMgr.Render("review_profile", complexity)
-	if err != nil {
-		s.cfg.Logger.Warn("failed to render review profile, using default", "error", err)
-		profileInstruction = "" // Will use default thorough profile
+	return &reviewContext{
+		FullContext:        contextString,
+		DefinitionsContext: definitionsContext,
+		ImpactRadius:       impactRadius,
+		Complexity:         complexity,
+		ContextEmpty:       contextEmpty,
+	}
+}
+
+// GenerateReview generates a structured code review using the RAG pipeline.
+func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, event *core.GitHubEvent, diff string, changedFiles []internalgithub.ChangedFile) (*core.StructuredReview, string, error) {
+	if repoConfig == nil {
+		repoConfig = core.DefaultRepoConfig()
 	}
 
-	promptData := s.buildReviewPromptDataWithProfile(event, repoConfig, contextString, definitionsContext, diff, changedFiles, profileInstruction)
+	s.cfg.Logger.Info("preparing data for a full review", "repo", event.RepoFullName, "pr", event.PRNumber, "embedder", s.cfg.EmbedderModel)
+	if diff == "" {
+		s.cfg.Logger.Info("no code changes in pull request", "pr", event.PRNumber)
+		noChangesReview := &core.StructuredReview{
+			Summary:     "This pull request contains no code changes. Looks good to me!",
+			Suggestions: []core.Suggestion{},
+		}
+		return noChangesReview, noChangesReview.Summary, nil
+	}
+
+	// If changedFiles is empty (internal review), extract them from the diff
+	if len(changedFiles) == 0 {
+		changedFiles = ParseDiff(diff)
+		s.cfg.Logger.Info("extracted changed files from diff for internal review", "count", len(changedFiles))
+	}
+
+	rc := s.buildReviewContext(ctx, repo, event, changedFiles, diff, buildPRDescription(event), true)
+
+	// Render profile instruction
+	profileInstruction, err := s.cfg.PromptMgr.Render("review_profile", rc.Complexity)
+	if err != nil {
+		s.cfg.Logger.Warn("failed to render review profile, using default", "error", err)
+		profileInstruction = ""
+	}
+
+	promptData := s.buildReviewPromptDataWithProfile(event, repoConfig, rc.FullContext, rc.DefinitionsContext, diff, changedFiles, profileInstruction)
 
 	promptStr, err := s.cfg.PromptMgr.Render(llm.CodeReviewPrompt, promptData)
 	if err != nil {
@@ -257,21 +283,19 @@ func (s *Service) GenerateReview(ctx context.Context, repoConfig *core.RepoConfi
 	}
 
 	if structuredReview.Verdict == "" {
-		structuredReview.Verdict = core.VerdictComment // Default if missing
+		structuredReview.Verdict = core.VerdictComment
 	}
 
 	// Filter and validate suggestions with profile-specific threshold
 	validator := NewSuggestionValidator(diff, changedFiles)
-	filter := NewFilterForProfile(complexity.Profile)
+	filter := NewFilterForProfile(rc.Complexity.Profile)
 	structuredReview = filter.FilterAndRank(structuredReview, validator, s.cfg.Logger.Info)
 
-	// Add complexity score to result for UI display
-	structuredReview.ReviewProfile = string(complexity.Profile)
-	structuredReview.ComplexityScore = complexity.Score
-	structuredReview.ImpactRadius = complexity.ImpactRadius
+	structuredReview.ReviewProfile = string(rc.Complexity.Profile)
+	structuredReview.ComplexityScore = rc.Complexity.Score
+	structuredReview.ImpactRadius = rc.ImpactRadius
 
-	// Add disclaimer to summary if context was empty
-	if contextEmpty {
+	if rc.ContextEmpty {
 		structuredReview.Summary = "**Note:** This review was generated without repository context. Verify findings against actual codebase.\n\n" + structuredReview.Summary
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/rag"
+	ragReview "github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -571,15 +572,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		j.logger.Warn("failed to fetch commit messages, review will proceed without them", "error", cErr)
 	}
 
-	validLineMaps := make(map[string]map[int]struct{})
-	for _, f := range changedFiles {
-		lines, err := github.ParseValidLinesFromPatch(f.Patch, j.logger)
-		if err != nil {
-			j.logger.Error("failed to parse valid lines from patch", "file", f.Filename, "error", err)
-			continue
-		}
-		validLineMaps[f.Filename] = lines
-	}
+	validLineMaps := ragReview.BuildValidLineMap(changedFiles)
 
 	executor := reviewpkg.NewExecutor(j.ragService, reviewpkg.Config{
 		ComparisonModels: j.cfg.AI.ComparisonModels,
