@@ -5,7 +5,6 @@
 # Viper maps env vars automatically: SECTION_KEY → section.key
 #
 # Used by:
-#   make demo PR=<url>        — CLI review with just a GitHub PAT
 #   make quickstart           — Full server stack via Docker
 #   docker-compose.demo.yml   — Mounts this file as /app/config.yaml
 

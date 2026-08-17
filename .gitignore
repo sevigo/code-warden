@@ -33,7 +33,6 @@ go.work.sum
 # env file
 .env
 config.yaml
-warden-terminal.log
 *_test_results*
 .agent/
 

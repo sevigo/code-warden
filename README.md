@@ -13,17 +13,6 @@ Everything runs on your infrastructure. Your code never leaves.
 
 ## Quick Start
 
-### Demo mode (5 minutes, no GitHub App needed)
-
-```sh
-git clone https://github.com/sevigo/code-warden
-cd code-warden
-cp .env.example .env        # add your GitHub PAT to GITHUB_TOKEN
-make demo PR=https://github.com/owner/repo/pull/42
-```
-
-Clones the repo, indexes it into local Qdrant, prints findings to the terminal. No webhook, no GitHub App, no public URL.
-
 ### Full server (15 minutes, includes web UI)
 
 ```sh
@@ -164,60 +153,6 @@ exclude_dirs:
 ```
 
 Full reference: [config.yaml.example](config.yaml.example)
-
----
-
-## CLI
-
-```sh
-# Manually re-index a repository
-./bin/warden-cli update /path/to/repo
-
-# Full prescan (initial index or forced rebuild)
-./bin/warden-cli prescan /path/to/repo
-
-# Review a PR from the command line
-export CW_GITHUB_TOKEN="ghp_xxx"
-./bin/warden-cli review https://github.com/owner/repo/pull/123
-```
-
----
-
-## Terminal UI (Onboarding Assistant)
-
-Interactive terminal UI for exploring and querying indexed repositories — useful for developer onboarding, code exploration, and debugging.
-
-```sh
-make build-terminal
-./bin/warden-term
-```
-
-### Themes
-
-```sh
-# Available: cyan, matrix, amber, cyberpunk, ice, dracula, fire
-./bin/warden-term --theme matrix
-CODE_WARDEN_THEME=dracula ./bin/warden-term
-./bin/warden-term --list-themes
-```
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `/add [name] [path]` | Register and index a local repository |
-| `/list`, `/ls` | List registered repositories |
-| `/select [name]` | Set active repository |
-| `/rescan [name?]` | Re-scan for updates |
-| `/new`, `/reset` | Start a new conversation |
-| `/help`, `/h` | Show available commands |
-| `/exit`, `/quit` | Exit |
-
-1. `/add my-project /path/to/repo`
-2. `/select my-project`
-3. Ask questions freely: `How does authentication work?`, `What's the pattern for adding a new endpoint?`
-
-The terminal uses the RAG pipeline to retrieve relevant code before answering — architectural summaries, function definitions, and dependency relationships, not just keyword matches.
 
 ---
 

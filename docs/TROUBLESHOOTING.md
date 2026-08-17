@@ -36,10 +36,7 @@ The RAG retrieval returned no documents.
    ```sh
    curl http://localhost:6333/collections
    ```
-   If the collection is missing, run a prescan:
-   ```sh
-   ./bin/warden-cli prescan /path/to/repo
-   ```
+   If the collection is missing, trigger a full scan for the repo from the dashboard UI.
 2. Is the embedder reachable?
    ```sh
    curl http://localhost:11434/api/embeddings -d '{"model":"nomic-embed-text","prompt":"test"}'
@@ -97,11 +94,11 @@ This is **non-fatal** — retrieval falls back to dense-only search. Reviews sti
 
 ---
 
-## Prescan stuck or very slow
+## Scan stuck or very slow
 
 1. Large binary files may be causing the indexer to stall. Add their extensions to `exclude_exts` in `.code-warden.yml`.
-2. Prescan is bottlenecked by embedding generation. A faster embedder model or GPU acceleration helps significantly.
-3. Prescan is resumable — kill it and restart, it picks up where it left off.
+2. A scan is bottlenecked by embedding generation. A faster embedder model or GPU acceleration helps significantly.
+3. Scans are resumable — restart one from the dashboard and it picks up where it left off.
 
 ---
 

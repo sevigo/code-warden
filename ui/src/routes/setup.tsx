@@ -270,10 +270,7 @@ ai:
           done={false}
           active={activeStep === 5}
         >
-          <p>Add a repository from the dashboard and trigger a scan:</p>
-          <CodeBlock>
-            ./bin/warden-cli prescan /path/to/repo
-          </CodeBlock>
+          <p>Add a repository from the dashboard and trigger a scan.</p>
         </Step>
 
         {/* Step 6 */}
