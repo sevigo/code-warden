@@ -28,13 +28,18 @@ const (
 
 // DashboardHandler serves dashboard, stats, reviews, jobs, and config endpoints.
 type DashboardHandler struct {
-	cfg    *config.Config
-	store  storage.Store
-	logger *slog.Logger
+	cfg       *config.Config
+	store     storage.Store
+	credStore *config.CredentialStore
+	logger    *slog.Logger
 }
 
 func NewDashboardHandler(cfg *config.Config, store storage.Store, logger *slog.Logger) *DashboardHandler {
 	return &DashboardHandler{cfg: cfg, store: store, logger: logger}
+}
+
+func (h *DashboardHandler) SetCredentialStore(cs *config.CredentialStore) {
+	h.credStore = cs
 }
 
 func (h *DashboardHandler) writeJSON(w http.ResponseWriter, v any) {

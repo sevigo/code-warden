@@ -18,17 +18,18 @@ import (
 
 // App holds the main dependencies of the application.
 type App struct {
-	Cfg         *config.Config
-	Store       storage.Store
-	VectorStore storage.VectorStore
-	RepoMgr     repomanager.RepoManager
-	Dispatcher  core.JobDispatcher
-	Logger      *slog.Logger
-	DB          *db.DB
-	RAGService  rag.Service
-	Server      *server.Server
-	GitClient   *gitutil.Client
-	MCPServer   *globalmcp.Server
+	Cfg             *config.Config
+	Store           storage.Store
+	VectorStore     storage.VectorStore
+	RepoMgr         repomanager.RepoManager
+	Dispatcher      core.JobDispatcher
+	Logger          *slog.Logger
+	DB              *db.DB
+	CredentialStore *config.CredentialStore
+	RAGService      rag.Service
+	Server          *server.Server
+	GitClient       *gitutil.Client
+	MCPServer       *globalmcp.Server
 }
 
 // NewApp creates a new App instance.
@@ -66,6 +67,30 @@ func NewApp(
 		GitClient:   gitClient,
 		MCPServer:   mcpServer,
 		Logger:      logger,
+	}
+}
+
+// LoadCredentials creates a CredentialStore from the DB connection and loads
+// any stored credentials into the config. Called after Wire init, before server start.
+func (a *App) LoadCredentials() {
+	cs, err := config.NewCredentialStore(a.DB.DB)
+	if err != nil {
+		a.Logger.Warn("credential store unavailable, falling back to config files", "error", err)
+		return
+	}
+	a.CredentialStore = cs
+
+	ctx := context.Background()
+	var github config.GitHubAppCredentials
+	if ok, err := cs.Load(ctx, "github_app", &github); ok && err == nil {
+		a.Cfg.ApplyDBCredentials(&github, nil)
+		a.Logger.Info("loaded GitHub credentials from database")
+	}
+
+	var llm config.LLMCredentials
+	if ok, err := cs.Load(ctx, "llm", &llm); ok && err == nil {
+		a.Cfg.ApplyDBCredentials(nil, &llm)
+		a.Logger.Info("loaded LLM credentials from database")
 	}
 }
 

@@ -16,15 +16,30 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 )
 
+// readPrivateKey returns the PEM bytes from the config, preferring the inline
+// PEM string (DB-backed) over the file path (config file).
+func readPrivateKey(cfg *config.Config) ([]byte, error) {
+	if cfg.GitHub.PrivateKeyPEM != "" {
+		return []byte(cfg.GitHub.PrivateKeyPEM), nil
+	}
+	if cfg.GitHub.PrivateKeyPath != "" {
+		key, err := os.ReadFile(cfg.GitHub.PrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read private key from %s: %w", cfg.GitHub.PrivateKeyPath, err)
+		}
+		return key, nil
+	}
+	return nil, fmt.Errorf("no private key configured (set private_key_path or store credentials in DB)")
+}
+
 // CreateInstallationClient creates a GitHub client that is authenticated as a specific application installation.
 // It will now return the client, the raw token string, and an error.
 func CreateInstallationClient(ctx context.Context, cfg *config.Config, installationID int64, logger *slog.Logger) (Client, string, error) {
 	logger.Info("Creating GitHub installation client", "installation_id", installationID)
 
-	// Load private key
-	privateKey, err := os.ReadFile(cfg.GitHub.PrivateKeyPath)
+	privateKey, err := readPrivateKey(cfg)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to read private key from %s: %w", cfg.GitHub.PrivateKeyPath, err)
+		return nil, "", err
 	}
 
 	// Create JWT source
@@ -55,10 +70,9 @@ func CreateInstallationClient(ctx context.Context, cfg *config.Config, installat
 // GetInstallationIDForRepo looks up the installation ID for a repository using GitHub App credentials.
 // This is used when a repo is added via UI and we need to find its installation ID.
 func GetInstallationIDForRepo(ctx context.Context, cfg *config.Config, repoFullName string, logger *slog.Logger) (int64, error) {
-	// Load private key
-	privateKey, err := os.ReadFile(cfg.GitHub.PrivateKeyPath)
+	privateKey, err := readPrivateKey(cfg)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read private key from %s: %w", cfg.GitHub.PrivateKeyPath, err)
+		return 0, err
 	}
 
 	// Create JWT transport for App API calls
