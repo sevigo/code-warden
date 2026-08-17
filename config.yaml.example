@@ -76,7 +76,7 @@ ai:
   # Set to 0.66 to proceed when 2/3 of models finished (balanced).
   consensus_quorum: 0.66
     
-  # Paths for Architectural Comparison (used by `prescan`)
+  # Paths for Architectural Comparison (used during full scans)
   # Default is "." (root only). Add specific high-level directories for deeper analysis.
   comparison_paths:
     - "."

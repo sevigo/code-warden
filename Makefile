@@ -2,12 +2,6 @@
 SERVER_BINARY_NAME=code-warden
 SERVER_CMD_PATH=./cmd/server
 
-CLI_BINARY_NAME=warden-cli
-CLI_CMD_PATH=./cmd/cli
-
-TERMINAL_BINARY_NAME=warden-term
-TERMINAL_CMD_PATH=./cmd/terminal
-
 # Output directory for all binaries and tools
 BIN_DIR=$(CURDIR)/bin
 
@@ -17,27 +11,17 @@ GOLINT_VERSION=v2.11.3
 
 .DEFAULT_GOAL := all
 .PHONY: all build run clean test lint dev ui-deps build-ui dev-ui run/server run/ui \
-	demo quickstart pull-models demo-up demo-down demo-logs
+	quickstart pull-models demo-up demo-down demo-logs
 
 all: build
 
-build: build/server build/cli build/terminal
+build: build/server
 	@echo "All binaries built successfully in $(BIN_DIR)/"
 
 build/server:
 	@echo "Building server ($(SERVER_BINARY_NAME))..."
 	@mkdir -p $(BIN_DIR)
 	@go build -v -o $(BIN_DIR)/$(SERVER_BINARY_NAME) $(SERVER_CMD_PATH)
-
-build/cli:
-	@echo "Building CLI ($(CLI_BINARY_NAME))..."
-	@mkdir -p $(BIN_DIR)
-	@go build -v -o $(BIN_DIR)/$(CLI_BINARY_NAME) $(CLI_CMD_PATH)
-
-build/terminal:
-	@echo "Building terminal UI ($(TERMINAL_BINARY_NAME))..."
-	@mkdir -p $(BIN_DIR)
-	@go build -v -o $(BIN_DIR)/$(TERMINAL_BINARY_NAME) $(TERMINAL_CMD_PATH)
 
 run: build/server
 	@echo "Starting server ($(SERVER_BINARY_NAME))..."
@@ -48,14 +32,6 @@ run/server: run
 
 run/ui: dev-ui
 
-run/cli:
-	@echo "Starting CLI ($(CLI_BINARY_NAME))..."
-	@go run $(CLI_CMD_PATH)
-
-run/terminal:
-	@echo "Starting terminal UI ($(TERMINAL_BINARY_NAME))..."
-	@go run $(TERMINAL_CMD_PATH)
-	
 test:
 	@echo "Running tests..."
 	@go test -v ./...
@@ -96,13 +72,6 @@ build-all: build build-ui
 	@echo "All binaries and UI built successfully"
 
 # ── Demo & Quickstart ─────────────────────────────────────────────────────────
-
-## CLI review — no server, no GitHub App needed. Just a GitHub PAT.
-## Usage: make demo PR=https://github.com/owner/repo/pull/123
-demo:
-	@[ -f .env ] || cp .env.example .env
-	@[ -n "$(PR)" ] || (echo "Usage: make demo PR=<pr-url>" && exit 1)
-	@go run ./cmd/cli review $(PR)
 
 ## Full server quickstart — starts all services in Docker, opens web UI.
 quickstart:

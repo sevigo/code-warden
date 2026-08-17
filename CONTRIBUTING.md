@@ -40,7 +40,7 @@ All tests and lint must pass before submitting a PR.
 
 | Directory | What lives here |
 |---|---|
-| `cmd/` | Binary entry points (server, CLI, terminal) |
+| `cmd/` | Binary entry points (server) |
 | `internal/rag/` | RAG pipeline — context building, indexing, review generation |
 | `internal/jobs/` | Job dispatcher and review worker |
 | `internal/github/` | GitHub API client and webhook handling |

@@ -1,15 +1,6 @@
 # Setup Guide
 
-## Quick Demo (5 minutes, no GitHub App)
-
-Review a real PR with just a GitHub PAT:
-
-```sh
-git clone https://github.com/sevigo/code-warden
-cd code-warden
-cp .env.example .env    # set GITHUB_TOKEN to your PAT
-make demo PR=https://github.com/owner/repo/pull/42
-```
+## Quick Demo (no GitHub App)
 
 **Full server with web UI (15 minutes):**
 
@@ -156,22 +147,11 @@ Update the **Webhook URL** in your GitHub App settings to the tunnel URL + `/web
 
 ---
 
-### Step 6: Initial prescan
+### Step 6: Index the repository
 
-Before reviews work, Code-Warden needs to index the repository into Qdrant. This happens automatically on the first `/review`, but for large repos you should run it manually first:
+Before reviews work, Code-Warden needs to index the repository into Qdrant. This happens automatically on the first `/review`, but for large repos you should run a full scan from the dashboard first.
 
-```sh
-git clone https://github.com/your-org/your-repo /path/to/data/repos/your-org/your-repo
-./bin/warden-cli prescan /path/to/data/repos/your-org/your-repo
-```
-
-Prescan is resumable — if interrupted, re-run the same command and it picks up where it left off.
-
-For incremental updates after prescan:
-
-```sh
-./bin/warden-cli update /path/to/data/repos/your-org/your-repo
-```
+To index a repository, add it from the dashboard UI and trigger a scan. For incremental updates after a scan, `/review` re-indexes changed files automatically.
 
 ---
 
@@ -197,7 +177,7 @@ To enable `/implement`, see [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.m
 curl http://localhost:6333/collections
 ```
 
-After the first prescan you should see a collection named after the repository.
+After the first scan you should see a collection named after the repository.
 
 **Webhook receiving events?**
 
