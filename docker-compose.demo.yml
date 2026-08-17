@@ -56,7 +56,7 @@ services:
     networks:
       - cw-demo-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,7 +73,7 @@ services:
     networks:
       - cw-demo-net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 10
