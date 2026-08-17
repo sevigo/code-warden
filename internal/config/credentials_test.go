@@ -162,7 +162,7 @@ func TestApplyDBCredentials_PartialOverride(t *testing.T) {
 	cfg.ApplyDBCredentials(&GitHubAppCredentials{
 		AppID:         200,        // overrides env
 		WebhookSecret: "",         // empty — should NOT override
-		PrivateKeyPEM:  "pem-data", // set DB-backed key
+		PrivateKeyPEM: "pem-data", // set DB-backed key
 	}, nil)
 
 	if cfg.GitHub.AppID != 200 {
