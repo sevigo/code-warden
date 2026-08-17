@@ -84,14 +84,37 @@ Info 'GitHub and LLM credentials will be configured via the setup wizard at http
 Heading '3. GPU detection...'
 
 $GpuOverride = @()
+
+# NVIDIA: works on Windows via Docker Desktop's NVIDIA GPU support.
 $nvidia = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 if ($nvidia -and (& nvidia-smi) 2>$null) {
     Ok 'NVIDIA GPU detected'
     $GpuOverride = @('-f', 'docker-compose.gpu.yml')
     Info 'Using NVIDIA GPU compose override for Ollama'
 } else {
-    Info 'No NVIDIA GPU detected -- using CPU mode (Ollama runs on CPU)'
-    Info 'Apple Silicon: Metal acceleration works automatically via the Ollama image'
+    # AMD ROCm: the docker-compose.amd.yml mounts /dev/kfd and /dev/dri, which
+    # are Linux device files. Docker Desktop on Windows runs containers in a
+    # Linux VM and does not expose host AMD GPUs to that VM, so the ROCm
+    # override only works on a native Linux host. We detect an AMD GPU via WMI
+    # (works on Windows) so we can tell the user why we're falling back to CPU
+    # instead of silently skipping them.
+    $amdGpu = $false
+    try {
+        $controllers = Get-CimInstance Win32_VideoController -ErrorAction Stop
+        foreach ($c in $controllers) {
+            if ($c.Name -and $c.Name -match 'AMD|Radeon') { $amdGpu = $true; break }
+        }
+    } catch {}
+
+    if ($amdGpu) {
+        Ok 'AMD/Radeon GPU detected'
+        Warn 'ROCm GPU passthrough is not supported via Docker Desktop on Windows.'
+        Warn 'The server will run in CPU mode. For ROCm acceleration, run on a native'
+        Warn 'Linux host with ROCm drivers installed and use docker-compose.amd.yml.'
+    } else {
+        Info 'No NVIDIA GPU detected -- using CPU mode (Ollama runs on CPU)'
+        Info 'Apple Silicon: Metal acceleration works automatically via the Ollama image'
+    }
 }
 
 # -- Build & start -----------------------------------------------------------
@@ -103,12 +126,14 @@ Info 'First run pulls local Ollama models (~1.6 GB): embedder + fast model.'
 Info 'Generator (kimi-k2.5) is a cloud model -- no local download needed.'
 Write-Host ''
 
-# Build the compose command and invoke it
-$composeArgs = @('-f', $Compose) + $GpuOverride + @('up', '-d', '--build')
+# Build the compose command and invoke it. The `compose` subcommand is needed
+# for the v2 plugin (`docker compose`) but NOT for the v1 standalone binary
+# (`docker-compose`), so we branch the invocation rather than just the args.
+$baseArgs = @('-f', $Compose) + $GpuOverride + @('up', '-d', '--build')
 if ($ComposeCmd -eq 'docker compose') {
-    & docker @composeArgs
+    & docker compose @baseArgs
 } else {
-    & docker-compose @composeArgs
+    & docker-compose @baseArgs
 }
 if ($LASTEXITCODE -ne 0) { throw "docker compose up failed (exit $LASTEXITCODE)" }
 
