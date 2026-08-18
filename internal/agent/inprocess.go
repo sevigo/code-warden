@@ -117,8 +117,7 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 }
 
 // resolveAgentLLM returns the LLM to use for the native agent.
-// If agent.model is set and can be resolved, that model is used.
-// Otherwise falls back to the review LLM (o.llm).
+// If agent.model is set, it is used. Otherwise falls back to the injected model (o.llm).
 func (o *Orchestrator) resolveAgentLLM(ctx context.Context) (llms.Model, error) {
 	if o.config.Model != "" && o.ragService != nil {
 		agentLLM, err := o.ragService.GetLLM(ctx, o.config.Model)

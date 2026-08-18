@@ -21,7 +21,6 @@ import (
 	"github.com/sevigo/code-warden/internal/rag"
 	ragReview "github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/repomanager"
-	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/internal/stringsutil"
 
@@ -205,8 +204,12 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	// 4. Load repository config
 	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
 
-	// 5. Get scoped vector store for this repo
-	scopedStore := j.vectorStore.ForRepo(repo.QdrantCollectionName, j.cfg.AI.EmbedderModel)
+	// 5. Get scoped vector store for this repo (optional — nil when the RAG
+	// pipeline / Qdrant is absent; the agent falls back to grep/search tools).
+	var scopedStore storage.ScopedVectorStore
+	if j.vectorStore != nil && repo != nil && repo.QdrantCollectionName != "" {
+		scopedStore = j.vectorStore.ForRepo(repo.QdrantCollectionName, j.cfg.AI.EmbedderModel)
+	}
 
 	// 6. Parse agent timeout
 	timeout, err := j.cfg.Agent.GetTimeout()
@@ -234,6 +237,7 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 		j.store,
 		scopedStore,
 		j.ragService,
+		j.llm,
 		ghClient,
 		ghToken,
 		repo,
@@ -585,33 +589,11 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 	validLineMaps := ragReview.BuildValidLineMap(changedFiles)
 
-	var structuredReview *core.StructuredReview
-	var rawReview string
-
-	if j.cfg.AI.ReviewMode == "agent" {
-		structuredReview, rawReview, err = j.runAgentReview(ctx, event, diff, changedFiles)
-		if err != nil {
-			return nil, "", nil, fmt.Errorf("failed to generate agent review: %w", err)
-		}
-	} else {
-		executor := reviewpkg.NewExecutor(j.ragService, reviewpkg.Config{
-			ComparisonModels: j.cfg.AI.ComparisonModels,
-			ReviewsDir:       j.cfg.AI.ReviewsDir,
-			Logger:           j.logger,
-		})
-
-		result, execErr := executor.Execute(ctx, reviewpkg.Params{
-			RepoConfig:   env.repoConfig,
-			Repo:         env.repo,
-			Event:        event,
-			Diff:         diff,
-			ChangedFiles: changedFiles,
-		})
-		if execErr != nil {
-			return nil, "", nil, fmt.Errorf("failed to generate review: %w", execErr)
-		}
-		structuredReview = result.Review
-		rawReview = result.RawReview
+	// Agent-based review is the default engine. RAG retrieval is no longer used
+	// for /review — the agent investigates the diff with grep + read_file.
+	structuredReview, rawReview, err := j.runAgentReview(ctx, event, diff, changedFiles)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to generate review: %w", err)
 	}
 
 	return structuredReview, rawReview, validLineMaps, nil

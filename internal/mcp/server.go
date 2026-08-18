@@ -142,46 +142,56 @@ func NewServer(
 
 // registerTools registers all available MCP tools.
 func (s *Server) registerTools() {
-	// Core code search tools
-	s.registry.MustRegisterTool(&tools.SearchCode{
-		VectorStore: s.vectorStore,
-		Logger:      s.logger,
-	})
-	s.registry.MustRegisterTool(&tools.GetArchContext{
-		VectorStore: s.vectorStore,
-		Logger:      s.logger,
-	})
-	s.registry.MustRegisterTool(&tools.GetSymbol{
-		VectorStore: s.vectorStore,
-		Logger:      s.logger,
-	})
-	s.registry.MustRegisterTool(&tools.GetStructure{
-		VectorStore: s.vectorStore,
-		ProjectRoot: s.projectRoot,
-		Logger:      s.logger,
-	})
-	s.registry.MustRegisterTool(&tools.FindUsages{
-		VectorStore: s.vectorStore,
-		Logger:      s.logger,
-	})
-	s.registry.MustRegisterTool(&tools.GetCallers{
-		VectorStore: s.vectorStore,
-		Logger:      s.logger,
-	})
-	s.registry.MustRegisterTool(&tools.GetCallees{
-		VectorStore: s.vectorStore,
-		Logger:      s.logger,
-	})
-	s.registry.MustRegisterTool(&tools.ReviewCode{
-		RagService:       s.ragService,
-		Repo:             s.repo,
-		RepoConfig:       s.repoConfig,
-		ComparisonModels: s.comparisonModels,
-		ReviewsDir:       s.reviewsDir,
-		SingleModelOnly:  s.agentMode,
-		ReviewTracker:    s,
-		Logger:           s.logger,
-	})
+	// Vector-backed code search tools are only available when a vector store is
+	// present. When it is nil (Phase 2: /implement without Qdrant), the agent
+	// relies on grep/search tools instead of semantic retrieval.
+	if s.vectorStore != nil {
+		s.registry.MustRegisterTool(&tools.SearchCode{
+			VectorStore: s.vectorStore,
+			Logger:      s.logger,
+		})
+		s.registry.MustRegisterTool(&tools.GetArchContext{
+			VectorStore: s.vectorStore,
+			Logger:      s.logger,
+		})
+		s.registry.MustRegisterTool(&tools.GetSymbol{
+			VectorStore: s.vectorStore,
+			Logger:      s.logger,
+		})
+		s.registry.MustRegisterTool(&tools.GetStructure{
+			VectorStore: s.vectorStore,
+			ProjectRoot: s.projectRoot,
+			Logger:      s.logger,
+		})
+		s.registry.MustRegisterTool(&tools.FindUsages{
+			VectorStore: s.vectorStore,
+			Logger:      s.logger,
+		})
+		s.registry.MustRegisterTool(&tools.GetCallers{
+			VectorStore: s.vectorStore,
+			Logger:      s.logger,
+		})
+		s.registry.MustRegisterTool(&tools.GetCallees{
+			VectorStore: s.vectorStore,
+			Logger:      s.logger,
+		})
+	}
+
+	// RAG-based review_code requires the RAG service. The agent-based review path
+	// (Phase 1) does not use this tool.
+	if s.ragService != nil {
+		s.registry.MustRegisterTool(&tools.ReviewCode{
+			RagService:       s.ragService,
+			Repo:             s.repo,
+			RepoConfig:       s.repoConfig,
+			ComparisonModels: s.comparisonModels,
+			ReviewsDir:       s.reviewsDir,
+			SingleModelOnly:  s.agentMode,
+			ReviewTracker:    s,
+			Logger:           s.logger,
+		})
+	}
+
 	s.registry.MustRegisterTool(&tools.RunCommand{
 		RepoConfig:  s.repoConfig,
 		ProjectRoot: s.projectRoot,
