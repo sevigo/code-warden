@@ -30,6 +30,7 @@ import (
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
+	"github.com/sevigo/goframe/llms/openai"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
@@ -62,6 +63,9 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		provideSQLXDB,
 		provideGlobalMCPServer,
 		provideWorkspaceRegistry,
+
+		wire.Bind(new(core.Job), new(*jobs.ReviewJob)),
+		wire.Bind(new(core.SessionCanceller), new(*jobs.ReviewJob)),
 	)
 	return &app.App{}, nil, nil
 }
@@ -138,6 +142,24 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 			return nil, fmt.Errorf("GEMINI_API_KEY is not set")
 		}
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
+	case "openai":
+		if cfg.AI.OpenAIAPIKey == "" {
+			return nil, fmt.Errorf("OPENAI_API_KEY is not set")
+		}
+		baseURL := cfg.AI.OpenAIBaseURL
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		modelName := cfg.AI.GeneratorModel
+		if cfg.AI.OpenAIModel != "" {
+			modelName = cfg.AI.OpenAIModel
+		}
+		return openai.New(
+			openai.WithAPIKey(cfg.AI.OpenAIAPIKey),
+			openai.WithBaseURL(baseURL),
+			openai.WithModel(modelName),
+			openai.WithLogger(logger),
+		)
 	case "ollama":
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
