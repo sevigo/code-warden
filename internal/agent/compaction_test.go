@@ -15,15 +15,15 @@ func TestFindTailStart_StartsOnHumanMessage(t *testing.T) {
 	// Build a message slice that ends with tool-role messages.
 	// The tail should walk back past them to the last human message.
 	msgs := []schema.MessageContent{
-		schema.NewSystemMessage("system"),     // 0 — system prompt
-		schema.NewHumanMessage("task"),        // 1
-		schema.NewAIMessage("thinking"),       // 2
-		schema.NewHumanMessage("user msg"),    // 3  ← expected tail start
-		schema.NewAIMessage("tool request"),   // 4
-		schema.NewToolResultMessage("t", "r"), // 5  role=tool
-		schema.NewAIMessage("tool request2"),  // 6
-		schema.NewToolResultMessage("t", "r"), // 7  role=tool
-		schema.NewAIMessage("final"),          // 8
+		schema.NewSystemMessage("system"),                     // 0 — system prompt
+		schema.NewHumanMessage("task"),                        // 1
+		schema.NewAIMessage("thinking"),                       // 2
+		schema.NewHumanMessage("user msg"),                    // 3  ← expected tail start
+		schema.NewAIMessage("tool request"),                   // 4
+		schema.NewToolResultMessageWithID("t", "call-1", "r"), // 5  role=tool
+		schema.NewAIMessage("tool request2"),                  // 6
+		schema.NewToolResultMessageWithID("t", "call-2", "r"), // 7  role=tool
+		schema.NewAIMessage("final"),                          // 8
 	}
 	// minTail=4 → ideal start = len(9)-4 = 5, but msgs[5] is tool-role.
 	// Should walk back to msgs[3] (human).
@@ -62,16 +62,16 @@ func TestFindTailStart_NeverOrphansToolResult(t *testing.T) {
 	// Construct a history where every reasonable cut point is a tool-role message.
 	// findTailStart must keep walking until it finds a human message.
 	msgs := []schema.MessageContent{
-		schema.NewSystemMessage("sys"),        // 0
-		schema.NewHumanMessage("start"),       // 1
-		schema.NewAIMessage("req"),            // 2
-		schema.NewHumanMessage("user reply"),  // 3 ← only safe boundary in range
-		schema.NewAIMessage("req"),            // 4
-		schema.NewToolResultMessage("t", "x"), // 5
-		schema.NewAIMessage("req"),            // 6
-		schema.NewToolResultMessage("t", "x"), // 7
-		schema.NewAIMessage("req"),            // 8
-		schema.NewToolResultMessage("t", "x"), // 9
+		schema.NewSystemMessage("sys"),                        // 0
+		schema.NewHumanMessage("start"),                       // 1
+		schema.NewAIMessage("req"),                            // 2
+		schema.NewHumanMessage("user reply"),                  // 3 ← only safe boundary in range
+		schema.NewAIMessage("req"),                            // 4
+		schema.NewToolResultMessageWithID("t", "call-1", "x"), // 5
+		schema.NewAIMessage("req"),                            // 6
+		schema.NewToolResultMessageWithID("t", "call-2", "x"), // 7
+		schema.NewAIMessage("req"),                            // 8
+		schema.NewToolResultMessageWithID("t", "call-3", "x"), // 9
 	}
 	start := findTailStart(msgs, 6) // ideal start = 4 (ai msg)
 	assert.Equal(t, schema.ChatMessageTypeHuman, msgs[start].Role)
@@ -81,12 +81,12 @@ func TestFindTailStart_NeverOrphansToolResult(t *testing.T) {
 
 func toolResultMsg(toolName, path string) schema.MessageContent {
 	content := fmt.Sprintf("Tool '%s' returned: {\"ok\":true,\"path\":%q,\"bytes\":10}", toolName, path)
-	return schema.NewToolResultMessage(toolName, content)
+	return schema.NewToolResultMessageWithID(toolName, "call-"+toolName, content)
 }
 
 func readResultMsg(path string) schema.MessageContent {
 	content := fmt.Sprintf("Tool 'read_file' returned: {\"content\":\"x\",\"lines\":1,\"path\":%q}", path)
-	return schema.NewToolResultMessage("read_file", content)
+	return schema.NewToolResultMessageWithID("read_file", "call-read", content)
 }
 
 func TestExtractFileOpsFromMsgs_Basic(t *testing.T) {
