@@ -38,9 +38,11 @@ func TestSpawnAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpawnAgent() unexpected error: %v", err)
 	}
-	status := s1.GetStatus()
-	if status != StatusPending && status != StatusRunning {
-		t.Errorf("SpawnAgent() expected status %v or %v, got %v", StatusPending, StatusRunning, status)
+	// The session must be registered before SpawnAgent returns. Its status is
+	// not part of the contract: the background agent goroutine (which runs with a
+	// nil LLM in this test) may set it to Failed before the assertion below.
+	if _, ok := o.sessions[s1.ID]; !ok {
+		t.Errorf("SpawnAgent() did not register the session")
 	}
 
 	_, err = o.SpawnAgent(ctx, issue)
