@@ -155,10 +155,15 @@ func DefaultConfig() Config {
 }
 
 // NewOrchestrator creates a new agent orchestrator.
+//
+// vectorStore and ragService are optional (Phase 2: /implement works without a
+// vector store — grep/search tools replace vector retrieval). llm is the model
+// used by the in-process native agent; it is required when ragService is nil.
 func NewOrchestrator(
 	store storage.Store,
 	vectorStore storage.ScopedVectorStore,
 	ragService rag.Service,
+	llm llms.Model,
 	ghClient github.Client,
 	ghToken string,
 	repo *storage.Repository,
@@ -214,9 +219,12 @@ func NewOrchestrator(
 		sessionsMu:        sync.RWMutex{},
 		done:              make(chan struct{}),
 	}
-	// Pre-populate the review LLM when available; nil-safe — ragService may be
-	// absent in tests or when the RAG pipeline is disabled.
-	if ragService != nil {
+
+	// Prefer the directly-injected model. Fall back to ragService for backward
+	// compatibility (ragService may be absent when the RAG pipeline is disabled).
+	if llm != nil {
+		o.llm = llm
+	} else if ragService != nil {
 		o.llm = ragService.GeneratorLLM()
 	}
 	return o
