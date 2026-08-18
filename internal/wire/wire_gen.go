@@ -24,10 +24,10 @@ import (
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/embeddings"
-	"github.com/sevigo/goframe/httpclient"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
+	"github.com/sevigo/goframe/llms/openai"
 	"github.com/sevigo/goframe/parsers"
 	"github.com/sevigo/goframe/schema"
 	"github.com/sevigo/goframe/textsplitter"
@@ -94,9 +94,9 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		return nil, nil, err
 	}
 	workspaceRegistry := provideWorkspaceRegistry(logger)
-	job := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger, workspaceRegistry)
-	jobDispatcher := jobs.NewDispatcher(ctx, job, configConfig, logger)
-	serverServer := server.NewServerWithStore(ctx, configConfig, jobDispatcher, job, store, service, repoManager, client, logger)
+	reviewJob := jobs.NewReviewJob(configConfig, service, store, vectorStore, repoManager, logger, workspaceRegistry, model, promptManager)
+	jobDispatcher := jobs.NewDispatcher(ctx, reviewJob, configConfig, logger)
+	serverServer := server.NewServerWithStore(ctx, configConfig, jobDispatcher, reviewJob, store, service, repoManager, client, logger)
 	globalmcpServer, err := provideGlobalMCPServer(ctx, configConfig, logger, workspaceRegistry, store, vectorStore, service)
 	if err != nil {
 		cleanup()
@@ -174,36 +174,40 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 			return nil, fmt.Errorf("GEMINI_API_KEY is not set")
 		}
 		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
+	case "openai":
+		if cfg.AI.OpenAIAPIKey == "" {
+			return nil, fmt.Errorf("OPENAI_API_KEY is not set")
+		}
+		baseURL := cfg.AI.OpenAIBaseURL
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		modelName := cfg.AI.GeneratorModel
+		if cfg.AI.OpenAIModel != "" {
+			modelName = cfg.AI.OpenAIModel
+		}
+		return openai.New(openai.WithAPIKey(cfg.AI.OpenAIAPIKey), openai.WithBaseURL(baseURL), openai.WithModel(modelName), openai.WithLogger(logger))
 	case "ollama":
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
-		logger.Info("configuring Ollama HTTP client for generator",
+		logger.Info("configuring Ollama for generator",
 			"response_header_timeout", headerTimeout,
 			"request_timeout", requestTimeout,
 			"model", cfg.AI.GeneratorModel,
 		)
 
-		clientCfg := httpclient.NewConfig(httpclient.WithResponseHeaderTimeout(headerTimeout))
-
-		if requestTimeout > 0 {
-			clientCfg.Timeout = requestTimeout
-		} else {
-			clientCfg.Timeout = 0
-		}
-
-		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithHTTPClient(httpclient.NewClient(clientCfg)), ollama.WithModel(cfg.AI.GeneratorModel), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
-
-		if cfg.AI.EnableThinking {
-			opts = append(opts, ollama.WithThinking(true))
-			if cfg.AI.ThinkingEffort != "" {
-				opts = append(opts, ollama.WithReasoningEffort(cfg.AI.ThinkingEffort))
-			}
-		}
-
-		if cfg.AI.ModelKeepAlive != "" {
-			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
-		}
+		opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
+			ServerURL:          cfg.AI.OllamaHost,
+			APIKey:             cfg.AI.OllamaAPIKey,
+			Model:              cfg.AI.GeneratorModel,
+			HTTPHeaderTimeout:  headerTimeout,
+			HTTPRequestTimeout: requestTimeout,
+			ModelKeepAlive:     cfg.AI.ModelKeepAlive,
+			EnableThinking:     cfg.AI.EnableThinking,
+			ThinkingEffort:     cfg.AI.ThinkingEffort,
+			Logger:             logger,
+		})
 		return ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.AI.LLMProvider)
@@ -221,25 +225,21 @@ func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logge
 		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
 		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
 
-		logger.Info("configuring Ollama HTTP client for embedder",
+		logger.Info("configuring Ollama for embedder",
 			"response_header_timeout", headerTimeout,
 			"request_timeout", requestTimeout,
 			"model", cfg.AI.EmbedderModel,
 		)
 
-		clientCfg := httpclient.NewConfig(httpclient.WithResponseHeaderTimeout(headerTimeout))
-
-		if requestTimeout > 0 {
-			clientCfg.Timeout = requestTimeout
-		} else {
-			clientCfg.Timeout = 0
-		}
-
-		opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithAPIKey(cfg.AI.OllamaAPIKey), ollama.WithModel(cfg.AI.EmbedderModel), ollama.WithHTTPClient(httpclient.NewClient(clientCfg)), ollama.WithLogger(logger), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
-
-		if cfg.AI.ModelKeepAlive != "" {
-			opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
-		}
+		opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
+			ServerURL:          cfg.AI.OllamaHost,
+			APIKey:             cfg.AI.OllamaAPIKey,
+			Model:              cfg.AI.EmbedderModel,
+			HTTPHeaderTimeout:  headerTimeout,
+			HTTPRequestTimeout: requestTimeout,
+			ModelKeepAlive:     cfg.AI.ModelKeepAlive,
+			Logger:             logger,
+		})
 		embedderLLM, err = ollama.New(opts...)
 	default:
 		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.AI.EmbedderProvider)
@@ -373,25 +373,20 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logg
 	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger2)
 	requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger2)
 	logger2.
-		Info("configuring Ollama HTTP client for reranker",
+		Info("configuring Ollama for reranker",
 			"response_header_timeout", headerTimeout,
 			"request_timeout", requestTimeout,
 			"model", cfg.AI.RerankerModel,
 		)
 
-	clientCfg := httpclient.NewConfig(httpclient.WithResponseHeaderTimeout(headerTimeout))
-
-	if requestTimeout > 0 {
-		clientCfg.Timeout = requestTimeout
-	} else {
-		clientCfg.Timeout = 0
-	}
-
-	opts := []ollama.Option{ollama.WithServerURL(cfg.AI.OllamaHost), ollama.WithModel(cfg.AI.RerankerModel), ollama.WithHTTPClient(httpclient.NewClient(clientCfg)), ollama.WithLogger(logger2), ollama.WithRetryAttempts(3), ollama.WithRetryDelay(2 * time.Second)}
-
-	if cfg.AI.ModelKeepAlive != "" {
-		opts = append(opts, ollama.WithKeepAlive(cfg.AI.ModelKeepAlive))
-	}
+	opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
+		ServerURL:          cfg.AI.OllamaHost,
+		Model:              cfg.AI.RerankerModel,
+		HTTPHeaderTimeout:  headerTimeout,
+		HTTPRequestTimeout: requestTimeout,
+		ModelKeepAlive:     cfg.AI.ModelKeepAlive,
+		Logger:             logger2,
+	})
 
 	rerankLLM, err := ollama.New(opts...)
 	if err != nil {
@@ -400,10 +395,11 @@ func provideReranker(ctx context.Context, cfg *config.Config, logger2 *slog.Logg
 
 	prompt, err := promptMgr.Raw("rerank_precision")
 	if err != nil {
-		logger2.Warn("failed to load rerank prompt, using default", "error", err)
+		logger2.
+			Warn("failed to load rerank prompt, using default", "error", err)
 		return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3)), nil
 	}
-
-	logger2.Debug("Loaded rerank prompt", "prompt_len", len(prompt))
+	logger2.
+		Debug("Loaded rerank prompt", "prompt_len", len(prompt))
 	return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3), llms.WithPrompt(prompt)), nil
 }

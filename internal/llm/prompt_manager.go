@@ -29,6 +29,15 @@ const (
 	ReuseVerificationPrompt     PromptKey = "reuse_verification"
 	ProjectContextPrompt        PromptKey = "project_context"
 	GapIdentificationPrompt     PromptKey = "gap_identification"
+
+	// ReviewBugPrompt is the bug-finder review lens system prompt key.
+	ReviewBugPrompt PromptKey = "review_bug"
+	// ReviewSecurityPrompt is the security review lens system prompt key.
+	ReviewSecurityPrompt PromptKey = "review_security"
+	// ReviewPerformancePrompt is the performance review lens system prompt key.
+	ReviewPerformancePrompt PromptKey = "review_performance"
+	// ReviewConventionsPrompt is the conventions review lens system prompt key.
+	ReviewConventionsPrompt PromptKey = "review_conventions"
 )
 
 type PromptManager struct {

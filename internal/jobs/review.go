@@ -6,21 +6,26 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sevigo/code-warden/internal/agent"
+	agentreview "github.com/sevigo/code-warden/internal/agent/review"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/globalmcp"
+	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/rag"
 	ragReview "github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	reviewpkg "github.com/sevigo/code-warden/internal/review"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/internal/stringsutil"
+
+	"github.com/sevigo/goframe/llms"
 )
 
 type ReviewJob struct {
@@ -31,6 +36,8 @@ type ReviewJob struct {
 	repoMgr           repomanager.RepoManager
 	logger            *slog.Logger
 	globalMCPRegistry *globalmcp.WorkspaceRegistry
+	llm               llms.Model
+	promptMgr         *llm.PromptManager
 	repoMutexes       sync.Map
 	// activeSessions maps session ID → orchestrator for in-flight implement jobs.
 	// Used by CancelSession to honour /cancel <id> webhook commands.
@@ -59,6 +66,8 @@ func NewReviewJob(
 	repoMgr repomanager.RepoManager,
 	logger *slog.Logger,
 	globalMCPRegistry *globalmcp.WorkspaceRegistry,
+	model llms.Model,
+	promptMgr *llm.PromptManager,
 ) *ReviewJob {
 	return &ReviewJob{
 		cfg:               cfg,
@@ -68,6 +77,8 @@ func NewReviewJob(
 		repoMgr:           repoMgr,
 		logger:            logger,
 		globalMCPRegistry: globalMCPRegistry,
+		llm:               model,
+		promptMgr:         promptMgr,
 	}
 }
 
@@ -574,24 +585,54 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 	validLineMaps := ragReview.BuildValidLineMap(changedFiles)
 
-	executor := reviewpkg.NewExecutor(j.ragService, reviewpkg.Config{
-		ComparisonModels: j.cfg.AI.ComparisonModels,
-		ReviewsDir:       j.cfg.AI.ReviewsDir,
-		Logger:           j.logger,
-	})
+	var structuredReview *core.StructuredReview
+	var rawReview string
 
-	result, err := executor.Execute(ctx, reviewpkg.Params{
-		RepoConfig:   env.repoConfig,
-		Repo:         env.repo,
-		Event:        event,
-		Diff:         diff,
-		ChangedFiles: changedFiles,
-	})
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to generate review: %w", err)
+	if j.cfg.AI.ReviewMode == "agent" {
+		structuredReview, rawReview, err = j.runAgentReview(ctx, event, diff, changedFiles)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("failed to generate agent review: %w", err)
+		}
+	} else {
+		executor := reviewpkg.NewExecutor(j.ragService, reviewpkg.Config{
+			ComparisonModels: j.cfg.AI.ComparisonModels,
+			ReviewsDir:       j.cfg.AI.ReviewsDir,
+			Logger:           j.logger,
+		})
+
+		result, execErr := executor.Execute(ctx, reviewpkg.Params{
+			RepoConfig:   env.repoConfig,
+			Repo:         env.repo,
+			Event:        event,
+			Diff:         diff,
+			ChangedFiles: changedFiles,
+		})
+		if execErr != nil {
+			return nil, "", nil, fmt.Errorf("failed to generate review: %w", execErr)
+		}
+		structuredReview = result.Review
+		rawReview = result.RawReview
 	}
 
-	return result.Review, result.RawReview, validLineMaps, nil
+	return structuredReview, rawReview, validLineMaps, nil
+}
+
+// runAgentReview runs the agent-based multi-angle review and returns the
+// structured review plus the raw merged response.
+func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, string, error) {
+	repoURL := j.buildAgentCloneURL(event)
+
+	runner := agentreview.NewRunner(j.llm, j.promptMgr, j.logger, nil)
+	result, err := runner.Run(ctx, agentreview.Params{
+		Diff:         diff,
+		ChangedFiles: changedFiles,
+		RepoURL:      repoURL,
+		RepoFullName: event.RepoFullName,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return result.Review, result.Raw, nil
 }
 
 // completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
@@ -782,6 +823,29 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 
 func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *core.RepoConfig {
 	return config.LoadRepoConfigWithDefaults(repoPath, repoFullName, j.logger)
+}
+
+// buildAgentCloneURL constructs a clone URL for the agent review workspace,
+// embedding the installation token so the pure-Go Cloner can authenticate.
+func (j *ReviewJob) buildAgentCloneURL(event *core.GitHubEvent) string {
+	base := event.RepoCloneURL
+	if base == "" {
+		base = fmt.Sprintf("https://github.com/%s/%s.git", event.RepoOwner, event.RepoName)
+	}
+
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token == "" {
+		return base
+	}
+
+	// https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
+	if strings.HasPrefix(base, "https://") {
+		return "https://x-access-token:" + token + "@" + strings.TrimPrefix(base, "https://")
+	}
+	return base
 }
 
 // firstNonEmpty returns the first non-empty string from the given strings.

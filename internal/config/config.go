@@ -247,6 +247,14 @@ type AIConfig struct {
 	ConsensusTimeout     string   `mapstructure:"consensus_timeout"` // Timeout for individual model reviews in consensus mode (e.g., "5m")
 	ConsensusQuorum      float64  `mapstructure:"consensus_quorum"`  // Percentage of models that must finish before synthesis (0.0 to 1.0)
 
+	// ReviewMode selects the review engine: "rag" (default) or "agent".
+	ReviewMode string `mapstructure:"review_mode"`
+
+	// OpenAI-compatible provider (any OpenAI-compatible endpoint).
+	OpenAIBaseURL string `mapstructure:"openai_base_url"`
+	OpenAIAPIKey  string `mapstructure:"openai_api_key"`
+	OpenAIModel   string `mapstructure:"openai_model"`
+
 	// Thinking/Reasoning Mode - for models that support it (DeepSeek-R1, Qwen 3, etc.)
 	EnableThinking bool   `mapstructure:"enable_thinking"` // Enable thinking/reasoning mode
 	ThinkingEffort string `mapstructure:"thinking_effort"` // "low", "medium", "high" (for GPT-OSS models)
@@ -521,6 +529,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.context_token_budget", 100000)   // Tuned for 200K-256K context models; leaves ~100K for prompt + diff + output
 	v.SetDefault("ai.retrieval_score_threshold", 0.0) // 0.0 = disabled; set e.g. 0.3 to filter weak matches
 	v.SetDefault("ai.enable_code_suggestions", true)  // Include code suggestions by default
+	v.SetDefault("ai.review_mode", "rag")             // "rag" (default) or "agent"
+	v.SetDefault("ai.openai_base_url", "https://api.openai.com/v1")
 
 	// Storage
 	v.SetDefault("storage.qdrant_host", "localhost:6334")
