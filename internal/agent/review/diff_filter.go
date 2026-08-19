@@ -1,6 +1,7 @@
 package review
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/core"
@@ -8,7 +9,7 @@ import (
 )
 
 // diffFilter holds the valid new-side line ranges per changed file, used to
-// drop findings that point at unchanged code (mirrors Kodus's snapLinesToDiff).
+// validate and snap findings to the diff hunks (mirrors Kodus's snapLinesToDiff).
 type diffFilter struct {
 	fileLines map[string]map[int]struct{}
 }
@@ -34,6 +35,58 @@ func (f *diffFilter) Allow(s core.Suggestion) bool {
 	}
 	_, inDiff := lines[s.LineNumber]
 	return inDiff
+}
+
+// Snap validates a suggestion against the diff and, when the cited line is
+// close to a hunk, snaps it to the nearest valid diff line. This fixes the
+// common failure mode where the agent is off by a few lines (e.g. it reports
+// line 50 but the hunk covers 45-48) and the finding would otherwise be
+// silently dropped. Returns nil when the finding is outside the file's diff
+// hunks entirely (file not in diff -> retain as-is via a copy).
+func (f *diffFilter) Snap(s core.Suggestion) *core.Suggestion {
+	if s.FilePath == "" || s.LineNumber == 0 {
+		return &s
+	}
+	lines, ok := f.fileLines[stripPrefix(s.FilePath)]
+	if !ok {
+		// File not in the diff map — retain as off-diff summary comment.
+		return &s
+	}
+	if _, inDiff := lines[s.LineNumber]; inDiff {
+		return &s
+	}
+	// Snap to the nearest valid line within a small window. Kodus uses a
+	// similar approach to avoid losing real findings due to off-by-N errors.
+	const snapWindow = 5
+	sorted := sortedLines(lines)
+	bestLine := 0
+	bestDelta := snapWindow + 1
+	for _, ln := range sorted {
+		delta := ln - s.LineNumber
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta < bestDelta {
+			bestDelta = delta
+			bestLine = ln
+		}
+	}
+	if bestLine > 0 {
+		out := s
+		out.LineNumber = bestLine
+		return &out
+	}
+	return nil
+}
+
+// sortedLines returns the valid line numbers for a file in ascending order.
+func sortedLines(lines map[int]struct{}) []int {
+	out := make([]int, 0, len(lines))
+	for ln := range lines {
+		out = append(out, ln)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // stripPrefix removes a leading "./" from a file path for map lookups.

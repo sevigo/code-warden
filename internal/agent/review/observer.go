@@ -33,12 +33,20 @@ func (o *reviewObserver) OnIterationStart(_ context.Context, iteration int) {
 }
 
 // OnThinkComplete logs that the model finished reasoning for this cycle.
-func (o *reviewObserver) OnThinkComplete(_ context.Context, _ string, toolCalls []llms.ToolCall, _ goframeagent.TokenUsage, err error) {
+func (o *reviewObserver) OnThinkComplete(_ context.Context, response string, toolCalls []llms.ToolCall, _ goframeagent.TokenUsage, err error) {
 	o.logger.Info("review: angle thought complete",
 		"angle", o.angle,
 		"tool_calls", len(toolCalls),
 		"error", err,
 	)
+	// Log the first 200 chars of the response at debug level so the
+	// investigation path is traceable when debugging wandering agents.
+	if response != "" {
+		o.logger.Debug("review: angle thought",
+			"angle", o.angle,
+			"response", truncate(response, 200),
+		)
+	}
 }
 
 // OnToolCall logs an investigation step (e.g. grep/read_file) the agent performs.

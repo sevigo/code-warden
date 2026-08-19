@@ -12,6 +12,7 @@ import (
 	"github.com/sevigo/goframe/chains"
 	"github.com/sevigo/goframe/gitutil"
 	"github.com/sevigo/goframe/llms"
+	"github.com/sevigo/goframe/schema"
 
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
@@ -109,38 +110,56 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 		defer cleanup()
 	}
 
-	// Build the shared task context once (diff + changed files).
-	taskCtx := r.buildTaskContext(params)
+	// Build the shared task context once (diff + changed files + changed-line map).
+	fileLines := internalgithub.BuildValidLineMap(params.ChangedFiles)
+	changedLinesSummary := buildChangedLinesSummary(fileLines)
+	filenameIndex := buildFilenameIndex(fileLines)
+	taskCtx := r.buildTaskContext(params, changedLinesSummary)
 	diffFilter := newDiffFilter(params.ChangedFiles)
+
+	// Scope angles to those relevant for the changed files. This avoids
+	// spending tokens on angles with no applicable findings (e.g. security
+	// angle on a doc-only PR).
+	scopedAngles := scopeAngles(r.angles, params.ChangedFiles)
+	if len(scopedAngles) < len(r.angles) {
+		r.logger.Info("agent review: scoped angles",
+			"total", len(r.angles),
+			"scoped", len(scopedAngles),
+		)
+	}
 
 	timeout := params.Timeout
 	if timeout <= 0 {
-		timeout = 5 * time.Minute
+		timeout = 3 * time.Minute
 	}
 	maxIter := params.MaxIterations
 	if maxIter <= 0 {
-		maxIter = 15
+		maxIter = 8
 	}
 
 	chain := chains.NewMapReduceChain(
 		func(ctx context.Context, angle Angle) ([]core.Suggestion, error) {
-			return r.runAngle(ctx, angle, workspace, taskCtx, maxIter)
+			return r.runAngle(ctx, angle, workspace, taskCtx, params.Diff, changedLinesSummary, filenameIndex, maxIter)
 		},
 		func(_ context.Context, results [][]core.Suggestion) (*core.StructuredReview, error) {
-			// Flatten, dedup, and filter to the diff hunks.
+			r.logger.Info("agent review: reduce phase",
+				"angles_dispatched", len(scopedAngles),
+				"angles_collected", len(results),
+			)
+			// Flatten, dedup, and snap/filter to the diff hunks.
 			var suggestions []core.Suggestion
 			for _, group := range results {
 				suggestions = append(suggestions, group...)
 			}
-			suggestions = dedupAndFilter(suggestions, diffFilter)
+			suggestions = dedupAndFilter(suggestions, diffFilter, r.logger)
 			return r.buildReview(suggestions), nil
 		},
-		chains.WithMaxConcurrency[Angle, []core.Suggestion, *core.StructuredReview](len(r.angles)),
+		chains.WithMaxConcurrency[Angle, []core.Suggestion, *core.StructuredReview](len(scopedAngles)),
 		chains.WithMapTimeout[Angle, []core.Suggestion, *core.StructuredReview](timeout),
 		chains.WithQuorum[Angle, []core.Suggestion, *core.StructuredReview](0.5),
 	)
 
-	review, err := chain.Call(ctx, r.angles)
+	review, err := chain.Call(ctx, scopedAngles)
 	if err != nil {
 		return nil, fmt.Errorf("agent review: failed: %w", err)
 	}
@@ -156,7 +175,7 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 }
 
 // runAngle runs a single agent pass for one angle and returns its findings.
-func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx string, maxIter int) ([]core.Suggestion, error) {
+func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx, diff, changedLines, filenameIndex string, maxIter int) ([]core.Suggestion, error) {
 	r.logger.Info("agent review: starting angle", "angle", angle.Name, "workspace", workspace)
 
 	systemPrompt, err := r.promptMgr.Raw(angle.PromptKey)
@@ -173,11 +192,20 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 			}
 		}
 	}
+	// Register the get_diff tool so the agent can re-anchor on the diff at any
+	// time. This prevents the "wandering" failure mode where the diff scrolls
+	// out of context and the agent starts exploring the whole repo.
+	getDiff := newGetDiffTool(diff, changedLines, filenameIndex)
+	if err := registry.Register(getDiff); err != nil {
+		r.logger.Warn("agent review: failed to register get_diff tool",
+			"angle", angle.Name, "error", err)
+	}
 
 	loop, err := goframeagent.NewAgentLoop(r.llm, registry,
 		goframeagent.WithLoopSystemPrompt(systemPrompt),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopObserver(newReviewObserver(r.logger, angle.Name)),
+		goframeagent.WithLoopCompactionHook(r.compactionHook(angle.Name)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("agent review angle %s: new loop: %w", angle.Name, err)
@@ -210,15 +238,21 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 	return review.Suggestions, nil
 }
 
-// buildTaskContext renders the diff, changed-file list, and commit messages for
-// the agent task.
-func (r *Runner) buildTaskContext(params Params) string {
+// buildTaskContext renders the diff, changed-file list, changed-line numbers,
+// and commit messages for the agent task. The changed-lines section gives the
+// agent the exact valid <line> values up front so it doesn't guess from @@ headers.
+func (r *Runner) buildTaskContext(params Params, changedLinesSummary string) string {
 	var b strings.Builder
 	b.WriteString("Repository: ")
 	b.WriteString(params.RepoFullName)
 	b.WriteString("\n\nChanged files:\n")
 	for _, cf := range params.ChangedFiles {
 		b.WriteString("- " + cf.Filename + "\n")
+	}
+	if changedLinesSummary != "" {
+		b.WriteString("\nChanged line numbers (use these for <line> tags):\n")
+		b.WriteString(changedLinesSummary)
+		b.WriteString("\n")
 	}
 	if len(params.CommitMessages) > 0 {
 		b.WriteString("\nCommit messages:\n")
@@ -228,19 +262,81 @@ func (r *Runner) buildTaskContext(params Params) string {
 	}
 	b.WriteString("\n--- DIFF ---\n")
 	b.WriteString(params.Diff)
+	b.WriteString("\n\nTip: Call get_diff to re-fetch this diff and the changed-line list at any time.")
 	return b.String()
 }
 
-// dedupAndFilter deduplicates findings by file:line and drops those outside the
-// diff hunks.
-func dedupAndFilter(suggestions []core.Suggestion, filter *diffFilter) []core.Suggestion {
+// compactionHook returns a hook that compacts the conversation history when the
+// cumulative input tokens exceed a threshold. It preserves the system prompt,
+// the initial task (diff + changed lines), and the last two tool results, and
+// inserts a short reminder so the agent knows history was summarized. This
+// prevents the unbounded context growth that otherwise leads to 1M+ token
+// reviews where the model spends its budget re-reading its own history.
+func (r *Runner) compactionHook(angle string) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+	const compactAtTokens = 60_000
+	return func(_ context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+		if tokens.Input < compactAtTokens {
+			return nil
+		}
+		r.logger.Info("agent review: compacting context",
+			"angle", angle,
+			"tokens_in", tokens.Input,
+			"messages_before", len(msgs),
+		)
+		compacted := make([]schema.MessageContent, 0, 6)
+		// Keep the system prompt (first message).
+		for _, m := range msgs {
+			if m.Role == schema.ChatMessageTypeSystem {
+				compacted = append(compacted, m)
+				break
+			}
+		}
+		// Keep the initial user task message (diff + context).
+		for _, m := range msgs {
+			if m.Role == schema.ChatMessageTypeHuman {
+				compacted = append(compacted, m)
+				break
+			}
+		}
+		// Append a reminder that older tool results were dropped.
+		compacted = append(compacted, schema.NewHumanMessage(
+			"[Context compacted: earlier tool results were summarized to save space. "+
+				"Call get_diff to re-fetch the diff if needed. Emit your <review> now if you have enough evidence.]",
+		))
+		// Keep the last two tool results so the agent has its most recent findings.
+		var tail []schema.MessageContent
+		for i := len(msgs) - 1; i >= 0 && len(tail) < 2; i-- {
+			if msgs[i].Role == schema.ChatMessageTypeTool {
+				tail = append(tail, msgs[i])
+			}
+		}
+		// Reverse tail back to chronological order.
+		for i := len(tail) - 1; i >= 0; i-- {
+			compacted = append(compacted, tail[i])
+		}
+		return compacted
+	}
+}
+
+// dedupAndFilter deduplicates findings by file:line, snaps off-by-a-few-lines
+// findings to the nearest diff hunk, and drops those that can't be snapped.
+// Filtered findings are logged so "0 findings" is debuggable.
+func dedupAndFilter(suggestions []core.Suggestion, filter *diffFilter, logger *slog.Logger) []core.Suggestion {
 	// Dedup first.
 	deduped := Deduplicate([]*core.StructuredReview{{Suggestions: suggestions}})
 	out := make([]core.Suggestion, 0, len(deduped))
 	for _, s := range deduped {
-		if filter.Allow(s) {
-			out = append(out, s)
+		snapped := filter.Snap(s)
+		if snapped != nil {
+			out = append(out, *snapped)
+			continue
 		}
+		logger.Warn("agent review: filtered finding outside diff hunks",
+			"file", s.FilePath,
+			"line", s.LineNumber,
+			"severity", s.Severity,
+			"category", s.Category,
+		)
 	}
 	return out
 }
