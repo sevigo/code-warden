@@ -31,6 +31,9 @@ type Options struct {
 	CommitMessages []string
 	// Timeout is the per-angle timeout. When zero, the runner default (5m) is used.
 	Timeout time.Duration
+	// MaxIterations is the per-angle agent-loop iteration cap. When zero, the
+	// runner default (15) is used.
+	MaxIterations int
 }
 
 // Run executes the agent-based review and returns the structured result.
@@ -60,6 +63,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts Opti
 		RepoFullName:   opts.RepoFullName,
 		CommitMessages: opts.CommitMessages,
 		Timeout:        opts.Timeout,
+		MaxIterations:  opts.MaxIterations,
 	}
 
 	return runner.Run(ctx, params)

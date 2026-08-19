@@ -43,6 +43,7 @@ func main() {
 		noColor = fs.Bool("no-color", false, "disable colorized output")
 		cfgPath = fs.String("config", "", "path to a config file (default: ./config.yaml, $HOME/.code-warden)")
 		timeout = fs.Duration("timeout", 0, "per-angle timeout (default: 5m; raise for slow local models)")
+		maxIter = fs.Int("max-iterations", 0, "per-angle agent-loop iteration cap (default: 15)")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "review — run the agent-based code review standalone")
@@ -83,7 +84,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts, err := buildOptions(ctx, *local, *pr, *prNum, *token, *base, *timeout)
+	opts, err := buildOptions(ctx, *local, *pr, *prNum, *token, *base, *timeout, *maxIter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -107,7 +108,7 @@ func main() {
 }
 
 // buildOptions resolves the review inputs (local diff or public PR).
-func buildOptions(ctx context.Context, local, pr string, prNum int, token, base string, timeout time.Duration) (reviewcli.Options, error) {
+func buildOptions(ctx context.Context, local, pr string, prNum int, token, base string, timeout time.Duration, maxIter int) (reviewcli.Options, error) {
 	if local != "" {
 		abs, err := filepath.Abs(local)
 		if err != nil {
@@ -128,6 +129,7 @@ func buildOptions(ctx context.Context, local, pr string, prNum int, token, base 
 			RepoFullName:   filepath.Base(abs),
 			CommitMessages: commits,
 			Timeout:        timeout,
+			MaxIterations:  maxIter,
 		}, nil
 	}
 
@@ -146,6 +148,7 @@ func buildOptions(ctx context.Context, local, pr string, prNum int, token, base 
 		RepoFullName:   owner + "/" + repo,
 		CommitMessages: data.CommitMessages,
 		Timeout:        timeout,
+		MaxIterations:  maxIter,
 	}, nil
 }
 
