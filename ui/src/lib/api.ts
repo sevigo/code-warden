@@ -65,13 +65,6 @@ export interface SetupTestLLMResponse {
   detail: string
 }
 
-export interface SetupTestWebhookResponse {
-  status: string
-  app_id: number
-  webhook_secret: boolean
-  message: string
-}
-
 export interface AppConfig {
   ai: {
     llm_provider: string
@@ -202,8 +195,6 @@ export const api = {
       }),
     testLLM: () =>
       fetchApi<SetupTestLLMResponse>('/setup/test-llm', { method: 'POST' }),
-    testWebhook: () =>
-      fetchApi<SetupTestWebhookResponse>('/setup/test-webhook', { method: 'POST' }),
   },
 
   config: {

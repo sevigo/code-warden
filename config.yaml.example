@@ -11,8 +11,6 @@
 server:
   port: "8080"
   max_workers: 5
-  # UI theme: "dark" or "light"
-  theme: "dark"
 
 # ============================================================================
 # GitHub App Configuration (required for server mode)
@@ -120,7 +118,6 @@ storage:
 # Database Configuration
 # ============================================================================
 database:
-  driver: "postgres"
   host: "localhost"
   port: 5432
   database: "codewarden"
@@ -128,8 +125,6 @@ database:
   # Set via environment variable DATABASE_PASSWORD for security
   password: "secret"
   ssl_mode: "disable"
-  max_open_conns: 25
-  max_idle_conns: 5
   conn_max_lifetime: "5m"
   conn_max_idle_time: "5m"
 

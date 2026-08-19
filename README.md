@@ -143,7 +143,6 @@ Full reference: [config.yaml.example](config.yaml.example)
 |---|---|
 | [docs/SETUP.md](docs/SETUP.md) | Deployment and first-run guide |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component relationships and system design |
-| [docs/INDEXING.md](docs/INDEXING.md) | Chunk types, metadata, debugging retrieval |
 | [docs/IMPLEMENT_ARCHITECTURE.md](docs/IMPLEMENT_ARCHITECTURE.md) | `/implement` flow and agent design |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and fixes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |

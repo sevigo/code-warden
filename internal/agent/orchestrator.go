@@ -52,12 +52,9 @@ type Config struct {
 	Mode                  string        `yaml:"mode"`
 	Model                 string        `yaml:"model"`
 	Timeout               time.Duration `yaml:"timeout"`
-	MaxIterations         int           `yaml:"max_iterations"`
 	MaxConcurrentSessions int           `yaml:"max_concurrent_sessions"`
 	MCPAddr               string        `yaml:"mcp_addr"`
 	WorkingDir            string        `yaml:"working_dir"`
-	ReviewsDir            string        `yaml:"reviews_dir"`
-	MCPTimeout            time.Duration `yaml:"mcp_timeout"`
 	InProcessOnly         bool          `yaml:"in_process_only"`
 	BaseBranch            string        `yaml:"base_branch"`
 
@@ -144,10 +141,8 @@ func DefaultConfig() Config {
 		Mode:                  "warden",
 		Model:                 "qwen2.5-coder",
 		Timeout:               30 * time.Minute,
-		MaxIterations:         3,
 		MaxConcurrentSessions: 3,
 		MCPAddr:               "127.0.0.1:8081",
-		MCPTimeout:            5 * time.Minute,
 		WorkingDir:            "/tmp/code-warden-agents",
 		// Budget fields default to zero; effectiveXxx() methods supply the actual defaults.
 	}
@@ -177,10 +172,6 @@ func NewOrchestrator(
 		repoConfig,
 		projectRoot,
 		logger,
-		mcp.Config{
-			ReviewsDir: config.ReviewsDir,
-			AgentMode:  true,
-		},
 	)
 
 	logger.Info("MCP server configured for agent review")

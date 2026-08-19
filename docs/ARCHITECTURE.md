@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Code-Warden is a self-hosted GitHub App that reviews pull requests using LLMs with full codebase context via a RAG pipeline. This document covers the component layout and how they connect.
+Code-Warden is a self-hosted GitHub App that reviews pull requests using an agent-based approach: parallel agent passes investigate the diff with grep + `read_file` against an isolated checkout. This document covers the component layout and how they connect.
 
 ## High-Level Architecture
 
@@ -11,14 +11,14 @@ Code-Warden is a self-hosted GitHub App that reviews pull requests using LLMs wi
 │                                                                                  │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐ │
 │  │   GitHub App   │  │  MCP Server    │  │  Job System    │  │  Repo Manager  │ │
-│  │  (webhooks)    │  │  (JSON-RPC)    │  │  (dispatcher)  │  │  (git ops)    │ │
+│  │  (webhooks)    │  │  (tools)       │  │  (dispatcher)  │  │  (git ops)    │ │
 │  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘ │
 │          │                   │                   │                   │          │
 │          └───────────────────┴───────────────────┴───────────────────┘          │
 │                                      │                                           │
 │                          ┌───────────▼───────────┐                              │
-│                          │     RAG Service       │                              │
-│                          │  (6-stage pipeline)   │                              │
+│                          │  Agent Review Runner  │                              │
+│                          │  (multi-angle passes) │                              │
 │                          └───────────┬───────────┘                              │
 │                                      │                                           │
 │                          ┌───────────▼───────────┐                              │
@@ -32,20 +32,16 @@ Code-Warden is a self-hosted GitHub App that reviews pull requests using LLMs wi
                      │            GoFrame                  │
                      │         (Library Layer)             │
                      │  ┌─────────────────────────────┐   │
-                     │  │      VectorStore            │   │
-                     │  │      (Qdrant impl)          │   │
+                     │  │          llms               │   │
+                     │  │  (Ollama/Gemini/OpenAI)     │   │
                      │  └─────────────────────────────┘   │
                      │  ┌─────────────────────────────┐   │
-                     │  │       Embedder              │   │
-                     │  │    (Ollama/Gemini)          │   │
+                     │  │          agent              │   │
+                     │  │  (loop, registry, chains)   │   │
                      │  └─────────────────────────────┘   │
                      │  ┌─────────────────────────────┐   │
-                     │  │    DocumentLoader           │   │
-                     │  │    (Git, Parsers)           │   │
-                     │  └─────────────────────────────┘   │
-                     │  ┌─────────────────────────────┐   │
-                     │  │        Chains               │   │
-                     │  │  (RetrievalQA, etc)         │   │
+                     │  │        gitutil              │   │
+                     │  │  (clone into workspace)     │   │
                      │  └─────────────────────────────┘   │
                      └─────────────────────────────────────┘
 ```
@@ -54,31 +50,25 @@ Code-Warden is a self-hosted GitHub App that reviews pull requests using LLMs wi
 
 ### GoFrame (Library Layer)
 
-GoFrame is a RAG framework for code understanding. It provides:
+GoFrame provides the agent runtime and LLM abstraction:
 
 | Package | Purpose |
 |---------|---------|
-| `schema/` | Core data structures — Document, SparseVector, Retriever, Reranker interfaces |
-| `llms/` | LLM abstraction — Model interface, Ollama/Gemini implementations |
-| `embeddings/` | Vector embeddings — Embedder interface, batch processing, sparse vectors |
-| `vectorstores/` | Vector database — VectorStore interface, Qdrant implementation, retrievers |
-| `parsers/` | Language parsing — Parser plugins for Go, TypeScript, Markdown, etc. |
-| `textsplitter/` | Code chunking — Code-aware text splitting with metadata propagation |
-| `documentloaders/` | Document loading — Git repository loading with streaming |
-| `chains/` | LLM chains — LLMChain, RetrievalQA, MapReduceChain |
-
-GoFrame does **not** include: application logic (GitHub webhooks, job queues), agent orchestration, business-specific tools, or database persistence.
+| `llms/` | LLM abstraction — Model interface, Ollama/Gemini/OpenAI implementations |
+| `agent/` | Agent loop, tool registry, governance, observer |
+| `chains/` | Parallel map-reduce with quorum (used for multi-angle review) |
+| `gitutil/` | Pure-Go shallow clone for isolated workspaces |
 
 ### Code-Warden (Application Layer)
 
 | Component | Purpose | Location |
 |-----------|---------|----------|
 | **GitHub App** | Webhook handling, PR/issue processing | `internal/github/`, `internal/server/` |
-| **RAG Service** | 6-stage context building for reviews | `internal/rag/` |
-| **MCP Server** | JSON-RPC tools for AI agents | `internal/mcp/` |
+| **Agent Review** | Multi-angle agent-based review runner | `internal/agent/review/` |
+| **MCP Server** | Tools for AI agents | `internal/mcp/` |
 | **Agent Orchestrator** | Session management, workspace isolation | `internal/agent/` |
 | **Job System** | Background job dispatch and execution | `internal/jobs/` |
-| **Storage** | PostgreSQL + Qdrant data access | `internal/storage/` |
+| **Storage** | PostgreSQL persistence | `internal/storage/` |
 | **Repo Manager** | Git clone, sync, diff calculation | `internal/repomanager/` |
 
 ## Data Flow
@@ -91,25 +81,26 @@ GoFrame does **not** include: application logic (GitHub webhooks, job queues), a
 │ "/review"  │    │ Handler    │    │ Dispatcher │    │ (worker)   │
 └────────────┘    └────────────┘    └────────────┘    └─────┬──────┘
                                                               │
-                      ┌───────────────────────────────────────┤
-                      │                                       │
-                      ▼                                       ▼
-             ┌────────────────┐                    ┌────────────────┐
-             │  RepoManager   │                    │  RAG Service   │
-             │  (git clone,   │                    │  (6-stage)     │
-             │   diff calc)   │                    └───────┬────────┘
-             └────────────────┘                            │
-                                                           ▼
-                                                  ┌────────────────┐
-                                                  │  LLM Client    │
-                                                  │  (review gen)  │
-                                                  └───────┬────────┘
-                                                          │
-                                                          ▼
-                                                  ┌────────────────┐
-                                                  │ GitHub Client  │
-                                                  │ (post comment) │
-                                                  └────────────────┘
+                       ┌───────────────────────────────────────┤
+                       │                                       │
+                       ▼                                       ▼
+              ┌────────────────┐                    ┌────────────────┐
+              │  RepoManager   │                    │ Agent Review   │
+              │  (git clone)   │                    │ Runner         │
+              └────────────────┘                    └───────┬────────┘
+                                                            │
+                                     ┌──────────────────────┼──────────────────┐
+                                     ▼                      ▼                  ▼
+                              ┌──────────────┐      ┌──────────────┐   ┌──────────────┐
+                              │ Bug pass     │      │ Security     │   │ Perf/Conv    │
+                              │ (grep+read)  │      │ (grep+read)  │   │ (grep+read)  │
+                              └──────┬───────┘      └──────┬───────┘   └──────┬───────┘
+                                     └─────────┬────────────┴───────────┬──────┘
+                                               ▼                        ▼
+                                       ┌────────────────┐      ┌────────────────┐
+                                       │ merge + dedup  │      │ GitHub Client  │
+                                       │ (file:line)    │      │ (post comment) │
+                                       └────────────────┘      └────────────────┘
 ```
 
 The `/implement` flow is documented in [IMPLEMENT_ARCHITECTURE.md](./IMPLEMENT_ARCHITECTURE.md).
@@ -125,22 +116,13 @@ type Store interface {
     SaveReview(ctx, review) error
     // ...
 }
-
-type ScopedVectorStore interface {
-    SimilaritySearch(ctx, query, k, opts...) ([]Document, error)
-    SimilaritySearchWithScores(ctx, query, k, opts...) ([]ScoredDocument, error)
-    AddDocuments(ctx, docs, opts...) ([]string, error)
-    // ...
-}
 ```
 
-### RAG Service
+### Agent Review Runner
 
 ```go
-type Service interface {
-    UpdateRepoContext(ctx, repo, repoPath) error
-    GenerateReview(ctx, config, repo, event, diff, feedback) (*StructuredReview, error)
-}
+type Runner struct { /* llm, promptMgr, tools, angles, logger */ }
+func (r *Runner) Run(ctx, params) (*Result, error)
 ```
 
 ### MCP Tools
@@ -149,7 +131,7 @@ type Service interface {
 type Tool interface {
     Name() string
     Description() string
-    InputSchema() map[string]any
+    ParametersSchema() map[string]any
     Execute(ctx context.Context, args map[string]any) (any, error)
 }
 ```
@@ -157,7 +139,6 @@ type Tool interface {
 ---
 
 - [SETUP.md](./SETUP.md) — Deployment and first-run guide
-- [INDEXING.md](./INDEXING.md) — Chunk types, metadata schema, debugging retrieval
 - [IMPLEMENT_ARCHITECTURE.md](./IMPLEMENT_ARCHITECTURE.md) — `/implement` flow and agent design
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — Common issues and fixes
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — How to contribute

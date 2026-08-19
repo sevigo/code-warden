@@ -55,9 +55,6 @@ type AgentConfig struct {
 	// WorkingDir is the directory for agent workspaces.
 	WorkingDir string `mapstructure:"working_dir"`
 
-	// MCPTimeout is the timeout for individual MCP tool calls (e.g., "5m").
-	MCPTimeout string `mapstructure:"mcp_timeout"`
-
 	// DefaultWorkspace is an optional path to a repository that should be used
 	// as the default workspace for standalone MCP mode.
 	DefaultWorkspace string `mapstructure:"default_workspace"`
@@ -92,19 +89,6 @@ type AgentConfig struct {
 // GetTimeout parses and returns the timeout duration.
 func (c *AgentConfig) GetTimeout() (time.Duration, error) {
 	return time.ParseDuration(c.Timeout)
-}
-
-// GetMCPTimeout parses and returns the MCP tool timeout duration.
-// Returns the default of 5 minutes if not configured or invalid.
-func (c *AgentConfig) GetMCPTimeout() time.Duration {
-	if c.MCPTimeout == "" {
-		return 5 * time.Minute
-	}
-	d, err := time.ParseDuration(c.MCPTimeout)
-	if err != nil {
-		return 5 * time.Minute
-	}
-	return d
 }
 
 // Validate validates the agent configuration.
@@ -210,7 +194,6 @@ func (c *AgentConfig) validateDefaultWorkspace() error {
 type ServerConfig struct {
 	Port       string `mapstructure:"port"`
 	MaxWorkers int    `mapstructure:"max_workers"`
-	Theme      string `mapstructure:"theme"`
 }
 
 type GitHubConfig struct {
@@ -255,15 +238,12 @@ type StorageConfig struct {
 }
 
 type DBConfig struct {
-	Driver          string        `mapstructure:"driver"`
 	Host            string        `mapstructure:"host"`
 	Port            int           `mapstructure:"port"`
 	Database        string        `mapstructure:"database"`
 	Username        string        `mapstructure:"username"`
 	Password        string        `mapstructure:"password"`
 	SSLMode         string        `mapstructure:"ssl_mode"`
-	MaxOpenConns    int           `mapstructure:"max_open_conns"`
-	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"`
 }
@@ -338,15 +318,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("logging.output", "stdout")
 
 	// Database
-	v.SetDefault("database.driver", "postgres")
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 5432)
 	v.SetDefault("database.database", "codewarden")
 	v.SetDefault("database.username", "postgres")
 	// Password has no default
 	v.SetDefault("database.ssl_mode", "disable")
-	v.SetDefault("database.max_open_conns", 25)
-	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", "5m")
 	v.SetDefault("database.conn_max_idle_time", "5m")
 
@@ -358,7 +335,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.max_iterations", 3)
 	v.SetDefault("agent.max_concurrent_sessions", 3)
 	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
-	v.SetDefault("agent.mcp_timeout", "5m")
 	v.SetDefault("agent.working_dir", "")
 	v.SetDefault("agent.plan_iterations", 0)    // 0 = use built-in default (8)
 	v.SetDefault("agent.edit_iterations", 0)    // 0 = use built-in default (50)

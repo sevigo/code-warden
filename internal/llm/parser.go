@@ -199,46 +199,6 @@ func parseLegacySuggestionHeader(line string) (string, int, int, bool) {
 	return path, ln, ln, true
 }
 
-// Unindent removes common leading whitespace from multiline strings.
-func Unindent(s string) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) <= 1 {
-		return strings.TrimSpace(s)
-	}
-
-	minIndent := -1
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		indent := 0
-		for _, r := range line {
-			if unicode.IsSpace(r) {
-				indent++
-			} else {
-				break
-			}
-		}
-		if minIndent == -1 || indent < minIndent {
-			minIndent = indent
-		}
-	}
-
-	if minIndent <= 0 {
-		return strings.TrimSpace(s)
-	}
-
-	var result []string
-	for _, line := range lines {
-		if len(line) >= minIndent {
-			result = append(result, line[minIndent:])
-		} else {
-			result = append(result, "")
-		}
-	}
-	return strings.TrimSpace(strings.Join(result, "\n"))
-}
-
 // StripMarkdownFence extracts content from markdown fences.
 func StripMarkdownFence(s string) string {
 	trimmed := strings.TrimSpace(s)

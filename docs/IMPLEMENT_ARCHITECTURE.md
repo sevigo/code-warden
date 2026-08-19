@@ -73,7 +73,7 @@ runWardenAgent(ctx, session, branch)
 ├─ ── Phase 3: Review (orchestrator-driven state machine) ────
 │   for round := 1..maxRounds:
 │     diff = git diff HEAD
-│     result = review.Executor.Execute(diff)    ← same RAG pipeline as /review
+│     result = agentReview.Runner.Run(diff)    ← same agent review as /review
 │     if APPROVE → break → Phase 4
 │     buildFixLoop() ← restricted tools, exact findings in task context
 │
@@ -92,7 +92,7 @@ The review phase is run by Go code, not an LLM agent loop. Two problems made the
 
 2. **Cold-start with nil history.** The previous design passed `nil` history to the review loop. The agent started with just system prompt + task and no memory of what the edit loop did. In practice it spent all its iterations re-exploring the codebase instead of reviewing.
 
-The fix: Go runs `git diff HEAD` directly, calls the proven `review.Executor` (the same RAG pipeline `/review` uses), and feeds the exact findings to a small "fix loop." Review always runs regardless of edit-loop behavior. The fix loop only reads/writes the specific reported files.
+The fix: Go runs `git diff HEAD` directly, calls the agent-based review runner (the same engine `/review` uses), and feeds the exact findings to a small "fix loop." Review always runs regardless of edit-loop behavior. The fix loop only reads/writes the specific reported files.
 
 ---
 
@@ -134,17 +134,6 @@ Every session is persisted to the `agent_sessions` PostgreSQL table.
 ---
 
 ## MCP Tools Reference
-
-### Code exploration (RAG-backed, read-only)
-
-| Tool | Description |
-|------|-------------|
-| `search_code` | Semantic search over the indexed codebase |
-| `get_symbol` | Look up a symbol definition |
-| `get_structure` | Project directory tree |
-| `get_arch_context` | Architecture summary for a directory |
-| `find_usages` | Call sites for a symbol |
-| `get_callers` / `get_callees` | Call graph navigation |
 
 ### Code exploration (exact search, read-only)
 
@@ -195,10 +184,9 @@ agent:
   publish_iterations: 8
 ```
 
-Model resolution: `agent.model` (if set) → `ragService.GeneratorLLM()` (the review model).
+Model resolution: `agent.model` (if set) → the injected review model (`o.llm`).
 
 ---
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Component relationships and system design
-- [INDEXING.md](./INDEXING.md) — Chunk types, metadata, debugging retrieval
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — Common issues and fixes

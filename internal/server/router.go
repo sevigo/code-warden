@@ -16,12 +16,6 @@ import (
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
-// NewRouter creates and configures a new HTTP router with middleware and API routes.
-func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
-	r, _, _ := NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, logger)
-	return r
-}
-
 // NewRouterWithStore creates a router with storage for web UI endpoints.
 func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) (*chi.Mux, *handler.DashboardHandler, *handler.SetupHandler) {
 	r := chi.NewRouter()

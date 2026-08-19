@@ -15,15 +15,7 @@ type diffFilter struct {
 
 // newDiffFilter builds a diff filter from the changed files' patches.
 func newDiffFilter(changedFiles []internalgithub.ChangedFile) *diffFilter {
-	fileLines := make(map[string]map[int]struct{})
-	for _, cf := range changedFiles {
-		lines, err := internalgithub.ParseValidLinesFromPatch(cf.Patch, nil)
-		if err != nil {
-			continue
-		}
-		fileLines[cf.Filename] = lines
-	}
-	return &diffFilter{fileLines: fileLines}
+	return &diffFilter{fileLines: internalgithub.BuildValidLineMap(changedFiles)}
 }
 
 // Allow reports whether a suggestion points at a valid new-side line in the

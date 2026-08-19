@@ -74,13 +74,8 @@ ai:
   llm_provider: "ollama"
   ollama_host: "http://localhost:11434"
   generator_model: "qwen2.5-coder:7b"
-  embedder_model: "nomic-embed-text"
-  fast_model: "qwen2.5-coder:1.5b"
-  enable_reranking: true
-  reranker_model: "qwen2.5-coder:1.5b"
 
 storage:
-  qdrant_host: "localhost:6334"
   repo_path: "/path/to/data/repos"
 
 database:
@@ -97,15 +92,13 @@ database:
 
 ```sh
 docker-compose up -d
-docker-compose ps   # verify both Qdrant and PostgreSQL are running
+docker-compose ps   # verify PostgreSQL is running
 ```
 
 Pull the Ollama models:
 
 ```sh
-ollama pull nomic-embed-text
 ollama pull qwen2.5-coder:7b
-ollama pull qwen2.5-coder:1.5b
 ```
 
 Or if using Docker Compose Ollama:

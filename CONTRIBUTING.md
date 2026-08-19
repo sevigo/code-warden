@@ -9,7 +9,7 @@ Bug fixes, features, docs, and tests are all welcome.
 ```sh
 git clone https://github.com/sevigo/code-warden
 cd code-warden
-docker-compose up -d          # Qdrant + PostgreSQL
+docker compose up -d db          # PostgreSQL
 cp config.yaml.example config.yaml
 make build
 ./bin/code-warden
@@ -21,15 +21,14 @@ For full setup including GitHub App configuration, see [docs/SETUP.md](docs/SETU
 
 ```sh
 make test        # Run all tests
-make test-race   # Run with race detector
 make lint        # golangci-lint
 ```
 
 Run a specific package:
 
 ```sh
-go test -v ./internal/rag/...
-go test -run TestTokenizer ./internal/...
+go test -v ./internal/agent/review/...
+go test -run TestTokenizer ./internal/llm/...
 ```
 
 All tests and lint must pass before submitting a PR.
@@ -41,12 +40,12 @@ All tests and lint must pass before submitting a PR.
 | Directory | What lives here |
 |---|---|
 | `cmd/` | Binary entry points (server) |
-| `internal/rag/` | RAG pipeline — context building, indexing, review generation |
+| `internal/agent/review/` | Multi-angle agent-based review runner |
+| `internal/agent/` | Agent orchestration for `/implement` |
 | `internal/jobs/` | Job dispatcher and review worker |
 | `internal/github/` | GitHub API client and webhook handling |
-| `internal/agent/` | Agent orchestration for `/implement` |
 | `internal/mcp/` | MCP server and tool implementations |
-| `internal/storage/` | PostgreSQL and Qdrant abstractions |
+| `internal/storage/` | PostgreSQL persistence |
 | `internal/core/` | Domain types and interfaces |
 | `internal/llm/` | LLM client wrappers and prompt management |
 | `internal/config/` | Configuration loading and defaults |
@@ -56,12 +55,11 @@ All tests and lint must pass before submitting a PR.
 
 ## Common contribution patterns
 
-### Adding a new RAG context stage
+### Adding a new review angle
 
-1. Create `internal/rag/contextpkg/<stage>.go`
-2. Implement your retrieval logic returning `[]schema.Document`
-3. Add it to the parallel stage runner in `internal/rag/contextpkg/builder.go`
-4. Write tests in `internal/rag/contextpkg/<stage>_test.go`
+1. Create `internal/llm/prompts/review_<angle>.prompt`
+2. Add the prompt key constant to `internal/llm/prompt_manager.go`
+3. Register the angle in `internal/agent/review/angles.go`
 
 ### Adding a new MCP tool
 
@@ -70,7 +68,7 @@ All tests and lint must pass before submitting a PR.
    type Tool interface {
        Name() string
        Description() string
-       InputSchema() map[string]any
+       ParametersSchema() map[string]any
        Execute(ctx context.Context, args map[string]any) (any, error)
    }
    ```
@@ -79,20 +77,20 @@ All tests and lint must pass before submitting a PR.
 
 ### Adding a new GitHub command
 
-1. Parse the command in the webhook handler (`internal/github/`)
+1. Parse the command in the webhook handler (`internal/server/handler/webhook.go`)
 2. Add the event type to `internal/core/events.go`
 3. Add the job handler in `internal/jobs/review.go`
 
 ### Adding a new prompt
 
 1. Create `internal/llm/prompts/<name>.prompt`
-2. Add the prompt key constant to `internal/llm/keys.go`
-3. Use it via `promptMgr.Render(llm.MyPromptKey, data)`
+2. Add the prompt key constant to `internal/llm/prompt_manager.go`
+3. Use it via `promptMgr.Raw(llm.MyPromptKey)`
 
 ### Changing the database schema
 
 1. Add migration SQL to `internal/db/migrations/`
-2. Update the relevant `Store` interface in `internal/storage/store.go`
+2. Update the relevant `Store` interface in `internal/storage/database.go`
 3. Update the PostgreSQL implementation
 4. Update mock if the interface changed
 
@@ -120,10 +118,10 @@ Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`
 
 Examples:
 ```
-feat: add /explain command for symbol lookup via RAG
-fix: resolve stale LSP cache causing false positives in client.go
-docs: update INDEXING.md with new chunk type
-chore: upgrade goframe to v0.36.0
+feat: add security review angle
+fix: resolve nil dereference in review runner
+docs: update architecture overview
+chore: upgrade goframe to v0.42.0
 ```
 
 Keep the first line under 72 characters.

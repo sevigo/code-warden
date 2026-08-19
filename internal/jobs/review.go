@@ -203,12 +203,9 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			Mode:                  j.cfg.Agent.Mode,
 			Model:                 j.cfg.Agent.Model,
 			Timeout:               timeout,
-			MaxIterations:         j.cfg.Agent.MaxIterations,
 			MaxConcurrentSessions: j.cfg.Agent.MaxConcurrentSessions,
 			MCPAddr:               j.cfg.Agent.MCPAddr,
-			MCPTimeout:            j.cfg.Agent.GetMCPTimeout(),
 			WorkingDir:            j.cfg.Agent.WorkingDir,
-			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 			InProcessOnly:         j.cfg.Agent.InProcessOnly,
 			BaseBranch:            j.cfg.Agent.BaseBranch,
 			PlanIterations:        j.cfg.Agent.PlanIterations,
@@ -460,7 +457,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		j.logger.Warn("failed to fetch commit messages, review will proceed without them", "error", cErr)
 	}
 
-	validLineMaps := buildValidLineMap(changedFiles)
+	validLineMaps := github.BuildValidLineMap(changedFiles)
 
 	// Agent-based review is the default engine. RAG retrieval is no longer used
 	// for /review — the agent investigates the diff with grep + read_file.
@@ -673,15 +670,4 @@ func (j *ReviewJob) buildAgentCloneURL(event *core.GitHubEvent) string {
 		return "https://x-access-token:" + token + "@" + strings.TrimPrefix(base, "https://")
 	}
 	return base
-}
-
-// firstNonEmpty returns the first non-empty string from the given strings.
-// If all strings are empty, returns the empty string.
-func firstNonEmpty(strings ...string) string {
-	for _, s := range strings {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }

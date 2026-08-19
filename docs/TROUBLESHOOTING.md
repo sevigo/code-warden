@@ -26,37 +26,14 @@ Common issues and how to fix them.
 
 ---
 
-## Review posted but context is empty / review is vague
+## Review posted but review is vague
 
 **Symptom:** Review says something like "cannot provide specific feedback without repository context."
 
-The RAG retrieval returned no documents.
+The agent was unable to investigate the diff against the repository. Common causes:
 
-1. Is the repository indexed?
-   ```sh
-   curl http://localhost:6333/collections
-   ```
-   If the collection is missing, trigger a full scan for the repo from the dashboard UI.
-2. Is the embedder reachable?
-   ```sh
-   curl http://localhost:11434/api/embeddings -d '{"model":"nomic-embed-text","prompt":"test"}'
-   ```
-3. Look for `HIGH HALLUCINATION RISK` in server logs — this confirms empty context was detected.
-
----
-
-## Embedder model not found
-
-**Symptom:** Log line: `failed to generate embeddings: model not found`
-
-```sh
-ollama pull nomic-embed-text   # or whatever embedder_model you configured
-```
-
-With Docker:
-```sh
-docker-compose exec ollama ollama pull nomic-embed-text
-```
+1. The repo checkout could not be cloned (check network/auth and `repo_path` permissions).
+2. The configured LLM model is unreachable or overloaded.
 
 ---
 
@@ -70,35 +47,6 @@ docker-compose exec ollama ollama pull nomic-embed-text
 | Model not loaded in Ollama | Check `ollama list` and pull if missing |
 | Ollama out of memory | Use a smaller model or increase RAM |
 | Cloud proxy latency | Increase timeout, or switch to a faster model |
-
----
-
-## Qdrant connection refused
-
-**Symptom:** Log line: `failed to connect to Qdrant` at startup.
-
-```sh
-docker-compose ps                       # Is Qdrant running?
-curl http://localhost:6333/healthz       # Is it healthy?
-```
-
-Code-Warden uses the gRPC port (6334), not the HTTP port (6333). Verify `storage.qdrant_host` in config.
-
----
-
-## Sparse vector generation fails
-
-**Symptom:** Log line: `sparse vector generation failed, using dense only`
-
-This is **non-fatal** — retrieval falls back to dense-only search. Reviews still work but may miss exact identifier matches. Usually caused by an empty or whitespace-only text being tokenized. Check the surrounding log context.
-
----
-
-## Scan stuck or very slow
-
-1. Large binary files may be causing the indexer to stall. Add their extensions to `exclude_exts` in `.code-warden.yml`.
-2. A scan is bottlenecked by embedding generation. A faster embedder model or GPU acceleration helps significantly.
-3. Scans are resumable — restart one from the dashboard and it picks up where it left off.
 
 ---
 
@@ -143,4 +91,4 @@ logging:
   level: "debug"
 ```
 
-This logs every retrieval query, sparse vector generation, LLM call, and context assembly step. It's very verbose — don't run in production unless you're actively debugging.
+This logs every agent tool call and LLM call. It's very verbose — don't run in production unless you're actively debugging.

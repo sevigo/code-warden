@@ -92,9 +92,6 @@ func NewStandaloneServer(cfg *config.Config, logger *slog.Logger, registry *Work
 		s.defaultRepoCfg,
 		cfg.Agent.DefaultWorkspace,
 		logger,
-		mcp.Config{
-			ReviewsDir: cfg.AI.ReviewsDir,
-		},
 	)
 
 	return s

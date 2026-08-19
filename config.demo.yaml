@@ -42,7 +42,6 @@ storage:
   repo_path: "./data/repos"
 
 database:
-  driver: "postgres"
   # Host overridden to "db" inside docker-compose via DATABASE_HOST env var
   host: "localhost"
   port: 5432
@@ -51,8 +50,6 @@ database:
   # Password comes from DATABASE_PASSWORD env var
   password: "secret"
   ssl_mode: "disable"
-  max_open_conns: 10
-  max_idle_conns: 3
   conn_max_lifetime: "5m"
   conn_max_idle_time: "5m"
 

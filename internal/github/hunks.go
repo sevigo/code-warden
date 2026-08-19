@@ -82,3 +82,18 @@ func parseHunkHeader(header string) (int, error) {
 
 	return startLine, nil
 }
+
+// BuildValidLineMap constructs a map of valid new-side line numbers per changed
+// file from their patches. Used to validate inline suggestion placement and to
+// filter review findings to the diff hunks.
+func BuildValidLineMap(changedFiles []ChangedFile) map[string]map[int]struct{} {
+	result := make(map[string]map[int]struct{})
+	for _, cf := range changedFiles {
+		lines, err := ParseValidLinesFromPatch(cf.Patch, nil)
+		if err != nil {
+			continue
+		}
+		result[cf.Filename] = lines
+	}
+	return result
+}
