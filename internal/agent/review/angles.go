@@ -24,7 +24,7 @@ type Angle struct {
 // All use the same model; only the system prompt differs.
 var DefaultAngles = []Angle{
 	{Name: "bug", PromptKey: llm.ReviewBugPrompt, Description: "logic bugs and correctness"},
-	{Name: "security", PromptKey: llm.ReviewSecurityPrompt, Description: "security vulnerabilities"},
-	{Name: "performance", PromptKey: llm.ReviewPerformancePrompt, Description: "performance and scalability"},
-	{Name: "conventions", PromptKey: llm.ReviewConventionsPrompt, Description: "conventions and maintainability"},
+	// {Name: "security", PromptKey: llm.ReviewSecurityPrompt, Description: "security vulnerabilities"},
+	// {Name: "performance", PromptKey: llm.ReviewPerformancePrompt, Description: "performance and scalability"},
+	// {Name: "conventions", PromptKey: llm.ReviewConventionsPrompt, Description: "conventions and maintainability"},
 }

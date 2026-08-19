@@ -45,7 +45,7 @@ func FetchPR(ctx context.Context, in PRInput) (*PRData, error) {
 
 	// 1. Pull request metadata (head repo clone URL).
 	prURL := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", apiBase, in.Owner, in.Repo, in.Number)
-	prBytes, err := getBody(ctx, client, prURL, in.Token)
+	prBytes, err := getBody(ctx, client, prURL, in.Token, "")
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func FetchPR(ctx context.Context, in PRInput) (*PRData, error) {
 
 	// 2. PR diff (unified diff via the .diff endpoint).
 	diffURL := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", apiBase, in.Owner, in.Repo, in.Number)
-	diffBytes, err := getBody(ctx, client, diffURL+".diff", in.Token)
+	diffBytes, err := getBody(ctx, client, diffURL+".diff", in.Token, "application/vnd.github.v3.diff")
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func FetchPR(ctx context.Context, in PRInput) (*PRData, error) {
 	// 3. Commit messages (best-effort; non-fatal if unavailable).
 	commitsURL := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/commits", apiBase, in.Owner, in.Repo, in.Number)
 	var commitMessages []string
-	if commitsBytes, err := getBody(ctx, client, commitsURL, in.Token); err == nil {
+	if commitsBytes, err := getBody(ctx, client, commitsURL, in.Token, ""); err == nil {
 		var commits []struct {
 			Commit struct {
 				Message string `json:"message"`
@@ -103,12 +103,18 @@ func FetchPR(ctx context.Context, in PRInput) (*PRData, error) {
 }
 
 // getBody performs an authenticated GET and returns the response body.
-func getBody(ctx context.Context, client *http.Client, rawURL, token string) ([]byte, error) {
+// accept overrides the Accept header; when empty, the default GitHub JSON
+// format is requested.
+func getBody(ctx context.Context, client *http.Client, rawURL, token, accept string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	} else {
+		req.Header.Set("Accept", "application/vnd.github+json")
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
