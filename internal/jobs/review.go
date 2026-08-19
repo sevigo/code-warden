@@ -18,8 +18,6 @@ import (
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/llm"
-	"github.com/sevigo/code-warden/internal/rag"
-	ragReview "github.com/sevigo/code-warden/internal/rag/review"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/internal/stringsutil"
@@ -29,9 +27,7 @@ import (
 
 type ReviewJob struct {
 	cfg               *config.Config
-	ragService        rag.Service
 	store             storage.Store
-	vectorStore       storage.VectorStore
 	repoMgr           repomanager.RepoManager
 	logger            *slog.Logger
 	globalMCPRegistry *globalmcp.WorkspaceRegistry
@@ -59,9 +55,7 @@ func (j *ReviewJob) CancelSession(id string) error {
 // NewReviewJob creates a new ReviewJob.
 func NewReviewJob(
 	cfg *config.Config,
-	rag rag.Service,
 	store storage.Store,
-	vectorStore storage.VectorStore,
 	repoMgr repomanager.RepoManager,
 	logger *slog.Logger,
 	globalMCPRegistry *globalmcp.WorkspaceRegistry,
@@ -70,9 +64,7 @@ func NewReviewJob(
 ) *ReviewJob {
 	return &ReviewJob{
 		cfg:               cfg,
-		ragService:        rag,
 		store:             store,
-		vectorStore:       vectorStore,
 		repoMgr:           repoMgr,
 		logger:            logger,
 		globalMCPRegistry: globalMCPRegistry,
@@ -204,20 +196,13 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	// 4. Load repository config
 	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
 
-	// 5. Get scoped vector store for this repo (optional — nil when the RAG
-	// pipeline / Qdrant is absent; the agent falls back to grep/search tools).
-	var scopedStore storage.ScopedVectorStore
-	if j.vectorStore != nil && repo != nil && repo.QdrantCollectionName != "" {
-		scopedStore = j.vectorStore.ForRepo(repo.QdrantCollectionName, j.cfg.AI.EmbedderModel)
-	}
-
-	// 6. Parse agent timeout
+	// 5. Parse agent timeout
 	timeout, err := j.cfg.Agent.GetTimeout()
 	if err != nil {
 		return fmt.Errorf("invalid agent timeout: %w", err)
 	}
 
-	// 7. Create orchestrator
+	// 6. Create orchestrator
 	// For agent iterations, use a single randomly-selected comparison model (if configured)
 	// instead of full consensus review. This provides better quality than the generator model
 	// alone while keeping review time within the 60-second MCP tool timeout.
@@ -235,9 +220,8 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 
 	orchestrator := agent.NewOrchestrator(
 		j.store,
-		scopedStore,
-		j.ragService,
 		j.llm,
+		j.promptMgr,
 		ghClient,
 		ghToken,
 		repo,
@@ -393,7 +377,7 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 	}()
 
 	// 1. Fetch the latest review from the database
-	lastReview, err := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+	_, err = j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
 	if err != nil {
 		j.logger.Warn("failed to fetch last review for re-review", "error", err)
 		// Fallback: If no previous review, run a full review instead
@@ -401,10 +385,16 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 		return err
 	}
 
-	// 2. Fetch changed files for context
+	// 2. Fetch changed files and diff for context
 	changedFiles, err := reviewEnv.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
 		err = fmt.Errorf("failed to get changed files for re-review context: %w", err)
+		return err
+	}
+
+	diff, err := reviewEnv.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		err = fmt.Errorf("failed to get PR diff for re-review: %w", err)
 		return err
 	}
 
@@ -414,8 +404,9 @@ func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.Git
 		j.logger.Warn("failed to fetch commit messages for re-review, proceeding without them", "error", cErr)
 	}
 
-	// 3. Generate Re-Review using RAG service
-	structuredReview, rawReReview, err := j.ragService.GenerateReReview(ctx, reviewEnv.repo, event, lastReview, reviewEnv.ghClient, changedFiles)
+	// 3. Generate Re-Review using the agent-based review runner
+	// (re-review is equivalent to a fresh review of the current diff).
+	structuredReview, rawReReview, err := j.runAgentReview(ctx, event, diff, changedFiles)
 	if err != nil {
 		err = fmt.Errorf("failed to generate re-review: %w", err)
 		return err
@@ -520,22 +511,7 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		return nil, repoErr
 	}
 
-	// Update vector store only when the default branch has new commits.
-	// PR diffs are NEVER written to Qdrant; they are passed in-memory to the LLM.
-	if updateResult.IsInitialClone || updateResult.DefaultBranchChanged {
-		if vsErr := j.updateVectorStoreAndSHA(ctx, j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName), repo, updateResult); vsErr != nil {
-			mutex.Unlock()
-			j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, vsErr)
-			return nil, vsErr
-		}
-	} else {
-		j.logger.Info("default branch unchanged — skipping Qdrant update, running review off existing index",
-			"repo", event.RepoFullName,
-			"default_branch_sha", updateResult.DefaultBranchSHA,
-		)
-	}
-
-	// ── Check for duplicate review WHILE HOLDING THE LOCK ───────────────────
+	// Check for duplicate review WHILE HOLDING THE LOCK ───────────────────
 	// This prevents a race condition where two concurrent webhooks for the same PR
 	// could both pass the SHA check and generate duplicate reviews.
 	skipReview := false
@@ -587,7 +563,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 		j.logger.Warn("failed to fetch commit messages, review will proceed without them", "error", cErr)
 	}
 
-	validLineMaps := ragReview.BuildValidLineMap(changedFiles)
+	validLineMaps := buildValidLineMap(changedFiles)
 
 	// Agent-based review is the default engine. RAG retrieval is no longer used
 	// for /review — the agent investigates the diff with grep + read_file.
@@ -604,7 +580,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, string, error) {
 	repoURL := j.buildAgentCloneURL(event)
 
-	runner := agentreview.NewRunner(j.llm, j.promptMgr, j.logger, nil)
+	runner := agentreview.NewRunner(j.llm, j.promptMgr, agent.ReadOnlyReviewTools, j.logger, nil)
 	result, err := runner.Run(ctx, agentreview.Params{
 		Diff:         diff,
 		ChangedFiles: changedFiles,
@@ -714,34 +690,6 @@ func extractBriefTitle(comment string) string {
 // truncateTitle truncates a title to a maximum length.
 func truncateTitle(title string, maxLen int) string {
 	return stringsutil.Truncate(title, maxLen, "...")
-}
-
-// updateVectorStoreAndSHA performs incremental indexing of the default branch changes.
-// It persists DefaultBranchSHA (not the PR HeadSHA) as LastIndexedSHA to keep
-// the Qdrant baseline aligned with main.
-func (j *ReviewJob) updateVectorStoreAndSHA(ctx context.Context, repoConfig *core.RepoConfig, repo *storage.Repository, updateResult *core.UpdateResult) error {
-	if err := j.ragService.SyncRepoIndex(ctx, repoConfig, repo, updateResult, nil); err != nil {
-		return fmt.Errorf("failed to sync repository index: %w", err)
-	}
-
-	// Persist the DEFAULT BRANCH SHA (not the PR HeadSHA) so the next sync
-	// correctly computes the incremental diff against main.
-	shaToStore := updateResult.DefaultBranchSHA
-	if shaToStore == "" {
-		// Defensive fallback — should not happen with the new sync logic
-		shaToStore = updateResult.HeadSHA
-		j.logger.Warn("DefaultBranchSHA was empty, falling back to HeadSHA for persistence",
-			"repo", repo.FullName,
-		)
-	}
-
-	if err := j.repoMgr.UpdateRepoSHA(ctx, repo.FullName, shaToStore); err != nil {
-		j.logger.Error("CRITICAL: Vector store updated but failed to persist new SHA in database.",
-			"error", err, "repo", repo.FullName, "new_sha", shaToStore)
-		return fmt.Errorf("CRITICAL: failed to update last indexed SHA after vector store update: %w", err)
-	}
-
-	return nil
 }
 
 func (j *ReviewJob) setupReview(ctx context.Context, event *core.GitHubEvent, title, summary string) (github.Client, string, github.StatusUpdater, int64, error) {

@@ -18,12 +18,11 @@ import (
 )
 
 type manager struct {
-	cfg         *config.Config
-	store       storage.Store
-	logger      *slog.Logger
-	vectorStore storage.VectorStore
-	gitClient   *gitutil.Client
-	repoMux     sync.Map
+	cfg       *config.Config
+	store     storage.Store
+	logger    *slog.Logger
+	gitClient *gitutil.Client
+	repoMux   sync.Map
 }
 
 //go:generate mockgen -destination=../../mocks/mock_repomanager.go -package=mocks github.com/sevigo/code-warden/internal/repomanager RepoManager
@@ -42,16 +41,14 @@ type RepoManager interface {
 func New(
 	cfg *config.Config,
 	store storage.Store,
-	vectorStore storage.VectorStore,
 	gitClient *gitutil.Client,
 	logger *slog.Logger,
 ) RepoManager {
 	return &manager{
-		cfg:         cfg,
-		store:       store,
-		logger:      logger,
-		vectorStore: vectorStore,
-		gitClient:   gitClient,
+		cfg:       cfg,
+		store:     store,
+		logger:    logger,
+		gitClient: gitClient,
 	}
 }
 

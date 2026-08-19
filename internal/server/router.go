@@ -11,7 +11,6 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/gitutil"
-	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server/handler"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -19,12 +18,12 @@ import (
 
 // NewRouter creates and configures a new HTTP router with middleware and API routes.
 func NewRouter(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *chi.Mux {
-	r, _, _ := NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, nil, logger)
+	r, _, _ := NewRouterWithStore(cfg, dispatcher, nil, nil, nil, nil, logger)
 	return r
 }
 
 // NewRouterWithStore creates a router with storage for web UI endpoints.
-func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) (*chi.Mux, *handler.DashboardHandler, *handler.SetupHandler) {
+func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) (*chi.Mux, *handler.DashboardHandler, *handler.SetupHandler) {
 	r := chi.NewRouter()
 	var dashboardHandler *handler.DashboardHandler
 	var setupHandler *handler.SetupHandler
@@ -59,25 +58,18 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, cance
 
 		// Web UI API routes
 		if store != nil {
-			webUIHandler := handler.NewWebUIHandler(store, ragService, repoMgr, gitClient, cfg, logger)
+			webUIHandler := handler.NewWebUIHandler(store, repoMgr, gitClient, cfg, logger)
 			dashboardHandler = handler.NewDashboardHandler(cfg, store, logger)
 
 			// Fast endpoints — short timeout is fine
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos", webUIHandler.ListRepos)
 			r.With(middleware.Timeout(30*time.Second)).Post("/repos", webUIHandler.RegisterRepo)
 			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}", webUIHandler.GetRepo)
-			r.With(middleware.Timeout(30*time.Second)).Post("/repos/{repoId}/scan", webUIHandler.TriggerScan)
-			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/status", webUIHandler.GetScanStatus)
-			r.With(middleware.Timeout(30*time.Second)).Get("/repos/{repoId}/stats", webUIHandler.GetRepoStats)
-
-			// LLM endpoints — 10 min timeout (Ollama can be slow)
-			r.With(middleware.Timeout(10*time.Minute)).Post("/repos/{repoId}/chat", webUIHandler.Chat)
-			r.With(middleware.Timeout(10*time.Minute)).Post("/repos/{repoId}/explain", webUIHandler.Explain)
 
 			// SSE — no timeout, long-lived connection
 			r.Get("/events", webUIHandler.SSEEvents)
 
-			// Dashboard endpoints (mock data — wire to real services later)
+			// Dashboard endpoints
 			r.With(middleware.Timeout(30*time.Second)).Get("/setup/status", dashboardHandler.SetupStatus)
 			r.With(middleware.Timeout(30*time.Second)).Get("/config", dashboardHandler.GetConfig)
 			r.With(middleware.Timeout(30*time.Second)).Get("/stats/global", dashboardHandler.GlobalStats)

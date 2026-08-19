@@ -20,8 +20,8 @@ import (
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/globalmcp"
+	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/mcp"
-	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -36,8 +36,8 @@ type Orchestrator struct {
 	projectRoot       string
 	repoConfig        *core.RepoConfig
 	repo              *storage.Repository
-	ragService        rag.Service
 	llm               llms.Model // used by native in-process agent mode
+	promptMgr         *llm.PromptManager
 	store             storage.AgentSessionStore
 
 	sessions   map[string]*Session
@@ -155,15 +155,11 @@ func DefaultConfig() Config {
 }
 
 // NewOrchestrator creates a new agent orchestrator.
-//
-// vectorStore and ragService are optional (Phase 2: /implement works without a
-// vector store — grep/search tools replace vector retrieval). llm is the model
-// used by the in-process native agent; it is required when ragService is nil.
+// llm is the model used by the in-process native agent and the warden review loop.
 func NewOrchestrator(
 	store storage.Store,
-	vectorStore storage.ScopedVectorStore,
-	ragService rag.Service,
 	llm llms.Model,
+	promptMgr *llm.PromptManager,
 	ghClient github.Client,
 	ghToken string,
 	repo *storage.Repository,
@@ -176,8 +172,6 @@ func NewOrchestrator(
 	// Create MCP server
 	mcpServer := mcp.NewServer(
 		store,
-		vectorStore,
-		ragService,
 		ghClient,
 		ghToken,
 		repo,
@@ -213,19 +207,12 @@ func NewOrchestrator(
 		projectRoot:       absRoot,
 		repoConfig:        repoConfig,
 		repo:              repo,
-		ragService:        ragService,
+		llm:               llm,
+		promptMgr:         promptMgr,
 		store:             store,
 		sessions:          make(map[string]*Session),
 		sessionsMu:        sync.RWMutex{},
 		done:              make(chan struct{}),
-	}
-
-	// Prefer the directly-injected model. Fall back to ragService for backward
-	// compatibility (ragService may be absent when the RAG pipeline is disabled).
-	if llm != nil {
-		o.llm = llm
-	} else if ragService != nil {
-		o.llm = ragService.GeneratorLLM()
 	}
 	return o
 }

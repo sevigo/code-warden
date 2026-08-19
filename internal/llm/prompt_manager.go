@@ -15,21 +15,6 @@ var promptFiles embed.FS
 type PromptKey string
 
 const (
-	CodeReviewPrompt            PromptKey = "code_review"
-	CodeGenerationPrompt        PromptKey = "code_generation"
-	ReReviewPrompt              PromptKey = "rereview"
-	ArchSummaryPrompt           PromptKey = "arch_summary"
-	FileSummaryPrompt           PromptKey = "file_summary"
-	QuestionPrompt              PromptKey = "question"
-	HyDEPrompt                  PromptKey = "hyde_code"
-	ConsensusReviewPrompt       PromptKey = "consensus_review"
-	ValidateSnippetPrompt       PromptKey = "validate_snippet"
-	ValidateSnippetsBatchPrompt PromptKey = "validate_snippets_batch"
-	IntentExtractionPrompt      PromptKey = "intent_extraction"
-	ReuseVerificationPrompt     PromptKey = "reuse_verification"
-	ProjectContextPrompt        PromptKey = "project_context"
-	GapIdentificationPrompt     PromptKey = "gap_identification"
-
 	// ReviewBugPrompt is the bug-finder review lens system prompt key.
 	ReviewBugPrompt PromptKey = "review_bug"
 	// ReviewSecurityPrompt is the security review lens system prompt key.

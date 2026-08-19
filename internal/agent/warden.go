@@ -33,12 +33,12 @@ import (
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/schema"
 
+	agentreview "github.com/sevigo/code-warden/internal/agent/review"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/cryptoutil"
 	gh "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/mcp/tools"
-	ragreview "github.com/sevigo/code-warden/internal/rag/review"
-	reviewpkg "github.com/sevigo/code-warden/internal/review"
 )
 
 // publishToolNames are withheld from the implement loop and reserved for the
@@ -245,11 +245,7 @@ func (o *Orchestrator) runReviewPhase(
 		"max_rounds", maxRounds,
 	)
 
-	executor := reviewpkg.NewExecutor(o.ragService, reviewpkg.Config{
-		ComparisonModels: nil, // single-model only for agent speed
-		ReviewsDir:       o.config.ReviewsDir,
-		Logger:           o.logger,
-	})
+	executor := agentreview.NewRunner(o.llm, o.promptMgr, ReadOnlyReviewTools, o.logger, nil)
 
 	totalFixIters := 0
 	lastVerdict := ""
@@ -324,7 +320,7 @@ func (o *Orchestrator) runReviewRound(
 	session *Session,
 	ws *agentWorkspace,
 	round, maxRounds int,
-	executor *reviewpkg.Executor,
+	executor *agentreview.Runner,
 	tracker *progressTracker,
 ) (verdict string, review *core.StructuredReview, err error) {
 	sessionCtx := tools.WithSessionID(ctx, session.ID)
@@ -344,19 +340,12 @@ func (o *Orchestrator) runReviewRound(
 
 	o.logger.Info("warden: running code review",
 		"session_id", session.ID, "round", round, "diff_bytes", len(diff))
-	parsedFiles := ragreview.ParseDiff(diff)
-	event := &core.GitHubEvent{
-		PRTitle:      fmt.Sprintf("Implement #%d: %s", session.Issue.Number, session.Issue.Title),
-		PRBody:       session.Issue.Body,
-		RepoFullName: session.Issue.RepoOwner + "/" + session.Issue.RepoName,
-		HeadSHA:      "agent-workspace",
-	}
-	result, execErr := executor.Execute(ctx, reviewpkg.Params{
-		RepoConfig:   o.repoConfig,
-		Repo:         o.repo,
-		Event:        event,
+	parsedFiles := agentreview.ParseDiff(diff)
+	result, execErr := executor.Run(ctx, agentreview.Params{
 		Diff:         diff,
 		ChangedFiles: parsedFiles,
+		WorkspaceDir: ws.dir,
+		RepoFullName: session.Issue.RepoOwner + "/" + session.Issue.RepoName,
 	})
 	if execErr != nil {
 		o.logger.Error("warden: code review failed",
@@ -364,15 +353,16 @@ func (o *Orchestrator) runReviewRound(
 		return "", nil, fmt.Errorf("code review round %d: %w", round, execErr)
 	}
 
-	verdict = result.Review.Verdict
+	review = result.Review
+	verdict = review.Verdict
 	o.logger.Info("warden: review complete",
 		"session_id", session.ID, "round", round,
-		"verdict", verdict, "confidence", result.Review.Confidence,
+		"verdict", verdict, "confidence", review.Confidence,
 	)
-	o.mcpServer.RecordReviewBySession(sessionCtx, result.Review.Verdict, result.DiffHash)
+	o.mcpServer.RecordReviewBySession(sessionCtx, review.Verdict, hashDiff(diff))
 	o.mcpServer.RecordReviewFiles(sessionCtx, changedFileNames(parsedFiles))
 
-	return verdict, result.Review, nil
+	return verdict, review, nil
 }
 
 // runPublishPhase builds and runs the publish loop, assembles the final result,
@@ -1209,6 +1199,11 @@ var errNoChanges = fmt.Errorf("no changes to commit")
 // output. The caller should yield a draft PR rather than fail the session —
 // the agent may have made partial changes that are worth preserving.
 var errEmptyDiff = fmt.Errorf("no diff detected in workspace")
+
+// hashDiff returns a short hash of the reviewed diff for review-tracking.
+func hashDiff(diff string) string {
+	return cryptoutil.HashString(diff)
+}
 
 // yieldDraftPR is called when the implement loop ends without an APPROVE verdict.
 // Instead of silently failing, it commits any pending changes, pushes the branch,

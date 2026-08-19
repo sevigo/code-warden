@@ -12,16 +12,21 @@ import (
 	"github.com/sevigo/goframe/gitutil"
 	"github.com/sevigo/goframe/llms"
 
-	"github.com/sevigo/code-warden/internal/agent"
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	llmpkg "github.com/sevigo/code-warden/internal/llm"
 )
 
+// ToolBuilder constructs the read-only investigation tools (grep, find,
+// read_file, list_dir) wired to a workspace root. It is provided by the caller
+// to avoid an import cycle between this package and internal/agent.
+type ToolBuilder func(workspaceRoot string) []goframeagent.Tool
+
 // Runner executes the multi-angle agent-based code review.
 type Runner struct {
 	llm       llms.Model
 	promptMgr *llmpkg.PromptManager
+	tools     ToolBuilder
 	angles    []Angle
 	logger    *slog.Logger
 }
@@ -33,7 +38,12 @@ type Params struct {
 	// ChangedFiles are the per-file patches of the PR.
 	ChangedFiles []internalgithub.ChangedFile
 	// RepoURL is the git URL (credentials embedded) to clone for investigation.
+	// Ignored when WorkspaceDir is set.
 	RepoURL string
+	// WorkspaceDir is an existing checkout to investigate. When set, the runner
+	// uses it directly instead of cloning RepoURL (used by /implement's local
+	// workspace, which is already at the modified state).
+	WorkspaceDir string
 	// RepoFullName is "owner/name" used for logging.
 	RepoFullName string
 }
@@ -45,7 +55,8 @@ type Result struct {
 }
 
 // NewRunner creates a Runner. angles defaults to DefaultAngles when nil.
-func NewRunner(model llms.Model, promptMgr *llmpkg.PromptManager, logger *slog.Logger, angles []Angle) *Runner {
+// tools is the read-only tool builder; when nil it defaults to no tools.
+func NewRunner(model llms.Model, promptMgr *llmpkg.PromptManager, tools ToolBuilder, logger *slog.Logger, angles []Angle) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -55,6 +66,7 @@ func NewRunner(model llms.Model, promptMgr *llmpkg.PromptManager, logger *slog.L
 	return &Runner{
 		llm:       model,
 		promptMgr: promptMgr,
+		tools:     tools,
 		angles:    angles,
 		logger:    logger,
 	}
@@ -70,13 +82,21 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 		}, Raw: "No code changes."}, nil
 	}
 
-	// 1. Clone the repo to an isolated workspace.
-	cloner := gitutil.NewCloner(r.logger)
-	workspace, cleanup, err := cloner.Clone(ctx, params.RepoURL)
-	if err != nil {
-		return nil, fmt.Errorf("agent review: clone failed: %w", err)
+	// 1. Determine the workspace to investigate: use the provided local checkout
+	// if given, otherwise clone the repo to an isolated workspace.
+	var workspace string
+	var cleanup func()
+	if params.WorkspaceDir != "" {
+		workspace = params.WorkspaceDir
+	} else {
+		cloner := gitutil.NewCloner(r.logger)
+		var err error
+		workspace, cleanup, err = cloner.Clone(ctx, params.RepoURL)
+		if err != nil {
+			return nil, fmt.Errorf("agent review: clone failed: %w", err)
+		}
+		defer cleanup()
 	}
-	defer cleanup()
 
 	// Build the shared task context once (diff + changed files).
 	taskCtx := r.buildTaskContext(params)
@@ -118,10 +138,12 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 	}
 
 	registry := goframeagent.NewRegistry()
-	for _, t := range agent.ReadOnlyReviewTools(workspace) {
-		if err := registry.Register(t); err != nil {
-			r.logger.Warn("agent review: failed to register tool",
-				"angle", angle.Name, "tool", t.Name(), "error", err)
+	if r.tools != nil {
+		for _, t := range r.tools(workspace) {
+			if err := registry.Register(t); err != nil {
+				r.logger.Warn("agent review: failed to register tool",
+					"angle", angle.Name, "tool", t.Name(), "error", err)
+			}
 		}
 	}
 

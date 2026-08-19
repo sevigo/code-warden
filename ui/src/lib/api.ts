@@ -2,53 +2,9 @@ export interface Repository {
   id: number
   full_name: string
   clone_path: string
-  qdrant_collection_name: string
   last_indexed_sha: string
   created_at: string
   updated_at: string
-}
-
-export interface ScanState {
-  id: number
-  repository_id: number
-  // 'scanning'/'in_progress'/'pending' from web; 'not_indexed' is UI-only (no scan state)
-  status: 'pending' | 'in_progress' | 'scanning' | 'completed' | 'failed' | 'not_indexed'
-  progress?: {
-    files_total: number
-    files_done: number
-    stage: string
-    current_file?: string
-  }
-  artifacts?: {
-    chunks_count: number
-    indexed_at: string
-  }
-  created_at: string
-  updated_at: string
-}
-
-export interface RepoStats {
-  chunks_count: number
-  files_count: number
-  last_indexed_sha: string
-  last_scan_date: string
-}
-
-export interface ChatRequest {
-  question: string
-  history: string[]
-}
-
-export interface ChatResponse {
-  answer: string
-}
-
-export interface ExplainRequest {
-  path: string
-}
-
-export interface ExplainResponse {
-  content: string
 }
 
 export interface RegisterRepoRequest {
@@ -64,7 +20,6 @@ export interface SetupStatus {
   }
   services: {
     database: { status: string; latency_ms: number }
-    qdrant: { status: string; latency_ms: number }
     llm?: { status: string; latency_ms: number; provider: string }
   }
   ready: boolean
@@ -121,14 +76,10 @@ export interface AppConfig {
   ai: {
     llm_provider: string
     generator_model: string
-    embedder_model: string
   }
   github: {
     app_id: number
     webhook_configured: boolean
-  }
-  storage: {
-    qdrant_host: string
   }
 }
 
@@ -179,7 +130,6 @@ export interface ReviewHistoryItem {
 
 export interface GlobalStats {
   total_repos: number
-  indexed_repos: number
   total_reviews: number
   reviews_this_week: number
   total_findings: number
@@ -196,7 +146,7 @@ export interface GlobalStats {
 
 export interface JobRun {
   id: string
-  type: 'review' | 'scan' | 'implement' | 'rereview'
+  type: 'review' | 'implement' | 'rereview'
   repo_full_name: string
   pr_number: number
   status: 'pending' | 'running' | 'completed' | 'failed'
@@ -239,31 +189,6 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    scan: (id: number) =>
-      fetchApi<void>(`/repos/${id}/scan`, { method: 'POST' }),
-    status: (id: number) =>
-      fetchApi<ScanState | null>(`/repos/${id}/status`),
-    stats: (id: number) =>
-      fetchApi<RepoStats>(`/repos/${id}/stats`),
-  },
-
-  chat: {
-    ask: (repoId: number, data: ChatRequest) =>
-      fetchApi<ChatResponse>(`/repos/${repoId}/chat`, {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-    explain: (repoId: number, data: ExplainRequest) =>
-      fetchApi<ExplainResponse>(`/repos/${repoId}/explain`, {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-  },
-
-  events: {
-    scanProgress: (repoId: number): EventSource => {
-      return new EventSource(`${API_BASE}/events?repo_id=${repoId}`)
-    },
   },
 
   setup: {

@@ -20,15 +20,13 @@ const (
 
 // Config represents the top-level configuration structure.
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	GitHub   GitHubConfig   `mapstructure:"github"`
-	AI       AIConfig       `mapstructure:"ai"`
-	Agent    AgentConfig    `mapstructure:"agent"`
-	Database DBConfig       `mapstructure:"database"`
-	Storage  StorageConfig  `mapstructure:"storage"`
-	Logging  logger.Config  `mapstructure:"logging"`
-	Features FeaturesConfig `mapstructure:"features"`
-	Warden   WardenConfig   `mapstructure:"warden"`
+	Server   ServerConfig  `mapstructure:"server"`
+	GitHub   GitHubConfig  `mapstructure:"github"`
+	AI       AIConfig      `mapstructure:"ai"`
+	Agent    AgentConfig   `mapstructure:"agent"`
+	Database DBConfig      `mapstructure:"database"`
+	Storage  StorageConfig `mapstructure:"storage"`
+	Logging  logger.Config `mapstructure:"logging"`
 }
 
 // AgentConfig holds configuration for the autonomous agent system.
@@ -225,30 +223,16 @@ type GitHubConfig struct {
 }
 
 type AIConfig struct {
-	LLMProvider          string   `mapstructure:"llm_provider"`
-	EmbedderProvider     string   `mapstructure:"embedder_provider"`
-	OllamaHost           string   `mapstructure:"ollama_host"`
-	OllamaAPIKey         string   `mapstructure:"ollama_api_key"`
-	GeminiAPIKey         string   `mapstructure:"gemini_api_key"`
-	GeneratorModel       string   `mapstructure:"generator_model"`
-	FastModel            string   `mapstructure:"fast_model"`
-	EmbedderModel        string   `mapstructure:"embedder_model"`
-	EmbedderTask         string   `mapstructure:"embedder_task_description"`
-	RerankerModel        string   `mapstructure:"reranker_model"`
-	EnableReranking      bool     `mapstructure:"enable_reranking"`
-	EnableHybrid         bool     `mapstructure:"enable_hybrid_search"`
-	SparseVectorName     string   `mapstructure:"sparse_vector_name"`
-	EnableHyDE           bool     `mapstructure:"enable_hyde"` // Hypothetical Document Embeddings (slow but high recall)
-	ComparisonModels     []string `mapstructure:"comparison_models"`
-	ComparisonPaths      []string `mapstructure:"comparison_paths"`
-	MaxConcurrentReviews int      `mapstructure:"max_concurrent_reviews"`
-	MaxComparisonModels  int      `mapstructure:"max_comparison_models"`
-	HyDEConcurrency      int      `mapstructure:"hyde_concurrency"`
-	ConsensusTimeout     string   `mapstructure:"consensus_timeout"` // Timeout for individual model reviews in consensus mode (e.g., "5m")
-	ConsensusQuorum      float64  `mapstructure:"consensus_quorum"`  // Percentage of models that must finish before synthesis (0.0 to 1.0)
-
-	// ReviewMode selects the review engine: "rag" (default) or "agent".
-	ReviewMode string `mapstructure:"review_mode"`
+	LLMProvider         string   `mapstructure:"llm_provider"`
+	OllamaHost          string   `mapstructure:"ollama_host"`
+	OllamaAPIKey        string   `mapstructure:"ollama_api_key"`
+	GeminiAPIKey        string   `mapstructure:"gemini_api_key"`
+	GeneratorModel      string   `mapstructure:"generator_model"`
+	ComparisonModels    []string `mapstructure:"comparison_models"`
+	ComparisonPaths     []string `mapstructure:"comparison_paths"`
+	MaxComparisonModels int      `mapstructure:"max_comparison_models"`
+	ConsensusTimeout    string   `mapstructure:"consensus_timeout"` // Timeout for individual model reviews in consensus mode (e.g., "5m")
+	ConsensusQuorum     float64  `mapstructure:"consensus_quorum"`  // Percentage of models that must finish before synthesis (0.0 to 1.0)
 
 	// OpenAI-compatible provider (any OpenAI-compatible endpoint).
 	OpenAIBaseURL string `mapstructure:"openai_base_url"`
@@ -266,12 +250,6 @@ type AIConfig struct {
 	HTTPResponseHeaderTimeout string `mapstructure:"http_response_header_timeout"` // Timeout for waiting for HTTP response headers (e.g., "30s", "120s")
 	HTTPRequestTimeout        string `mapstructure:"http_request_timeout"`         // Overall HTTP request timeout including body (e.g., "5m", "10m")
 
-	// Context Assembly
-	ContextTokenBudget      int     `mapstructure:"context_token_budget"`      // Max tokens for RAG context (default: 100000 for 200K+ context models)
-	MaxContextSummaries     int     `mapstructure:"max_context_summaries"`     // Max number of architectural summaries (default: 1000)
-	RetrievalScoreThreshold float32 `mapstructure:"retrieval_score_threshold"` // Min cosine similarity to include a retrieved doc (0.0 = disabled)
-	RerankMinScore          float32 `mapstructure:"rerank_min_score"`          // Min reranker score to keep a doc after reranking (0.0 = disabled)
-
 	// Review Output Options
 	EnableCodeSuggestions bool   `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
 	ReviewsDir            string `mapstructure:"reviews_dir"`             // Directory to save review artifacts (default: "reviews")
@@ -280,9 +258,6 @@ type AIConfig struct {
 func (c *AIConfig) Validate() error {
 	if len(c.ComparisonModels) == 0 {
 		return nil
-	}
-	if c.HyDEConcurrency < 1 {
-		return errors.New("ai.hyde_concurrency must be >= 1")
 	}
 	if c.ConsensusQuorum < 0 || c.ConsensusQuorum > 1 {
 		return errors.New("ai.consensus_quorum must be between 0.0 and 1.0")
@@ -362,82 +337,7 @@ func validateSymlink(clean, original string) error {
 }
 
 type StorageConfig struct {
-	QdrantHost string `mapstructure:"qdrant_host"`
-	RepoPath   string `mapstructure:"repo_path"`
-}
-
-type FeaturesConfig struct {
-	EnableBinaryQuantization bool `mapstructure:"enable_binary_quantization"`
-	EnableGraphAnalysis      bool `mapstructure:"enable_graph_analysis"`
-}
-
-// WardenConfig holds configuration for warden agent integration.
-type WardenConfig struct {
-	// Enabled determines if warden agent functionality is active.
-	Enabled bool `mapstructure:"enabled"`
-
-	// DesignDocs enables design document generation during indexing.
-	DesignDocs bool `mapstructure:"design_docs"`
-
-	// DesignDocsTypes specifies which design document types to generate.
-	// Valid types: testing_patterns, dependencies, conventions, api_patterns
-	// Default: all types
-	DesignDocsTypes []string `mapstructure:"design_docs_types"`
-
-	// MaxIterations limits agent exploration iterations.
-	MaxIterations int `mapstructure:"max_iterations"`
-}
-
-// GetDesignDocTypes returns validated design document types.
-func (c *WardenConfig) GetDesignDocTypes() []string {
-	validTypes := map[string]bool{
-		"testing_patterns": true,
-		"dependencies":     true,
-		"conventions":      true,
-		"api_patterns":     true,
-	}
-
-	if len(c.DesignDocsTypes) == 0 {
-		return []string{"testing_patterns", "dependencies", "conventions", "api_patterns"}
-	}
-
-	var result []string
-	for _, t := range c.DesignDocsTypes {
-		if validTypes[t] {
-			result = append(result, t)
-		}
-	}
-
-	if len(result) == 0 {
-		return []string{"testing_patterns", "dependencies", "conventions", "api_patterns"}
-	}
-
-	return result
-}
-
-// Validate validates the warden configuration.
-func (c *WardenConfig) Validate() error {
-	if !c.Enabled {
-		return nil
-	}
-
-	if c.MaxIterations < 0 {
-		return fmt.Errorf("warden.max_iterations must be >= 0, got: %d", c.MaxIterations)
-	}
-
-	for _, t := range c.DesignDocsTypes {
-		validTypes := map[string]bool{
-			"testing_patterns": true,
-			"dependencies":     true,
-			"conventions":      true,
-			"api_patterns":     true,
-		}
-		if !validTypes[t] {
-			return fmt.Errorf("warden.design_docs_types contains invalid type: %s", t)
-		}
-	}
-
-	return nil
+	RepoPath string `mapstructure:"repo_path"`
 }
 
 type DBConfig struct {
@@ -495,7 +395,6 @@ func LoadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
-//nolint:funlen // Defaults configuration tends to be long
 func setDefaults(v *viper.Viper) {
 	// Server
 	v.SetDefault("server.port", "8080")
@@ -506,34 +405,18 @@ func setDefaults(v *viper.Viper) {
 
 	// AI
 	v.SetDefault("ai.llm_provider", "ollama")
-	v.SetDefault("ai.embedder_provider", "ollama")
 	v.SetDefault("ai.ollama_host", "http://localhost:11434")
 	v.SetDefault("ai.ollama_api_key", "")
-	v.SetDefault("ai.embedder_model", "nomic-embed-text")
-	v.SetDefault("ai.embedder_task_description", "search_document")
-	v.SetDefault("ai.enable_reranking", false)     // Disabled by default for speed
-	v.SetDefault("ai.reranker_model", "gemma2:2b") // Default to a small, fast model
-	v.SetDefault("ai.fast_model", "gemma3:1b")     // Very fast model for variation/validation
-	v.SetDefault("ai.enable_hybrid_search", true)
-	v.SetDefault("ai.sparse_vector_name", "code_sparse")
-	v.SetDefault("ai.enable_hyde", true)              // Enabled by default for high recall
-	v.SetDefault("ai.rerank_min_score", float32(0.0)) // 0.0 = disabled; set e.g. 0.1 to drop weak reranked docs
-	v.SetDefault("ai.max_context_summaries", 1000)
-	v.SetDefault("ai.hyde_concurrency", 5)
 	v.SetDefault("ai.enable_thinking", false)               // Disabled by default - enable per model
 	v.SetDefault("ai.thinking_effort", "medium")            // "low", "medium", "high"
 	v.SetDefault("ai.model_keep_alive", "10m")              // Keep models loaded for 10 minutes
 	v.SetDefault("ai.http_response_header_timeout", "180s") // 3 minutes for slow model loading
 	v.SetDefault("ai.http_request_timeout", "600s")         // 10 minutes overall timeout for large requests
 	v.SetDefault("ai.consensus_quorum", 0.66)
-	v.SetDefault("ai.context_token_budget", 100000)   // Tuned for 200K-256K context models; leaves ~100K for prompt + diff + output
-	v.SetDefault("ai.retrieval_score_threshold", 0.0) // 0.0 = disabled; set e.g. 0.3 to filter weak matches
-	v.SetDefault("ai.enable_code_suggestions", true)  // Include code suggestions by default
-	v.SetDefault("ai.review_mode", "agent")           // "rag" or "agent"
+	v.SetDefault("ai.enable_code_suggestions", true) // Include code suggestions by default
 	v.SetDefault("ai.openai_base_url", "https://api.openai.com/v1")
 
 	// Storage
-	v.SetDefault("storage.qdrant_host", "localhost:6334")
 	v.SetDefault("storage.repo_path", "./data/repos")
 
 	// Logging
@@ -553,15 +436,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", "5m")
 	v.SetDefault("database.conn_max_idle_time", "5m")
-
-	// Features
-	v.SetDefault("features.enable_binary_quantization", true)
-	v.SetDefault("features.enable_graph_analysis", true)
-
-	// Warden
-	v.SetDefault("warden.enabled", false)
-	v.SetDefault("warden.design_docs", true)
-	v.SetDefault("warden.max_iterations", 20)
 
 	// Agent
 	v.SetDefault("agent.enabled", false)
@@ -592,12 +466,6 @@ func (c *Config) Validate() error {
 	if err := c.validateDatabase(); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if err := c.validateStorage(); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if err := c.Warden.Validate(); err != nil {
-		errs = append(errs, err.Error())
-	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
@@ -610,19 +478,15 @@ func (c *Config) validateAI() error {
 
 	if c.AI.LLMProvider == "" {
 		errs = append(errs, "ai.llm_provider is required")
-	} else if c.AI.LLMProvider != "ollama" && c.AI.LLMProvider != llmProviderGemini {
-		errs = append(errs, "ai.llm_provider must be 'ollama' or 'gemini'")
+	} else if c.AI.LLMProvider != "ollama" && c.AI.LLMProvider != llmProviderGemini && c.AI.LLMProvider != "openai" {
+		errs = append(errs, "ai.llm_provider must be 'ollama', 'gemini', or 'openai'")
 	}
 
 	if c.AI.GeneratorModel == "" {
 		errs = append(errs, "ai.generator_model is required")
 	}
 
-	if c.AI.EmbedderModel == "" {
-		errs = append(errs, "ai.embedder_model is required")
-	}
-
-	if (c.AI.LLMProvider == llmProviderGemini || c.AI.EmbedderProvider == llmProviderGemini) && c.AI.GeminiAPIKey == "" {
+	if c.AI.LLMProvider == llmProviderGemini && c.AI.GeminiAPIKey == "" {
 		errs = append(errs, "ai.gemini_api_key is required for gemini provider")
 	}
 
@@ -661,13 +525,6 @@ func (c *Config) validateDatabase() error {
 
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))
-	}
-	return nil
-}
-
-func (c *Config) validateStorage() error {
-	if c.Storage.QdrantHost == "" {
-		return errors.New("storage.qdrant_host is required")
 	}
 	return nil
 }

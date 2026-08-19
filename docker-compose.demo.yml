@@ -1,6 +1,6 @@
 # docker-compose.demo.yml — Code-Warden all-in-one demo stack
 #
-# Includes: PostgreSQL + Qdrant + Ollama + Code-Warden server
+# Includes: PostgreSQL + Ollama + Code-Warden server
 #
 # Usage:
 #   make quickstart           — guided first-time setup
@@ -12,14 +12,10 @@
 #   NVIDIA:  docker-compose -f docker-compose.demo.yml -f docker-compose.gpu.yml up -d
 #   AMD ROCm: docker-compose -f docker-compose.demo.yml -f docker-compose.amd.yml up -d
 #
-# Models pulled on first start (~1.6 GB total):
-#   qwen3-embedding:0.6b   ~639 MB  (embedder — local, called per indexed chunk)
-#   qwen2.5-coder:1.5b     ~1.0 GB  (fast model — local, used for HyDE and quick passes)
+# Models pulled on first start (~1.0 GB total):
+#   qwen2.5-coder:1.5b     ~1.0 GB  (fast model — used for quick passes)
 #
 # The generator (kimi-k2.5 by default) is an Ollama cloud model — no local download.
-#
-# Reranking is disabled in config.demo.yaml — no reranker model needed.
-# Sparse vectors are generated in-process (no Ollama call required).
 
 services:
 
@@ -44,24 +40,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── Qdrant Vector Database ──────────────────────────────────────────────────
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: cw-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - demo_qdrant_data:/var/lib/qdrant/storage
-    networks:
-      - cw-demo-net
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   # ── Ollama LLM Runtime ──────────────────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
@@ -80,10 +58,6 @@ services:
       start_period: 30s
     restart: unless-stopped
     # GPU is optional — generator (kimi-k2.5) is a cloud model; no local GPU needed.
-    # A GPU only speeds up the local embedder (qwen3-embedding:0.6b).
-    # NVIDIA: add docker-compose.gpu.yml override
-    # AMD ROCm: add docker-compose.amd.yml override
-    # Apple Silicon: Metal acceleration works automatically via this image.
 
   # ── Model Initialiser (one-shot) ────────────────────────────────────────────
   ollama-init:
@@ -96,9 +70,7 @@ services:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: >
       sh -c "
-        echo '>> Pulling qwen3-embedding:0.6b (~639 MB)...' &&
-        ollama pull qwen3-embedding:0.6b &&
-        echo '>> Pulling qwen2.5-coder:1.5b (~1 GB, fast/HyDE model)...' &&
+        echo '>> Pulling qwen2.5-coder:1.5b (~1 GB, fast model)...' &&
         ollama pull qwen2.5-coder:1.5b &&
         echo '>> Local models ready. Generator (kimi-k2.5) is a cloud model — no download needed.'
       "
@@ -125,7 +97,6 @@ services:
       # Point to docker-compose service names — override any values in .env
       AI_OLLAMA_HOST: http://ollama:11434
       DATABASE_HOST: db
-      STORAGE_QDRANT_HOST: qdrant:6334
       # Persist the credential master key in the data volume so it survives
       # container recreation regardless of hostname behaviour.
       CODE_WARDEN_DATA_DIR: /app/data
@@ -137,8 +108,6 @@ services:
       - cw-demo-net
     depends_on:
       db:
-        condition: service_healthy
-      qdrant:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
@@ -156,6 +125,5 @@ networks:
 
 volumes:
   demo_postgres_data:
-  demo_qdrant_data:
   demo_ollama_data:
   demo_server_data:

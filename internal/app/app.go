@@ -10,7 +10,6 @@ import (
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/globalmcp"
-	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -20,13 +19,11 @@ import (
 type App struct {
 	Cfg             *config.Config
 	Store           storage.Store
-	VectorStore     storage.VectorStore
 	RepoMgr         repomanager.RepoManager
 	Dispatcher      core.JobDispatcher
 	Logger          *slog.Logger
 	DB              *db.DB
 	CredentialStore *config.CredentialStore
-	RAGService      rag.Service
 	Server          *server.Server
 	GitClient       *gitutil.Client
 	MCPServer       *globalmcp.Server
@@ -37,10 +34,8 @@ func NewApp(
 	cfg *config.Config,
 	dbConn *db.DB,
 	store storage.Store,
-	vs storage.VectorStore,
 	repoMgr repomanager.RepoManager,
 	dispatcher core.JobDispatcher,
-	rag rag.Service,
 	srv *server.Server,
 	gitClient *gitutil.Client,
 	mcpServer *globalmcp.Server,
@@ -48,25 +43,21 @@ func NewApp(
 ) *App {
 	logger.Info("initializing Code Warden application",
 		"llm_provider", cfg.AI.LLMProvider,
-		"embedder_provider", cfg.AI.EmbedderProvider,
 		"generator_model", cfg.AI.GeneratorModel,
-		"embedder_model", cfg.AI.EmbedderModel,
 		"max_workers", cfg.Server.MaxWorkers,
 		"repo_path", cfg.Storage.RepoPath,
 	)
 
 	return &App{
-		Cfg:         cfg,
-		DB:          dbConn,
-		Store:       store,
-		VectorStore: vs,
-		RepoMgr:     repoMgr,
-		Dispatcher:  dispatcher,
-		RAGService:  rag,
-		Server:      srv,
-		GitClient:   gitClient,
-		MCPServer:   mcpServer,
-		Logger:      logger,
+		Cfg:        cfg,
+		DB:         dbConn,
+		Store:      store,
+		RepoMgr:    repoMgr,
+		Dispatcher: dispatcher,
+		Server:     srv,
+		GitClient:  gitClient,
+		MCPServer:  mcpServer,
+		Logger:     logger,
 	}
 }
 
@@ -144,14 +135,6 @@ func (a *App) Stop() error {
 	if a.Server != nil {
 		if err := a.Server.Stop(); err != nil {
 			a.Logger.Error("error during HTTP server shutdown", "error", err)
-			shutdownErr = a.firstError(shutdownErr, err)
-		}
-	}
-
-	// Close the vector store to release gRPC connections.
-	if a.VectorStore != nil {
-		if err := a.VectorStore.Close(); err != nil {
-			a.Logger.Error("error during vector store shutdown", "error", err)
 			shutdownErr = a.firstError(shutdownErr, err)
 		}
 	}

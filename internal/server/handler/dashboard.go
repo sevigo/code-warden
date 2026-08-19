@@ -65,7 +65,6 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dbStatus, dbLatency := h.pingDatabase(ctx)
-	qdrantStatus, qdrantLatency := pingURL(h.cfg.Storage.QdrantHost, "/healthz", true)
 	llmStatus, llmLatency := h.pingLLM()
 
 	installURL := ""
@@ -83,10 +82,9 @@ func (h *DashboardHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		},
 		"services": map[string]any{
 			"database": map[string]any{"status": dbStatus, "latency_ms": dbLatency},
-			"qdrant":   map[string]any{"status": qdrantStatus, "latency_ms": qdrantLatency},
 			"llm":      map[string]any{"status": llmStatus, "latency_ms": llmLatency, "provider": h.cfg.AI.LLMProvider},
 		},
-		"ready": configured && dbStatus == "ok" && qdrantStatus == "ok" && llmStatus == "ok",
+		"ready": configured && dbStatus == "ok" && llmStatus == "ok",
 	})
 }
 
@@ -102,13 +100,7 @@ func (h *DashboardHandler) pingDatabase(ctx context.Context) (string, int64) {
 }
 
 // pingURL performs a GET health check against a service URL.
-// When grpcPort is true, ":6334" is converted to ":6333" (Qdrant gRPC→HTTP).
-func pingURL(host, path string, grpcPort bool) (string, int64) {
-	if grpcPort {
-		if rest, ok := strings.CutSuffix(host, ":6334"); ok {
-			host = rest + ":6333"
-		}
-	}
+func pingURL(host, path string) (string, int64) {
 	if !strings.HasPrefix(host, "http") {
 		host = "http://" + host
 	}
@@ -140,7 +132,7 @@ func (h *DashboardHandler) pingLLM() (string, int64) {
 		}
 		url = host + "/api/tags"
 	}
-	return pingURL(url, "", false)
+	return pingURL(url, "")
 }
 
 func (h *DashboardHandler) GetConfig(w http.ResponseWriter, _ *http.Request) {
@@ -148,14 +140,10 @@ func (h *DashboardHandler) GetConfig(w http.ResponseWriter, _ *http.Request) {
 		"ai": map[string]any{
 			"llm_provider":    h.cfg.AI.LLMProvider,
 			"generator_model": h.cfg.AI.GeneratorModel,
-			"embedder_model":  h.cfg.AI.EmbedderModel,
 		},
 		"github": map[string]any{
 			"app_id":             h.cfg.GitHub.AppID,
 			"webhook_configured": h.cfg.GitHub.WebhookSecret != "",
-		},
-		"storage": map[string]any{
-			"qdrant_host": h.cfg.Storage.QdrantHost,
 		},
 	})
 }
@@ -171,12 +159,6 @@ func (h *DashboardHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	totalRepos := len(repos)
-	indexedRepos := 0
-	for _, repo := range repos {
-		if repo.LastIndexedSHA != "" {
-			indexedRepos++
-		}
-	}
 
 	reviewStats, err := h.store.GetReviewStats(ctx)
 	if err != nil {
@@ -186,7 +168,6 @@ func (h *DashboardHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
 
 	h.writeJSON(w, map[string]any{
 		"total_repos":       totalRepos,
-		"indexed_repos":     indexedRepos,
 		"total_reviews":     reviewStats.TotalReviews,
 		"reviews_this_week": reviewStats.ReviewsThisWeek,
 		"total_findings":    0,

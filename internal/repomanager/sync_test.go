@@ -10,9 +10,6 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/sevigo/goframe/schema"
-	"github.com/sevigo/goframe/vectorstores"
-	"github.com/sevigo/goframe/vectorstores/qdrant"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
@@ -98,77 +95,6 @@ func (s *mockStore) ListAgentSessions(_ context.Context, _, _ string, _ int) ([]
 	return nil, nil
 }
 
-// Mock VectorStore
-type mockVectorStore struct{}
-
-// Satisfy storage.VectorStore interface (which includes vectorstores.VectorStore)
-func (m *mockVectorStore) SetBatchConfig(_ qdrant.BatchConfig) error { return nil }
-func (m *mockVectorStore) ForRepo(_, _ string) storage.ScopedVectorStore {
-	return &mockScopedStore{}
-}
-func (m *mockVectorStore) AddDocumentsToCollection(_ context.Context, _, _ string, _ []schema.Document, _ func(processed, total int, duration time.Duration)) error {
-	return nil
-}
-func (m *mockVectorStore) SearchCollection(_ context.Context, _, _, _ string, _ int) ([]schema.Document, error) {
-	return nil, nil
-}
-func (m *mockVectorStore) SearchCollectionBatch(_ context.Context, _, _ string, _ []string, _ int, _ ...vectorstores.Option) ([][]schema.Document, error) {
-	return nil, nil
-}
-func (m *mockVectorStore) DeleteDocumentsFromCollection(_ context.Context, _, _ string, _ []string) error {
-	return nil
-}
-func (m *mockVectorStore) DeleteDocumentsFromCollectionByFilter(_ context.Context, _, _ string, _ map[string]any) error {
-	return nil
-}
-func (m *mockVectorStore) DeleteCollection(_ context.Context, _ string) error {
-	return nil
-}
-func (m *mockVectorStore) Close() error { return nil }
-
-// vectorstores.VectorStore methods
-func (m *mockVectorStore) AddDocuments(_ context.Context, _ []schema.Document, _ ...vectorstores.Option) ([]string, error) {
-	return nil, nil
-}
-func (m *mockVectorStore) SimilaritySearch(_ context.Context, _ string, _ int, _ ...vectorstores.Option) ([]schema.Document, error) {
-	return nil, nil
-}
-func (m *mockVectorStore) SimilaritySearchWithScores(_ context.Context, _ string, _ int, _ ...vectorstores.Option) ([]vectorstores.DocumentWithScore, error) {
-	return nil, nil
-}
-func (m *mockVectorStore) SimilaritySearchBatch(_ context.Context, _ []string, _ int, _ ...vectorstores.Option) ([][]schema.Document, error) {
-	return nil, nil
-}
-func (m *mockVectorStore) DeleteDocumentsByFilter(_ context.Context, _ map[string]any, _ ...vectorstores.Option) error {
-	return nil
-}
-func (m *mockVectorStore) ListCollections(_ context.Context) ([]string, error) { return nil, nil }
-
-// Mock ScopedVectorStore
-type mockScopedStore struct{}
-
-func (m *mockScopedStore) CollectionName() string { return "test" }
-func (m *mockScopedStore) EmbedderModel() string  { return "test" }
-func (m *mockScopedStore) AddDocuments(_ context.Context, _ []schema.Document, _ ...vectorstores.Option) ([]string, error) {
-	return nil, nil
-}
-func (m *mockScopedStore) SimilaritySearch(_ context.Context, _ string, _ int, _ ...vectorstores.Option) ([]schema.Document, error) {
-	return nil, nil
-}
-func (m *mockScopedStore) SimilaritySearchWithScores(_ context.Context, _ string, _ int, _ ...vectorstores.Option) ([]vectorstores.DocumentWithScore, error) {
-	return nil, nil
-}
-func (m *mockScopedStore) SimilaritySearchBatch(_ context.Context, _ []string, _ int, _ ...vectorstores.Option) ([][]schema.Document, error) {
-	return nil, nil
-}
-func (m *mockScopedStore) DeleteDocumentsByFilter(_ context.Context, _ map[string]any, _ ...vectorstores.Option) error {
-	return nil
-}
-func (m *mockScopedStore) DeleteCollection(_ context.Context, _ string) error {
-	return nil
-}
-func (m *mockScopedStore) ListCollections(_ context.Context) ([]string, error) { return nil, nil }
-
 func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 	// This test verifies that if LastIndexedSHA is invalid (e.g. force push or GC),
 	// the sync process catches the diff error and falls back to a full re-index (new clone).
@@ -223,23 +149,19 @@ func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 		Storage: config.StorageConfig{
 			RepoPath: filepath.Join(tmpDir, "local_storage"),
 		},
-		AI: config.AIConfig{
-			EmbedderModel: "test-model",
-		},
 	}
 	store := &mockStore{
 		repos: map[string]*storage.Repository{
 			"test-user/test-repo": {
-				FullName:             "test-user/test-repo",
-				ClonePath:            localPath,
-				QdrantCollectionName: "test_coll",
-				LastIndexedSHA:       commit1.String(), // Missing from shallow clone triggers fallback
+				FullName:       "test-user/test-repo",
+				ClonePath:      localPath,
+				LastIndexedSHA: commit1.String(), // Missing from shallow clone triggers fallback
 			},
 		},
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	gitClient := gitutil.NewClient(logger)
-	mgr := New(cfg, store, &mockVectorStore{}, gitClient, logger)
+	mgr := New(cfg, store, gitClient, logger)
 
 	// Sync should fail diff and fallback because commit1 is absent in shallow clone
 	event := &core.GitHubEvent{
