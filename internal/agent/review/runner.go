@@ -193,30 +193,12 @@ func (r *Runner) buildTaskContext(params Params) string {
 // diff hunks.
 func dedupAndFilter(suggestions []core.Suggestion, filter *diffFilter) []core.Suggestion {
 	// Dedup first.
-	deduped := dedupSuggestions(suggestions)
+	deduped := Deduplicate([]*core.StructuredReview{{Suggestions: suggestions}})
 	out := make([]core.Suggestion, 0, len(deduped))
 	for _, s := range deduped {
 		if filter.Allow(s) {
 			out = append(out, s)
 		}
-	}
-	return out
-}
-
-// dedupSuggestions merges duplicates by file:line keeping the highest severity.
-func dedupSuggestions(suggestions []core.Suggestion) []core.Suggestion {
-	seen := make(map[string]int)
-	out := make([]core.Suggestion, 0, len(suggestions))
-	for _, s := range suggestions {
-		key := findingKey(s)
-		if idx, ok := seen[key]; ok {
-			if rank(out[idx].Severity) < rank(s.Severity) {
-				out[idx] = s
-			}
-			continue
-		}
-		seen[key] = len(out)
-		out = append(out, s)
 	}
 	return out
 }

@@ -118,8 +118,7 @@ func (o *Orchestrator) runNativeLoop(ctx context.Context, session *Session, bran
 
 // resolveAgentLLM returns the LLM to use for the native agent.
 // It uses the injected model (o.llm). The dedicated agent.model resolution that
-// previously routed through the RAG service is removed — the generator model is
-// used for agent runs.
+// previously routed through the RAG service is gone — the generator model is used.
 func (o *Orchestrator) resolveAgentLLM(_ context.Context) (llms.Model, error) {
 	if o.llm == nil {
 		return nil, fmt.Errorf("native agent mode requires a configured LLM (llm is nil)")

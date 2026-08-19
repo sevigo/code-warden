@@ -489,9 +489,9 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		return nil, err
 	}
 
-	// ── Mutex: protect only the Git sync + optional Qdrant update phase ──────
+	// ── Mutex: protect only the Git sync phase ─────────────────────────────
 	// The lock is acquired here and released at the end of this function.
-	// GenerateReview (LLM call) runs completely outside the lock.
+	// The review (LLM call) runs completely outside the lock.
 	mutex := j.getRepoMutex(event.RepoFullName)
 	mutex.Lock()
 
@@ -544,7 +544,7 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 }
 
 // processRepository fetches the PR diff and changed files from GitHub, validates them,
-// and runs the LLM-based review. The Qdrant index is NOT modified here.
+// and runs the agent-based review.
 func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]map[int]struct{}, error) {
 	// Fetch diff and changed files once — used for both validation and review generation
 	diff, err := env.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)

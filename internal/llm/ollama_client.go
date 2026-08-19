@@ -19,12 +19,10 @@ type OllamaClientConfig struct {
 	ModelKeepAlive     string
 	EnableThinking     bool
 	ThinkingEffort     string
-	EnableReranking    bool
 	Logger             *slog.Logger
 }
 
 // BuildOllamaOptions creates Ollama client options from configuration.
-// This consolidates the common pattern used for generator, embedder, and reranker LLMs.
 func BuildOllamaOptions(cfg OllamaClientConfig) []ollama.Option {
 	httpClient := buildHTTPClient(cfg.HTTPHeaderTimeout, cfg.HTTPRequestTimeout, cfg.Logger)
 

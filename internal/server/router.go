@@ -47,7 +47,7 @@ func NewRouterWithStore(cfg *config.Config, dispatcher core.JobDispatcher, cance
 		r.With(middleware.Timeout(30*time.Second)).Post("/webhook/github", webhookHandler.Handle)
 
 		// Setup wizard endpoints — mounted unconditionally so the wizard is
-		// reachable even before storage/rag are wired (first-boot scenario).
+		// reachable even before storage is wired (first-boot scenario).
 		// The handlers themselves return 503 if the credential store is nil.
 		setupHandler = handler.NewSetupHandler(cfg, logger)
 		r.With(middleware.Timeout(30*time.Second)).Post("/setup/github/manifest", setupHandler.GitHubManifest)

@@ -1,5 +1,5 @@
 // Package mcp provides a Model Context Protocol (MCP) server for code-warden.
-// It exposes tools for AI agents to interact with the codebase context stored in Qdrant.
+// It exposes tools for AI agents to interact with the codebase in an isolated workspace.
 package mcp
 
 import (
