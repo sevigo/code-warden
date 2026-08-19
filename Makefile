@@ -49,7 +49,7 @@ clean:
 	@echo "Cleaning up binaries..."
 	@rm -rf ./bin
 
-# Clean up database, qdrant and local data
+# Clean up database and local data
 clean-data:
 	@echo "Cleaning up data..."
 	@powershell -ExecutionPolicy Bypass -File ./scripts/cleanup.ps1
@@ -85,7 +85,6 @@ endif
 ## Pull local Ollama models for demo (run on host Ollama, not Docker)
 ## Generator (kimi-k2.5) is a cloud model — no local download needed for it.
 pull-models:
-	ollama pull qwen3-embedding:0.6b
 	ollama pull qwen2.5-coder:1.5b
 
 ## Start all demo services (after initial quickstart)

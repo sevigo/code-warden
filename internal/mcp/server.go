@@ -37,9 +37,6 @@ type Server struct {
 	governance *goframeagent.Governance
 	rateCheck  *goframeagent.RateLimitCheck
 
-	agentMode  bool
-	reviewsDir string
-
 	// SSE session management
 	sessionsMu sync.RWMutex
 	sessions   map[string]*sseSession
@@ -88,14 +85,6 @@ type Tool interface {
 	Execute(ctx context.Context, args map[string]any) (any, error)
 }
 
-// Config holds configuration for the MCP server.
-type Config struct {
-	Port        int
-	ProjectRoot string
-	ReviewsDir  string
-	AgentMode   bool // When true, tools use single-model review for faster agent feedback
-}
-
 // NewServer creates a new MCP server.
 func NewServer(
 	store storage.Store,
@@ -105,7 +94,6 @@ func NewServer(
 	repoConfig *core.RepoConfig,
 	projectRoot string,
 	logger *slog.Logger,
-	config Config,
 ) *Server {
 	s := &Server{
 		store:            store,
@@ -119,8 +107,6 @@ func NewServer(
 		sessions:         make(map[string]*sseSession),
 		workspaces:       make(map[string]string),
 		reviewsBySession: make(map[string]*reviewResult),
-		agentMode:        config.AgentMode,
-		reviewsDir:       config.ReviewsDir,
 	}
 
 	// Register default tools

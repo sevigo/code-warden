@@ -36,11 +36,6 @@ func (s *Server) SetCredentialStore(cs *config.CredentialStore) {
 	}
 }
 
-// NewServer creates a new HTTP server with the given configuration and job dispatcher.
-func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *Server {
-	return NewServerWithStore(ctx, cfg, dispatcher, nil, nil, nil, nil, logger)
-}
-
 // NewServerWithStore creates a new HTTP server with storage for web UI endpoints.
 func NewServerWithStore(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *Server {
 	router, dashboardHandler, setupHandler := NewRouterWithStore(cfg, dispatcher, canceller, store, repoMgr, gitClient, logger)
