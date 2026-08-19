@@ -219,7 +219,9 @@ func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filter
 		},
 		chains.WithMaxConcurrency[Angle, []core.Suggestion, *core.StructuredReview](len(scopedAngles)),
 		chains.WithMapTimeout[Angle, []core.Suggestion, *core.StructuredReview](timeout),
-		chains.WithQuorum[Angle, []core.Suggestion, *core.StructuredReview](0.5),
+		// Quorum 1.0 = wait for all angles. With 0.5, the slowest angle
+		// (often bug, the most important) gets cut off when 3 of 4 finish.
+		chains.WithQuorum[Angle, []core.Suggestion, *core.StructuredReview](1.0),
 	)
 
 	review, err := chain.Call(ctx, scopedAngles)
