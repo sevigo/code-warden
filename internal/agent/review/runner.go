@@ -46,6 +46,12 @@ type Params struct {
 	WorkspaceDir string
 	// RepoFullName is "owner/name" used for logging.
 	RepoFullName string
+	// CommitMessages are the commit messages for the PR/branch being reviewed.
+	// They give the agent context on the intent of the changes.
+	CommitMessages []string
+	// Timeout is the per-angle timeout. When zero, defaults to 5 minutes.
+	// Local CPU models (e.g. ornith on Ollama) may need longer.
+	Timeout time.Duration
 }
 
 // Result is the outcome of a review run.
@@ -102,6 +108,11 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 	taskCtx := r.buildTaskContext(params)
 	diffFilter := newDiffFilter(params.ChangedFiles)
 
+	timeout := params.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+
 	chain := chains.NewMapReduceChain(
 		func(ctx context.Context, angle Angle) ([]core.Suggestion, error) {
 			return r.runAngle(ctx, angle, workspace, taskCtx)
@@ -116,7 +127,7 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 			return r.buildReview(suggestions), nil
 		},
 		chains.WithMaxConcurrency[Angle, []core.Suggestion, *core.StructuredReview](len(r.angles)),
-		chains.WithMapTimeout[Angle, []core.Suggestion, *core.StructuredReview](5*time.Minute),
+		chains.WithMapTimeout[Angle, []core.Suggestion, *core.StructuredReview](timeout),
 		chains.WithQuorum[Angle, []core.Suggestion, *core.StructuredReview](0.75),
 	)
 
@@ -124,6 +135,13 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent review: failed: %w", err)
 	}
+
+	r.logger.Info("agent review: complete",
+		"repo", params.RepoFullName,
+		"angles", len(r.angles),
+		"findings", len(review.Suggestions),
+		"verdict", review.Verdict,
+	)
 
 	return &Result{Review: review}, nil
 }
@@ -150,6 +168,7 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 	loop, err := goframeagent.NewAgentLoop(r.llm, registry,
 		goframeagent.WithLoopSystemPrompt(systemPrompt),
 		goframeagent.WithLoopMaxIterations(10),
+		goframeagent.WithLoopObserver(newReviewObserver(r.logger, angle.Name)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("agent review angle %s: new loop: %w", angle.Name, err)
@@ -175,7 +194,8 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 	return review.Suggestions, nil
 }
 
-// buildTaskContext renders the diff and changed-file list for the agent task.
+// buildTaskContext renders the diff, changed-file list, and commit messages for
+// the agent task.
 func (r *Runner) buildTaskContext(params Params) string {
 	var b strings.Builder
 	b.WriteString("Repository: ")
@@ -183,6 +203,12 @@ func (r *Runner) buildTaskContext(params Params) string {
 	b.WriteString("\n\nChanged files:\n")
 	for _, cf := range params.ChangedFiles {
 		b.WriteString("- " + cf.Filename + "\n")
+	}
+	if len(params.CommitMessages) > 0 {
+		b.WriteString("\nCommit messages:\n")
+		for _, m := range params.CommitMessages {
+			b.WriteString("- " + m + "\n")
+		}
 	}
 	b.WriteString("\n--- DIFF ---\n")
 	b.WriteString(params.Diff)

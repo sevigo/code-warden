@@ -262,6 +262,27 @@ func LoadConfig() (*Config, error) {
 	v.AddConfigPath(".")      // optionally look for config in the working directory
 	v.AddConfigPath("$HOME/.code-warden")
 
+	return loadConfig(v)
+}
+
+// LoadConfigWithFile loads configuration from an explicit config file path.
+// The path may be relative or absolute. If the file does not exist, defaults
+// and environment variables are still applied.
+func LoadConfigWithFile(path string) (*Config, error) {
+	v := viper.New()
+
+	// 1. Set Defaults
+	setDefaults(v)
+
+	// 2. Read Config File
+	v.SetConfigFile(path)
+
+	return loadConfig(v)
+}
+
+// loadConfig finalizes a viper instance: reads the config file, applies env
+// overrides, and unmarshals into Config.
+func loadConfig(v *viper.Viper) (*Config, error) {
 	if err := v.ReadInConfig(); err != nil {
 		if !errors.As(err, &viper.ConfigFileNotFoundError{}) {
 			// Config file was found but another error occurred (e.g., syntax error)
@@ -282,9 +303,6 @@ func LoadConfig() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal configuration: %w", err)
 	}
-
-	// Post-process / construct derived values if needed (e.g., DSN)
-	// (Note: DSN construction logic moved to where it's used or handled here if purely config-derived)
 
 	return &cfg, nil
 }
