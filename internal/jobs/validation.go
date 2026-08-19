@@ -6,7 +6,22 @@ import (
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/core"
+	internalgithub "github.com/sevigo/code-warden/internal/github"
 )
+
+// buildValidLineMap constructs a map of valid new-side line numbers per changed
+// file from their patches. Used to validate inline suggestion placement.
+func buildValidLineMap(changedFiles []internalgithub.ChangedFile) map[string]map[int]struct{} {
+	result := make(map[string]map[int]struct{})
+	for _, cf := range changedFiles {
+		lines, err := internalgithub.ParseValidLinesFromPatch(cf.Patch, nil)
+		if err != nil {
+			continue
+		}
+		result[cf.Filename] = lines
+	}
+	return result
+}
 
 // nonReviewableExtensions contains file extensions that should not be code-reviewed.
 // These are documentation, configuration, data, or binary files.

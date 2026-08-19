@@ -8,7 +8,6 @@ import {
   Circle,
   ExternalLink,
   Github,
-  Server,
   Database,
   ArrowRight,
   Zap,
@@ -115,9 +114,8 @@ export default function SetupPage() {
 
   const githubConfigured = status?.github_app.configured ?? false
   const dbOk = status?.services.database.status === 'ok'
-  const qdrantOk = status?.services.qdrant.status === 'ok'
   const llmOk = status?.services.llm?.status === 'ok'
-  const servicesOk = dbOk && qdrantOk
+  const servicesOk = dbOk
   const allDone = githubConfigured && servicesOk && llmOk
 
   const getActiveStep = (): 1 | 2 | 3 | 4 => {
@@ -135,7 +133,6 @@ export default function SetupPage() {
 
       <ServiceStatusCard
         dbOk={dbOk}
-        qdrantOk={qdrantOk}
         llmOk={llmOk}
         allDone={allDone}
         activeStep={activeStep}
@@ -170,8 +167,8 @@ export default function SetupPage() {
           <LLMTestStep onResolved={() => refetchStatus()} provider={status?.services.llm?.provider} />
         </Step>
 
-        <Step num={4} title="Index a repository and trigger your first review" done={false} active={activeStep === 4}>
-          <p>Add a repository from the dashboard, scan it, then open a PR and comment:</p>
+        <Step num={4} title="Trigger your first review" done={false} active={activeStep === 4}>
+          <p>Add a repository from the dashboard, then open a PR and comment:</p>
           <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-[6px] bg-[#2264d6]/10 text-[#2264d6] font-mono text-sm">
             <Zap className="h-3.5 w-3.5" />
             /review
@@ -210,14 +207,12 @@ function Header() {
 
 function ServiceStatusCard({
   dbOk,
-  qdrantOk,
   llmOk,
   allDone,
   activeStep,
   hasStatus,
 }: {
   dbOk: boolean | undefined
-  qdrantOk: boolean | undefined
   llmOk: boolean | undefined
   allDone: boolean
   activeStep: number
@@ -229,11 +224,6 @@ function ServiceStatusCard({
         <div className="flex items-center gap-2 text-sm">
           <Database className="h-4 w-4 text-[#8c919b]" />
           <ServicePill ok={dbOk} label="PostgreSQL" />
-        </div>
-        <div className="w-px h-4 bg-[#e1e3e6] dark:bg-[#2d2f36] mx-1" />
-        <div className="flex items-center gap-2 text-sm">
-          <Server className="h-4 w-4 text-[#8c919b]" />
-          <ServicePill ok={qdrantOk} label="Qdrant" />
         </div>
         <div className="w-px h-4 bg-[#e1e3e6] dark:bg-[#2d2f36] mx-1" />
         <div className="flex items-center gap-2 text-sm">

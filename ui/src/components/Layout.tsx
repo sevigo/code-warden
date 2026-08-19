@@ -1,8 +1,8 @@
-import { NavLink, useNavigate, useLocation, Link } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState, useCallback } from 'react'
 import {
-  Shield, Search, Plus, Loader2, MessageSquare,
+  Shield, Search, Plus, Loader2,
   LayoutDashboard, Activity, Settings, Sun, Moon, X
 } from 'lucide-react'
 import { Toaster } from 'sonner'
@@ -249,13 +249,6 @@ export default function Layout({ children }: SidebarProps) {
                       <StatusDot status={null} />
                       <span className="truncate flex-1">{name}</span>
                     </NavLink>
-                    <Link
-                      to={`/repos/${repo.id}/chat`}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-[4px] opacity-0 group-hover:opacity-100 hover:bg-[#2264d6]/10 text-[#656a76] hover:text-[#2264d6] transition-all"
-                      title="Chat with AI"
-                    >
-                      <MessageSquare className="h-3 w-3" />
-                    </Link>
                   </div>
                 )
               })

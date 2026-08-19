@@ -21,7 +21,6 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/mcp"
-	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/storage"
 )
 
@@ -48,19 +47,15 @@ type Server struct {
 	standaloneMode bool
 	defaultRepo    *storage.Repository
 	defaultRepoCfg *core.RepoConfig
-	ragService     rag.Service
 	store          storage.Store
-	vectorStore    storage.ScopedVectorStore
 	mcpServer      *mcp.Server // Embedded MCP server for standalone mode
 }
 
 // StandaloneConfig holds dependencies for standalone MCP mode.
 type StandaloneConfig struct {
-	Store       storage.Store
-	VectorStore storage.ScopedVectorStore
-	RAGService  rag.Service
-	Repo        *storage.Repository
-	RepoConfig  *core.RepoConfig
+	Store      storage.Store
+	Repo       *storage.Repository
+	RepoConfig *core.RepoConfig
 }
 
 func NewServer(cfg *config.Config, logger *slog.Logger, registry *WorkspaceRegistry) *Server {
@@ -84,8 +79,6 @@ func NewStandaloneServer(cfg *config.Config, logger *slog.Logger, registry *Work
 		ready:          make(chan struct{}),
 		standaloneMode: true,
 		store:          standaloneCfg.Store,
-		vectorStore:    standaloneCfg.VectorStore,
-		ragService:     standaloneCfg.RAGService,
 		defaultRepo:    standaloneCfg.Repo,
 		defaultRepoCfg: standaloneCfg.RepoConfig,
 	}
@@ -93,8 +86,6 @@ func NewStandaloneServer(cfg *config.Config, logger *slog.Logger, registry *Work
 	// Create embedded MCP server for standalone mode
 	s.mcpServer = mcp.NewServer(
 		s.store,
-		s.vectorStore,
-		s.ragService,
 		nil, // ghClient - not available in standalone mode
 		"",  // ghToken
 		s.defaultRepo,
@@ -278,43 +269,8 @@ func (s *Server) handleListTools(w http.ResponseWriter, _ *http.Request) {
 
 	tools := []map[string]interface{}{
 		{
-			"name":               "search_code",
-			"description":        "Search code using semantic search",
-			"requires_workspace": true,
-		},
-		{
-			"name":               "get_arch_context",
-			"description":        "Get architectural context for the codebase",
-			"requires_workspace": true,
-		},
-		{
-			"name":               "get_symbol",
-			"description":        "Get symbol definition and usage",
-			"requires_workspace": true,
-		},
-		{
-			"name":               "find_usages",
-			"description":        "Find all usages of a symbol in the codebase",
-			"requires_workspace": true,
-		},
-		{
-			"name":               "get_callers",
-			"description":        "Find all functions that call the specified function",
-			"requires_workspace": true,
-		},
-		{
-			"name":               "get_callees",
-			"description":        "Find all functions called by the specified function",
-			"requires_workspace": true,
-		},
-		{
-			"name":               "get_structure",
-			"description":        "Get file structure analysis",
-			"requires_workspace": true,
-		},
-		{
-			"name":               "review_code",
-			"description":        "Perform code review on current changes",
+			"name":               "run_command",
+			"description":        "Run a whitelisted shell command in the workspace",
 			"requires_workspace": true,
 		},
 		{

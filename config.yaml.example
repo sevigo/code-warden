@@ -31,127 +31,76 @@ github:
 # AI Configuration
 # ============================================================================
 ai:
-  # LLM provider for code generation: "ollama" or "gemini"
+  # LLM provider for code generation: "ollama", "gemini", or "openai"
   llm_provider: "ollama"
-  # Embedder provider: "ollama" or "gemini"
-  embedder_provider: "ollama"
-  
+
   # Ollama settings (when using ollama provider)
   # Point to your LOCAL Ollama instance (not Docker)
   ollama_host: "http://localhost:11434"
-  
+
   # Gemini settings (when using gemini provider)
   # Set via environment variable AI_GEMINI_API_KEY for security
   gemini_api_key: ""
 
-  # Reranker model for 2-stage retrieval (always uses Ollama, regardless of llm_provider).
-  # Use a code-optimized model for best quality - it understands code semantics better.
-  # Recommended: "qwen2.5-coder:7b" (best quality) or "qwen2.5-coder:1.5b" (faster, smaller)
-  # Alternatives: "gemma3:1b" (lightweight), "codellama:7b"
-  reranker_model: "qwen2.5-coder:7b"
-
-  # Enable 2-stage retrieval (reranker improves context relevance, adds ~0.5s latency).
-  # Set to false if you want maximum speed and can tolerate slightly less precise context.
-  enable_reranking: true
-
-  # Fast Model (The "Validator" - Gemma, Qwen-Coder-1.5b)
-  # Used for high-frequency tasks: generating search query variations, validating snippet relevance.
-  # Needs to be very fast and cheap.
-  fast_model: "gemma3:1b"
+  # OpenAI-compatible provider settings (when using openai provider).
+  # Any OpenAI-compatible endpoint works: OpenAI, Azure, OpenRouter, vLLM, LM Studio.
+  # openai_base_url: "https://api.openai.com/v1"
+  # openai_api_key: ""   # Set via AI_OPENAI_API_KEY env var for security
+  # openai_model: ""     # Defaults to ai.generator_model if unset
 
   # Model names
-  # Generator Model (The "Main Driver" - Kimi)
+  # Generator Model (The "Main Driver")
   generator_model: "kimi-k2.5:cloud"
-  
+
   # Consensus Models (The "Trio" - Kimi, DeepSeek, Gemini)
-  # Used for both "Consensus Code Review" and "Architectural Comparison"
-  comparison_models: 
+  # Used for "Consensus Code Review"
+  comparison_models:
     - "kimi-k2.5:cloud"
     - "deepseek-v3.1:671b-cloud"
     - "gemini-3-pro-preview:latest"
-    
+
   # Consensus Quorum (0.0 to 1.0)
-  # Percentage of models that must finish before synthesis begins. 
+  # Percentage of models that must finish before synthesis begins.
   # Set to 1.0 to wait for EVERY model (safest but slowest).
   # Set to 0.66 to proceed when 2/3 of models finished (balanced).
   consensus_quorum: 0.66
-    
-  # Paths for Architectural Comparison (used during full scans)
-  # Default is "." (root only). Add specific high-level directories for deeper analysis.
+
+  # Paths for Architectural Comparison
   comparison_paths:
     - "."
     - "internal/core"
     - "internal/llm"
 
-  embedder_model: "nomic-embed-text"
-  embedder_task_description: "search_document"
-
   # Thinking/Reasoning Mode - for models that support it (DeepSeek-R1, Qwen 3, Kimi-K2.5, etc.)
-  # Enables transparent decision-making in code reviews. Models show their reasoning process.
-  # Note: Some models like qwen3-coder-next do NOT support thinking.
+  # Enables transparent decision-making in code reviews.
   enable_thinking: false
   # Thinking effort level: "low", "medium", "high" (for supported models)
   thinking_effort: "medium"
 
   # Model Memory Management - keep models loaded for faster subsequent responses
-  # Examples: "5m" (5 minutes), "10m", "1h", "0" (unload immediately)
   model_keep_alive: "10m"
 
   # HTTP Client Overrides
   # Timeout for waiting for the first byte of an LLM response (headers).
-  # Increase this if you see "timeout awaiting response headers" errors
-  # when using heavy cloud models via Ollama proxy.
-  # default: "180s" (3 minutes)
   http_response_header_timeout: "15m"
 
   # Overall HTTP request timeout (including body transfer).
-  # This is a safety net for very long-running requests.
-  # Set to "0" or omit to disable (rely only on response_header_timeout).
-  # default: "0" (disabled - recommended for most cases)
+  # Set to "0" or omit to disable.
   # http_request_timeout: "0"
 
-  # Context Assembly
-  # Maximum tokens for RAG context (retrieved code snippets, definitions, etc.)
-  # This is NOT the full prompt - it's just the retrieved context portion.
-  # Recommendation based on model context window:
-  #   - 8K context models: 4000-6000
-  #   - 32K context models: 12000-20000
-  #   - 128K context models: 16000-50000 (16000 is a conservative default)
-  #   - 256K+ context models: 50000-100000
-  # Note: Leave room for system prompt (~1K), diff (~4K), and response (~8K-16K)
-  context_token_budget: 16000
-
-  # Maximum number of architectural summaries (directories) to load during context generation.
-  # If a repository has more directories than this limit, only the most relevant will be fetched.
-  # Increase this for massive monorepos where you need complete coverage.
-  # default: 1000
-  max_context_summaries: 1000
-
-  # Hybrid Search (dense + sparse vectors)
-  # enable_hybrid_search: true activates Qdrant hybrid search using both dense embeddings
-  # and the code-aware sparse tokenizer (camelCase/snake_case splitting via FNV hashing).
-  # sparse_vector_name must match the named sparse vector in your Qdrant collection schema.
-  # If you change this after initial indexing, re-index all collections.
-  enable_hybrid_search: true
-  sparse_vector_name: "code_sparse"
+  # Review output options
+  # Include code suggestions in review comments (GitHub suggestion blocks).
+  enable_code_suggestions: true
 
 # ============================================================================
 # Agent Configuration (Autonomous Issue Implementation)
 # ============================================================================
 # The agent system implements GitHub issues autonomously using AI.
-# Only in-process modes are supported:
 #
-#   "warden" (recommended) — phased plan→implement→publish loop using
-#   the same LLM as configured under "ai". Tools injected in-process;
-#   no MCP HTTP server needed when in_process_only is true.
+#   "warden" (recommended) — phased plan→implement→review→publish loop using
+#   the agent-based review engine (grep + read_file). Tools injected in-process.
 #
-#   "native" — single-loop in-process mode (no phased publish step).
-#
-#   Architecture:
-#     GitHub Issue ──► Orchestrator ──► plan loop ──► implement loop ──► publish loop
-#                           │                 └── file tools, LSP, search_code, review_code
-#                           └── RAG/Qdrant (code index, search)
-#
+#   "native" — single-loop in-process mode.
 agent:
   # Enable the agent system for /implement comments on GitHub issues
   enabled: true
@@ -159,37 +108,30 @@ agent:
   # "warden" activates the phased plan→implement→publish harness.
   mode: "warden"
 
-  # LLM model for the agent loops (Ollama format: "ollama/<model>").
-  # Falls back to the review LLM (ai.generator_model) if this is unset.
-  model: "ollama/glm-5.1:cloud"
-
   # Skip the MCP HTTP server — tools are registered directly in the goframe
-  # agent registry. Set to true whenever mode is "warden" or "native".
+  # agent registry.
   in_process_only: true
 
   # Base branch for pull requests opened by the agent (default: "main").
   base_branch: "main"
 
   # Maximum review→fix iterations in the implement loop before the agent
-  # yields a draft PR for human review (capped by reviewCapTool).
+  # yields a draft PR for human review.
   max_iterations: 3
 
-  # Maximum concurrent agent sessions (prevents resource exhaustion).
+  # Maximum concurrent agent sessions.
   max_concurrent_sessions: 3
 
-  # Maximum time for a single agent session (plan + implement + publish).
+  # Maximum time for a single agent session.
   timeout: "1h"
 
   # Working directory for isolated agent workspaces.
-  # Each session gets its own subdirectory: <working_dir>/<session_id>/
   working_dir: "/tmp/code-warden-agents"
 
 # ============================================================================
 # Storage Configuration
 # ============================================================================
 storage:
-  # Qdrant vector database host (gRPC port)
-  qdrant_host: "localhost:6334"
   # Local path for cloned repositories
   repo_path: "./data/repos"
 
@@ -220,12 +162,3 @@ logging:
   format: "text"
   # Output: "stdout", "stderr", or "file"
   output: "stdout"
-
-# ============================================================================
-# Feature Flags
-# ============================================================================
-features:
-  # Enable binary quantization for faster vector search
-  enable_binary_quantization: true
-  # Enable graph-based code analysis
-  enable_graph_analysis: true

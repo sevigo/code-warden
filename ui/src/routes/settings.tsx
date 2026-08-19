@@ -208,12 +208,6 @@ export default function SettingsPage() {
                 service={status?.services.database}
                 description="Stores repository metadata and job history"
               />
-              <ServiceCard
-                icon={Server}
-                name="Qdrant Vector Store"
-                service={status?.services.qdrant}
-                description="Manages code embeddings and vector search"
-              />
             </div>
           </Section>
 
@@ -227,10 +221,6 @@ export default function SettingsPage() {
               <ConfigRow 
                 label="Generator Model" 
                 value={<MonoValue v={cfg?.ai.generator_model ?? ''} />} 
-              />
-              <ConfigRow 
-                label="Embedder Model" 
-                value={<MonoValue v={cfg?.ai.embedder_model ?? ''} />} 
               />
               <ConfigRow
                 label="Consensus Models"
@@ -282,23 +272,6 @@ export default function SettingsPage() {
                 status={(() => {
                   const github = cfg?.github as { private_key_path?: string } | undefined
                   return github?.private_key_path ? 'ok' : 'warning'
-                })()}
-              />
-            </div>
-          </Section>
-
-          {/* Storage */}
-          <Section icon={Database} title="Storage Configuration">
-            <div className="py-2">
-              <ConfigRow 
-                label="Qdrant Host" 
-                value={<MonoValue v={cfg?.storage.qdrant_host ?? ''} copyable />} 
-              />
-              <ConfigRow
-                label="Collection Prefix"
-                value={(() => {
-                  const storage = cfg?.storage as { collection_prefix?: string } | undefined
-                  return <MonoValue v={storage?.collection_prefix ?? 'default'} />
                 })()}
               />
             </div>

@@ -2,7 +2,6 @@ import { createBrowserRouter } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './routes/index'
 import RepoDetail from './routes/repos.$repoId'
-import ChatPage from './routes/repos.$repoId.chat'
 import ReviewsPage from './routes/repos.$repoId.reviews'
 import ReviewDetailPage from './routes/repos.$repoId.reviews.$prNum'
 import JobsPage from './routes/jobs'
@@ -17,10 +16,6 @@ export const router = createBrowserRouter([
   {
     path: '/repos/:repoId',
     element: <Layout><RepoDetail /></Layout>,
-  },
-  {
-    path: '/repos/:repoId/chat',
-    element: <Layout fluid><ChatPage /></Layout>,
   },
   {
     path: '/repos/:repoId/reviews',

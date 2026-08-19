@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery, useQueries } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
@@ -11,7 +11,6 @@ import {
   XCircle,
   Loader2,
   Clock,
-  MessageSquare,
   ChevronRight,
   Shield,
   Plus,
@@ -19,9 +18,8 @@ import {
   Zap,
   GitBranch,
 } from 'lucide-react'
-import StatusBadge from '@/components/StatusBadge'
 import { api } from '@/lib/api'
-import type { Repository, ScanState, GlobalStats, JobRun } from '@/lib/api'
+import type { Repository, GlobalStats, JobRun } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { KPICard, ActionCard } from '@/components/ui/card'
 
@@ -92,7 +90,6 @@ function PipelineRow({ job, repos }: { job: JobRun; repos: Repository[] | undefi
   const getTypeColor = () => {
     switch (job.type) {
       case 'review': return 'text-blue-500'
-      case 'scan': return 'text-violet-500'
       case 'implement': return 'text-amber-500'
       case 'rereview': return 'text-sky-500'
       default: return 'text-[#8c919b]'
@@ -159,17 +156,6 @@ function PipelineRow({ job, repos }: { job: JobRun; repos: Repository[] | undefi
  * Repository Row - Enhanced table row with actions
  */
 function RepoRow({ repo }: { repo: Repository }) {
-  const { data: scanState } = useQuery<ScanState | null>({
-    queryKey: ['scanState', repo.id],
-    queryFn: () => api.repos.status(repo.id),
-    refetchInterval: (query) => {
-      const s = query.state.data?.status
-      return s === 'scanning' || s === 'in_progress' || s === 'pending' ? 2000 : false
-    },
-  })
-  
-  const isCompleted = scanState?.status === 'completed'
-
   return (
     <motion.tr
       variants={fadeUp}
@@ -194,21 +180,16 @@ function RepoRow({ repo }: { repo: Repository }) {
         </Link>
       </td>
       
-      {/* Status */}
-      <td className="py-3 px-3">
-        <StatusBadge status={scanState?.status} size="sm" />
-      </td>
-      
       {/* Reviews */}
       <td className="py-3 px-3">
         <span className="text-xs text-[#8c919b]">—</span>
       </td>
       
-      {/* Last Scan */}
+      {/* Last Indexed */}
       <td className="py-3 px-3">
         <span className="text-xs text-[#8c919b]">
-          {scanState?.artifacts?.indexed_at
-            ? new Date(scanState.artifacts.indexed_at).toLocaleDateString(undefined, { 
+          {repo.last_indexed_sha
+            ? new Date(repo.last_indexed_sha).toLocaleDateString(undefined, { 
                 month: 'short', 
                 day: 'numeric' 
               })
@@ -219,15 +200,6 @@ function RepoRow({ repo }: { repo: Repository }) {
       {/* Actions */}
       <td className="py-3 pr-4 lg:pr-5">
         <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          {isCompleted && (
-            <Link
-              to={`/repos/${repo.id}/chat`}
-              className="p-1.5 rounded-[4px] hover:bg-[#2264d6]/10 text-[#8c919b] hover:text-[#2264d6] transition-colors"
-              title="Chat"
-            >
-              <MessageSquare className="h-3.5 w-3.5" />
-            </Link>
-          )}
           <Link
             to={`/repos/${repo.id}/reviews`}
             className="px-2.5 py-1.5 rounded-[4px] text-xs font-medium text-[#656a76] hover:text-foreground hover:bg-[#e1e3e6]/50 dark:text-[#b2b6bd] dark:hover:bg-[#2d2f36] transition-colors"
@@ -309,18 +281,6 @@ export default function Dashboard() {
     refetchInterval: 15_000,
   })
 
-  // Prefetch scan states
-  useQueries({
-    queries: (repos || []).map(repo => ({
-      queryKey: ['scanState', repo.id],
-      queryFn: () => api.repos.status(repo.id),
-      refetchInterval: (query: { state: { data?: ScanState | null } }) => {
-        const s = query.state.data?.status
-        return s === 'scanning' || s === 'in_progress' || s === 'pending' ? 2000 : false
-      },
-    }))
-  })
-
   if (reposLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-32 gap-3">
@@ -346,7 +306,6 @@ export default function Dashboard() {
     return <EmptyState onAdd={() => setShowAddDialog(true)} />
   }
 
-  const indexedCount = globalStats?.indexed_repos ?? 0
   const totalCount = globalStats?.total_repos ?? repos.length
 
   return (
@@ -376,8 +335,8 @@ export default function Dashboard() {
         <KPICard
           icon={Layers}
           label="Repositories"
-          value={`${indexedCount}/${totalCount}`}
-          sub="indexed / total"
+          value={`${totalCount}`}
+          sub="total"
           color="text-violet-500"
         />
 
@@ -458,9 +417,8 @@ export default function Dashboard() {
                 <thead>
                   <tr className="border-b border-[#e1e3e6] dark:border-[#2d2f36]">
                     <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 pl-4 lg:pl-5">Repository</th>
-                    <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 px-3">Status</th>
                     <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 px-3">Reviews</th>
-                    <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 px-3">Last Scan</th>
+                    <th className="text-left text-[10px] font-semibold text-[#656a76] uppercase tracking-wider py-3 px-3">Last Indexed</th>
                     <th className="py-3 pr-4 lg:pr-5" />
                   </tr>
                 </thead>
@@ -480,7 +438,7 @@ export default function Dashboard() {
             <ActionCard
               icon={Zap}
               title="Quick Start"
-              description="Set up your first repository and trigger an initial scan to begin AI-powered code reviews."
+              description="Set up your first repository and trigger a review to begin AI-powered code reviews."
               actionLabel="Get Started"
               href="/setup"
             />
@@ -512,10 +470,6 @@ export default function Dashboard() {
                   <div className="flex items-center gap-2 text-xs">
                     <div className="h-2 w-2 rounded-full bg-emerald-500" />
                     <span className="text-[#656a76]">Database</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs">
-                    <div className="h-2 w-2 rounded-full bg-emerald-500" />
-                    <span className="text-[#656a76]">Vector Store</span>
                   </div>
                 </div>
               </div>

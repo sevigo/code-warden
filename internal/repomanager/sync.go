@@ -87,10 +87,9 @@ func (m *manager) cloneAndIndex(
 	}
 
 	newRec := &storage.Repository{
-		FullName:             ev.RepoFullName,
-		ClonePath:            clonePath,
-		QdrantCollectionName: GenerateCollectionName(ev.RepoFullName),
-		InstallationID:       ev.InstallationID,
+		FullName:       ev.RepoFullName,
+		ClonePath:      clonePath,
+		InstallationID: ev.InstallationID,
 	}
 
 	if existing != nil {

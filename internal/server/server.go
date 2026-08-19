@@ -12,7 +12,6 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/gitutil"
-	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server/handler"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -39,12 +38,12 @@ func (s *Server) SetCredentialStore(cs *config.CredentialStore) {
 
 // NewServer creates a new HTTP server with the given configuration and job dispatcher.
 func NewServer(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *Server {
-	return NewServerWithStore(ctx, cfg, dispatcher, nil, nil, nil, nil, nil, logger)
+	return NewServerWithStore(ctx, cfg, dispatcher, nil, nil, nil, nil, logger)
 }
 
 // NewServerWithStore creates a new HTTP server with storage for web UI endpoints.
-func NewServerWithStore(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, ragService rag.Service, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *Server {
-	router, dashboardHandler, setupHandler := NewRouterWithStore(cfg, dispatcher, canceller, store, ragService, repoMgr, gitClient, logger)
+func NewServerWithStore(ctx context.Context, cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, store storage.Store, repoMgr repomanager.RepoManager, gitClient *gitutil.Client, logger *slog.Logger) *Server {
+	router, dashboardHandler, setupHandler := NewRouterWithStore(cfg, dispatcher, canceller, store, repoMgr, gitClient, logger)
 
 	return &Server{
 		ctx: ctx,

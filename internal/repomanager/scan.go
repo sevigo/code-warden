@@ -140,10 +140,9 @@ func (m *manager) ensureRepoRecord(ctx context.Context, fullName, clonePath stri
 	}
 	if rec == nil {
 		newRec := &storage.Repository{
-			FullName:             fullName,
-			ClonePath:            clonePath,
-			QdrantCollectionName: GenerateCollectionName(fullName),
-			LastIndexedSHA:       "",
+			FullName:       fullName,
+			ClonePath:      clonePath,
+			LastIndexedSHA: "",
 		}
 		if err := m.store.CreateRepository(ctx, newRec); err != nil {
 			return fmt.Errorf("create repo record: %w", err)

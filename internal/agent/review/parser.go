@@ -3,10 +3,12 @@ package review
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/sevigo/goframe/output"
 
 	"github.com/sevigo/code-warden/internal/core"
+	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
 )
 
@@ -32,4 +34,45 @@ func (p *StructuredReviewParser) Parse(ctx context.Context, outputStr string) (*
 		return llm.ParseLegacyMarkdownReview(outputStr)
 	}
 	return parsed, nil
+}
+
+// ParseDiff splits a unified diff string into per-file [internalgithub.ChangedFile] entries.
+func ParseDiff(diff string) []internalgithub.ChangedFile {
+	var files []internalgithub.ChangedFile
+	var currentFile *internalgithub.ChangedFile
+
+	lines := strings.Split(diff, "\n")
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			// Start of a new file
+			if currentFile != nil {
+				files = append(files, *currentFile)
+			}
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				// Format: diff --git a/path/to/file b/path/to/file
+				// We want the path after b/
+				filename := strings.TrimPrefix(parts[3], "b/")
+				currentFile = &internalgithub.ChangedFile{
+					Filename: filename,
+				}
+			}
+		case strings.HasPrefix(line, "@@"):
+			// Hunk header — skip, not part of the patch body
+			continue
+		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+			// Diff file headers — skip, not part of the patch body
+			continue
+		case currentFile != nil:
+			// Append line to current file patch
+			currentFile.Patch += line + "\n"
+		}
+	}
+
+	if currentFile != nil {
+		files = append(files, *currentFile)
+	}
+
+	return files
 }

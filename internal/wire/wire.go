@@ -22,19 +22,13 @@ import (
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
-	"github.com/sevigo/code-warden/internal/rag"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
-	"github.com/sevigo/goframe/embeddings"
 	"github.com/sevigo/goframe/llms"
 	"github.com/sevigo/goframe/llms/gemini"
 	"github.com/sevigo/goframe/llms/ollama"
 	"github.com/sevigo/goframe/llms/openai"
-	"github.com/sevigo/goframe/parsers"
-	"github.com/sevigo/goframe/schema"
-	"github.com/sevigo/goframe/textsplitter"
-	"github.com/sevigo/goframe/vectorstores/qdrant"
 )
 
 func InitializeApp(ctx context.Context) (*app.App, func(), error) {
@@ -49,13 +43,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		jobs.NewDispatcher,
 		jobs.NewReviewJob,
 		llm.NewPromptManager,
-		rag.NewService,
-		provideVectorStore,
 		provideGeneratorLLM,
-		provideEmbedder,
-		provideReranker,
-		provideParserRegistry,
-		provideTextSplitter,
 		provideLoggerConfig,
 		provideLogWriter,
 		provideDBConfig,
@@ -93,46 +81,6 @@ func parseRequestTimeout(s string, logger *slog.Logger) time.Duration {
 
 func provideSQLXDB(db *db.DB) *sqlx.DB {
 	return db.DB
-}
-
-func provideVectorStore(cfg *config.Config, embedder embeddings.Embedder, logger *slog.Logger) storage.VectorStore {
-	var batchConfig *qdrant.BatchConfig
-	if cfg.AI.EmbedderProvider == "gemini" {
-		batchConfig = &qdrant.BatchConfig{
-			BatchSize:               256,
-			MaxConcurrency:          4,
-			EmbeddingBatchSize:      90,
-			EmbeddingMaxConcurrency: 1,
-			RetryAttempts:           qdrant.DefaultRetryAttempts,
-			RetryDelay:              qdrant.DefaultRetryDelay,
-			RetryJitter:             qdrant.DefaultRetryJitter,
-			MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
-		}
-	} else {
-		batchConfig = &qdrant.BatchConfig{
-			BatchSize:               512,
-			MaxConcurrency:          8,
-			EmbeddingBatchSize:      64,
-			EmbeddingMaxConcurrency: 8,
-			RetryAttempts:           qdrant.DefaultRetryAttempts,
-			RetryDelay:              qdrant.DefaultRetryDelay,
-			RetryJitter:             qdrant.DefaultRetryJitter,
-			MaxRetryDelay:           qdrant.DefaultMaxRetryDelay,
-		}
-	}
-
-	return storage.NewQdrantVectorStore(
-		cfg,
-		logger,
-		storage.WithBatchConfig(batchConfig),
-		storage.WithInitialEmbedder(cfg.AI.EmbedderModel, embedder),
-		storage.WithQdrantOptions(
-			qdrant.WithTimeout(60*time.Second),
-			qdrant.WithKeepaliveTime(15*time.Second),
-			qdrant.WithKeepaliveTimeout(5*time.Second),
-			qdrant.WithPoolSize(20),
-		),
-	)
 }
 
 func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
@@ -187,66 +135,6 @@ func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.L
 	}
 }
 
-func provideEmbedder(ctx context.Context, cfg *config.Config, logger *slog.Logger) (embeddings.Embedder, error) {
-	var embedderLLM embeddings.Embedder
-	var err error
-
-	switch cfg.AI.EmbedderProvider {
-	case "gemini":
-		embedderLLM, err = gemini.New(ctx,
-			gemini.WithEmbeddingModel(cfg.AI.EmbedderModel),
-			gemini.WithAPIKey(cfg.AI.GeminiAPIKey),
-		)
-	case "ollama":
-		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
-		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
-
-		logger.Info("configuring Ollama for embedder",
-			"response_header_timeout", headerTimeout,
-			"request_timeout", requestTimeout,
-			"model", cfg.AI.EmbedderModel,
-		)
-
-		opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
-			ServerURL:          cfg.AI.OllamaHost,
-			APIKey:             cfg.AI.OllamaAPIKey,
-			Model:              cfg.AI.EmbedderModel,
-			HTTPHeaderTimeout:  headerTimeout,
-			HTTPRequestTimeout: requestTimeout,
-			ModelKeepAlive:     cfg.AI.ModelKeepAlive,
-			Logger:             logger,
-		})
-		embedderLLM, err = ollama.New(opts...)
-	default:
-		return nil, fmt.Errorf("unsupported embedder provider: %s", cfg.AI.EmbedderProvider)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to create embedder LLM: %w", err)
-	}
-	return embeddings.NewEmbedder(embedderLLM)
-}
-
-func provideParserRegistry(logger *slog.Logger) (parsers.ParserRegistry, error) {
-	return parsers.RegisterLanguagePlugins(logger)
-}
-
-func provideTextSplitter(registry parsers.ParserRegistry, model llms.Model, logger *slog.Logger) (textsplitter.TextSplitter, error) {
-	tokenizer := llm.NewOllamaTokenizerAdapter(model)
-	splitter, err := textsplitter.NewCodeAware(
-		registry,
-		tokenizer,
-		logger,
-		textsplitter.WithChunkSize(2000),
-		textsplitter.WithChunkOverlap(200),
-		textsplitter.WithParentContextConfig(textsplitter.ParentContextConfig{Enabled: true}),
-	)
-	if err != nil {
-		return nil, err
-	}
-	return splitter, nil
-}
-
 func provideLoggerConfig(cfg *config.Config) logger.Config {
 	return cfg.Logging
 }
@@ -278,7 +166,7 @@ func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logge
 	return logger.NewLogger(loggerConfig, writer)
 }
 
-func provideGlobalMCPServer(ctx context.Context, cfg *config.Config, logger *slog.Logger, registry *globalmcp.WorkspaceRegistry, store storage.Store, vectorStore storage.VectorStore, ragService rag.Service) (*globalmcp.Server, error) {
+func provideGlobalMCPServer(ctx context.Context, cfg *config.Config, logger *slog.Logger, registry *globalmcp.WorkspaceRegistry, store storage.Store) (*globalmcp.Server, error) {
 	if cfg.Agent.DefaultWorkspace == "" {
 		logger.Info("No default workspace configured, using proxy-only MCP server")
 		return globalmcp.NewServer(cfg, logger, registry), nil
@@ -294,14 +182,10 @@ func provideGlobalMCPServer(ctx context.Context, cfg *config.Config, logger *slo
 		return nil, fmt.Errorf("failed to setup default workspace: %w", err)
 	}
 
-	scopedStore := vectorStore.ForRepo(repo.QdrantCollectionName, cfg.AI.EmbedderModel)
-
 	standaloneCfg := &globalmcp.StandaloneConfig{
-		Store:       store,
-		VectorStore: scopedStore,
-		RAGService:  ragService,
-		Repo:        repo,
-		RepoConfig:  core.DefaultRepoConfig(),
+		Store:      store,
+		Repo:       repo,
+		RepoConfig: core.DefaultRepoConfig(),
 	}
 
 	return globalmcp.NewStandaloneServer(cfg, logger, registry, standaloneCfg), nil
@@ -320,11 +204,9 @@ func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullNa
 
 	logger.Info("Creating new repository record for default workspace", "repo", repoFullName)
 
-	collectionName := repomanager.GenerateCollectionName(repoFullName)
 	repo = &storage.Repository{
-		FullName:             repoFullName,
-		ClonePath:            repoPath,
-		QdrantCollectionName: collectionName,
+		FullName:  repoFullName,
+		ClonePath: repoPath,
 	}
 
 	if err := store.CreateRepository(ctx, repo); err != nil {
@@ -336,45 +218,4 @@ func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullNa
 
 func provideWorkspaceRegistry(logger *slog.Logger) *globalmcp.WorkspaceRegistry {
 	return globalmcp.NewWorkspaceRegistry(logger)
-}
-
-func provideReranker(ctx context.Context, cfg *config.Config, logger *slog.Logger, promptMgr *llm.PromptManager) (schema.Reranker, error) {
-	if !cfg.AI.EnableReranking {
-		logger.Info("Reranking is disabled, using NoOpReranker")
-		return schema.NoOpReranker{}, nil
-	}
-
-	logger.Info("Initializing LLM Reranker", "model", cfg.AI.RerankerModel)
-
-	headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
-	requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
-
-	logger.Info("configuring Ollama for reranker",
-		"response_header_timeout", headerTimeout,
-		"request_timeout", requestTimeout,
-		"model", cfg.AI.RerankerModel,
-	)
-
-	opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
-		ServerURL:          cfg.AI.OllamaHost,
-		Model:              cfg.AI.RerankerModel,
-		HTTPHeaderTimeout:  headerTimeout,
-		HTTPRequestTimeout: requestTimeout,
-		ModelKeepAlive:     cfg.AI.ModelKeepAlive,
-		Logger:             logger,
-	})
-
-	rerankLLM, err := ollama.New(opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create reranker LLM: %w", err)
-	}
-
-	prompt, err := promptMgr.Raw("rerank_precision")
-	if err != nil {
-		logger.Warn("failed to load rerank prompt, using default", "error", err)
-		return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3)), nil
-	}
-
-	logger.Debug("Loaded rerank prompt", "prompt_len", len(prompt))
-	return llms.NewLLMReranker(rerankLLM, llms.WithConcurrency(3), llms.WithPrompt(prompt)), nil
 }
