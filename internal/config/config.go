@@ -223,16 +223,11 @@ type GitHubConfig struct {
 }
 
 type AIConfig struct {
-	LLMProvider         string   `mapstructure:"llm_provider"`
-	OllamaHost          string   `mapstructure:"ollama_host"`
-	OllamaAPIKey        string   `mapstructure:"ollama_api_key"`
-	GeminiAPIKey        string   `mapstructure:"gemini_api_key"`
-	GeneratorModel      string   `mapstructure:"generator_model"`
-	ComparisonModels    []string `mapstructure:"comparison_models"`
-	ComparisonPaths     []string `mapstructure:"comparison_paths"`
-	MaxComparisonModels int      `mapstructure:"max_comparison_models"`
-	ConsensusTimeout    string   `mapstructure:"consensus_timeout"` // Timeout for individual model reviews in consensus mode (e.g., "5m")
-	ConsensusQuorum     float64  `mapstructure:"consensus_quorum"`  // Percentage of models that must finish before synthesis (0.0 to 1.0)
+	LLMProvider    string `mapstructure:"llm_provider"`
+	OllamaHost     string `mapstructure:"ollama_host"`
+	OllamaAPIKey   string `mapstructure:"ollama_api_key"`
+	GeminiAPIKey   string `mapstructure:"gemini_api_key"`
+	GeneratorModel string `mapstructure:"generator_model"`
 
 	// OpenAI-compatible provider (any OpenAI-compatible endpoint).
 	OpenAIBaseURL string `mapstructure:"openai_base_url"`
@@ -253,87 +248,6 @@ type AIConfig struct {
 	// Review Output Options
 	EnableCodeSuggestions bool   `mapstructure:"enable_code_suggestions"` // Include code suggestions in review comments (GitHub suggestion blocks)
 	ReviewsDir            string `mapstructure:"reviews_dir"`             // Directory to save review artifacts (default: "reviews")
-}
-
-func (c *AIConfig) Validate() error {
-	if len(c.ComparisonModels) == 0 {
-		return nil
-	}
-	if c.ConsensusQuorum < 0 || c.ConsensusQuorum > 1 {
-		return errors.New("ai.consensus_quorum must be between 0.0 and 1.0")
-	}
-	if err := c.validateModels(); err != nil {
-		return err
-	}
-	return c.validatePaths()
-}
-
-func (c *AIConfig) validateModels() error {
-	if len(c.ComparisonModels) > 10 {
-		return errors.New("comparison_models cannot exceed 10 to prevent timeout cascades")
-	}
-	if c.MaxComparisonModels > 10 {
-		return errors.New("max_comparison_models cannot exceed 10")
-	}
-
-	seenModels := make(map[string]bool)
-	for _, m := range c.ComparisonModels {
-		if strings.TrimSpace(m) == "" {
-			return errors.New("comparison_models cannot contain empty model names")
-		}
-		if seenModels[m] {
-			return fmt.Errorf("duplicate model in comparison_models: %s", m)
-		}
-		seenModels[m] = true
-	}
-	return nil
-}
-
-func (c *AIConfig) validatePaths() error {
-	for _, p := range c.ComparisonPaths {
-		if err := validateComparisonPath(p); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateComparisonPath(p string) error {
-	clean := filepath.Clean(p)
-
-	// Cross-platform absolute path check
-	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "\\") {
-		return fmt.Errorf("comparison_paths must be relative: %s", p)
-	}
-
-	// Traversal check
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("comparison_paths cannot contain traversal components: %s", p)
-	}
-
-	// Symlink validation
-	return validateSymlink(clean, p)
-}
-
-func validateSymlink(clean, original string) error {
-	info, err := os.Lstat(clean)
-	if err != nil {
-		return nil //nolint:nilerr // Path doesn't exist, which is fine for config validation
-	}
-
-	if info.Mode()&os.ModeSymlink == 0 {
-		return nil
-	}
-
-	target, err := filepath.EvalSymlinks(clean)
-	if err != nil {
-		return fmt.Errorf("comparison_paths symlink resolution failed: %s", original)
-	}
-
-	if filepath.IsAbs(target) {
-		return fmt.Errorf("comparison_paths symlink points to absolute path: %s", original)
-	}
-	return nil
 }
 
 type StorageConfig struct {
@@ -412,8 +326,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.model_keep_alive", "10m")              // Keep models loaded for 10 minutes
 	v.SetDefault("ai.http_response_header_timeout", "180s") // 3 minutes for slow model loading
 	v.SetDefault("ai.http_request_timeout", "600s")         // 10 minutes overall timeout for large requests
-	v.SetDefault("ai.consensus_quorum", 0.66)
-	v.SetDefault("ai.enable_code_suggestions", true) // Include code suggestions by default
+	v.SetDefault("ai.enable_code_suggestions", true)        // Include code suggestions by default
 	v.SetDefault("ai.openai_base_url", "https://api.openai.com/v1")
 
 	// Storage
@@ -488,10 +401,6 @@ func (c *Config) validateAI() error {
 
 	if c.AI.LLMProvider == llmProviderGemini && c.AI.GeminiAPIKey == "" {
 		errs = append(errs, "ai.gemini_api_key is required for gemini provider")
-	}
-
-	if err := c.AI.Validate(); err != nil {
-		errs = append(errs, err.Error())
 	}
 
 	if len(errs) > 0 {

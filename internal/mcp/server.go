@@ -1,5 +1,5 @@
 // Package mcp provides a Model Context Protocol (MCP) server for code-warden.
-// It exposes tools for AI agents to interact with the codebase context stored in Qdrant.
+// It exposes tools for AI agents to interact with the codebase in an isolated workspace.
 package mcp
 
 import (
@@ -37,10 +37,8 @@ type Server struct {
 	governance *goframeagent.Governance
 	rateCheck  *goframeagent.RateLimitCheck
 
-	// Comparison models for consensus review (optional)
-	comparisonModels []string
-	agentMode        bool
-	reviewsDir       string
+	agentMode  bool
+	reviewsDir string
 
 	// SSE session management
 	sessionsMu sync.RWMutex
@@ -92,11 +90,10 @@ type Tool interface {
 
 // Config holds configuration for the MCP server.
 type Config struct {
-	Port             int
-	ProjectRoot      string
-	ComparisonModels []string
-	ReviewsDir       string
-	AgentMode        bool // When true, review_code uses single-model review for faster agent feedback
+	Port        int
+	ProjectRoot string
+	ReviewsDir  string
+	AgentMode   bool // When true, tools use single-model review for faster agent feedback
 }
 
 // NewServer creates a new MCP server.
@@ -122,7 +119,6 @@ func NewServer(
 		sessions:         make(map[string]*sseSession),
 		workspaces:       make(map[string]string),
 		reviewsBySession: make(map[string]*reviewResult),
-		comparisonModels: config.ComparisonModels,
 		agentMode:        config.AgentMode,
 		reviewsDir:       config.ReviewsDir,
 	}

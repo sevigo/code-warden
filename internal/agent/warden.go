@@ -9,7 +9,7 @@ package agent
 //    Implements changes, verifies with make build/lint/test.
 //
 //  Review state machine (orchestrator-driven, not agent-driven):
-//    The Go orchestrator runs the proven RAG code review directly (same pipeline
+//    The Go orchestrator runs the agent-based review directly (the same engine
 //    as the /review command), then spawns a restricted "fix loop" if changes are
 //    requested. This guarantees the review always runs and solves the diff-acquisition
 //    problem (the LLM had no way to produce the diff required by review_code).
@@ -119,7 +119,7 @@ func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, bra
 			o.updateIssueComment(tctx, session.Issue, id, body)
 		}
 	}
-	tracker := newProgressTracker(session, ws.logFile, "RAG-only", progressCreate, progressUpdate)
+	tracker := newProgressTracker(session, ws.logFile, "agent-based", progressCreate, progressUpdate)
 	tracker.start(ctx)
 	defer tracker.stop()
 
@@ -214,7 +214,7 @@ func (o *Orchestrator) runImplementPhase(
 //
 // Unlike the previous LLM-driven approach (where the agent was expected to call
 // review_code and provide a git diff it had no way to obtain), the orchestrator
-// now runs the proven RAG code review directly — the same pipeline used by the
+// now runs the agent-based review directly — the same engine used by the
 // /review PR command. The LLM is only involved in targeted fix loops when the
 // reviewer requests changes.
 //
@@ -309,7 +309,7 @@ func (o *Orchestrator) runReviewPhase(
 }
 
 // runReviewRound executes a single review round: gets the workspace diff and
-// runs the RAG review. Returns the verdict and review result on success.
+// runs the agent-based review. Returns the verdict and review result on success.
 //
 // On failure it returns a non-nil error without calling failSession — the
 // caller is responsible for deciding how to handle each error type:

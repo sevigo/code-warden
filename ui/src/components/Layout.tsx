@@ -10,7 +10,6 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import type { Repository, SetupStatus } from '@/lib/api'
-import { StatusDot } from '@/components/StatusBadge'
 import { useTheme } from '@/lib/useTheme'
 import { Button } from '@/components/ui/button'
 
@@ -246,7 +245,6 @@ export default function Layout({ children }: SidebarProps) {
                       to={`/repos/${repo.id}`}
                       className={repoLinkClass}
                     >
-                      <StatusDot status={null} />
                       <span className="truncate flex-1">{name}</span>
                     </NavLink>
                   </div>

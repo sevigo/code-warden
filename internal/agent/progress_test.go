@@ -53,7 +53,7 @@ func TestProgressTracker_PhaseChange(t *testing.T) {
 	tracker := newProgressTracker(
 		&Session{ID: "phase-test"},
 		&buf,
-		"degraded (RAG-only)",
+		"agent-based",
 		func(_ context.Context, _ string) int64 { return 0 },
 		func(_ context.Context, _ int64, _ string) {},
 	)

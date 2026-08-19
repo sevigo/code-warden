@@ -19,7 +19,6 @@ const cloneTimeout = 5 * time.Minute
 // syncRepo decides whether we need a fresh clone or an incremental update.
 // IMPORTANT: This function only ever syncs the repository's *default branch* (main/master).
 // PR head SHAs are never checked out here; they are used only for logging and DB records.
-// This prevents the "linear indexing" corruption where parallel PR webhooks thrash Qdrant.
 func (m *manager) syncRepo(ctx context.Context, ev *core.GitHubEvent, token string) (*core.UpdateResult, error) {
 	repoRec, err := m.store.GetRepositoryByFullName(ctx, ev.RepoFullName)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
@@ -133,7 +132,7 @@ func (m *manager) incrementalUpdate(
 	}
 
 	// Fetch and checkout the DEFAULT BRANCH ONLY — not the PR's HeadSHA.
-	// This keeps the on-disk working tree and the Qdrant index in sync with main.
+	// This keeps the on-disk working tree in sync with main.
 	if err := m.ensureDefaultBranch(ctx, ev, token, rec.ClonePath); err != nil {
 		return nil, err
 	}
@@ -161,9 +160,9 @@ func (m *manager) incrementalUpdate(
 		}, nil
 	}
 
-	// Check if the default branch has actually moved since our last index.
+	// Check if the default branch has actually moved since our last sync.
 	if rec.LastIndexedSHA == defaultBranchSHA {
-		m.logger.Info("default branch unchanged, no Qdrant update needed",
+		m.logger.Info("default branch unchanged, no update needed",
 			"repo", ev.RepoFullName,
 			"sha", defaultBranchSHA,
 		)

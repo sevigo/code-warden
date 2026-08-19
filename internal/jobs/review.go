@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -103,8 +102,6 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 	switch event.Type {
 	case core.FullReview:
 		return j.runFullReview(ctx, event)
-	case core.ReReview:
-		return j.runReReview(ctx, event)
 	case core.ImplementIssue:
 		return j.runImplementIssue(ctx, event)
 	default:
@@ -117,15 +114,6 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	j.logger.Info("🚀 Starting Code Review", "repo", event.RepoFullName, "pr", event.PRNumber)
 	finish := j.startJobRun(ctx, "review", event, "webhook:/review")
 	err := j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
-	finish(ctx, err)
-	return err
-}
-
-// runReReview handles the `/rereview` command.
-func (j *ReviewJob) runReReview(ctx context.Context, event *core.GitHubEvent) error {
-	j.logger.Info("🔄 Starting Re-Review", "repo", event.RepoFullName, "pr", event.PRNumber)
-	finish := j.startJobRun(ctx, "rereview", event, "webhook:/rereview")
-	err := j.executeReReviewWorkflow(ctx, event)
 	finish(ctx, err)
 	return err
 }
@@ -161,8 +149,6 @@ func (j *ReviewJob) startJobRun(ctx context.Context, jobType string, event *core
 }
 
 // runImplementIssue handles the `/implement` command on issues.
-//
-//nolint:funlen // Complex workflow requiring multiple sequential steps
 func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEvent) error {
 	j.logger.Info("🤖 Starting Issue Implementation",
 		"repo", event.RepoFullName,
@@ -203,21 +189,6 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 	}
 
 	// 6. Create orchestrator
-	// For agent iterations, use a single randomly-selected comparison model (if configured)
-	// instead of full consensus review. This provides better quality than the generator model
-	// alone while keeping review time within the 60-second MCP tool timeout.
-	// Full consensus review (3 models) takes 90-180+ seconds which causes client timeouts.
-	var agentComparisonModel []string
-	if len(j.cfg.AI.ComparisonModels) > 0 {
-		// Randomly select one model from the comparison models
-		//nolint:gosec // G404: Random selection of review model, not security-sensitive
-		selectedModel := j.cfg.AI.ComparisonModels[rand.IntN(len(j.cfg.AI.ComparisonModels))]
-		agentComparisonModel = []string{selectedModel}
-		j.logger.Info("agent using single comparison model for faster review",
-			"selected_model", selectedModel,
-			"available_models", j.cfg.AI.ComparisonModels)
-	}
-
 	orchestrator := agent.NewOrchestrator(
 		j.store,
 		j.llm,
@@ -237,7 +208,6 @@ func (j *ReviewJob) runImplementIssue(ctx context.Context, event *core.GitHubEve
 			MCPAddr:               j.cfg.Agent.MCPAddr,
 			MCPTimeout:            j.cfg.Agent.GetMCPTimeout(),
 			WorkingDir:            j.cfg.Agent.WorkingDir,
-			ComparisonModels:      agentComparisonModel,
 			ReviewsDir:            firstNonEmpty(j.cfg.AI.ReviewsDir, "reviews"),
 			InProcessOnly:         j.cfg.Agent.InProcessOnly,
 			BaseBranch:            j.cfg.Agent.BaseBranch,
@@ -365,79 +335,6 @@ func (j *ReviewJob) formatImplementResult(result *agent.Result) string {
 	return sb.String()
 }
 
-func (j *ReviewJob) executeReReviewWorkflow(ctx context.Context, event *core.GitHubEvent) (err error) {
-	reviewEnv, err := j.setupReviewEnvironment(ctx, event, "Follow-up Review", "Re-analyzing PR...")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
-		}
-	}()
-
-	// 1. Fetch the latest review from the database
-	_, err = j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
-	if err != nil {
-		j.logger.Warn("failed to fetch last review for re-review", "error", err)
-		// Fallback: If no previous review, run a full review instead
-		err = j.executeReviewWorkflow(ctx, event, "Code Review (Fallback)", "No previous review found, running full review...")
-		return err
-	}
-
-	// 2. Fetch changed files and diff for context
-	changedFiles, err := reviewEnv.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		err = fmt.Errorf("failed to get changed files for re-review context: %w", err)
-		return err
-	}
-
-	diff, err := reviewEnv.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
-	if err != nil {
-		err = fmt.Errorf("failed to get PR diff for re-review: %w", err)
-		return err
-	}
-
-	if commits, cErr := reviewEnv.ghClient.GetPullRequestCommits(ctx, event.RepoOwner, event.RepoName, event.PRNumber); cErr == nil {
-		event.CommitMessages = commits
-	} else {
-		j.logger.Warn("failed to fetch commit messages for re-review, proceeding without them", "error", cErr)
-	}
-
-	// 3. Generate Re-Review using the agent-based review runner
-	// (re-review is equivalent to a fresh review of the current diff).
-	structuredReview, rawReReview, err := j.runAgentReview(ctx, event, diff, changedFiles)
-	if err != nil {
-		err = fmt.Errorf("failed to generate re-review: %w", err)
-		return err
-	}
-
-	// 4. Post the result
-	if err = reviewEnv.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
-		return fmt.Errorf("failed to post re-review comment: %w", err)
-	}
-
-	// Store the raw LLM output so future re-reviews can parse suggestions from it.
-	reReviewContent := rawReReview
-	if reReviewContent == "" {
-		reReviewContent = structuredReview.Summary
-	}
-
-	// 5. Save the re-review as a new review record? Yes, to maintain history.
-	dbReview := &core.Review{
-		RepoFullName:  event.RepoFullName,
-		PRNumber:      event.PRNumber,
-		HeadSHA:       event.HeadSHA,
-		ReviewContent: reReviewContent,
-	}
-	if err = j.store.SaveReview(ctx, dbReview); err != nil {
-		j.logger.Warn("failed to save re-review to database (failing to avoid inconsistent state)", "error", err)
-		return fmt.Errorf("failed to save re-review: %w", err)
-	}
-
-	return reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID, "success", "Re-Review Complete", "Follow-up analysis finished.")
-}
-
 func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHubEvent, title, summary string) (err error) {
 	reviewEnv, err := j.setupReviewEnvironment(ctx, event, title, summary)
 	if err != nil {
@@ -489,9 +386,9 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		return nil, err
 	}
 
-	// ── Mutex: protect only the Git sync + optional Qdrant update phase ──────
+	// ── Mutex: protect only the Git sync phase ─────────────────────────────
 	// The lock is acquired here and released at the end of this function.
-	// GenerateReview (LLM call) runs completely outside the lock.
+	// The review (LLM call) runs completely outside the lock.
 	mutex := j.getRepoMutex(event.RepoFullName)
 	mutex.Lock()
 
@@ -544,7 +441,7 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 }
 
 // processRepository fetches the PR diff and changed files from GitHub, validates them,
-// and runs the LLM-based review. The Qdrant index is NOT modified here.
+// and runs the agent-based review.
 func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]map[int]struct{}, error) {
 	// Fetch diff and changed files once — used for both validation and review generation
 	diff, err := env.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
@@ -738,7 +635,7 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 
 	// Validate based on event type
 	switch event.Type {
-	case core.FullReview, core.ReReview:
+	case core.FullReview:
 		if event.PRNumber <= 0 {
 			return fmt.Errorf("pull request number must be positive for review, got: %d", event.PRNumber)
 		}

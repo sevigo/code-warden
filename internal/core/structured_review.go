@@ -56,12 +56,3 @@ type StructuredReview struct {
 	// This is Go-computed metadata, not LLM output.
 	ImpactRadius int `json:"impact_radius,omitempty"`
 }
-
-// ReReviewResult represents the expected structured output from the LLM
-// when performing a follow-up review of changes since a previous review.
-type ReReviewResult struct {
-	// Verdict is the programmatic approval status: "APPROVE", "REQUEST_CHANGES", or "COMMENT".
-	Verdict string `json:"verdict"`
-	// Summary is a high-level overview of the re-review findings.
-	Summary string `json:"summary"`
-}

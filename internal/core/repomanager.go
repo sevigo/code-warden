@@ -4,8 +4,7 @@
 package core
 
 // UpdateResult contains the lists of files that have changed between two commits
-// during a repository sync operation. It is used to track what needs to be added,
-// updated, or removed from the vector store.
+// during a repository sync operation.
 type UpdateResult struct {
 	// FilesToAddOrUpdate contains the paths of files that are new or have been modified.
 	FilesToAddOrUpdate []string
@@ -17,7 +16,6 @@ type UpdateResult struct {
 	RepoFullName string
 
 	// HeadSHA is the PR's head SHA — used for logging and DB records only.
-	// It is never written to Qdrant; only DefaultBranchSHA is indexed.
 	HeadSHA string
 
 	// DefaultBranchSHA is the SHA of the default branch (main) that was synced.
@@ -25,7 +23,7 @@ type UpdateResult struct {
 	DefaultBranchSHA string
 
 	// DefaultBranchChanged is true when the default branch advanced since the
-	// last indexed SHA, meaning the Qdrant collection must be updated.
+	// last synced SHA.
 	DefaultBranchChanged bool
 
 	// IsInitialClone is true when this is the first sync of a repository.

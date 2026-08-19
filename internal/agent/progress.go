@@ -53,7 +53,7 @@ type progressTracker struct {
 	updateComment func(ctx context.Context, id int64, body string)
 
 	// lspMode is included in every status comment so the reader knows
-	// whether precise LSP diagnostics or RAG-only mode is active.
+	// the review/implementation mode in use (e.g. "agent-based").
 	lspMode string
 
 	mu              sync.Mutex
@@ -68,18 +68,18 @@ type progressTracker struct {
 }
 
 // newProgressTracker creates a tracker but does not start the background goroutine.
-// lspMode should be "precise (LSP)" or "degraded (RAG-only)".
+// mode is a short label describing the review/implementation mode (e.g. "agent-based").
 func newProgressTracker(
 	session *Session,
 	logW io.Writer,
-	lspMode string,
+	mode string,
 	createComment func(ctx context.Context, body string) int64,
 	updateComment func(ctx context.Context, id int64, body string),
 ) *progressTracker {
 	return &progressTracker{
 		session:       session,
 		logW:          logW,
-		lspMode:       lspMode,
+		lspMode:       mode,
 		createComment: createComment,
 		updateComment: updateComment,
 		phase:         "implementing",

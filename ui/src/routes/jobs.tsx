@@ -9,7 +9,6 @@ import {
   Activity,
   RotateCcw,
   GitPullRequest,
-  Layers,
   Zap,
   Filter,
   ChevronDown,
@@ -25,7 +24,7 @@ import { cn } from '@/lib/utils'
 const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.04 } } }
 const fadeUp = { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0, transition: { duration: 0.25 } } }
 
-type FilterType = 'all' | 'review' | 'scan' | 'implement' | 'rereview'
+type FilterType = 'all' | 'review' | 'implement' | 'rereview'
 type StatusFilter = 'all' | 'completed' | 'failed' | 'running' | 'queued'
 
 // ── Helper Functions ─────────────────────────────────────────────────────────
@@ -102,10 +101,6 @@ function JobTypeBadge({ type }: { type: JobRun['type'] }) {
     review: {
       icon: GitPullRequest,
       className: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
-    },
-    scan: {
-      icon: Layers,
-      className: 'text-violet-500 bg-violet-500/10 border-violet-500/20',
     },
     implement: {
       icon: Zap,
@@ -249,7 +244,6 @@ export default function JobsPage() {
   const FILTERS: { key: FilterType; label: string }[] = [
     { key: 'all', label: 'All Types' },
     { key: 'review', label: 'Review' },
-    { key: 'scan', label: 'Scan' },
     { key: 'implement', label: 'Implement' },
     { key: 'rereview', label: 'Re-review' },
   ]
@@ -377,7 +371,7 @@ export default function JobsPage() {
           </p>
           <p className="text-sm text-[#8c919b]">
             {jobs?.length === 0
-              ? 'Jobs will appear here when you trigger reviews or scans'
+              ? 'Jobs will appear here when you trigger reviews or implementations'
               : 'Try adjusting your filters'}
           </p>
         </Card>
