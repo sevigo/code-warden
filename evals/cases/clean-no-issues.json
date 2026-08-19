@@ -1,0 +1,8 @@
+{
+  "name": "clean-no-issues",
+  "suite": "clean",
+  "diff": "diff --git a/README.md b/README.md\nindex 0000000..1111111\n--- a/README.md\n+++ b/README.md\n@@ -0,0 +1,5 @@\n+# Project Title\n+\n+A simple Go project.\n+\n+See LICENSE for details.",
+  "expected_findings": [],
+  "expected_verdict": "APPROVE",
+  "max_false_positives": 0
+}

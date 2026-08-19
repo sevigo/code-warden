@@ -93,3 +93,13 @@ func sortedLines(lines map[int]struct{}) []int {
 func stripPrefix(p string) string {
 	return strings.TrimPrefix(p, "./")
 }
+
+// NewDiffFilterForTest builds a diff filter for use in tests/evals.
+func NewDiffFilterForTest(changedFiles []internalgithub.ChangedFile) *diffFilter {
+	return newDiffFilter(changedFiles)
+}
+
+// SnapForTest exposes Snap for tests/evals.
+func (f *diffFilter) SnapForTest(s core.Suggestion) *core.Suggestion {
+	return f.Snap(s)
+}
