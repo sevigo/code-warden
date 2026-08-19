@@ -35,8 +35,11 @@ type Options struct {
 	// runner default (8) is used.
 	MaxIterations int
 	// ContextWindow is the model's max context size in tokens. When zero,
-	// the runner default (32768) is used. Compaction triggers at 60%.
+	// the runner default (128000) is used. Compaction triggers at 60%.
 	ContextWindow int
+	// Config controls noise filtering. When nil, the runner uses
+	// DefaultConfig.
+	Config *agentreview.Config
 }
 
 // Run executes the agent-based review and returns the structured result.
@@ -55,7 +58,6 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts Opti
 		return nil, fmt.Errorf("load prompts: %w", err)
 	}
 
-	// Tools investigate the workspace root (or a temp clone for PR mode).
 	runner := agentreview.NewRunner(model, promptMgr, agent.ReadOnlyReviewTools, logger, nil)
 
 	params := agentreview.Params{
@@ -68,6 +70,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts Opti
 		Timeout:        opts.Timeout,
 		MaxIterations:  opts.MaxIterations,
 		ContextWindow:  opts.ContextWindow,
+		Config:         opts.Config,
 	}
 
 	return runner.Run(ctx, params)
