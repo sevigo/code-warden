@@ -338,7 +338,9 @@ func (t *findTool) Execute(ctx context.Context, args map[string]any) (any, error
 func newFindWalkFn(root, searchRoot, pattern string, limit int, matches *[]string, truncated *bool) fs.WalkDirFunc {
 	return func(absPath string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if d.IsDir() {
+			// WalkDir passes a nil DirEntry when it can't read a directory
+			// (e.g. permission denied). Skip it rather than dereferencing nil.
+			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
