@@ -52,25 +52,6 @@ ai:
   # Generator Model (The "Main Driver")
   generator_model: "kimi-k2.5:cloud"
 
-  # Consensus Models (The "Trio" - Kimi, DeepSeek, Gemini)
-  # Used for "Consensus Code Review"
-  comparison_models:
-    - "kimi-k2.5:cloud"
-    - "deepseek-v3.1:671b-cloud"
-    - "gemini-3-pro-preview:latest"
-
-  # Consensus Quorum (0.0 to 1.0)
-  # Percentage of models that must finish before synthesis begins.
-  # Set to 1.0 to wait for EVERY model (safest but slowest).
-  # Set to 0.66 to proceed when 2/3 of models finished (balanced).
-  consensus_quorum: 0.66
-
-  # Paths for Architectural Comparison
-  comparison_paths:
-    - "."
-    - "internal/core"
-    - "internal/llm"
-
   # Thinking/Reasoning Mode - for models that support it (DeepSeek-R1, Qwen 3, Kimi-K2.5, etc.)
   # Enables transparent decision-making in code reviews.
   enable_thinking: false

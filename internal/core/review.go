@@ -31,21 +31,3 @@ type Review struct {
 	// CreatedAt is the timestamp when the review was created.
 	CreatedAt time.Time `db:"created_at"`
 }
-
-// ReReviewData is a type-safe struct for rendering re-review prompts.
-// It contains all the context needed for the LLM to perform a follow-up
-// review of changes since a previous review was generated.
-type ReReviewData struct {
-	// Language is the programming language of the repository.
-	Language string
-	// OriginalReview is the content of the previous review being followed up on.
-	OriginalReview string
-	// NewDiff contains the code changes since the original review.
-	NewDiff string
-	// UserInstructions are optional custom guidance provided by the user.
-	UserInstructions string
-	// Context is the repository context retrieved from the vector store.
-	Context string
-	// Definitions contains resolved type definitions for the changed code.
-	Definitions string
-}

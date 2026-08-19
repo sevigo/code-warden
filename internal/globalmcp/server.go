@@ -93,8 +93,7 @@ func NewStandaloneServer(cfg *config.Config, logger *slog.Logger, registry *Work
 		cfg.Agent.DefaultWorkspace,
 		logger,
 		mcp.Config{
-			ComparisonModels: cfg.AI.ComparisonModels,
-			ReviewsDir:       cfg.AI.ReviewsDir,
+			ReviewsDir: cfg.AI.ReviewsDir,
 		},
 	)
 

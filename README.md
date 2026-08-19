@@ -48,17 +48,12 @@ make pull-models  # pull models to host Ollama (outside Docker)
 
 When someone comments `/review` on a PR:
 
-1. **Sync** — clone or update the repo, re-index changed files into Qdrant
-2. **Context retrieval** — five parallel stages:
-   - *Architectural* — directory-level summaries for touched paths
-   - *HyDE* — hypothetical document embeddings for semantic search
-   - *Impact* — callers and importers of changed symbols
-   - *Description* — code related to the PR title, body, and commits
-   - *Definitions* — exact type/function definitions for every symbol in the diff
-3. **Review** — context + diff + custom instructions go to the LLM (or multiple models in consensus mode)
+1. **Sync** — clone or update the repo to the PR's default branch
+2. **Investigate** — the agent clones the PR's checkout and runs grep + `read_file` to understand the diff in context
+3. **Review** — parallel agent passes (bug, security, performance, conventions) each review the diff with read-only tools, then merge + dedupe findings
 4. **Post** — severity-rated findings as inline GitHub comments
 
-`/rereview` runs a follow-up pass comparing the new diff against previous findings — what was fixed, what was missed, what's new.
+`/rereview` is an alias for `/review` — it always reviews the current diff fresh.
 
 `/implement` goes further: an agent reads the issue, explores the codebase via MCP tools, writes code, runs lint and tests, reviews its own work, and opens a PR.
 
@@ -67,27 +62,20 @@ When someone comments `/review` on a PR:
 ## Features
 
 **Reviews**
-- Context-aware — retrieves relevant code before the LLM sees the diff
-- Consensus mode — multiple models in parallel, synthesized into one review
-- Re-review — checks whether previous findings were addressed
+- Agent-based — investigates the diff with grep + read_file against an isolated checkout
+- Multi-angle — bug, security, performance, and conventions passes run in parallel on the same model
+- Diff-boundary enforced — findings outside the changed hunks are dropped
 - Structured output — severity badges (🔴 critical · 🟠 warning · 🟡 suggestion) with inline comments
-
-**Indexing**
-- Incremental — only re-indexes files that changed in the diff
-- Hybrid search — dense embeddings + code-aware sparse vectors
-- Code-aware chunking — preserves function boundaries, propagates file-level metadata
-- Multi-language AST — extracts definitions, imports, and structure
 
 **Agent (`/implement`)**
 - Reads a GitHub issue, plans, and implements changes in an isolated workspace
-- MCP tools: `search_code`, `get_symbol`, `get_arch_context`, `review_code`, `push_branch`
-- Self-review loop before committing
+- MCP tools: `run_command`, `push_branch`, `create_pull_request`
+- Agent-based review loop before committing
 - Only reviewed files are included in the PR
 
 **Infrastructure**
-- Self-hosted — Ollama (local) or cloud LLMs via proxy
+- Self-hosted — Ollama (local) or cloud LLMs (Gemini, any OpenAI-compatible endpoint)
 - PostgreSQL for job history and review storage
-- Qdrant for vector storage
 - Per-repository config via `.code-warden.yml`
 
 ---
@@ -128,16 +116,9 @@ github:
 
 ```yaml
 ai:
-  llm_provider: "ollama"           # "ollama" or "gemini"
+  llm_provider: "ollama"           # "ollama", "gemini", or "openai"
   ollama_host: "http://localhost:11434"
   generator_model: "kimi-k2.5:cloud"
-  embedder_model: "qwen3-embedding:0.6b"
-  comparison_models:               # Enable consensus review
-    - "kimi-k2.5:cloud"
-    - "deepseek-v3.1:671b-cloud"
-  enable_reranking: true
-  enable_hybrid_search: true
-  context_token_budget: 16000
 ```
 
 ### Per-repository (`.code-warden.yml`)
@@ -171,7 +152,7 @@ Full reference: [config.yaml.example](config.yaml.example)
 
 ## Built On
 
-Code-Warden is built on [GoFrame](https://github.com/sevigo/goframe), a Go RAG framework that provides LLM chains, Qdrant integration, code-aware text splitting, multi-language AST parsing, and hybrid sparse/dense search.
+Code-Warden is built on [GoFrame](https://github.com/sevigo/goframe), a Go framework that provides LLM providers, agent loops, and MCP tooling.
 
 ## License
 

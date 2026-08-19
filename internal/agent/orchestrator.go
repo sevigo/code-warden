@@ -56,7 +56,6 @@ type Config struct {
 	MaxConcurrentSessions int           `yaml:"max_concurrent_sessions"`
 	MCPAddr               string        `yaml:"mcp_addr"`
 	WorkingDir            string        `yaml:"working_dir"`
-	ComparisonModels      []string      `yaml:"comparison_models"`
 	ReviewsDir            string        `yaml:"reviews_dir"`
 	MCPTimeout            time.Duration `yaml:"mcp_timeout"`
 	InProcessOnly         bool          `yaml:"in_process_only"`
@@ -179,18 +178,12 @@ func NewOrchestrator(
 		projectRoot,
 		logger,
 		mcp.Config{
-			ComparisonModels: config.ComparisonModels,
-			ReviewsDir:       config.ReviewsDir,
-			AgentMode:        true,
+			ReviewsDir: config.ReviewsDir,
+			AgentMode:  true,
 		},
 	)
 
-	// Log configuration
-	if len(config.ComparisonModels) > 0 {
-		logger.Info("MCP server configured for consensus review", "models", config.ComparisonModels)
-	} else {
-		logger.Info("MCP server configured for single-model review (faster for agent iterations)")
-	}
+	logger.Info("MCP server configured for agent review")
 
 	absRoot, err := filepath.Abs(projectRoot)
 	if err != nil {

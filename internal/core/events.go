@@ -16,8 +16,6 @@ type ReviewType int
 const (
 	// FullReview indicates a complete code review should be performed.
 	FullReview ReviewType = iota
-	// ReReview indicates a follow-up review of changes since a previous review.
-	ReReview
 	// ImplementIssue indicates an autonomous agent should implement the issue.
 	ImplementIssue
 )
@@ -38,11 +36,11 @@ type GitHubEvent struct {
 	PRBody   string // The body/description of the pull request
 	HeadSHA  string // The HEAD commit SHA of the PR
 
-	// Type specifies whether this is a FullReview or a ReReview request.
+	// Type specifies whether this is a review or implement request.
 	Type ReviewType
 
 	// UserInstructions captures optional text provided with the command
-	// (e.g., "/rereview check security"). This allows users to provide
+	// (e.g., "/review check security"). This allows users to provide
 	// custom guidance to the code review process.
 	UserInstructions string
 
@@ -72,7 +70,7 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	commentBody := strings.TrimSpace(strings.ToLower(event.GetComment().GetBody()))
-	reviewType, instructions, err := parseReviewCommand(commentBody)
+	instructions, err := parseReviewCommand(commentBody)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +94,7 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	return &GitHubEvent{
-		Type:             reviewType,
+		Type:             FullReview,
 		RepoOwner:        repo.GetOwner().GetLogin(),
 		RepoName:         repo.GetName(),
 		RepoFullName:     repo.GetFullName(),
@@ -128,29 +126,32 @@ func sanitizeInstructions(instructions string) string {
 	}, instructions)
 }
 
-// parseReviewCommand parses the comment body to determine the review type
-// and any user-provided instructions.
+// parseReviewCommand parses the comment body and returns any user-provided
+// instructions.
 //
-// Returns the ReviewType, instructions string, and an error if the command
-// is not recognized.
-func parseReviewCommand(commentBody string) (ReviewType, string, error) {
-	if commentBody == "/review" {
-		return FullReview, "", nil
+// Both "/review" and "/rereview" map to a full review: since the RAG re-review
+// pipeline was removed, a re-review is identical to a fresh review of the
+// current diff. The command is kept as an alias for backward compatibility.
+//
+// Returns the instructions string, and an error if the command is not recognized.
+func parseReviewCommand(commentBody string) (string, error) {
+	if commentBody == "/review" || commentBody == reReviewCmd {
+		return "", nil
 	}
 
-	if !strings.HasPrefix(commentBody, reReviewCmd) {
-		return 0, "", fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
+	// Accept "/rereview <instructions>" (with a space).
+	if strings.HasPrefix(commentBody, reReviewCmd+" ") {
+		args := strings.TrimPrefix(commentBody, reReviewCmd)
+		return sanitizeInstructions(strings.TrimSpace(args)), nil
 	}
 
-	// Ensure it's "/rereview" exactly or "/rereview " (with space)
-	if commentBody != reReviewCmd && !strings.HasPrefix(commentBody, reReviewCmd+" ") {
-		return 0, "", fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
+	// Accept "/review <instructions>" (with a space).
+	if strings.HasPrefix(commentBody, "/review ") {
+		args := strings.TrimPrefix(commentBody, "/review")
+		return sanitizeInstructions(strings.TrimSpace(args)), nil
 	}
 
-	args := strings.TrimPrefix(commentBody, reReviewCmd)
-	instructions := strings.TrimSpace(args)
-
-	return ReReview, sanitizeInstructions(instructions), nil
+	return "", fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
 }
 
 // ImplementEventFromIssueComment transforms a GitHub IssueCommentEvent on an issue

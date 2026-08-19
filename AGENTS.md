@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Code-Warden has a single Go entry point under `cmd/`: `server`. Application code lives in `internal/`: `rag/` handles retrieval and indexing, `agent/` runs implementation workflows, `github/` integrates with GitHub, `mcp/` exposes tools, and `storage/` and `db/migrations/` manage persistence. Generated mocks belong in `mocks/`. The React/TypeScript dashboard is in `ui/src/`; documentation and helper scripts live in `docs/` and `scripts/`.
+Code-Warden has a single Go entry point under `cmd/`: `server`. Application code lives in `internal/`: `agent/` runs implementation and review workflows (including `agent/review/` for the multi-angle agent-based review), `github/` integrates with GitHub, `mcp/` exposes tools, and `storage/` and `db/migrations/` manage persistence. Generated mocks belong in `mocks/`. The React/TypeScript dashboard is in `ui/src/`; documentation and helper scripts live in `docs/` and `scripts/`.
 
 ## Build, Test, and Development Commands
 
@@ -19,7 +19,7 @@ Format Go files with `goimports` (or `gofmt`); use tabs as emitted by these tool
 
 ## Testing Guidelines
 
-Place Go tests beside implementations as `*_test.go`, with functions named `TestXxx`; prefer table-driven cases for varied inputs. Tests use Go's `testing` package plus `testify/assert` and `testify/require`. Run targeted tests with `go test -v ./internal/rag/...`, then run `make test` and `make lint`. CI records coverage but sets no numeric threshold; new behavior and fixes should include focused tests.
+Place Go tests beside implementations as `*_test.go`, with functions named `TestXxx`; prefer table-driven cases for varied inputs. Tests use Go's `testing` package plus `testify/assert` and `testify/require`. Run targeted tests with `go test -v ./internal/agent/review/...`, then run `make test` and `make lint`. CI records coverage but sets no numeric threshold; new behavior and fixes should include focused tests.
 
 ## Commit & Pull Request Guidelines
 
