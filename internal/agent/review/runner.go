@@ -64,6 +64,10 @@ type Params struct {
 	// input tokens reach 60% of this value, preserving headroom for the
 	// model's response. Override with --context-window for unusual models.
 	ContextWindow int
+	// Config controls noise filtering: minimum severity, ignored paths,
+	// category toggles, and file limits. When nil, DefaultConfig is used.
+	// Pass an empty Config{} to disable all filtering.
+	Config *Config
 }
 
 // Result is the outcome of a review run.
@@ -90,8 +94,8 @@ func NewRunner(model llms.Model, promptMgr *llmpkg.PromptManager, tools ToolBuil
 	}
 }
 
-// Run clones the repo, dispatches the angle passes in parallel (quorum 0.75,
-// per-angle timeout 5m), merges + dedups findings, and returns a structured review.
+// Run clones the repo, dispatches the angle passes in parallel (quorum 0.5,
+// per-angle timeout 3m), merges + dedups findings, and returns a structured review.
 func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 	if params.Diff == "" {
 		return &Result{Review: &core.StructuredReview{
@@ -100,33 +104,82 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 		}, Raw: "No code changes."}, nil
 	}
 
-	// 1. Determine the workspace to investigate: use the provided local checkout
-	// if given, otherwise clone the repo to an isolated workspace.
-	var workspace string
-	var cleanup func()
-	if params.WorkspaceDir != "" {
-		workspace = params.WorkspaceDir
-	} else {
-		cloner := gitutil.NewCloner(r.logger)
-		var err error
-		workspace, cleanup, err = cloner.Clone(ctx, params.RepoURL)
-		if err != nil {
-			return nil, fmt.Errorf("agent review: clone failed: %w", err)
-		}
+	// Resolve review config — nil means defaults, empty struct means no filtering.
+	rc := params.Config
+	if rc == nil {
+		defaults := DefaultConfig()
+		rc = &defaults
+	}
+
+	// Filter changed files and check skip conditions before spending tokens.
+	filteredFiles, filteredDiff := r.prepareFiles(params, rc)
+	if filteredDiff == "" {
+		return &Result{Review: &core.StructuredReview{
+			Summary:     "Review skipped: all changed files match ignore patterns",
+			Suggestions: []core.Suggestion{},
+		}, Raw: "all files ignored"}, nil
+	}
+
+	// Clone or use the provided workspace.
+	workspace, cleanup, err := r.prepareWorkspace(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if cleanup != nil {
 		defer cleanup()
 	}
 
-	// Build the shared task context once (diff + changed files + changed-line map).
-	fileLines := internalgithub.BuildValidLineMap(params.ChangedFiles)
+	return r.dispatch(ctx, params, rc, filteredFiles, filteredDiff, workspace)
+}
+
+// prepareFiles filters changed files by ignore patterns and checks skip
+// conditions. Returns the filtered files and the filtered diff. When the
+// review should be skipped, filteredDiff is empty.
+func (r *Runner) prepareFiles(params Params, rc *Config) ([]internalgithub.ChangedFile, string) {
+	filteredFiles, ignoredCount := rc.FilterChangedFiles(params.ChangedFiles)
+	if ignoredCount > 0 {
+		r.logger.Info("agent review: ignored files",
+			"ignored", ignoredCount,
+			"remaining", len(filteredFiles),
+		)
+	}
+	if skip, _ := rc.ShouldSkipReview(params.ChangedFiles); skip {
+		return nil, ""
+	}
+	var filteredDiff string
+	if ignoredCount > 0 {
+		filteredDiff = rebuildDiff(params.ChangedFiles, filteredFiles)
+	} else {
+		filteredDiff = params.Diff
+	}
+	return filteredFiles, filteredDiff
+}
+
+// prepareWorkspace resolves the workspace to investigate: use the provided
+// local checkout if given, otherwise clone the repo to an isolated workspace.
+func (r *Runner) prepareWorkspace(ctx context.Context, params Params) (string, func(), error) {
+	if params.WorkspaceDir != "" {
+		return params.WorkspaceDir, nil, nil
+	}
+	cloner := gitutil.NewCloner(r.logger)
+	workspace, cleanup, err := cloner.Clone(ctx, params.RepoURL)
+	if err != nil {
+		return "", nil, fmt.Errorf("agent review: clone failed: %w", err)
+	}
+	return workspace, cleanup, nil
+}
+
+// dispatch builds the task context, filters angles, and runs the map-reduce chain.
+func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filteredFiles []internalgithub.ChangedFile, filteredDiff, workspace string) (*Result, error) {
+	fileLines := internalgithub.BuildValidLineMap(filteredFiles)
 	changedLinesSummary := buildChangedLinesSummary(fileLines)
 	filenameIndex := buildFilenameIndex(fileLines)
-	taskCtx := r.buildTaskContext(params, changedLinesSummary)
-	diffFilter := newDiffFilter(params.ChangedFiles)
+	taskCtx := r.buildTaskContext(params, filteredDiff, changedLinesSummary, filteredFiles)
+	diffFilter := newDiffFilter(filteredFiles)
 
-	// Scope angles to those relevant for the changed files. This avoids
-	// spending tokens on angles with no applicable findings (e.g. security
-	// angle on a doc-only PR).
-	scopedAngles := scopeAngles(r.angles, params.ChangedFiles)
+	// Filter angles: category toggles + file-relevance scoping.
+	categorizedAngles := rc.FilterAngles(r.angles)
+	scopedAngles := scopeAngles(categorizedAngles, filteredFiles)
 	if len(scopedAngles) < len(r.angles) {
 		r.logger.Info("agent review: scoped angles",
 			"total", len(r.angles),
@@ -149,19 +202,19 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 
 	chain := chains.NewMapReduceChain(
 		func(ctx context.Context, angle Angle) ([]core.Suggestion, error) {
-			return r.runAngle(ctx, angle, workspace, taskCtx, params.Diff, changedLinesSummary, filenameIndex, maxIter, contextWindow)
+			return r.runAngle(ctx, angle, workspace, taskCtx, filteredDiff, changedLinesSummary, filenameIndex, maxIter, contextWindow)
 		},
 		func(_ context.Context, results [][]core.Suggestion) (*core.StructuredReview, error) {
 			r.logger.Info("agent review: reduce phase",
 				"angles_dispatched", len(scopedAngles),
 				"angles_collected", len(results),
 			)
-			// Flatten, dedup, and snap/filter to the diff hunks.
 			var suggestions []core.Suggestion
 			for _, group := range results {
 				suggestions = append(suggestions, group...)
 			}
 			suggestions = dedupAndFilter(suggestions, diffFilter, r.logger)
+			suggestions = rc.FilterBySeverity(suggestions)
 			return r.buildReview(suggestions), nil
 		},
 		chains.WithMaxConcurrency[Angle, []core.Suggestion, *core.StructuredReview](len(scopedAngles)),
@@ -255,12 +308,12 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx, 
 // buildTaskContext renders the diff, changed-file list, changed-line numbers,
 // and commit messages for the agent task. The changed-lines section gives the
 // agent the exact valid <line> values up front so it doesn't guess from @@ headers.
-func (r *Runner) buildTaskContext(params Params, changedLinesSummary string) string {
+func (r *Runner) buildTaskContext(params Params, diff, changedLinesSummary string, changedFiles []internalgithub.ChangedFile) string {
 	var b strings.Builder
 	b.WriteString("Repository: ")
 	b.WriteString(params.RepoFullName)
 	b.WriteString("\n\nChanged files:\n")
-	for _, cf := range params.ChangedFiles {
+	for _, cf := range changedFiles {
 		b.WriteString("- " + cf.Filename + "\n")
 	}
 	if changedLinesSummary != "" {
@@ -275,8 +328,26 @@ func (r *Runner) buildTaskContext(params Params, changedLinesSummary string) str
 		}
 	}
 	b.WriteString("\n--- DIFF ---\n")
-	b.WriteString(params.Diff)
+	b.WriteString(diff)
 	b.WriteString("\n\nTip: Call get_diff to re-fetch this diff and the changed-line list at any time.")
+	return b.String()
+}
+
+// rebuildDiff reconstructs a unified diff containing only the files that
+// passed the ignore filter. Each changed file's patch is concatenated with
+// the standard diff --git header.
+func rebuildDiff(allFiles, keptFiles []internalgithub.ChangedFile) string {
+	keptSet := make(map[string]bool, len(keptFiles))
+	for _, f := range keptFiles {
+		keptSet[f.Filename] = true
+	}
+	var b strings.Builder
+	for _, f := range allFiles {
+		if !keptSet[f.Filename] {
+			continue
+		}
+		b.WriteString(f.Patch)
+	}
 	return b.String()
 }
 
