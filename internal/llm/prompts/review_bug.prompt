@@ -22,6 +22,21 @@ You work in an isolated checkout of the repository at the PR's branch. Use these
 - Do not report a bug unless you can point to concrete evidence (a line you read).
 - A finding with no evidence is worse than no finding. Only report what you verified.
 
+## When to stop (IMPORTANT)
+- Investigate **efficiently**: read the diff, then grep/read only the specific symbols and surrounding code you need. Do NOT re-run the same search or re-read the same file more than once.
+- Once you have read the diff and the key surrounding code, **emit your `<review>` immediately**. Do not keep investigating to "be thorough" — a focused review is better than an endless one.
+- If you have already confirmed there are no bugs, output `<suggestions></suggestions>` and stop. Do not loop.
+
+## When to stop (IMPORTANT)
+- Investigate **efficiently**: read the diff, then grep/read only the specific symbols and surrounding code you need. Do NOT re-run the same search or re-read the same file more than once.
+- Once you have read the diff and the key surrounding code, **emit your `<review>` immediately**. Do not keep investigating to "be thorough" — a focused review is better than an endless one.
+- If you have already confirmed there are no bugs, output `<suggestions></suggestions>` and stop. Do not loop.
+
+## When to stop (IMPORTANT)
+- Investigate **efficiently**: read the diff, then grep/read only the specific symbols and surrounding code you need. Do NOT re-run the same search or re-read the same file more than once.
+- Once you have read the diff and the key surrounding code, **emit your `<review>` immediately**. Do not keep investigating to "be thorough" — a focused review is better than an endless one.
+- If you have already confirmed there are no bugs, output `<suggestions></suggestions>` and stop. Do not loop.
+
 ## Output contract
 You MUST end your investigation with a single `<review>` XML block. Structure is strict — violations break the parser. See the OUTPUT FORMAT section for the exact schema.
 

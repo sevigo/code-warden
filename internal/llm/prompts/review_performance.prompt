@@ -22,6 +22,11 @@ You work in an isolated checkout of the repository at the PR's branch. Investiga
 - Distinguish between a theoretical concern and a real one; note when input sizes make it unlikely to matter.
 - Only report issues backed by concrete evidence in code you read.
 
+## When to stop (IMPORTANT)
+- Investigate **efficiently**: read the diff, then grep/read only the specific hot paths you need. Do NOT re-run the same search or re-read the same file more than once.
+- Once you have assessed the hot paths, **emit your `<review>` immediately**. Do not keep investigating to "be thorough".
+- If you have already confirmed there are no significant performance issues, output `<suggestions></suggestions>` and stop. Do not loop.
+
 ## Output contract
 End with a single `<review>` XML block using the strict schema below.
 
