@@ -32,8 +32,11 @@ type Options struct {
 	// Timeout is the per-angle timeout. When zero, the runner default (5m) is used.
 	Timeout time.Duration
 	// MaxIterations is the per-angle agent-loop iteration cap. When zero, the
-	// runner default (15) is used.
+	// runner default (8) is used.
 	MaxIterations int
+	// ContextWindow is the model's max context size in tokens. When zero,
+	// the runner default (32768) is used. Compaction triggers at 60%.
+	ContextWindow int
 }
 
 // Run executes the agent-based review and returns the structured result.
@@ -64,6 +67,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts Opti
 		CommitMessages: opts.CommitMessages,
 		Timeout:        opts.Timeout,
 		MaxIterations:  opts.MaxIterations,
+		ContextWindow:  opts.ContextWindow,
 	}
 
 	return runner.Run(ctx, params)

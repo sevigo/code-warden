@@ -51,13 +51,19 @@ type Params struct {
 	// CommitMessages are the commit messages for the PR/branch being reviewed.
 	// They give the agent context on the intent of the changes.
 	CommitMessages []string
-	// Timeout is the per-angle timeout. When zero, defaults to 5 minutes.
-	// Local CPU models (e.g. ornith on Ollama) may need longer.
+	// Timeout is the per-angle timeout. When zero, defaults to 3 minutes.
+	// Local CPU models (e.g. gemma on Ollama) may need longer.
 	Timeout time.Duration
 	// MaxIterations is the per-angle agent-loop iteration cap. When zero,
-	// defaults to 15. A review angle needs to read the diff, grep for symbols,
-	// read surrounding code, then emit a <review> — 10 is often too tight.
+	// defaults to 8. A review angle needs to read the diff, grep for symbols,
+	// read surrounding code, then emit a <review>.
 	MaxIterations int
+	// ContextWindow is the model's maximum context size in tokens. When zero,
+	// defaults to 128000 (modern models: Claude 200K, GPT-4o 128K, Gemini 1M+,
+	// local models like gemma3/llama3 128K). The compaction hook triggers when
+	// input tokens reach 60% of this value, preserving headroom for the
+	// model's response. Override with --context-window for unusual models.
+	ContextWindow int
 }
 
 // Result is the outcome of a review run.
@@ -136,10 +142,14 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 	if maxIter <= 0 {
 		maxIter = 8
 	}
+	contextWindow := params.ContextWindow
+	if contextWindow <= 0 {
+		contextWindow = 128000
+	}
 
 	chain := chains.NewMapReduceChain(
 		func(ctx context.Context, angle Angle) ([]core.Suggestion, error) {
-			return r.runAngle(ctx, angle, workspace, taskCtx, params.Diff, changedLinesSummary, filenameIndex, maxIter)
+			return r.runAngle(ctx, angle, workspace, taskCtx, params.Diff, changedLinesSummary, filenameIndex, maxIter, contextWindow)
 		},
 		func(_ context.Context, results [][]core.Suggestion) (*core.StructuredReview, error) {
 			r.logger.Info("agent review: reduce phase",
@@ -175,7 +185,7 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 }
 
 // runAngle runs a single agent pass for one angle and returns its findings.
-func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx, diff, changedLines, filenameIndex string, maxIter int) ([]core.Suggestion, error) {
+func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx, diff, changedLines, filenameIndex string, maxIter, contextWindow int) ([]core.Suggestion, error) {
 	r.logger.Info("agent review: starting angle", "angle", angle.Name, "workspace", workspace)
 
 	systemPrompt, err := r.promptMgr.Raw(angle.PromptKey)
@@ -205,7 +215,7 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx, 
 		goframeagent.WithLoopSystemPrompt(systemPrompt),
 		goframeagent.WithLoopMaxIterations(maxIter),
 		goframeagent.WithLoopObserver(newReviewObserver(r.logger, angle.Name)),
-		goframeagent.WithLoopCompactionHook(r.compactionHook(angle.Name)),
+		goframeagent.WithLoopCompactionHook(r.compactionHook(angle.Name, contextWindow)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("agent review angle %s: new loop: %w", angle.Name, err)
@@ -222,11 +232,15 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx, 
 		return nil, fmt.Errorf("agent review angle %s: loop failed: %w", angle.Name, err)
 	}
 	if err != nil {
-		// The agent hit its iteration cap but may still have produced a valid
-		// <review> response. Log and continue parsing rather than failing the
-		// whole review.
 		r.logger.Warn("agent review: angle hit iteration cap, parsing partial response",
 			"angle", angle.Name, "error", err)
+	}
+
+	if result != nil && result.Response != "" {
+		r.logger.Info("agent review: angle raw response",
+			"angle", angle.Name,
+			"response", result.Response,
+		)
 	}
 
 	parser := NewStructuredReviewParser(r.logger)
@@ -272,15 +286,19 @@ func (r *Runner) buildTaskContext(params Params, changedLinesSummary string) str
 // inserts a short reminder so the agent knows history was summarized. This
 // prevents the unbounded context growth that otherwise leads to 1M+ token
 // reviews where the model spends its budget re-reading its own history.
-func (r *Runner) compactionHook(angle string) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
-	const compactAtTokens = 60_000
+func (r *Runner) compactionHook(angle string, contextWindow int) func(ctx context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
+	// Compact at 60% of the context window to leave headroom for the model's
+	// response and system prompt.
+	compactAtTokens := int(float64(contextWindow) * 0.6)
 	return func(_ context.Context, msgs []schema.MessageContent, tokens goframeagent.TokenUsage) []schema.MessageContent {
-		if tokens.Input < compactAtTokens {
+		if int(tokens.Input) < compactAtTokens {
 			return nil
 		}
 		r.logger.Info("agent review: compacting context",
 			"angle", angle,
-			"tokens_in", tokens.Input,
+			"tokens_in", int(tokens.Input),
+			"context_window", contextWindow,
+			"threshold", compactAtTokens,
 			"messages_before", len(msgs),
 		)
 		compacted := make([]schema.MessageContent, 0, 6)
@@ -351,12 +369,47 @@ func (r *Runner) buildReview(suggestions []core.Suggestion) *core.StructuredRevi
 		}
 	}
 
-	summary := fmt.Sprintf("Agent review completed with %d finding(s) across %d angle(s).",
-		len(suggestions), len(r.angles))
+	summary := buildSummary(suggestions, len(r.angles))
 
 	return &core.StructuredReview{
 		Summary:     summary,
 		Verdict:     verdict,
 		Suggestions: suggestions,
 	}
+}
+
+// buildSummary renders a concise summary of the findings.
+func buildSummary(suggestions []core.Suggestion, angleCount int) string {
+	if len(suggestions) == 0 {
+		return fmt.Sprintf("No issues found across %d review angle(s).", angleCount)
+	}
+	// Count by severity.
+	var crit, high, med, low int
+	for _, s := range suggestions {
+		switch strings.ToLower(s.Severity) {
+		case "critical":
+			crit++
+		case "high":
+			high++
+		case "medium":
+			med++
+		case "low":
+			low++
+		}
+	}
+	var parts []string
+	if crit > 0 {
+		parts = append(parts, fmt.Sprintf("%d critical", crit))
+	}
+	if high > 0 {
+		parts = append(parts, fmt.Sprintf("%d high", high))
+	}
+	if med > 0 {
+		parts = append(parts, fmt.Sprintf("%d medium", med))
+	}
+	if low > 0 {
+		parts = append(parts, fmt.Sprintf("%d low", low))
+	}
+	return fmt.Sprintf("%d finding(s): %s — across %d angle(s).",
+		len(suggestions), strings.Join(parts, ", "), angleCount)
 }

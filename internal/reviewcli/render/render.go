@@ -31,11 +31,14 @@ func Render(w io.Writer, review *core.StructuredReview, opts Options) {
 	if verdict == "" {
 		verdict = "N/A"
 	}
-	badge := renderVerdict(verdict)
-	fmt.Fprintln(w, badge)
+	fmt.Fprintln(w, renderVerdict(verdict))
+
+	// Confidence + summary on the same line if both present
+	if review.Confidence > 0 {
+		fmt.Fprintln(w, Dim(fmt.Sprintf("  confidence: %d%%", review.Confidence)))
+	}
 	fmt.Fprintln(w)
 
-	// Summary
 	if review.Summary != "" {
 		fmt.Fprintln(w, Wrap(review.Summary, width))
 		fmt.Fprintln(w)
@@ -119,7 +122,7 @@ func severityStyle(sev string) func(string) string {
 	}
 }
 
-// renderFinding writes a single finding as a bordered block.
+// renderFinding writes a single finding as a structured block.
 func renderFinding(w io.Writer, f core.Suggestion, width int) {
 	sev := strings.ToUpper(f.Severity)
 	if sev == "" {
@@ -132,56 +135,162 @@ func renderFinding(w io.Writer, f core.Suggestion, width int) {
 	if f.LineNumber > 0 {
 		loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
 	}
-	header := fmt.Sprintf("▸ %s %s", style("["+sev+"]"), Bold(Cyan(loc)))
-	fmt.Fprintln(w, header)
+	fmt.Fprintf(w, "%s %s\n", style("["+sev+"]"), Bold(Cyan(loc)))
 
-	// Category tag, if present
-	if f.Category != "" {
-		fmt.Fprintln(w, "  "+Dim(f.Category))
+	// Category + source on a dim line
+	meta := f.Category
+	if f.Source != "" {
+		if meta != "" {
+			meta += " · "
+		}
+		meta += f.Source
+	}
+	if meta != "" {
+		fmt.Fprintln(w, Dim("  "+meta))
 	}
 
-	// Comment
+	// Comment — parse structured sections (Observation, Rationale, Fix)
+	// and render each with a label prefix. Code fences get indented.
 	if f.Comment != "" {
-		comment := f.Comment
-		// Highlight bold markers as a lightweight formatting pass.
-		comment = formatComment(comment)
-		fmt.Fprintln(w, Wrap("  "+comment, width-2))
+		fmt.Fprintln(w)
+		renderComment(w, f.Comment, width)
 	}
 
 	// Code suggestion block
 	if f.CodeSuggestion != "" {
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "  "+GreenBold("Suggestion:"))
+		fmt.Fprintln(w, "  "+GreenBold("Suggested fix:"))
 		for _, line := range strings.Split(f.CodeSuggestion, "\n") {
 			fmt.Fprintln(w, "    "+Green(line))
 		}
 	}
 }
 
-// formatComment performs a light pass to render markdown bold markers as ANSI
-// bold and collapse common prefix labels.
-func formatComment(s string) string {
-	// Replace **bold** segments with ANSI bold (only when colors enabled).
-	if Enabled {
-		var b strings.Builder
-		rest := s
-		for {
-			open := strings.Index(rest, "**")
-			if open < 0 {
-				b.WriteString(rest)
-				break
-			}
-			end := strings.Index(rest[open+2:], "**")
-			if end < 0 {
-				b.WriteString(rest)
-				break
-			}
-			end += open + 2
-			b.WriteString(rest[:open])
-			b.WriteString(Bold(rest[open+2 : end]))
-			rest = rest[end+2:]
-		}
-		return b.String()
+// renderComment parses the comment for structured sections (**Observation:**,
+// **Rationale:**, **Fix:**) and code fences, rendering each with visual
+// separation. Falls back to plain wrapping when no structure is found.
+func renderComment(w io.Writer, comment string, width int) {
+	sections := parseCommentSections(comment)
+	if len(sections) == 0 {
+		// No structured sections — render as plain text.
+		fmt.Fprintln(w, Wrap(indent(comment, "  "), width-2))
+		return
 	}
-	return s
+	for _, s := range sections {
+		switch s.kind {
+		case sectionText:
+			fmt.Fprintln(w, Wrap(indent(s.text, "  "), width-2))
+		case sectionLabel:
+			label := Bold(s.label)
+			body := strings.TrimSpace(s.text)
+			if body == "" {
+				fmt.Fprintf(w, "  %s\n", label)
+			} else {
+				fmt.Fprintln(w, Wrap("  "+label+" "+body, width-2))
+			}
+		case sectionCode:
+			fmt.Fprintln(w, "  "+Dim("```"))
+			for _, line := range strings.Split(s.text, "\n") {
+				fmt.Fprintln(w, "  "+line)
+			}
+			fmt.Fprintln(w, "  "+Dim("```"))
+		}
+	}
+}
+
+type commentSection struct {
+	kind  int // sectionText, sectionLabel, or sectionCode
+	label string
+	text  string
+}
+
+const (
+	sectionText  = 0
+	sectionLabel = 1
+	sectionCode  = 2
+)
+
+// parseCommentSections splits a comment into typed sections: labeled blocks
+// (**Observation:**, **Rationale:**, **Fix:**), code fences (```), and plain text.
+// Each label starts a new section when encountered at the start of a line.
+func parseCommentSections(comment string) []commentSection {
+	var sections []commentSection
+	lines := strings.Split(comment, "\n")
+
+	inCode := false
+	var codeLines []string
+	var textLines []string
+
+	flushText := func() {
+		if len(textLines) == 0 {
+			return
+		}
+		text := strings.TrimSpace(strings.Join(textLines, "\n"))
+		textLines = textLines[:0]
+
+		// Check if this text block starts with a label like **Observation:**
+		label, rest := extractLabel(text)
+		if label != "" {
+			sections = append(sections, commentSection{kind: sectionLabel, label: label, text: rest})
+		} else {
+			sections = append(sections, commentSection{kind: sectionText, text: text})
+		}
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if inCode {
+				sections = append(sections, commentSection{kind: sectionCode, text: strings.Join(codeLines, "\n")})
+				codeLines = codeLines[:0]
+				inCode = false
+			} else {
+				flushText()
+				inCode = true
+			}
+			continue
+		}
+		if inCode {
+			codeLines = append(codeLines, line)
+			continue
+		}
+		// If this line starts a new label, flush pending text first.
+		if strings.HasPrefix(trimmed, "**") && len(textLines) > 0 {
+			flushText()
+		}
+		textLines = append(textLines, line)
+	}
+	flushText()
+	if inCode && len(codeLines) > 0 {
+		sections = append(sections, commentSection{kind: sectionCode, text: strings.Join(codeLines, "\n")})
+	}
+	return sections
+}
+
+// extractLabel checks if text starts with a **Label:** prefix and returns the
+// label and the remaining text.
+func extractLabel(text string) (label, rest string) {
+	if !strings.HasPrefix(text, "**") {
+		return "", text
+	}
+	end := strings.Index(text[2:], "**")
+	if end < 0 {
+		return "", text
+	}
+	label = text[2 : 2+end]
+	rest = strings.TrimSpace(text[2+end+2:])
+	// Label must end with ":" to be treated as a section label
+	if !strings.HasSuffix(label, ":") {
+		return "", text
+	}
+	label = strings.TrimSuffix(label, ":")
+	return label, rest
+}
+
+// indent prefixes each line of s with prefix.
+func indent(s, prefix string) string {
+	if s == "" {
+		return s
+	}
+	return prefix + strings.ReplaceAll(s, "\n", "\n"+prefix)
 }
