@@ -476,10 +476,11 @@ func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent,
 
 	runner := agentreview.NewRunner(j.llm, j.promptMgr, agent.ReadOnlyReviewTools, j.logger, nil)
 	result, err := runner.Run(ctx, agentreview.Params{
-		Diff:         diff,
-		ChangedFiles: changedFiles,
-		RepoURL:      repoURL,
-		RepoFullName: event.RepoFullName,
+		Diff:           diff,
+		ChangedFiles:   changedFiles,
+		RepoURL:        repoURL,
+		RepoFullName:   event.RepoFullName,
+		CommitMessages: event.CommitMessages,
 	})
 	if err != nil {
 		return nil, "", err

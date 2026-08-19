@@ -5,13 +5,29 @@
 
 A self-hosted GitHub App that reviews pull requests with full codebase context — not just the diff.
 
-Why does that matter? Most AI review tools only see what changed. They don't know that `UserService` already exists in another package, that your team avoids a certain pattern, or that this change breaks three callers downstream. Code-Warden retrieves architectural context, resolves definitions, traces downstream impact, and includes commit history before the LLM ever sees the diff.
+Why does that matter? Most AI review tools only see what changed. Code-Warden runs the review through an agent that investigates the actual repository — using grep and reading files to understand the code surrounding the diff — so it can catch issues the diff alone hides. It runs four parallel review angles (bug, security, performance, conventions) on the same model.
 
 Everything runs on your infrastructure. Your code never leaves.
 
 ---
 
 ## Quick Start
+
+### Standalone review (fastest, no GitHub setup)
+
+```sh
+go run ./cmd/review --local .           # review uncommitted changes in a local repo
+go run ./cmd/review --local . --base main   # review a branch vs main
+go run ./cmd/review --pr owner/repo --number 123   # review a public PR
+```
+
+The review model defaults to Ollama (e.g. `ornith:9b`). Point it at any model:
+
+```sh
+AI_GENERATOR_MODEL=ornith:9b go run ./cmd/review --local .
+```
+
+Add `--json` for machine-readable output or `--no-color` for plain text.
 
 ### Full server (15 minutes, includes web UI)
 
@@ -21,7 +37,7 @@ cd code-warden
 make quickstart             # guided interactive setup
 ```
 
-Starts everything in Docker with a web dashboard at `localhost:8080`. The wizard checks prerequisites, configures `.env`, detects your GPU, and pulls two local models (~1.6 GB). The review model (`kimi-k2.5`) runs as an Ollama cloud model — no GPU needed for that.
+Starts everything in Docker with a web dashboard at `localhost:8080`. The wizard checks prerequisites, configures `.env`, detects your GPU, and pulls a local model. The review model (`kimi-k2.5`) runs as an Ollama cloud model — no GPU needed for that.
 
 **GPU support** (optional — CPU works fine for demos):
 ```sh

@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -46,6 +47,16 @@ type Params struct {
 	WorkspaceDir string
 	// RepoFullName is "owner/name" used for logging.
 	RepoFullName string
+	// CommitMessages are the commit messages for the PR/branch being reviewed.
+	// They give the agent context on the intent of the changes.
+	CommitMessages []string
+	// Timeout is the per-angle timeout. When zero, defaults to 5 minutes.
+	// Local CPU models (e.g. ornith on Ollama) may need longer.
+	Timeout time.Duration
+	// MaxIterations is the per-angle agent-loop iteration cap. When zero,
+	// defaults to 15. A review angle needs to read the diff, grep for symbols,
+	// read surrounding code, then emit a <review> — 10 is often too tight.
+	MaxIterations int
 }
 
 // Result is the outcome of a review run.
@@ -102,9 +113,18 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 	taskCtx := r.buildTaskContext(params)
 	diffFilter := newDiffFilter(params.ChangedFiles)
 
+	timeout := params.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	maxIter := params.MaxIterations
+	if maxIter <= 0 {
+		maxIter = 15
+	}
+
 	chain := chains.NewMapReduceChain(
 		func(ctx context.Context, angle Angle) ([]core.Suggestion, error) {
-			return r.runAngle(ctx, angle, workspace, taskCtx)
+			return r.runAngle(ctx, angle, workspace, taskCtx, maxIter)
 		},
 		func(_ context.Context, results [][]core.Suggestion) (*core.StructuredReview, error) {
 			// Flatten, dedup, and filter to the diff hunks.
@@ -116,8 +136,8 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 			return r.buildReview(suggestions), nil
 		},
 		chains.WithMaxConcurrency[Angle, []core.Suggestion, *core.StructuredReview](len(r.angles)),
-		chains.WithMapTimeout[Angle, []core.Suggestion, *core.StructuredReview](5*time.Minute),
-		chains.WithQuorum[Angle, []core.Suggestion, *core.StructuredReview](0.75),
+		chains.WithMapTimeout[Angle, []core.Suggestion, *core.StructuredReview](timeout),
+		chains.WithQuorum[Angle, []core.Suggestion, *core.StructuredReview](0.5),
 	)
 
 	review, err := chain.Call(ctx, r.angles)
@@ -125,11 +145,18 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 		return nil, fmt.Errorf("agent review: failed: %w", err)
 	}
 
+	r.logger.Info("agent review: complete",
+		"repo", params.RepoFullName,
+		"angles", len(r.angles),
+		"findings", len(review.Suggestions),
+		"verdict", review.Verdict,
+	)
+
 	return &Result{Review: review}, nil
 }
 
 // runAngle runs a single agent pass for one angle and returns its findings.
-func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx string) ([]core.Suggestion, error) {
+func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx string, maxIter int) ([]core.Suggestion, error) {
 	r.logger.Info("agent review: starting angle", "angle", angle.Name, "workspace", workspace)
 
 	systemPrompt, err := r.promptMgr.Raw(angle.PromptKey)
@@ -149,7 +176,8 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 
 	loop, err := goframeagent.NewAgentLoop(r.llm, registry,
 		goframeagent.WithLoopSystemPrompt(systemPrompt),
-		goframeagent.WithLoopMaxIterations(10),
+		goframeagent.WithLoopMaxIterations(maxIter),
+		goframeagent.WithLoopObserver(newReviewObserver(r.logger, angle.Name)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("agent review angle %s: new loop: %w", angle.Name, err)
@@ -162,8 +190,15 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 	}
 
 	result, err := loop.Run(ctx, task, nil)
-	if err != nil {
+	if err != nil && !errors.Is(err, goframeagent.ErrMaxIterations) {
 		return nil, fmt.Errorf("agent review angle %s: loop failed: %w", angle.Name, err)
+	}
+	if err != nil {
+		// The agent hit its iteration cap but may still have produced a valid
+		// <review> response. Log and continue parsing rather than failing the
+		// whole review.
+		r.logger.Warn("agent review: angle hit iteration cap, parsing partial response",
+			"angle", angle.Name, "error", err)
 	}
 
 	parser := NewStructuredReviewParser(r.logger)
@@ -175,7 +210,8 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx s
 	return review.Suggestions, nil
 }
 
-// buildTaskContext renders the diff and changed-file list for the agent task.
+// buildTaskContext renders the diff, changed-file list, and commit messages for
+// the agent task.
 func (r *Runner) buildTaskContext(params Params) string {
 	var b strings.Builder
 	b.WriteString("Repository: ")
@@ -183,6 +219,12 @@ func (r *Runner) buildTaskContext(params Params) string {
 	b.WriteString("\n\nChanged files:\n")
 	for _, cf := range params.ChangedFiles {
 		b.WriteString("- " + cf.Filename + "\n")
+	}
+	if len(params.CommitMessages) > 0 {
+		b.WriteString("\nCommit messages:\n")
+		for _, m := range params.CommitMessages {
+			b.WriteString("- " + m + "\n")
+		}
 	}
 	b.WriteString("\n--- DIFF ---\n")
 	b.WriteString(params.Diff)

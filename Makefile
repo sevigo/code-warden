@@ -2,6 +2,9 @@
 SERVER_BINARY_NAME=code-warden
 SERVER_CMD_PATH=./cmd/server
 
+REVIEW_BINARY_NAME=code-warden-review
+REVIEW_CMD_PATH=./cmd/review
+
 # Output directory for all binaries and tools
 BIN_DIR=$(CURDIR)/bin
 
@@ -10,12 +13,12 @@ GOLINT_CMD=$(GOLINT_BIN_DIR)/golangci-lint
 GOLINT_VERSION=v2.11.3
 
 .DEFAULT_GOAL := all
-.PHONY: all build run clean test lint dev ui-deps build-ui dev-ui run/server run/ui \
+.PHONY: all build build/server build/review run run/review clean test lint dev ui-deps build-ui dev-ui run/server run/ui \
 	quickstart pull-models demo-up demo-down demo-logs
 
 all: build
 
-build: build/server
+build: build/server build/review
 	@echo "All binaries built successfully in $(BIN_DIR)/"
 
 build/server:
@@ -23,9 +26,18 @@ build/server:
 	@mkdir -p $(BIN_DIR)
 	@go build -v -o $(BIN_DIR)/$(SERVER_BINARY_NAME) $(SERVER_CMD_PATH)
 
+build/review:
+	@echo "Building review CLI ($(REVIEW_BINARY_NAME))..."
+	@mkdir -p $(BIN_DIR)
+	@go build -v -o $(BIN_DIR)/$(REVIEW_BINARY_NAME) $(REVIEW_CMD_PATH)
+
 run: build/server
 	@echo "Starting server ($(SERVER_BINARY_NAME))..."
 	@$(BIN_DIR)/$(SERVER_BINARY_NAME)
+
+# Run the standalone review CLI against a local checkout (no GitHub needed).
+run/review: build/review
+	@$(BIN_DIR)/$(REVIEW_BINARY_NAME) --local .
 
 # Convenience aliases
 run/server: run
