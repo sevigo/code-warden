@@ -59,8 +59,12 @@ func ParseDiff(diff string) []internalgithub.ChangedFile {
 				}
 			}
 		case strings.HasPrefix(line, "@@"):
-			// Hunk header — skip, not part of the patch body
-			continue
+			// Hunk header — include it in the patch body so downstream
+			// parsers (BuildValidLineMap / ParseValidLinesFromPatch) can
+			// determine the new-side starting line number.
+			if currentFile != nil {
+				currentFile.Patch += line + "\n"
+			}
 		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
 			// Diff file headers — skip, not part of the patch body
 			continue

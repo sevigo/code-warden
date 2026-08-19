@@ -38,24 +38,16 @@ func (o *reviewObserver) OnThinkComplete(_ context.Context, response string, too
 		"angle", o.angle,
 		"tool_calls", len(toolCalls),
 		"error", err,
+		"response", response,
 	)
-	// Log the first 200 chars of the response at debug level so the
-	// investigation path is traceable when debugging wandering agents.
-	if response != "" {
-		o.logger.Debug("review: angle thought",
-			"angle", o.angle,
-			"response", truncate(response, 200),
-		)
-	}
 }
 
 // OnToolCall logs an investigation step (e.g. grep/read_file) the agent performs.
 func (o *reviewObserver) OnToolCall(_ context.Context, toolName string, params map[string]any) {
-	arg := summarizeParams(params)
 	o.logger.Info("review: angle tool call",
 		"angle", o.angle,
 		"tool", toolName,
-		"arg", arg,
+		"params", params,
 	)
 }
 
@@ -94,17 +86,6 @@ func (o *reviewObserver) OnLoopComplete(_ context.Context, result *goframeagent.
 		"tokens_out", result.Tokens.Output,
 		"error", err,
 	)
-}
-
-// summarizeParams extracts a short, human-readable argument from tool params.
-func summarizeParams(params map[string]any) string {
-	// Tools like grep/read_file/find/list_dir accept a path or pattern.
-	for _, key := range []string{"pattern", "path", "query"} {
-		if v, ok := params[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // summarizeResult produces a compact description of a tool result.

@@ -42,8 +42,10 @@ func main() {
 		asJSON  = fs.Bool("json", false, "print raw structured review as JSON")
 		noColor = fs.Bool("no-color", false, "disable colorized output")
 		cfgPath = fs.String("config", "", "path to a config file (default: ./config.yaml, $HOME/.code-warden)")
-		timeout = fs.Duration("timeout", 0, "per-angle timeout (default: 5m; raise for slow local models)")
-		maxIter = fs.Int("max-iterations", 0, "per-angle agent-loop iteration cap (default: 15)")
+		timeout = fs.Duration("timeout", 0, "per-angle timeout (default: 3m; raise for slow local models)")
+		maxIter = fs.Int("max-iterations", 0, "per-angle agent-loop iteration cap (default: 8)")
+		logLvl  = fs.String("log-level", "info", "log level: debug, info, warn, error")
+		ctxWin  = fs.Int("context-window", 0, "model context window in tokens (default: 128000; compaction triggers at 60%)")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "review — run the agent-based code review standalone")
@@ -72,7 +74,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	logger := logger.NewLogger(logger.Config{Level: "info", Output: "stderr"}, os.Stderr)
+	logger := logger.NewLogger(logger.Config{Level: *logLvl, Output: "stderr"}, os.Stderr)
 
 	cfg, err := loadConfig(*cfgPath)
 	if err != nil {
@@ -84,7 +86,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts, err := buildOptions(ctx, *local, *pr, *prNum, *token, *base, *timeout, *maxIter)
+	opts, err := buildOptions(ctx, *local, *pr, *prNum, *token, *base, *timeout, *maxIter, *ctxWin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -108,7 +110,7 @@ func main() {
 }
 
 // buildOptions resolves the review inputs (local diff or public PR).
-func buildOptions(ctx context.Context, local, pr string, prNum int, token, base string, timeout time.Duration, maxIter int) (reviewcli.Options, error) {
+func buildOptions(ctx context.Context, local, pr string, prNum int, token, base string, timeout time.Duration, maxIter, ctxWin int) (reviewcli.Options, error) {
 	if local != "" {
 		abs, err := filepath.Abs(local)
 		if err != nil {
@@ -130,6 +132,7 @@ func buildOptions(ctx context.Context, local, pr string, prNum int, token, base 
 			CommitMessages: commits,
 			Timeout:        timeout,
 			MaxIterations:  maxIter,
+			ContextWindow:  ctxWin,
 		}, nil
 	}
 
@@ -149,6 +152,7 @@ func buildOptions(ctx context.Context, local, pr string, prNum int, token, base 
 		CommitMessages: data.CommitMessages,
 		Timeout:        timeout,
 		MaxIterations:  maxIter,
+		ContextWindow:  ctxWin,
 	}, nil
 }
 
