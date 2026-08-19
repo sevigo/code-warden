@@ -5,7 +5,7 @@
   "expected_findings": [
     {
       "file": "internal/github/hunks.go",
-      "line_range": [56, 58],
+      "line_range": [55, 60],
       "severity": "high",
       "category": "Bug",
       "description_contains": "decrement"

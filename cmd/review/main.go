@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,7 @@ func main() {
 
 	ctx := context.Background()
 	logger := logger.NewLogger(logger.Config{Level: *logLvl, Output: "stderr"}, os.Stderr)
+	slog.SetDefault(logger)
 
 	cfg, err := loadConfig(*cfgPath)
 	if err != nil {

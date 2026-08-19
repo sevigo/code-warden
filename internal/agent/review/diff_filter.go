@@ -94,12 +94,15 @@ func stripPrefix(p string) string {
 	return strings.TrimPrefix(p, "./")
 }
 
+// DiffFilter is the exported wrapper for diffFilter, used by the eval harness.
+type DiffFilter = diffFilter
+
 // NewDiffFilterForTest builds a diff filter for use in tests/evals.
-func NewDiffFilterForTest(changedFiles []internalgithub.ChangedFile) *diffFilter {
+func NewDiffFilterForTest(changedFiles []internalgithub.ChangedFile) *DiffFilter {
 	return newDiffFilter(changedFiles)
 }
 
 // SnapForTest exposes Snap for tests/evals.
-func (f *diffFilter) SnapForTest(s core.Suggestion) *core.Suggestion {
+func (f *DiffFilter) SnapForTest(s core.Suggestion) *core.Suggestion {
 	return f.Snap(s)
 }

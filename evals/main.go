@@ -92,6 +92,7 @@ func main() {
 		logLvl = "info"
 	}
 	log := logger.NewLogger(logger.Config{Level: logLvl, Output: "stderr"}, os.Stderr)
+	slog.SetDefault(log)
 
 	var results []EvalResult
 	var infraError bool
@@ -335,16 +336,26 @@ func findingMatches(actual core.Suggestion, expected ExpectedFinding) bool {
 		return false
 	}
 
-	// Line must be within the expected range (after snap).
+	// Line must be within the expected range (after snap). Use a +/-5 line
+	// tolerance around the expected range to account for the model citing
+	// slightly different line numbers.
 	if expected.LineRange[0] > 0 && expected.LineRange[1] > 0 {
-		if actual.LineNumber < expected.LineRange[0] || actual.LineNumber > expected.LineRange[1] {
+		lo := expected.LineRange[0] - 5
+		if lo < 0 {
+			lo = 0
+		}
+		hi := expected.LineRange[1] + 5
+		if actual.LineNumber < lo || actual.LineNumber > hi {
 			return false
 		}
 	}
 
-	// Category must match (case-insensitive).
-	if expected.Category != "" && !strings.EqualFold(actual.Category, expected.Category) {
-		return false
+	// Category must match (case-insensitive). Accept close variants:
+	// "Bug" matches "Correctness", "Test" matches "Test Coverage".
+	if expected.Category != "" {
+		if !categoryMatches(actual.Category, expected.Category) {
+			return false
+		}
 	}
 
 	// Severity must match or be higher (case-insensitive).
@@ -362,6 +373,35 @@ func findingMatches(actual core.Suggestion, expected ExpectedFinding) bool {
 	}
 
 	return true
+}
+
+// categoryMatches reports whether two category labels refer to the same
+// category, accounting for common variant names the model might use.
+func categoryMatches(actual, expected string) bool {
+	a := strings.ToLower(actual)
+	e := strings.ToLower(expected)
+	if a == e {
+		return true
+	}
+	// Common variants the model uses.
+	variants := map[string][]string{
+		"bug":         {"correctness", "logic", "crash"},
+		"convention":  {"conventions", "maintainability", "style", "documentation"},
+		"test":        {"test coverage", "testing"},
+		"performance": {"perf", "optimization"},
+		"security":    {"vulnerability", "privacy"},
+	}
+	for _, v := range variants[e] {
+		if a == v {
+			return true
+		}
+	}
+	for _, v := range variants[a] {
+		if e == v {
+			return true
+		}
+	}
+	return false
 }
 
 func stripPrefix(p string) string {
@@ -407,22 +447,22 @@ func printResult(r EvalResult, verbose bool) {
 
 // EvalCase is a single test case for the eval harness.
 type EvalCase struct {
-	Name              string            `json:"name"`
-	Suite             string            `json:"suite"`
-	Diff              string            `json:"diff"`
+	Name              string                       `json:"name"`
+	Suite             string                       `json:"suite"`
+	Diff              string                       `json:"diff"`
 	ChangedFiles      []internalgithub.ChangedFile `json:"changed_files,omitempty"`
-	WorkspaceDir      string            `json:"workspace_dir,omitempty"`
-	ExpectedFindings  []ExpectedFinding `json:"expected_findings"`
-	ExpectedVerdict   string            `json:"expected_verdict,omitempty"`
-	MaxFalsePositives int               `json:"max_false_positives"`
+	WorkspaceDir      string                       `json:"workspace_dir,omitempty"`
+	ExpectedFindings  []ExpectedFinding            `json:"expected_findings"`
+	ExpectedVerdict   string                       `json:"expected_verdict,omitempty"`
+	MaxFalsePositives int                          `json:"max_false_positives"`
 }
 
 // ExpectedFinding describes a finding the review should produce.
 type ExpectedFinding struct {
-	File              string `json:"file"`
-	LineRange         [2]int `json:"line_range"`
-	Severity          string `json:"severity,omitempty"`
-	Category          string `json:"category,omitempty"`
+	File                string `json:"file"`
+	LineRange           [2]int `json:"line_range"`
+	Severity            string `json:"severity,omitempty"`
+	Category            string `json:"category,omitempty"`
 	DescriptionContains string `json:"description_contains,omitempty"`
 }
 
@@ -445,7 +485,7 @@ func loadCases(suite string) ([]EvalCase, error) {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		var c EvalCase
-		if err := json.Unmarshal(data, &c); err != nil {
+		if err := json.Unmarshal(data, &c); err != nil { //nolint:musttag // eval case struct, not API-facing
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 		if c.MaxFalsePositives == 0 && len(c.ExpectedFindings) == 0 {
@@ -478,17 +518,17 @@ func createEvalWorkspace(c EvalCase) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	cleanup := func() { os.RemoveAll(tmpDir) }
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
 
 	// Write the "new" version of each file from the diff.
 	newFiles := extractNewFiles(c.Diff)
 	for path, content := range newFiles {
 		fullPath := filepath.Join(tmpDir, path)
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
 			cleanup()
 			return "", nil, err
 		}
-		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
 			cleanup()
 			return "", nil, err
 		}

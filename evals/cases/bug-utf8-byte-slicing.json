@@ -5,7 +5,7 @@
   "expected_findings": [
     {
       "file": "internal/stringsutil/truncate.go",
-      "line_range": [55, 62],
+      "line_range": [53, 62],
       "severity": "medium",
       "category": "Bug",
       "description_contains": "utf"

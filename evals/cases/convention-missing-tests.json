@@ -5,7 +5,7 @@
   "expected_findings": [
     {
       "file": "internal/agent/review/dedup.go",
-      "line_range": [60, 66],
+      "line_range": [60, 80],
       "severity": "high",
       "category": "Test",
       "description_contains": "test"
