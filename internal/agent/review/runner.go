@@ -69,9 +69,10 @@ type Params struct {
 
 // Result is the outcome of a review run.
 type Result struct {
-	Review *core.StructuredReview
-	Raw    string
-	Angles []AngleResult
+	Review   *core.StructuredReview
+	Raw      string
+	Angles   []AngleResult
+	Coverage *CoverageReceipt
 }
 
 // NewRunner creates a Runner using executor for individual agent passes.
@@ -100,7 +101,9 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 		return &Result{Review: &core.StructuredReview{
 			Summary:     "This pull request contains no code changes. Looks good to me!",
 			Suggestions: []core.Suggestion{},
-		}, Raw: "No code changes."}, nil
+		}, Raw: "No code changes.", Coverage: buildCoverageReceipt(
+			params.ChangedFiles, nil, r.angles, nil, nil, nil, "no code changes",
+		)}, nil
 	}
 
 	// Resolve review config — nil means defaults, empty struct means no filtering.
@@ -111,12 +114,14 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 	}
 
 	// Filter changed files and check skip conditions before spending tokens.
-	filteredFiles, filteredDiff := r.prepareFiles(params, rc)
-	if filteredDiff == "" {
+	filteredFiles, filteredDiff, skipReason := r.prepareFiles(params, rc)
+	if skipReason != "" {
 		return &Result{Review: &core.StructuredReview{
-			Summary:     "Review skipped: all changed files match ignore patterns",
+			Summary:     "Review skipped: " + skipReason,
 			Suggestions: []core.Suggestion{},
-		}, Raw: "all files ignored"}, nil
+		}, Raw: skipReason, Coverage: buildCoverageReceipt(
+			params.ChangedFiles, filteredFiles, r.angles, rc.FilterAngles(r.angles), nil, nil, skipReason,
+		)}, nil
 	}
 
 	// Clone or use the provided workspace.
@@ -132,9 +137,9 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 }
 
 // prepareFiles filters changed files by ignore patterns and checks skip
-// conditions. Returns the filtered files and the filtered diff. When the
-// review should be skipped, filteredDiff is empty.
-func (r *Runner) prepareFiles(params Params, rc *Config) ([]core.ChangedFile, string) {
+// conditions. Returns the filtered files, filtered diff, and skip reason.
+// When the review should be skipped, filteredDiff is empty.
+func (r *Runner) prepareFiles(params Params, rc *Config) ([]core.ChangedFile, string, string) {
 	filteredFiles, ignoredCount := rc.FilterChangedFiles(params.ChangedFiles)
 	if ignoredCount > 0 {
 		r.logger.Info("agent review: ignored files",
@@ -142,8 +147,8 @@ func (r *Runner) prepareFiles(params Params, rc *Config) ([]core.ChangedFile, st
 			"remaining", len(filteredFiles),
 		)
 	}
-	if skip, _ := rc.ShouldSkipReview(params.ChangedFiles); skip {
-		return nil, ""
+	if skip, reason := rc.ShouldSkipReview(params.ChangedFiles); skip {
+		return filteredFiles, "", reason
 	}
 	var filteredDiff string
 	if ignoredCount > 0 {
@@ -151,7 +156,7 @@ func (r *Runner) prepareFiles(params Params, rc *Config) ([]core.ChangedFile, st
 	} else {
 		filteredDiff = params.Diff
 	}
-	return filteredFiles, filteredDiff
+	return filteredFiles, filteredDiff, ""
 }
 
 // prepareWorkspace resolves the workspace to investigate: use the provided
@@ -184,6 +189,21 @@ func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filter
 			"total", len(r.angles),
 			"scoped", len(scopedAngles),
 		)
+	}
+	if len(scopedAngles) == 0 {
+		const reason = "no review angles enabled"
+		review := &core.StructuredReview{Summary: "Review skipped: " + reason, Suggestions: []core.Suggestion{}}
+		raw, err := MarshalStructuredReview(review)
+		if err != nil {
+			return nil, err
+		}
+		return &Result{
+			Review: review,
+			Raw:    raw,
+			Coverage: buildCoverageReceipt(
+				params.ChangedFiles, filteredFiles, r.angles, categorizedAngles, nil, nil, reason,
+			),
+		}, nil
 	}
 
 	timeout := params.Timeout
@@ -223,7 +243,13 @@ func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filter
 			}
 			suggestions = dedupAndFilter(suggestions, diffFilter, r.logger)
 			suggestions = rc.FilterBySeverity(suggestions)
-			return &Result{Review: r.buildReview(suggestions), Angles: results}, nil
+			return &Result{
+				Review: r.buildReview(suggestions, len(scopedAngles)),
+				Angles: results,
+				Coverage: buildCoverageReceipt(
+					params.ChangedFiles, filteredFiles, r.angles, categorizedAngles, scopedAngles, results, "",
+				),
+			}, nil
 		},
 		chains.WithMaxConcurrency[Angle, AngleResult, *Result](len(scopedAngles)),
 		chains.WithMapTimeout[Angle, AngleResult, *Result](timeout),
@@ -322,7 +348,7 @@ func dedupAndFilter(suggestions []core.Suggestion, filter *diffFilter, logger *s
 }
 
 // buildReview assembles a StructuredReview from the filtered suggestions.
-func (r *Runner) buildReview(suggestions []core.Suggestion) *core.StructuredReview {
+func (r *Runner) buildReview(suggestions []core.Suggestion, angleCount int) *core.StructuredReview {
 	verdict := core.VerdictApprove
 	for _, s := range suggestions {
 		if rank(s.Severity) >= severityRank["high"] {
@@ -331,7 +357,7 @@ func (r *Runner) buildReview(suggestions []core.Suggestion) *core.StructuredRevi
 		}
 	}
 
-	summary := buildSummary(suggestions, len(r.angles))
+	summary := buildSummary(suggestions, angleCount)
 
 	return &core.StructuredReview{
 		Summary:     summary,

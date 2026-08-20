@@ -120,7 +120,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	exitCode, err := presentReview(os.Stdout, result.Review, *asJSON, *prompt)
+	exitCode, err := presentReview(os.Stdout, result, *asJSON, *prompt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: encode review: %v\n", err)
 		os.Exit(1)
@@ -286,7 +286,8 @@ func executeReview(ctx context.Context, cfg *config.Config, logger *slog.Logger,
 	return service.Review(ctx, input, opts)
 }
 
-func presentReview(w io.Writer, review *core.StructuredReview, asJSON, promptOnly bool) (int, error) {
+func presentReview(w io.Writer, result *reviewapp.ReviewResult, asJSON, promptOnly bool) (int, error) {
+	review := result.Review
 	if asJSON {
 		if err := json.NewEncoder(w).Encode(review); err != nil {
 			return 1, err
@@ -295,9 +296,11 @@ func presentReview(w io.Writer, review *core.StructuredReview, asJSON, promptOnl
 	}
 	if promptOnly {
 		renderPromptOnly(w, review)
+		render.Coverage(w, result.Coverage)
 		return exitCodeForReview(review), nil
 	}
 	render.Render(w, review, render.Options{})
+	render.Coverage(w, result.Coverage)
 	return exitCodeForReview(review), nil
 }
 

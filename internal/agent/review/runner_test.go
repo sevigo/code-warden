@@ -65,6 +65,13 @@ func TestRunnerDelegatesAnglesAndCollectsExecutionResults(t *testing.T) {
 	assert.Len(t, result.Review.Suggestions, 2)
 	assert.Len(t, result.Angles, 2)
 	assert.NotEmpty(t, result.Raw)
+	require.NotNil(t, result.Coverage)
+	assert.Equal(t, CoverageStatusPartial, result.Coverage.Status)
+	require.Len(t, result.Coverage.Files, 1)
+	assert.Equal(t, CoverageItemReviewed, result.Coverage.Files[0].Status)
+	require.Len(t, result.Coverage.Angles, 2)
+	assert.Equal(t, CoverageItemCompleted, result.Coverage.Angles[0].Status)
+	assert.Equal(t, CoverageItemPartial, result.Coverage.Angles[1].Status)
 
 	requests := executor.Requests()
 	require.Len(t, requests, 2)
@@ -111,6 +118,34 @@ func TestRunnerRejectsMissingAngleExecutor(t *testing.T) {
 
 	require.ErrorContains(t, err, "angle executor is required")
 	assert.Nil(t, result)
+}
+
+func TestRunnerReportsSkippedCoverageForDisabledAngles(t *testing.T) {
+	t.Parallel()
+
+	executor := &recordingAngleExecutor{execute: func(AngleRequest) (AngleResult, error) {
+		return AngleResult{}, errors.New("executor must not run")
+	}}
+	runner := NewRunner(executor, nil, []Angle{{Name: "bug"}, {Name: "security"}})
+	diff, changedFiles := runnerTestDiff()
+
+	result, err := runner.Run(context.Background(), Params{
+		Diff:         diff,
+		ChangedFiles: changedFiles,
+		WorkspaceDir: t.TempDir(),
+		Config: &Config{
+			MinSeverity:       "low",
+			EnabledCategories: map[string]bool{"unknown": true},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Coverage)
+	assert.Equal(t, CoverageStatusSkipped, result.Coverage.Status)
+	assert.Len(t, executor.Requests(), 0)
+	assert.Equal(t, CoverageItemNotReviewed, result.Coverage.Files[0].Status)
+	assert.Equal(t, CoverageItemSkipped, result.Coverage.Angles[0].Status)
+	assert.Equal(t, "no review angles enabled", result.Coverage.Notes[0])
 }
 
 type recordingAngleExecutor struct {

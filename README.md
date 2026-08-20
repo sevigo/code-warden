@@ -29,6 +29,8 @@ AI_GENERATOR_MODEL=ornith:9b go run ./cmd/review --local .
 
 Add `--json` for machine-readable output or `--no-color` for plain text.
 
+Human-readable and `--prompt-only` reviews end with a coverage receipt showing which changed files were reviewed, which were ignored, and whether each configured review angle completed, returned a partial response, or was skipped. A `PARTIAL` receipt means a zero-finding result must not be treated as a fully clean review.
+
 To inspect and compare agent-loop behavior, save a private trace for each run:
 
 ```sh

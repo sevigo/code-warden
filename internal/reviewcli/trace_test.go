@@ -62,6 +62,13 @@ func TestWriteTracePersistsSafeReviewArtifacts(t *testing.T) {
 				Raw:         "raw model response",
 				Suggestions: []core.Suggestion{{FilePath: "main.go", LineNumber: 2}},
 			}},
+			Coverage: &agentreview.CoverageReceipt{
+				Status: agentreview.CoverageStatusPartial,
+				Files:  []agentreview.FileCoverage{{Path: "main.go", Status: agentreview.CoverageItemReviewed}},
+				Angles: []agentreview.AngleCoverage{{
+					Angle: "Bug / Correctness", Status: agentreview.CoverageItemPartial, CandidateFindings: 1,
+				}},
+			},
 		},
 	}
 
@@ -83,6 +90,9 @@ func TestWriteTracePersistsSafeReviewArtifacts(t *testing.T) {
 	require.Len(t, manifest.Angles, 1)
 	assert.Equal(t, "angle-01-bug-correctness.raw.txt", manifest.Angles[0].RawFile)
 	assert.Equal(t, agentreview.AngleStatusPartial, manifest.Angles[0].Status)
+	require.NotNil(t, manifest.Coverage)
+	assert.Equal(t, agentreview.CoverageStatusPartial, manifest.Coverage.Status)
+	assert.Equal(t, 1, manifest.Coverage.Angles[0].CandidateFindings)
 
 	assertFileContent(t, runDir, "input.diff", request.Input.Diff)
 	assertFileContent(t, runDir, manifest.Angles[0].RawFile, "raw model response")

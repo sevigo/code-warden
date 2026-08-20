@@ -11,6 +11,7 @@ import (
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/reviewapp"
 	"github.com/sevigo/code-warden/internal/reviewcli"
 )
 
@@ -78,17 +79,26 @@ func TestPresentReviewPreservesJSONAndPromptModes(t *testing.T) {
 			Comment:    "unsafe behavior",
 		}},
 	}
+	result := &reviewapp.ReviewResult{
+		Review: review,
+		Coverage: &agentreview.CoverageReceipt{
+			Status: agentreview.CoverageStatusComplete,
+			Files:  []agentreview.FileCoverage{{Path: "main.go", Status: agentreview.CoverageItemReviewed}},
+			Angles: []agentreview.AngleCoverage{{Angle: "bug", Status: agentreview.CoverageItemCompleted}},
+		},
+	}
 
 	var jsonOutput bytes.Buffer
-	exitCode, err := presentReview(&jsonOutput, review, true, false)
+	exitCode, err := presentReview(&jsonOutput, result, true, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, exitCode)
 	assert.Contains(t, jsonOutput.String(), `"verdict":"REQUEST_CHANGES"`)
 
 	var promptOutput bytes.Buffer
-	exitCode, err = presentReview(&promptOutput, review, false, true)
+	exitCode, err = presentReview(&promptOutput, result, false, true)
 	require.NoError(t, err)
 	assert.Equal(t, 1, exitCode)
 	assert.Contains(t, promptOutput.String(), "VERDICT: REQUEST_CHANGES")
 	assert.Contains(t, promptOutput.String(), "File: main.go:7")
+	assert.Contains(t, promptOutput.String(), "COVERAGE: COMPLETE")
 }
