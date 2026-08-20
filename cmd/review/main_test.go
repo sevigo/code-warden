@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
+	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/reviewcli"
 )
@@ -25,6 +26,24 @@ func TestBuildReviewRequestSelectsLocalSource(t *testing.T) {
 	assert.Equal(t, 4, opts.MaxIterations)
 	assert.Equal(t, 32000, opts.ContextWindow)
 	assert.Same(t, &reviewConfig, opts.Config)
+}
+
+func TestBuildTraceModelUsesEffectiveOpenAIModel(t *testing.T) {
+	t.Parallel()
+
+	model := buildTraceModel(config.AIConfig{
+		LLMProvider:    "openai",
+		GeneratorModel: "fallback-model",
+		OpenAIModel:    "review-model",
+		OpenAIAPIKey:   "must-not-be-exposed",
+		EnableThinking: true,
+		ThinkingEffort: "high",
+	})
+
+	assert.Equal(t, "openai", model.Provider)
+	assert.Equal(t, "review-model", model.Model)
+	assert.True(t, model.ThinkingEnabled)
+	assert.Equal(t, "high", model.ThinkingEffort)
 }
 
 func TestBuildReviewRequestSelectsPRSource(t *testing.T) {

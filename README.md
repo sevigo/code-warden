@@ -29,6 +29,21 @@ AI_GENERATOR_MODEL=ornith:9b go run ./cmd/review --local .
 
 Add `--json` for machine-readable output or `--no-color` for plain text.
 
+To inspect and compare agent-loop behavior, save a private trace for each run:
+
+```sh
+go run ./cmd/review --local . --trace-dir ./review-traces
+```
+
+Each invocation creates a timestamped directory containing:
+
+- `manifest.json` — safe model identity, review options, timing, changed files, and per-angle token/iteration metrics
+- `input.diff` — the exact diff supplied to the reviewer
+- `review.json` and `review.xml` — the merged structured review
+- `angle-*.raw.txt` — the raw final response from each review angle
+
+Trace directories and files are created with private permissions. Configured API keys, GitHub tokens, clone URLs, workspace paths, and provider endpoints are not written, but traces do contain source code and model output; do not commit or share them without reviewing their contents.
+
 ### Full server (15 minutes, includes web UI)
 
 ```sh

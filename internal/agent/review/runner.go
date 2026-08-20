@@ -14,6 +14,15 @@ import (
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 )
 
+const (
+	// DefaultAngleTimeout is the maximum duration of one review angle.
+	DefaultAngleTimeout = 3 * time.Minute
+	// DefaultMaxIterations is the agent-loop iteration budget for one angle.
+	DefaultMaxIterations = 8
+	// DefaultContextWindow is the assumed model context capacity in tokens.
+	DefaultContextWindow = 128000
+)
+
 // Runner executes the multi-angle agent-based code review.
 type Runner struct {
 	executor AngleExecutor
@@ -179,15 +188,15 @@ func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filter
 
 	timeout := params.Timeout
 	if timeout <= 0 {
-		timeout = 3 * time.Minute
+		timeout = DefaultAngleTimeout
 	}
 	maxIter := params.MaxIterations
 	if maxIter <= 0 {
-		maxIter = 8
+		maxIter = DefaultMaxIterations
 	}
 	contextWindow := params.ContextWindow
 	if contextWindow <= 0 {
-		contextWindow = 128000
+		contextWindow = DefaultContextWindow
 	}
 
 	chain := chains.NewMapReduceChain(
