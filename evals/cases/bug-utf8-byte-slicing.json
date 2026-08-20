@@ -1,0 +1,15 @@
+{
+  "name": "bug-utf8-byte-slicing",
+  "suite": "bug",
+  "diff": "diff --git a/internal/stringsutil/truncate.go b/internal/stringsutil/truncate.go\nindex 52e54dd..aaa0000 100644\n--- a/internal/stringsutil/truncate.go\n+++ b/internal/stringsutil/truncate.go\n@@ -49,3 +49,17 @@ func Indent(s, indent string) string {\n \t}\n \treturn indent + strings.ReplaceAll(s, \"\\n\", \"\\n\"+indent)\n }\n+\n+func TruncateBytes(s string, maxBytes int, suffix string) string {\n+\tif len(s) <= maxBytes {\n+\t\treturn s\n+\t}\n+\tif maxBytes <= len(suffix) {\n+\t\treturn s[:maxBytes]\n+\t}\n+\treturn s[:maxBytes-len(suffix)] + suffix\n+}",
+  "expected_findings": [
+    {
+      "file": "internal/stringsutil/truncate.go",
+      "line_range": [53, 62],
+      "severity": "medium",
+      "category": "Bug",
+      "description_contains": "utf"
+    }
+  ],
+  "max_false_positives": 3
+}

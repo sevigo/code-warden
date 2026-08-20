@@ -32,6 +32,13 @@ func parseDurationOpt(s string, fallback time.Duration, logger *slog.Logger) tim
 	return d
 }
 
+// BuildLLM constructs the generator LLM from configuration. It mirrors the
+// provider selection in internal/wire without needing the full DI graph.
+// Exported so the eval harness can reuse it.
+func BuildLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
+	return buildLLM(ctx, cfg, logger)
+}
+
 // buildLLM constructs the generator LLM from configuration. It mirrors the
 // provider selection in internal/wire without needing the full DI graph.
 func buildLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {

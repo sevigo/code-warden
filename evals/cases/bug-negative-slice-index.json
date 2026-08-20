@@ -1,0 +1,19 @@
+{
+  "name": "bug-negative-slice-index",
+  "suite": "bug",
+  "diff": "diff --git a/internal/stringsutil/set.go b/internal/stringsutil/set.go\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/internal/stringsutil/set.go\n@@ -0,0 +1,30 @@\n+package stringsutil\n+\n+import (\n+\t\"strings\"\n+)\n+\n+func ContainsAny(s string, needles []string) bool {\n+\tfor _, n := range needles {\n+\t\tif strings.Contains(s, n) {\n+\t\t\treturn true\n+\t\t}\n+\t}\n+\treturn false\n+}\n+\n+func JoinTruncated(parts []string, n int, sep string, maxLen int) string {\n+\tif n > len(parts) {\n+\t\tn = len(parts)\n+\t}\n+\tjoined := strings.Join(parts[:n], sep)\n+\tif maxLen == 0 {\n+\t\treturn joined\n+\t}\n+\treturn Truncate(joined, maxLen, \"...\")\n+}\n+\n+func Dedupe(items []string) []string {\n+\tseen := make(map[string]bool)\n+\tresult := make([]string, 0, len(items))\n+\tfor _, item := range items {\n+\t\tif !seen[item] {\n+\t\t\tseen[item] = true\n+\t\t\tresult = append(result, item)\n+\t\t}\n+\t}\n+\treturn result\n+}",
+  "workspace_files": {
+    "internal/stringsutil/truncate.go": "package stringsutil\n\nimport (\n\t\"strings\"\n\t\"unicode/utf8\"\n)\n\nfunc Truncate(s string, maxLen int, suffix string) string {\n\tif utf8.RuneCountInString(s) <= maxLen {\n\t\treturn s\n\t}\n\trunes := []rune(s)\n\tsuffixRunes := []rune(suffix)\n\tif maxLen <= len(suffixRunes) {\n\t\treturn string(runes[:maxLen])\n\t}\n\treturn string(runes[:maxLen-len(suffixRunes)]) + suffix\n}\n"
+  },
+  "expected_findings": [
+    {
+      "file": "internal/stringsutil/set.go",
+      "line_range": [20, 28],
+      "severity": "high",
+      "category": "Bug",
+      "description_contains": "negative"
+    }
+  ],
+  "expected_verdict": "REQUEST_CHANGES",
+  "max_false_positives": 3
+}

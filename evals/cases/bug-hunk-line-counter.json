@@ -1,0 +1,15 @@
+{
+  "name": "bug-hunk-line-counter-decrement",
+  "suite": "bug",
+  "diff": "diff --git a/internal/github/hunks.go b/internal/github/hunks.go\nindex e28e038..bbb0000 100644\n--- a/internal/github/hunks.go\n+++ b/internal/github/hunks.go\n@@ -48,9 +48,15 @@\n \t\t// We only care about added lines (+) and context lines ( ) on the new side.\n \t\t// Deleted lines (-) and other diff metadata are ignored and do not\n \t\t// increment the line counter for the new version of the file.\n \t\tif strings.HasPrefix(line, \"+\") {\n-\t\t\t// Added line\n+\t\t\tvalidLines[currentLine] = struct{}{}\n \t\t\tcurrentLine++\n \t\t} else if strings.HasPrefix(line, \" \") {\n-\t\t\t// Context line\n+\t\t\tvalidLines[currentLine] = struct{}{}\n \t\t\tcurrentLine++\n+\t\t} else if strings.HasPrefix(line, \"-\") {\n+\t\t\tcurrentLine--\n \t\t}",
+  "expected_findings": [
+    {
+      "file": "internal/github/hunks.go",
+      "line_range": [55, 60],
+      "severity": "high",
+      "category": "Bug",
+      "description_contains": "decrement"
+    }
+  ],
+  "max_false_positives": 3
+}
