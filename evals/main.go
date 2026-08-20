@@ -37,7 +37,6 @@ import (
 	internalgithub "github.com/sevigo/code-warden/internal/github"
 	llmpkg "github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
-	"github.com/sevigo/code-warden/internal/reviewcli"
 )
 
 func main() {
@@ -119,7 +118,7 @@ func loadLiveResources(ctx context.Context, opts evalOptions, log *slog.Logger) 
 	if err := cfg.ValidateForCLI(); err != nil {
 		return nil, nil, err
 	}
-	model, err := buildLLM(ctx, cfg, log)
+	model, err := llmpkg.NewGenerator(ctx, cfg.AI, log)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build LLM: %w", err)
 	}
@@ -661,9 +660,4 @@ func (f *diffFile) store(files map[string]string) {
 	if f.path != "" && len(f.lines) > 0 {
 		files[f.path] = strings.Join(f.lines, "\n") + "\n"
 	}
-}
-
-// buildLLM builds the LLM model from config.
-func buildLLM(ctx context.Context, cfg *config.Config, log *slog.Logger) (llms.Model, error) {
-	return reviewcli.BuildLLM(ctx, cfg, log)
 }
