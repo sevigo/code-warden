@@ -45,6 +45,9 @@ func (s *mockStore) UpdateRepository(_ context.Context, repo *storage.Repository
 
 // Stubs for other interface methods
 func (s *mockStore) SaveReview(_ context.Context, _ *core.Review) error { return nil }
+func (s *mockStore) UpdateReviewPublicationStatus(_ context.Context, _ int64, _ string) error {
+	return nil
+}
 func (s *mockStore) GetLatestReviewForPR(_ context.Context, _ string, _ int) (*core.Review, error) {
 	return nil, nil
 }

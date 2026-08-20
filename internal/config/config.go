@@ -34,7 +34,7 @@ type AgentConfig struct {
 	// Enabled determines if agent functionality is active.
 	Enabled bool `mapstructure:"enabled"`
 
-	// Mode is how the agent runs: "native" (in-process loop) or "warden"/"pi" (phased loop).
+	// Mode selects the phased implementation workflow. "pi" is a compatibility alias for "warden".
 	Mode string `mapstructure:"mode"`
 
 	// Model is the LLM model to use for the agent.
@@ -99,12 +99,11 @@ func (c *AgentConfig) Validate() error {
 
 	// Mode validation
 	validModes := map[string]bool{
-		"native": true,
 		"pi":     true,
 		"warden": true,
 	}
 	if !validModes[c.Mode] {
-		return fmt.Errorf("agent.mode must be 'native', 'pi', or 'warden', got: %s", c.Mode)
+		return fmt.Errorf("agent.mode must be 'warden' or 'pi', got: %s", c.Mode)
 	}
 
 	// Model validation

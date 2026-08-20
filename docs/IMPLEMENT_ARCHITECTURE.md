@@ -33,9 +33,8 @@ Orchestrator.SpawnAgent(ctx, issue)
   └── return Session immediately
 ```
 
-`runAgent` dispatches by mode:
-- `"warden"` → `runWardenAgent()` (production)
-- `"native"` → `runInProcessAgent()` (simpler, single-loop)
+`runAgent` dispatches `"warden"` (and the compatibility alias `"pi"`) to
+`runWardenAgent()`.
 
 ---
 
@@ -171,7 +170,7 @@ Every session is persisted to the `agent_sessions` PostgreSQL table.
 ```yaml
 agent:
   enabled: true
-  mode: warden                    # "warden" (phased) | "native" (legacy single-loop)
+  mode: warden                    # phased plan → implement → review → publish
   model: ""                      # Override LLM for implementation (empty = use review LLM)
   timeout: 60m
   max_concurrent_sessions: 3

@@ -23,6 +23,11 @@ var (
 	ErrDuplicateReview = errors.New("review already exists for this PR/SHA")
 )
 
+const (
+	ReviewPublicationPending   = "pending"
+	ReviewPublicationPublished = "published"
+)
+
 // Repository represents a stored Git repository.
 type Repository struct {
 	ID             int64     `json:"id" db:"id"`
@@ -82,6 +87,7 @@ type Store interface {
 	// Agent session persistence (see agent_session.go).
 	AgentSessionStore
 	SaveReview(ctx context.Context, review *core.Review) error
+	UpdateReviewPublicationStatus(ctx context.Context, id int64, status string) error
 	GetLatestReviewForPR(ctx context.Context, repoFullName string, prNumber int) (*core.Review, error)
 	GetAllReviewsForPR(ctx context.Context, repoFullName string, prNumber int) ([]*core.Review, error)
 	GetReviewsForRepo(ctx context.Context, repoFullName string) ([]*core.Review, error)
@@ -121,10 +127,20 @@ func NewStore(db *sqlx.DB) Store {
 // SaveReview inserts a new review record into the database.
 // Returns ErrDuplicateReview if a review already exists for the same repo/PR/SHA combination.
 func (s *postgresStore) SaveReview(ctx context.Context, review *core.Review) error {
+	if review.PublicationStatus == "" {
+		review.PublicationStatus = ReviewPublicationPending
+	}
 	query := `
-		INSERT INTO reviews (repo_full_name, pr_number, head_sha, review_content)
-		VALUES ($1, $2, $3, $4)`
-	_, err := s.db.ExecContext(ctx, query, review.RepoFullName, review.PRNumber, review.HeadSHA, review.ReviewContent)
+		INSERT INTO reviews (repo_full_name, pr_number, head_sha, review_content, publication_status)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id`
+	err := s.db.QueryRowContext(ctx, query,
+		review.RepoFullName,
+		review.PRNumber,
+		review.HeadSHA,
+		review.ReviewContent,
+		review.PublicationStatus,
+	).Scan(&review.ID)
 	if err != nil {
 		// Check for PostgreSQL unique constraint violation (error code 23505)
 		var pqErr *pq.Error
@@ -136,19 +152,39 @@ func (s *postgresStore) SaveReview(ctx context.Context, review *core.Review) err
 	return nil
 }
 
+// UpdateReviewPublicationStatus records the delivery state of a persisted review.
+func (s *postgresStore) UpdateReviewPublicationStatus(ctx context.Context, id int64, status string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE reviews SET publication_status = $1 WHERE id = $2`,
+		status,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update publication status for review %d: %w", id, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to read affected rows for review %d: %w", id, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("review %d: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // GetLatestReviewForPR retrieves the most recent review for a given pull request.
 func (s *postgresStore) GetLatestReviewForPR(ctx context.Context, repoFullName string, prNumber int) (*core.Review, error) {
 	query := `
-		SELECT id, repo_full_name, pr_number, head_sha, review_content, created_at 
-		FROM reviews 
-		WHERE repo_full_name = $1 AND pr_number = $2 
-		ORDER BY created_at DESC 
+		SELECT id, repo_full_name, pr_number, head_sha, review_content, publication_status, created_at
+		FROM reviews
+		WHERE repo_full_name = $1 AND pr_number = $2
+		ORDER BY created_at DESC
 		LIMIT 1`
 
 	row := s.db.QueryRowContext(ctx, query, repoFullName, prNumber)
 
 	var r core.Review
-	err := row.Scan(&r.ID, &r.RepoFullName, &r.PRNumber, &r.HeadSHA, &r.ReviewContent, &r.CreatedAt)
+	err := row.Scan(&r.ID, &r.RepoFullName, &r.PRNumber, &r.HeadSHA, &r.ReviewContent, &r.PublicationStatus, &r.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -210,9 +246,9 @@ func (s *postgresStore) UpdateRepository(ctx context.Context, repo *Repository) 
 // GetAllReviewsForPR retrieves all reviews for a specific pull request from the database.
 func (s *postgresStore) GetAllReviewsForPR(ctx context.Context, repoFullName string, prNumber int) ([]*core.Review, error) {
 	query := `
-		SELECT id, repo_full_name, pr_number, head_sha, review_content, created_at 
-		FROM reviews 
-		WHERE repo_full_name = $1 AND pr_number = $2 
+		SELECT id, repo_full_name, pr_number, head_sha, review_content, publication_status, created_at
+		FROM reviews
+		WHERE repo_full_name = $1 AND pr_number = $2 AND publication_status = 'published'
 		ORDER BY created_at ASC`
 
 	var reviews []*core.Review
@@ -434,9 +470,9 @@ func (s *postgresStore) UpsertScanState(ctx context.Context, state *ScanState) e
 // GetReviewsForRepo retrieves all reviews for a repository ordered by most recent first.
 func (s *postgresStore) GetReviewsForRepo(ctx context.Context, repoFullName string) ([]*core.Review, error) {
 	query := `
-		SELECT id, repo_full_name, pr_number, head_sha, review_content, created_at
+		SELECT id, repo_full_name, pr_number, head_sha, review_content, publication_status, created_at
 		FROM reviews
-		WHERE repo_full_name = $1
+		WHERE repo_full_name = $1 AND publication_status = 'published'
 		ORDER BY created_at DESC`
 
 	var reviews []*core.Review
@@ -453,7 +489,8 @@ func (s *postgresStore) GetReviewStats(ctx context.Context) (*ReviewStats, error
 		SELECT
 			COUNT(*) AS total_reviews,
 			COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS reviews_this_week
-		FROM reviews`
+		FROM reviews
+		WHERE publication_status = 'published'`
 
 	var stats ReviewStats
 	row := s.db.QueryRowContext(ctx, query)

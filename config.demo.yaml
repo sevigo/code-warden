@@ -61,12 +61,10 @@ logging:
 # Agent (autonomous /implement command) — disabled by default in demo mode.
 # To enable: set agent.enabled: true and configure a GitHub App + ngrok tunnel.
 #
-# mode: "pi" uses the native Go agent loop with file manipulation tools
-# (read_file, write_file, edit_file, list_dir) in addition to the MCP code
-# navigation tools. No external binary required.
+# mode: "warden" uses the phased Go agent workflow with in-process tools.
 agent:
   enabled: false
-  mode: "pi"
+  mode: "warden"
   model: "kimi-k2.5"          # Ollama cloud model — same as generator, no extra download
   max_iterations: 5
   max_concurrent_sessions: 3

@@ -1,5 +1,5 @@
 // Package agent provides orchestration for AI coding agents.
-// It manages agent sessions and runs in-process agent loops (native/warden modes).
+// It manages agent sessions and runs the phased warden workflow.
 package agent
 
 import (
@@ -36,7 +36,7 @@ type Orchestrator struct {
 	projectRoot       string
 	repoConfig        *core.RepoConfig
 	repo              *storage.Repository
-	llm               llms.Model // used by native in-process agent mode
+	llm               llms.Model // used by the warden implementation and review loops
 	promptMgr         *llm.PromptManager
 	store             storage.AgentSessionStore
 
@@ -149,7 +149,7 @@ func DefaultConfig() Config {
 }
 
 // NewOrchestrator creates a new agent orchestrator.
-// llm is the model used by the in-process native agent and the warden review loop.
+// llm is the model used by the warden implementation and review loops.
 func NewOrchestrator(
 	store storage.Store,
 	llm llms.Model,
@@ -202,7 +202,7 @@ func NewOrchestrator(
 }
 
 // Start begins the MCP HTTP server. Must be called before agents can use tools.
-// In native in-process mode (InProcessOnly=true), the HTTP server is skipped
+// In in-process-only mode, the HTTP server is skipped
 // because tools are injected directly into the goframe registry and never called
 // over HTTP.
 func (o *Orchestrator) Start() error {
@@ -496,13 +496,11 @@ func (o *Orchestrator) runAgent(ctx context.Context, session *Session) {
 		"branch", branch)
 
 	switch o.config.Mode {
-	case "native":
-		o.runInProcessAgent(ctx, session, branch)
 	case "pi", "warden":
 		o.runWardenAgent(ctx, session, branch)
 	default:
 		o.logger.Error("runAgent: unsupported agent mode", "mode", o.config.Mode)
-		o.failSession(ctx, session, fmt.Sprintf("unsupported agent mode: %s (use 'native' or 'warden')", o.config.Mode))
+		o.failSession(ctx, session, fmt.Sprintf("unsupported agent mode: %s (use 'warden')", o.config.Mode))
 	}
 }
 

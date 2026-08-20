@@ -354,13 +354,20 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 		}
 		return nil
 	}
+	if reviewEnv.pendingReview != nil {
+		parsed, parseErr := agentreview.NewStructuredReviewParser(j.logger).Parse(ctx, reviewEnv.pendingReview.ReviewContent)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse pending review %d for retry: %w", reviewEnv.pendingReview.ID, parseErr)
+		}
+		return j.completeReview(ctx, event, reviewEnv, parsed, nil)
+	}
 
-	structuredReview, rawReview, validFiles, err := j.processRepository(ctx, event, reviewEnv)
+	structuredReview, validFiles, err := j.processRepository(ctx, event, reviewEnv)
 	if err != nil {
 		return err
 	}
 
-	return j.completeReview(ctx, event, reviewEnv, structuredReview, rawReview, validFiles)
+	return j.completeReview(ctx, event, reviewEnv, structuredReview, validFiles)
 }
 
 type reviewEnvironment struct {
@@ -371,6 +378,7 @@ type reviewEnvironment struct {
 	updateResult  *core.UpdateResult
 	repoConfig    *core.RepoConfig
 	skipReview    bool // Set to true if review should be skipped (duplicate SHA)
+	pendingReview *core.Review
 }
 
 // setupReviewEnvironment initializes clients, syncs the repo to the default branch,
@@ -409,15 +417,23 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 	// This prevents a race condition where two concurrent webhooks for the same PR
 	// could both pass the SHA check and generate duplicate reviews.
 	skipReview := false
+	var pendingReview *core.Review
 	if event.Type == core.FullReview {
 		existing, err := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
-		if err != nil {
+		switch {
+		case err != nil:
 			j.logger.Warn("failed to check for existing review", "error", err, "repo", event.RepoFullName, "pr", event.PRNumber)
 			// Continue with review on error - don't block reviews if DB check fails
-		} else if existing != nil && existing.HeadSHA == event.HeadSHA {
+		case existing == nil || existing.HeadSHA != event.HeadSHA:
+			// No review exists for the current commit.
+		case existing.PublicationStatus == storage.ReviewPublicationPublished:
 			j.logger.Info("Skipping review — same SHA already reviewed (detected under mutex)",
 				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
 			skipReview = true
+		default:
+			j.logger.Info("Retrying review publication — persisted review is still pending",
+				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
+			pendingReview = existing
 		}
 	}
 
@@ -434,21 +450,22 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		updateResult:  updateResult,
 		repoConfig:    repoConfig,
 		skipReview:    skipReview,
+		pendingReview: pendingReview,
 	}, nil
 }
 
 // processRepository fetches the PR diff and changed files from GitHub, validates them,
 // and runs the agent-based review.
-func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, string, map[string]map[int]struct{}, error) {
+func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) (*core.StructuredReview, map[string]map[int]struct{}, error) {
 	// Fetch diff and changed files once — used for both validation and review generation
 	diff, err := env.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to get PR diff: %w", err)
+		return nil, nil, fmt.Errorf("failed to get PR diff: %w", err)
 	}
 
 	changedFiles, err := env.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to get changed files for validation: %w", err)
+		return nil, nil, fmt.Errorf("failed to get changed files for validation: %w", err)
 	}
 
 	if commits, cErr := env.ghClient.GetPullRequestCommits(ctx, event.RepoOwner, event.RepoName, event.PRNumber); cErr == nil {
@@ -461,17 +478,16 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 	// Agent-based review is the default engine. RAG retrieval is no longer used
 	// for /review — the agent investigates the diff with grep + read_file.
-	structuredReview, rawReview, err := j.runAgentReview(ctx, event, diff, changedFiles)
+	structuredReview, err := j.runAgentReview(ctx, event, diff, changedFiles)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to generate review: %w", err)
+		return nil, nil, fmt.Errorf("failed to generate review: %w", err)
 	}
 
-	return structuredReview, rawReview, validLineMaps, nil
+	return structuredReview, validLineMaps, nil
 }
 
-// runAgentReview runs the agent-based multi-angle review and returns the
-// structured review plus the raw merged response.
-func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, string, error) {
+// runAgentReview runs the agent-based multi-angle review.
+func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, error) {
 	repoURL := j.buildAgentCloneURL(event)
 
 	runner := agentreview.NewRunner(j.llm, j.promptMgr, agent.ReadOnlyReviewTools, j.logger, nil)
@@ -483,60 +499,106 @@ func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent,
 		CommitMessages: event.CommitMessages,
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return result.Review, result.Raw, nil
+	return result.Review, nil
 }
 
-// completeReview posts the review to GitHub, saves it to the DB, and marks the check run as successful.
-// It uses a database unique constraint to prevent duplicate reviews for the same SHA.
-func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, rawReview string, validLineMaps map[string]map[int]struct{}) error {
-	// Filter out non-code file suggestions first
-	structuredReview.Suggestions = FilterNonCodeSuggestions(j.logger, structuredReview.Suggestions)
-
-	// Validate and filter suggestions to prevent 422 errors
-	inlineSuggestions, offDiffSuggestions := ValidateSuggestionsByLine(j.logger, structuredReview.Suggestions, validLineMaps)
-	structuredReview.Suggestions = inlineSuggestions
-
-	// If there are off-diff suggestions, append them to the summary in a collapsible section
-	if len(offDiffSuggestions) > 0 {
-		structuredReview.Summary = appendOffDiffSuggestions(structuredReview.Summary, offDiffSuggestions)
-	}
-
-	// Save to DB first - the unique constraint (repo_full_name, pr_number, head_sha) prevents duplicates.
-	// If another concurrent webhook already saved a review for this SHA, we get ErrDuplicateReview.
-	dbReview := &core.Review{
-		RepoFullName:  event.RepoFullName,
-		PRNumber:      event.PRNumber,
-		HeadSHA:       event.HeadSHA,
-		ReviewContent: rawReview,
-	}
-	err := j.store.SaveReview(ctx, dbReview)
+// completeReview reserves the review in the database, publishes it to GitHub,
+// records successful delivery, and completes the check run.
+func (j *ReviewJob) completeReview(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment, structuredReview *core.StructuredReview, validLineMaps map[string]map[int]struct{}) error {
+	rawReview, err := j.prepareReviewForPublication(structuredReview, validLineMaps)
 	if err != nil {
-		if errors.Is(err, storage.ErrDuplicateReview) {
-			// Another concurrent webhook already completed this review.
-			// We still need to mark the check run as complete, but skip posting duplicate comments.
-			j.logger.Info("Review already saved by concurrent webhook, skipping duplicate post",
-				"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
-			if completeErr := env.statusUpdater.Completed(ctx, event, env.checkRunID, "success", "Review Complete", "AI analysis finished."); completeErr != nil {
-				j.logger.Warn("failed to update completion status", "error", completeErr)
-			}
-			return nil
-		}
-		j.logger.Error("failed to save review to database", "error", err)
-		return fmt.Errorf("failed to save review record to database: %w", err)
+		return err
 	}
 
-	// Only post to GitHub after successful DB save (prevents duplicate comments)
+	// Serialize publication attempts for the same commit in this process. The
+	// database unique constraint remains the cross-process reservation.
+	publicationMutex := j.getRepoMutex(event.RepoFullName)
+	publicationMutex.Lock()
+	defer publicationMutex.Unlock()
+
+	dbReview, published, err := j.reserveReviewPublication(ctx, event, rawReview)
+	if err != nil {
+		return err
+	}
+	if published {
+		j.logger.Info("Review already published by concurrent webhook, skipping duplicate post",
+			"repo", event.RepoFullName, "pr", event.PRNumber, "sha", event.HeadSHA)
+		return j.completeReviewCheck(ctx, event, env)
+	}
+
+	// A failed post leaves the record pending so a later webhook can retry it.
 	if err := env.statusUpdater.PostStructuredReview(ctx, event, structuredReview); err != nil {
 		return fmt.Errorf("failed to post review comment to GitHub: %w", err)
 	}
 
-	if err := env.statusUpdater.Completed(ctx, event, env.checkRunID, "success", "Review Complete", "AI analysis finished."); err != nil {
-		return fmt.Errorf("failed to update completion status on GitHub: %w", err)
+	if err := j.store.UpdateReviewPublicationStatus(ctx, dbReview.ID, storage.ReviewPublicationPublished); err != nil {
+		return fmt.Errorf("review was posted to GitHub but publication status could not be recorded: %w", err)
+	}
+
+	if err := j.completeReviewCheck(ctx, event, env); err != nil {
+		return err
 	}
 
 	j.logger.Info("Full review job completed successfully")
+	return nil
+}
+
+func (j *ReviewJob) prepareReviewForPublication(structuredReview *core.StructuredReview, validLineMaps map[string]map[int]struct{}) (string, error) {
+	structuredReview.Suggestions = FilterNonCodeSuggestions(j.logger, structuredReview.Suggestions)
+
+	inlineSuggestions, offDiffSuggestions := ValidateSuggestionsByLine(j.logger, structuredReview.Suggestions, validLineMaps)
+	structuredReview.Suggestions = inlineSuggestions
+
+	if len(offDiffSuggestions) > 0 {
+		structuredReview.Summary = appendOffDiffSuggestions(structuredReview.Summary, offDiffSuggestions)
+	}
+
+	rawReview, err := agentreview.MarshalStructuredReview(structuredReview)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize review: %w", err)
+	}
+	return rawReview, nil
+}
+
+// reserveReviewPublication reserves a delivery. The unique constraint prevents two
+// workers from independently creating publication records for the same SHA.
+func (j *ReviewJob) reserveReviewPublication(ctx context.Context, event *core.GitHubEvent, rawReview string) (*core.Review, bool, error) {
+	dbReview := &core.Review{
+		RepoFullName:      event.RepoFullName,
+		PRNumber:          event.PRNumber,
+		HeadSHA:           event.HeadSHA,
+		ReviewContent:     rawReview,
+		PublicationStatus: storage.ReviewPublicationPending,
+	}
+	err := j.store.SaveReview(ctx, dbReview)
+	if err == nil {
+		return dbReview, false, nil
+	}
+	if !errors.Is(err, storage.ErrDuplicateReview) {
+		j.logger.Error("failed to save review to database", "error", err)
+		return nil, false, fmt.Errorf("failed to save review record to database: %w", err)
+	}
+
+	existing, err := j.store.GetLatestReviewForPR(ctx, event.RepoFullName, event.PRNumber)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to load duplicate review record: %w", err)
+	}
+	if existing.HeadSHA != event.HeadSHA {
+		return nil, false, fmt.Errorf("duplicate review record has unexpected SHA %s, want %s", existing.HeadSHA, event.HeadSHA)
+	}
+	if existing.PublicationStatus != storage.ReviewPublicationPublished {
+		j.logger.Info("Retrying pending GitHub review publication",
+			"review_id", existing.ID, "repo", event.RepoFullName, "pr", event.PRNumber)
+	}
+	return existing, existing.PublicationStatus == storage.ReviewPublicationPublished, nil
+}
+
+func (j *ReviewJob) completeReviewCheck(ctx context.Context, event *core.GitHubEvent, env *reviewEnvironment) error {
+	if err := env.statusUpdater.Completed(ctx, event, env.checkRunID, "success", "Review Complete", "AI analysis finished."); err != nil {
+		return fmt.Errorf("failed to update completion status on GitHub: %w", err)
+	}
 	return nil
 }
 

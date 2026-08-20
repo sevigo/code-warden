@@ -231,7 +231,7 @@ func (s *Server) SetupGovernance(config GovernanceConfig) {
 	s.logger.Info("governance layer enabled", "checks", len(checks))
 }
 
-// Tools returns all registered tool objects (used by the native in-process agent).
+// Tools returns all registered tool objects for in-process agent loops.
 func (s *Server) Tools() []Tool {
 	raw := s.registry.List()
 	result := make([]Tool, 0, len(raw))
