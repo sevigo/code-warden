@@ -245,7 +245,8 @@ func (o *Orchestrator) runReviewPhase(
 		"max_rounds", maxRounds,
 	)
 
-	executor := agentreview.NewRunner(o.llm, o.promptMgr, ReadOnlyReviewTools, o.logger, nil)
+	angleExecutor := agentreview.NewGoframeAngleExecutor(o.llm, o.promptMgr, ReadOnlyReviewTools, o.logger)
+	executor := agentreview.NewRunner(angleExecutor, o.logger, nil)
 
 	totalFixIters := 0
 	lastVerdict := ""
