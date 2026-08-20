@@ -31,7 +31,7 @@ type ReviewReporter interface {
 }
 ```
 
-`ChangedFile` should move to a neutral package when this extraction starts; until then, do not create conversion layers just for a future integration.
+`core.ChangedFile` is the neutral diff-file type. The existing GitHub type is a compatibility alias, so integrations and the engine share it without conversion layers.
 
 The first implementations are deliberately concrete:
 
@@ -63,8 +63,8 @@ Add a registry only if model backends begin to require independently tested capa
 
 ## Migration order
 
-1. Move model construction into `internal/llm`; cover it with unit tests.
-2. Introduce neutral `ReviewInput` in a new application package and adapt the current CLI first.
+1. **Complete:** move model construction into `internal/llm`; cover it with unit tests.
+2. **Complete:** introduce neutral `ReviewInput` in a new application package and adapt the current CLI first.
 3. Adapt the GitHub review job to the same application service, preserving its existing status and duplicate-review safeguards.
 4. Move GitHub-specific rendering from the job workflow into `GitHubReporter`.
 5. Only then decide whether a second integration earns an adapter.

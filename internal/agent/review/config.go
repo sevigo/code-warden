@@ -5,13 +5,11 @@ import (
 	"strings"
 
 	"github.com/sevigo/code-warden/internal/core"
-	internalgithub "github.com/sevigo/code-warden/internal/github"
 )
 
 // Config controls which findings are kept and which files are reviewed.
-// Inspired by Kodus's suggestion_control + general config: severity filtering,
-// ignored paths, and per-category toggles reduce noise and skip irrelevant
-// files before spending tokens on them.
+// Severity filtering, ignored paths, and per-category toggles reduce noise and
+// skip irrelevant files before spending tokens on them.
 type Config struct {
 	// MinSeverity is the lowest severity to keep. "low" keeps everything,
 	// "medium" drops low, "high" drops medium+low, "critical" keeps only
@@ -29,13 +27,13 @@ type Config struct {
 	EnabledCategories map[string]bool
 
 	// MaxFiles caps the number of changed files in a PR before the review
-	// is skipped. 0 means no limit. Kodus defaults to 10 (trial) / 100.
+	// is skipped. 0 means no limit.
 	// Large diffs reduce review quality and waste tokens.
 	MaxFiles int
 }
 
-// DefaultConfig returns sensible defaults matching Kodus's shipped
-// defaults: min severity medium, common lockfiles ignored, all categories on.
+// DefaultConfig returns conservative defaults: minimum severity medium,
+// common generated files ignored, and all categories enabled.
 func DefaultConfig() Config {
 	return Config{
 		MinSeverity: "medium",
@@ -128,11 +126,11 @@ func (c *Config) FilterBySeverity(suggestions []core.Suggestion) []core.Suggesti
 // FilterChangedFiles splits changed files into reviewed and ignored sets.
 // Files matching IgnorePaths are dropped. Returns the filtered list and the
 // count of ignored files (for logging).
-func (c *Config) FilterChangedFiles(files []internalgithub.ChangedFile) ([]internalgithub.ChangedFile, int) {
+func (c *Config) FilterChangedFiles(files []core.ChangedFile) ([]core.ChangedFile, int) {
 	if len(c.IgnorePaths) == 0 {
 		return files, 0
 	}
-	filtered := make([]internalgithub.ChangedFile, 0, len(files))
+	filtered := make([]core.ChangedFile, 0, len(files))
 	ignored := 0
 	for _, f := range files {
 		if c.ShouldSkipFile(f.Filename) {
@@ -146,7 +144,7 @@ func (c *Config) FilterChangedFiles(files []internalgithub.ChangedFile) ([]inter
 
 // ShouldSkipReview reports whether the review should be skipped entirely
 // based on the changed files (too many files or all ignored).
-func (c *Config) ShouldSkipReview(files []internalgithub.ChangedFile) (bool, string) {
+func (c *Config) ShouldSkipReview(files []core.ChangedFile) (bool, string) {
 	filtered, ignored := c.FilterChangedFiles(files)
 	if len(filtered) == 0 && ignored > 0 {
 		return true, "all changed files match ignore patterns"

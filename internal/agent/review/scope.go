@@ -3,7 +3,7 @@ package review
 import (
 	"strings"
 
-	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/core"
 )
 
 // scopeAngles filters the default angles to those likely relevant for the
@@ -13,7 +13,7 @@ import (
 //
 // The heuristic is conservative: when in doubt, keep the angle. It only drops
 // an angle when none of the changed files match its domain.
-func scopeAngles(angles []Angle, changedFiles []internalgithub.ChangedFile) []Angle {
+func scopeAngles(angles []Angle, changedFiles []core.ChangedFile) []Angle {
 	if len(changedFiles) == 0 {
 		return angles
 	}
@@ -31,7 +31,7 @@ func scopeAngles(angles []Angle, changedFiles []internalgithub.ChangedFile) []An
 
 // angleRelevant reports whether at least one changed file could plausibly
 // contain findings for the given angle.
-func angleRelevant(a Angle, changedFiles []internalgithub.ChangedFile) bool {
+func angleRelevant(a Angle, changedFiles []core.ChangedFile) bool {
 	switch a.Name {
 	case "security":
 		for _, cf := range changedFiles {

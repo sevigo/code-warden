@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
-	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/core"
 )
 
 // GitDiff runs `git diff` in the repo at repoPath and returns the unified diff
@@ -35,7 +35,7 @@ func GitDiff(ctx context.Context, repoPath, base string) (string, error) {
 }
 
 // ChangedFilesFromDiff splits a unified diff string into per-file entries.
-func ChangedFilesFromDiff(diff string) []internalgithub.ChangedFile {
+func ChangedFilesFromDiff(diff string) []core.ChangedFile {
 	return agentreview.ParseDiff(diff)
 }
 

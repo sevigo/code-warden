@@ -38,7 +38,7 @@ type Params struct {
 	// Diff is the unified diff of the PR being reviewed.
 	Diff string
 	// ChangedFiles are the per-file patches of the PR.
-	ChangedFiles []internalgithub.ChangedFile
+	ChangedFiles []core.ChangedFile
 	// RepoURL is the git URL (credentials embedded) to clone for investigation.
 	// Ignored when WorkspaceDir is set.
 	RepoURL string
@@ -135,7 +135,7 @@ func (r *Runner) Run(ctx context.Context, params Params) (*Result, error) {
 // prepareFiles filters changed files by ignore patterns and checks skip
 // conditions. Returns the filtered files and the filtered diff. When the
 // review should be skipped, filteredDiff is empty.
-func (r *Runner) prepareFiles(params Params, rc *Config) ([]internalgithub.ChangedFile, string) {
+func (r *Runner) prepareFiles(params Params, rc *Config) ([]core.ChangedFile, string) {
 	filteredFiles, ignoredCount := rc.FilterChangedFiles(params.ChangedFiles)
 	if ignoredCount > 0 {
 		r.logger.Info("agent review: ignored files",
@@ -170,7 +170,7 @@ func (r *Runner) prepareWorkspace(ctx context.Context, params Params) (string, f
 }
 
 // dispatch builds the task context, filters angles, and runs the map-reduce chain.
-func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filteredFiles []internalgithub.ChangedFile, filteredDiff, workspace string) (*Result, error) {
+func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filteredFiles []core.ChangedFile, filteredDiff, workspace string) (*Result, error) {
 	fileLines := internalgithub.BuildValidLineMap(filteredFiles)
 	changedLinesSummary := buildChangedLinesSummary(fileLines)
 	filenameIndex := buildFilenameIndex(fileLines)
@@ -310,7 +310,7 @@ func (r *Runner) runAngle(ctx context.Context, angle Angle, workspace, taskCtx, 
 // buildTaskContext renders the diff, changed-file list, changed-line numbers,
 // and commit messages for the agent task. The changed-lines section gives the
 // agent the exact valid <line> values up front so it doesn't guess from @@ headers.
-func (r *Runner) buildTaskContext(params Params, diff, changedLinesSummary string, changedFiles []internalgithub.ChangedFile) string {
+func (r *Runner) buildTaskContext(params Params, diff, changedLinesSummary string, changedFiles []core.ChangedFile) string {
 	var b strings.Builder
 	b.WriteString("Repository: ")
 	b.WriteString(params.RepoFullName)
@@ -338,7 +338,7 @@ func (r *Runner) buildTaskContext(params Params, diff, changedLinesSummary strin
 // rebuildDiff reconstructs a unified diff containing only the files that
 // passed the ignore filter. Each changed file's patch is concatenated with
 // the standard diff --git header.
-func rebuildDiff(allFiles, keptFiles []internalgithub.ChangedFile) string {
+func rebuildDiff(allFiles, keptFiles []core.ChangedFile) string {
 	keptSet := make(map[string]bool, len(keptFiles))
 	for _, f := range keptFiles {
 		keptSet[f.Filename] = true
