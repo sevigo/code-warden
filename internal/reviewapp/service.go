@@ -36,9 +36,10 @@ type ReviewOptions struct {
 
 // ReviewResult is the provider-neutral outcome of a review.
 type ReviewResult struct {
-	Review *core.StructuredReview
-	Raw    string
-	Angles []agentreview.AngleResult
+	Review   *core.StructuredReview
+	Raw      string
+	Angles   []agentreview.AngleResult
+	Coverage *agentreview.CoverageReceipt
 }
 
 // ReviewSource loads review input from an integration such as a local checkout
@@ -88,7 +89,12 @@ func (s *Service) Review(ctx context.Context, input ReviewInput, opts ReviewOpti
 	if result == nil {
 		return nil, errors.New("review runner returned no result")
 	}
-	return &ReviewResult{Review: result.Review, Raw: result.Raw, Angles: result.Angles}, nil
+	return &ReviewResult{
+		Review:   result.Review,
+		Raw:      result.Raw,
+		Angles:   result.Angles,
+		Coverage: result.Coverage,
+	}, nil
 }
 
 var _ Reviewer = (*Service)(nil)

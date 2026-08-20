@@ -39,21 +39,22 @@ type TraceRequest struct {
 }
 
 type traceManifest struct {
-	SchemaVersion  int                `json:"schema_version"`
-	Status         string             `json:"status"`
-	StartedAt      time.Time          `json:"started_at"`
-	FinishedAt     time.Time          `json:"finished_at"`
-	DurationMillis int64              `json:"duration_ms"`
-	Repository     string             `json:"repository"`
-	Model          TraceModel         `json:"model"`
-	Options        traceOptions       `json:"options"`
-	ChangedFiles   []string           `json:"changed_files"`
-	CommitMessages []string           `json:"commit_messages,omitempty"`
-	DiffFile       string             `json:"diff_file"`
-	ReviewJSONFile string             `json:"review_json_file,omitempty"`
-	ReviewXMLFile  string             `json:"review_xml_file,omitempty"`
-	Angles         []traceAngleResult `json:"angles,omitempty"`
-	Error          string             `json:"error,omitempty"`
+	SchemaVersion  int                          `json:"schema_version"`
+	Status         string                       `json:"status"`
+	StartedAt      time.Time                    `json:"started_at"`
+	FinishedAt     time.Time                    `json:"finished_at"`
+	DurationMillis int64                        `json:"duration_ms"`
+	Repository     string                       `json:"repository"`
+	Model          TraceModel                   `json:"model"`
+	Options        traceOptions                 `json:"options"`
+	ChangedFiles   []string                     `json:"changed_files"`
+	CommitMessages []string                     `json:"commit_messages,omitempty"`
+	DiffFile       string                       `json:"diff_file"`
+	ReviewJSONFile string                       `json:"review_json_file,omitempty"`
+	ReviewXMLFile  string                       `json:"review_xml_file,omitempty"`
+	Angles         []traceAngleResult           `json:"angles,omitempty"`
+	Coverage       *agentreview.CoverageReceipt `json:"coverage,omitempty"`
+	Error          string                       `json:"error,omitempty"`
 }
 
 type traceOptions struct {
@@ -117,6 +118,7 @@ func writeTraceResult(runDir string, result *reviewapp.ReviewResult, manifest *t
 	if result == nil {
 		return nil
 	}
+	manifest.Coverage = result.Coverage
 	if err := writeTraceJSON(runDir, "review.json", result.Review); err != nil {
 		return err
 	}

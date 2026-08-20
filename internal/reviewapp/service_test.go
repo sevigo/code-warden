@@ -18,7 +18,10 @@ func TestServiceReviewMapsInputAndOptions(t *testing.T) {
 
 	wantReview := &core.StructuredReview{Summary: "done"}
 	wantAngles := []agentreview.AngleResult{{Angle: "bug", Status: agentreview.AngleStatusCompleted}}
-	runner := &recordingRunner{result: &agentreview.Result{Review: wantReview, Raw: "raw review", Angles: wantAngles}}
+	wantCoverage := &agentreview.CoverageReceipt{Status: agentreview.CoverageStatusComplete}
+	runner := &recordingRunner{result: &agentreview.Result{
+		Review: wantReview, Raw: "raw review", Angles: wantAngles, Coverage: wantCoverage,
+	}}
 	service := &Service{runner: runner}
 	reviewConfig := agentreview.DefaultConfig()
 	input := ReviewInput{
@@ -42,6 +45,7 @@ func TestServiceReviewMapsInputAndOptions(t *testing.T) {
 	assert.Same(t, wantReview, result.Review)
 	assert.Equal(t, "raw review", result.Raw)
 	assert.Equal(t, wantAngles, result.Angles)
+	assert.Same(t, wantCoverage, result.Coverage)
 	assert.Equal(t, input.Diff, runner.params.Diff)
 	assert.Equal(t, input.ChangedFiles, runner.params.ChangedFiles)
 	assert.Equal(t, input.CloneURL, runner.params.RepoURL)
