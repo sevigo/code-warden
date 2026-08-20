@@ -58,7 +58,7 @@ const (
 
 // runWardenAgent runs the two-phase warden loop: implement then publish.
 func (o *Orchestrator) runWardenAgent(ctx context.Context, session *Session, branch string) {
-	defer o.cleanupNativeSession(ctx, session)
+	defer o.cleanupAgentSession(ctx, session)
 
 	agentLLM, err := o.resolveAgentLLM(ctx)
 	if err != nil {
@@ -171,7 +171,7 @@ func (o *Orchestrator) runImplementPhase(
 	editTask := goframeagent.Task{
 		ID:          session.ID + "-impl",
 		Description: fmt.Sprintf("Implement GitHub issue #%d: %s", session.Issue.Number, session.Issue.Title),
-		Context:     o.buildNativeTaskContext(session.Issue, branch),
+		Context:     o.buildAgentTaskContext(session.Issue, branch),
 		Priority:    5,
 	}
 

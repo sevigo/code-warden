@@ -2,6 +2,8 @@ package review
 
 import (
 	"context"
+	"encoding/xml"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -10,6 +12,19 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/llm"
 )
+
+// MarshalStructuredReview serializes the merged review in the canonical XML
+// shape consumed by persistence and the dashboard.
+func MarshalStructuredReview(review *core.StructuredReview) (string, error) {
+	if review == nil {
+		return "", fmt.Errorf("cannot marshal nil structured review")
+	}
+	data, err := xml.MarshalIndent(review, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal structured review: %w", err)
+	}
+	return string(data), nil
+}
 
 // StructuredReviewParser parses the <review> XML block emitted by an agent
 // pass. It implements github.com/sevigo/goframe/schema OutputParser.

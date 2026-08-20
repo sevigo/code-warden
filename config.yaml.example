@@ -78,8 +78,6 @@ ai:
 #
 #   "warden" (recommended) — phased plan→implement→review→publish loop using
 #   the agent-based review engine (grep + read_file). Tools injected in-process.
-#
-#   "native" — single-loop in-process mode.
 agent:
   # Enable the agent system for /implement comments on GitHub issues
   enabled: true

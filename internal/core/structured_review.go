@@ -3,6 +3,8 @@
 // allowing for flexible and decoupled implementations of the application's logic.
 package core
 
+import "encoding/xml"
+
 // Suggestion represents a single piece of feedback for a specific line of code.
 // It contains the location, severity, and description of a potential issue,
 // along with optional code suggestions for fixing the problem.
@@ -36,6 +38,7 @@ type Suggestion struct {
 // parsable format. It contains a summary of the overall review, a verdict on
 // whether changes should be accepted, and a list of specific suggestions.
 type StructuredReview struct {
+	XMLName xml.Name `json:"-" xml:"review"`
 	// Title is an optional header for the review (e.g., "Re-Review Summary").
 	Title string `json:"title,omitempty" xml:"title,omitempty"`
 	// Summary is a high-level overview of the review findings.

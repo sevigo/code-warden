@@ -38,7 +38,7 @@ docker-compose exec ollama ollama list
 
 **Changes not persisting:** Ensure the workspace directory is writable and `agent.working_dir` points to the right place.
 
-**Agent not starting:** Verify `agent.enabled: true`, `agent.mode` is `warden` or `native`, and the configured LLM model is available (`ollama list`).
+**Agent not starting:** Verify `agent.enabled: true`, `agent.mode` is `warden`, and the configured LLM model is available (`ollama list`).
 
 ## Defaults
 

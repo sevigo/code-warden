@@ -228,6 +228,10 @@ func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filter
 	if err != nil {
 		return nil, fmt.Errorf("agent review: failed: %w", err)
 	}
+	raw, err := MarshalStructuredReview(review)
+	if err != nil {
+		return nil, err
+	}
 
 	r.logger.Info("agent review: complete",
 		"repo", params.RepoFullName,
@@ -236,7 +240,7 @@ func (r *Runner) dispatch(ctx context.Context, params Params, rc *Config, filter
 		"verdict", review.Verdict,
 	)
 
-	return &Result{Review: review}, nil
+	return &Result{Review: review, Raw: raw}, nil
 }
 
 // runAngle runs a single agent pass for one angle and returns its findings.
