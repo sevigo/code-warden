@@ -1,3 +1,5 @@
+// Package reviewcli provides a standalone entry point for agent-based code
+// reviews without requiring the GitHub App dependency graph.
 package reviewcli
 
 import (
@@ -48,7 +50,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, opts Opti
 		logger = slog.Default()
 	}
 
-	model, err := buildLLM(ctx, cfg, logger)
+	model, err := llm.NewGenerator(ctx, cfg.AI, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build LLM: %w", err)
 	}

@@ -71,10 +71,10 @@ The detailed proposed types and migration sequence are in [DISCOVERY_ARCHITECTUR
 
 **Outcome:** CLI and server select models identically.
 
-1. Move model construction to `internal/llm.Factory` (or equivalent function) and have Wire and the standalone CLI call it.
-2. Keep the configuration schema explicit: `ollama`, `openai` for compatible endpoints, and `gemini`. Validate credentials per selected backend.
-3. Add unit tests for backend selection and invalid configuration. Do not expose arbitrary runtime plugins or user-supplied Go code.
-4. Add a model capability declaration only if a real backend needs it (for example structured output or reasoning controls).
+- [x] Move model construction to `internal/llm.NewGenerator` and use it from Wire, the standalone CLI, and live evals.
+- [x] Keep the configuration schema explicit: `ollama`, `openai` for compatible endpoints, and `gemini`. Validate credentials per selected backend.
+- [x] Test backend selection, invalid configuration, and shared timeout defaults without exposing runtime plugins or user-supplied Go code.
+- [ ] Add model capability declarations only when a real backend needs them (for example structured output or reasoning controls).
 
 **Exit criteria:** server, CLI, and eval live mode use the same model factory and fail with the same actionable configuration errors.
 

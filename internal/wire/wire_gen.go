@@ -23,13 +23,9 @@ import (
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/goframe/llms"
-	"github.com/sevigo/goframe/llms/gemini"
-	"github.com/sevigo/goframe/llms/ollama"
-	"github.com/sevigo/goframe/llms/openai"
 	"io"
 	"log/slog"
 	"os"
-	"time"
 )
 
 // Injectors from wire.go:
@@ -78,76 +74,12 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 
 // wire.go:
 
-func parseHeaderTimeout(s string, logger *slog.Logger) time.Duration {
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		logger.Warn("invalid http_response_header_timeout, using default 180s", "error", err)
-		return 180 * time.Second
-	}
-	return d
-}
-
-func parseRequestTimeout(s string, logger *slog.Logger) time.Duration {
-	if s == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		logger.Warn("invalid http_request_timeout, using no timeout", "error", err)
-		return 0
-	}
-	return d
-}
-
 func provideSQLXDB(db2 *db.DB) *sqlx.DB {
 	return db2.DB
 }
 
 func provideGeneratorLLM(ctx context.Context, cfg *config.Config, logger *slog.Logger) (llms.Model, error) {
-	switch cfg.AI.LLMProvider {
-	case "gemini":
-		if cfg.AI.GeminiAPIKey == "" {
-			return nil, fmt.Errorf("GEMINI_API_KEY is not set")
-		}
-		return gemini.New(ctx, gemini.WithModel(cfg.AI.GeneratorModel), gemini.WithAPIKey(cfg.AI.GeminiAPIKey))
-	case "openai":
-		if cfg.AI.OpenAIAPIKey == "" {
-			return nil, fmt.Errorf("OPENAI_API_KEY is not set")
-		}
-		baseURL := cfg.AI.OpenAIBaseURL
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		modelName := cfg.AI.GeneratorModel
-		if cfg.AI.OpenAIModel != "" {
-			modelName = cfg.AI.OpenAIModel
-		}
-		return openai.New(openai.WithAPIKey(cfg.AI.OpenAIAPIKey), openai.WithBaseURL(baseURL), openai.WithModel(modelName), openai.WithLogger(logger))
-	case "ollama":
-		headerTimeout := parseHeaderTimeout(cfg.AI.HTTPResponseHeaderTimeout, logger)
-		requestTimeout := parseRequestTimeout(cfg.AI.HTTPRequestTimeout, logger)
-
-		logger.Info("configuring Ollama for generator",
-			"response_header_timeout", headerTimeout,
-			"request_timeout", requestTimeout,
-			"model", cfg.AI.GeneratorModel,
-		)
-
-		opts := llm.BuildOllamaOptions(llm.OllamaClientConfig{
-			ServerURL:          cfg.AI.OllamaHost,
-			APIKey:             cfg.AI.OllamaAPIKey,
-			Model:              cfg.AI.GeneratorModel,
-			HTTPHeaderTimeout:  headerTimeout,
-			HTTPRequestTimeout: requestTimeout,
-			ModelKeepAlive:     cfg.AI.ModelKeepAlive,
-			EnableThinking:     cfg.AI.EnableThinking,
-			ThinkingEffort:     cfg.AI.ThinkingEffort,
-			Logger:             logger,
-		})
-		return ollama.New(opts...)
-	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.AI.LLMProvider)
-	}
+	return llm.NewGenerator(ctx, cfg.AI, logger)
 }
 
 func provideLoggerConfig(cfg *config.Config) logger.Config {
