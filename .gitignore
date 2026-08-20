@@ -22,6 +22,7 @@ data/
 bin/
 keys/
 reviews/
+review-traces/
 *.sh
 !scripts/quickstart.sh
 

@@ -14,22 +14,22 @@ type Config struct {
 	// MinSeverity is the lowest severity to keep. "low" keeps everything,
 	// "medium" drops low, "high" drops medium+low, "critical" keeps only
 	// critical. Empty defaults to "low" (keep all).
-	MinSeverity string
+	MinSeverity string `json:"min_severity"`
 
 	// IgnorePaths are glob patterns matching files to skip entirely (no
 	// diff sent to the agent, no findings accepted from them). Common
 	// examples: yarn.lock, package-lock.json, vendor/**, **/*.gen.go.
-	IgnorePaths []string
+	IgnorePaths []string `json:"ignore_paths"`
 
 	// EnabledCategories toggles which review angles run. When nil or empty,
 	// all angles run. Keys are angle names: "bug", "security",
 	// "performance", "conventions".
-	EnabledCategories map[string]bool
+	EnabledCategories map[string]bool `json:"enabled_categories,omitempty"`
 
 	// MaxFiles caps the number of changed files in a PR before the review
 	// is skipped. 0 means no limit.
 	// Large diffs reduce review quality and waste tokens.
-	MaxFiles int
+	MaxFiles int `json:"max_files"`
 }
 
 // DefaultConfig returns conservative defaults: minimum severity medium,

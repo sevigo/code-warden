@@ -42,23 +42,24 @@ func main() {
 	fs := flag.NewFlagSet("review", flag.ExitOnError)
 
 	var (
-		local   = fs.String("local", "", "path to a local git checkout to review")
-		pr      = fs.String("pr", "", "PR to review as owner/repo")
-		prNum   = fs.Int("number", 0, "pull request number (used with --pr)")
-		token   = fs.String("token", "", "GitHub token (optional; private repos / higher limits)")
-		base    = fs.String("base", "", "git ref to diff against (default: HEAD = uncommitted changes)")
-		asJSON  = fs.Bool("json", false, "print raw structured review as JSON (no color)")
-		prompt  = fs.Bool("prompt-only", false, "print compact structured text for AI agent consumption (no color)")
-		noColor = fs.Bool("no-color", false, "disable colorized output")
-		cfgPath = fs.String("config", "", "path to a config file (default: ./config.yaml, $HOME/.code-warden)")
-		timeout = fs.Duration("timeout", 0, "per-angle timeout (default: 3m; raise for slow local models)")
-		maxIter = fs.Int("max-iterations", 0, "per-angle agent-loop iteration cap (default: 8)")
-		logLvl  = fs.String("log-level", "info", "log level: debug, info, warn, error")
-		ctxWin  = fs.Int("context-window", 0, "model context window in tokens (default: 128000; compaction triggers at 60%)")
-		sev     = fs.String("severity", "", "minimum severity to report: low, medium, high, critical (default: medium)")
-		ignore  = fs.String("ignore", "", "comma-separated glob patterns to ignore (e.g. \"vendor/**,*.lock\")")
-		cats    = fs.String("categories", "", "comma-separated categories to enable (e.g. \"bug,security\"); default: all")
-		maxF    = fs.Int("max-files", 0, "skip review when more than N files changed (default: 100)")
+		local    = fs.String("local", "", "path to a local git checkout to review")
+		pr       = fs.String("pr", "", "PR to review as owner/repo")
+		prNum    = fs.Int("number", 0, "pull request number (used with --pr)")
+		token    = fs.String("token", "", "GitHub token (optional; private repos / higher limits)")
+		base     = fs.String("base", "", "git ref to diff against (default: HEAD = uncommitted changes)")
+		asJSON   = fs.Bool("json", false, "print raw structured review as JSON (no color)")
+		prompt   = fs.Bool("prompt-only", false, "print compact structured text for AI agent consumption (no color)")
+		noColor  = fs.Bool("no-color", false, "disable colorized output")
+		cfgPath  = fs.String("config", "", "path to a config file (default: ./config.yaml, $HOME/.code-warden)")
+		timeout  = fs.Duration("timeout", 0, "per-angle timeout (default: 3m; raise for slow local models)")
+		maxIter  = fs.Int("max-iterations", 0, "per-angle agent-loop iteration cap (default: 8)")
+		logLvl   = fs.String("log-level", "info", "log level: debug, info, warn, error")
+		ctxWin   = fs.Int("context-window", 0, "model context window in tokens (default: 128000; compaction triggers at 60%)")
+		sev      = fs.String("severity", "", "minimum severity to report: low, medium, high, critical (default: medium)")
+		ignore   = fs.String("ignore", "", "comma-separated glob patterns to ignore (e.g. \"vendor/**,*.lock\")")
+		cats     = fs.String("categories", "", "comma-separated categories to enable (e.g. \"bug,security\"); default: all")
+		maxF     = fs.Int("max-files", 0, "skip review when more than N files changed (default: 100)")
+		traceDir = fs.String("trace-dir", "", "write private review trace artifacts beneath this directory")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "review — run the agent-based code review standalone")
@@ -113,9 +114,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	result, err := executeReview(ctx, cfg, logger, input, reviewOpts)
+	result, err := executeReviewRun(ctx, cfg, logger, input, reviewOpts, *traceDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: review failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -125,6 +126,52 @@ func main() {
 		os.Exit(1)
 	}
 	os.Exit(exitCode)
+}
+
+func executeReviewRun(ctx context.Context, cfg *config.Config, logger *slog.Logger, input reviewapp.ReviewInput, opts reviewapp.ReviewOptions, traceDir string) (*reviewapp.ReviewResult, error) {
+	startedAt := time.Now()
+	result, reviewErr := executeReview(ctx, cfg, logger, input, opts)
+	finishedAt := time.Now()
+	if err := writeReviewTrace(traceDir, cfg.AI, input, opts, result, reviewErr, startedAt, finishedAt); err != nil {
+		return nil, fmt.Errorf("write review trace: %w", err)
+	}
+	if reviewErr != nil {
+		return nil, fmt.Errorf("review failed: %w", reviewErr)
+	}
+	return result, nil
+}
+
+func writeReviewTrace(traceDir string, ai config.AIConfig, input reviewapp.ReviewInput, opts reviewapp.ReviewOptions, result *reviewapp.ReviewResult, reviewErr error, startedAt, finishedAt time.Time) error {
+	if traceDir == "" {
+		return nil
+	}
+	tracePath, err := reviewcli.WriteTrace(traceDir, reviewcli.TraceRequest{
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+		Model:      buildTraceModel(ai),
+		Input:      input,
+		Options:    opts,
+		Result:     result,
+		Err:        reviewErr,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "trace: %s\n", tracePath)
+	return nil
+}
+
+func buildTraceModel(ai config.AIConfig) reviewcli.TraceModel {
+	model := ai.GeneratorModel
+	if ai.LLMProvider == "openai" && ai.OpenAIModel != "" {
+		model = ai.OpenAIModel
+	}
+	return reviewcli.TraceModel{
+		Provider:        ai.LLMProvider,
+		Model:           model,
+		ThinkingEnabled: ai.EnableThinking,
+		ThinkingEffort:  ai.ThinkingEffort,
+	}
 }
 
 // exitCodeForReview returns the process exit code based on the review verdict.
