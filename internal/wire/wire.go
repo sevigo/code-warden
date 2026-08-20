@@ -17,7 +17,6 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
-	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/jobs"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
@@ -45,11 +44,7 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 		provideDBConfig,
 		provideSlogLogger,
 		provideSQLXDB,
-		provideGlobalMCPServer,
-		provideWorkspaceRegistry,
-
 		wire.Bind(new(core.Job), new(*jobs.ReviewJob)),
-		wire.Bind(new(core.SessionCanceller), new(*jobs.ReviewJob)),
 	)
 	return &app.App{}, nil, nil
 }
@@ -91,58 +86,4 @@ func provideLogWriter(cfg *config.Config) io.Writer {
 
 func provideSlogLogger(loggerConfig logger.Config, writer io.Writer) *slog.Logger {
 	return logger.NewLogger(loggerConfig, writer)
-}
-
-func provideGlobalMCPServer(ctx context.Context, cfg *config.Config, logger *slog.Logger, registry *globalmcp.WorkspaceRegistry, store storage.Store) (*globalmcp.Server, error) {
-	if cfg.Agent.DefaultWorkspace == "" {
-		logger.Info("No default workspace configured, using proxy-only MCP server")
-		return globalmcp.NewServer(cfg, logger, registry), nil
-	}
-
-	logger.Info("Default workspace configured, initializing standalone MCP server",
-		"workspace", cfg.Agent.DefaultWorkspace,
-		"repo", cfg.Agent.DefaultWorkspaceRepo)
-
-	repo, err := getOrCreateDefaultRepo(ctx, store, cfg.Agent.DefaultWorkspaceRepo, cfg.Agent.DefaultWorkspace, logger)
-	if err != nil {
-		logger.Error("Failed to setup default workspace", "error", err)
-		return nil, fmt.Errorf("failed to setup default workspace: %w", err)
-	}
-
-	standaloneCfg := &globalmcp.StandaloneConfig{
-		Store:      store,
-		Repo:       repo,
-		RepoConfig: core.DefaultRepoConfig(),
-	}
-
-	return globalmcp.NewStandaloneServer(cfg, logger, registry, standaloneCfg), nil
-}
-
-func getOrCreateDefaultRepo(ctx context.Context, store storage.Store, repoFullName, repoPath string, logger *slog.Logger) (*storage.Repository, error) {
-	repo, err := store.GetRepositoryByFullName(ctx, repoFullName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check for existing repository: %w", err)
-	}
-
-	if repo != nil {
-		logger.Info("Found existing repository record for default workspace", "repo", repoFullName)
-		return repo, nil
-	}
-
-	logger.Info("Creating new repository record for default workspace", "repo", repoFullName)
-
-	repo = &storage.Repository{
-		FullName:  repoFullName,
-		ClonePath: repoPath,
-	}
-
-	if err := store.CreateRepository(ctx, repo); err != nil {
-		return nil, fmt.Errorf("failed to create repository record: %w", err)
-	}
-
-	return repo, nil
-}
-
-func provideWorkspaceRegistry(logger *slog.Logger) *globalmcp.WorkspaceRegistry {
-	return globalmcp.NewWorkspaceRegistry(logger)
 }

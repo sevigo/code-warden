@@ -84,8 +84,6 @@ type ReviewStats struct {
 //
 //go:generate mockgen -destination=../../mocks/mock_store.go -package=mocks github.com/sevigo/code-warden/internal/storage Store
 type Store interface {
-	// Agent session persistence (see agent_session.go).
-	AgentSessionStore
 	SaveReview(ctx context.Context, review *core.Review) error
 	UpdateReviewPublicationStatus(ctx context.Context, id int64, status string) error
 	GetLatestReviewForPR(ctx context.Context, repoFullName string, prNumber int) (*core.Review, error)

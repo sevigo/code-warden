@@ -88,16 +88,6 @@ func (s *mockStore) ListJobRuns(_ context.Context, _, _ int) ([]*storage.JobRun,
 	return nil, nil
 }
 
-// AgentSessionStore stubs
-func (s *mockStore) CreateAgentSession(_ context.Context, _ *storage.AgentSession) error { return nil }
-func (s *mockStore) UpdateAgentSession(_ context.Context, _ *storage.AgentSession) error { return nil }
-func (s *mockStore) GetAgentSession(_ context.Context, _ string) (*storage.AgentSession, error) {
-	return nil, nil
-}
-func (s *mockStore) ListAgentSessions(_ context.Context, _, _ string, _ int) ([]*storage.AgentSession, error) {
-	return nil, nil
-}
-
 func TestSync_RecoverFromInvalidSHA(t *testing.T) {
 	// This test verifies that if LastIndexedSHA is invalid (e.g. force push or GC),
 	// the sync process catches the diff error and falls back to a full re-index (new clone).

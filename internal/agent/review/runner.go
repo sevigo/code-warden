@@ -40,8 +40,7 @@ type Params struct {
 	// Ignored when WorkspaceDir is set.
 	RepoURL string
 	// WorkspaceDir is an existing checkout to investigate. When set, the runner
-	// uses it directly instead of cloning RepoURL (used by /implement's local
-	// workspace, which is already at the modified state).
+	// uses it directly instead of cloning RepoURL.
 	WorkspaceDir string
 	// RepoFullName is "owner/name" used for logging.
 	RepoFullName string

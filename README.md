@@ -86,8 +86,6 @@ When someone comments `/review` on a PR:
 
 `/rereview` is an alias for `/review` — it always reviews the current diff fresh.
 
-`/implement` goes further: an agent reads the issue, explores the codebase via MCP tools, writes code, runs lint and tests, reviews its own work, and opens a PR.
-
 ---
 
 ## Features
@@ -97,12 +95,6 @@ When someone comments `/review` on a PR:
 - Multi-angle — bug, security, performance, and conventions passes run in parallel on the same model
 - Diff-boundary enforced — findings outside the changed hunks are dropped
 - Structured output — severity badges (🔴 critical · 🟠 warning · 🟡 suggestion) with inline comments
-
-**Agent (`/implement`)**
-- Reads a GitHub issue, plans, and implements changes in an isolated workspace
-- MCP tools: `run_command`, `push_branch`, `create_pull_request`
-- Agent-based review loop before committing
-- Only reviewed files are included in the PR
 
 **Infrastructure**
 - Self-hosted — Ollama (local) or cloud LLMs (Gemini, any OpenAI-compatible endpoint)
@@ -174,7 +166,6 @@ Full reference: [config.yaml.example](config.yaml.example)
 |---|---|
 | [docs/SETUP.md](docs/SETUP.md) | Deployment and first-run guide |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component relationships and system design |
-| [docs/IMPLEMENT_ARCHITECTURE.md](docs/IMPLEMENT_ARCHITECTURE.md) | `/implement` flow and agent design |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and fixes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 
@@ -182,7 +173,7 @@ Full reference: [config.yaml.example](config.yaml.example)
 
 ## Built On
 
-Code-Warden is built on [GoFrame](https://github.com/sevigo/goframe), a Go framework that provides LLM providers, agent loops, and MCP tooling.
+Code-Warden is built on [GoFrame](https://github.com/sevigo/goframe), a Go framework that provides LLM providers, agent loops, and tool calling.
 
 ## License
 

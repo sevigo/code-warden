@@ -10,16 +10,6 @@ import (
 	"github.com/google/go-github/v73/github"
 )
 
-// ReviewType distinguishes between a full review and a follow-up review.
-type ReviewType int
-
-const (
-	// FullReview indicates a complete code review should be performed.
-	FullReview ReviewType = iota
-	// ImplementIssue indicates an autonomous agent should implement the issue.
-	ImplementIssue
-)
-
 // GitHubEvent represents a simplified, internal view of a GitHub webhook event.
 // It is constructed from raw GitHub webhook payloads and serves as the primary
 // data carrier for triggering code review jobs.
@@ -36,9 +26,6 @@ type GitHubEvent struct {
 	PRBody   string // The body/description of the pull request
 	HeadSHA  string // The HEAD commit SHA of the PR
 
-	// Type specifies whether this is a review or implement request.
-	Type ReviewType
-
 	// UserInstructions captures optional text provided with the command
 	// (e.g., "/review check security"). This allows users to provide
 	// custom guidance to the code review process.
@@ -50,10 +37,6 @@ type GitHubEvent struct {
 	Commenter      string // The GitHub username that triggered the review
 	InstallationID int64  // The GitHub App installation ID
 
-	// Fields for ImplementIssue type
-	IssueNumber int    // The issue number (for /implement commands)
-	IssueTitle  string // The title of the issue
-	IssueBody   string // The body/description of the issue
 }
 
 // EventFromIssueComment transforms a raw GitHub IssueCommentEvent into the application's
@@ -94,7 +77,6 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	return &GitHubEvent{
-		Type:             FullReview,
 		RepoOwner:        repo.GetOwner().GetLogin(),
 		RepoName:         repo.GetName(),
 		RepoFullName:     repo.GetFullName(),
@@ -152,73 +134,4 @@ func parseReviewCommand(commentBody string) (string, error) {
 	}
 
 	return "", fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
-}
-
-// ImplementEventFromIssueComment transforms a GitHub IssueCommentEvent on an issue
-// (not a PR) into a GitHubEvent for the /implement command.
-// This is used to trigger autonomous agent implementation of issues.
-func ImplementEventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error) {
-	// Only process issues, not PRs
-	if event.GetIssue().IsPullRequest() {
-		return nil, fmt.Errorf("comment is on a pull request, not an issue")
-	}
-
-	commentBody := strings.TrimSpace(strings.ToLower(event.GetComment().GetBody()))
-	if !isImplementCommand(commentBody) {
-		return nil, fmt.Errorf("comment is not an /implement command")
-	}
-
-	repo := event.GetRepo()
-	if repo == nil || repo.GetOwner() == nil || repo.GetOwner().GetLogin() == "" || repo.GetName() == "" {
-		return nil, fmt.Errorf("repository or owner information is missing from the event")
-	}
-
-	issueNumber := event.GetIssue().GetNumber()
-	if issueNumber <= 0 {
-		return nil, fmt.Errorf("invalid issue number: %d", issueNumber)
-	}
-
-	if event.GetComment().GetUser() == nil || event.GetComment().GetUser().GetLogin() == "" {
-		return nil, fmt.Errorf("commenter information is missing from the event")
-	}
-
-	if event.GetInstallation() == nil || event.GetInstallation().GetID() == 0 {
-		return nil, fmt.Errorf("installation ID is missing from the event")
-	}
-
-	// Extract instructions after /implement
-	instructions := parseImplementInstructions(commentBody)
-
-	return &GitHubEvent{
-		Type:             ImplementIssue,
-		RepoOwner:        repo.GetOwner().GetLogin(),
-		RepoName:         repo.GetName(),
-		RepoFullName:     repo.GetFullName(),
-		RepoCloneURL:     repo.GetCloneURL(),
-		Language:         repo.GetLanguage(),
-		InstallationID:   event.GetInstallation().GetID(),
-		IssueNumber:      issueNumber,
-		IssueTitle:       event.GetIssue().GetTitle(),
-		IssueBody:        event.GetIssue().GetBody(),
-		UserInstructions: instructions,
-		Commenter:        event.GetComment().GetUser().GetLogin(),
-	}, nil
-}
-
-func isImplementCommand(commentBody string) bool {
-	if commentBody == "/implement" {
-		return true
-	}
-	// Allow "/implement " with instructions
-	return strings.HasPrefix(commentBody, "/implement ")
-}
-
-func parseImplementInstructions(commentBody string) string {
-	if !strings.HasPrefix(commentBody, "/implement ") {
-		return ""
-	}
-	instructions := strings.TrimPrefix(commentBody, "/implement")
-	instructions = strings.TrimSpace(instructions)
-
-	return sanitizeInstructions(instructions)
 }

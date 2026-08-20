@@ -39,12 +39,11 @@ All tests and lint must pass before submitting a PR.
 
 | Directory | What lives here |
 |---|---|
-| `cmd/` | Binary entry points (server) |
+| `cmd/` | Binary entry points (`server` and standalone `review`) |
 | `internal/agent/review/` | Multi-angle agent-based review runner |
-| `internal/agent/` | Agent orchestration for `/implement` |
+| `internal/agent/reviewtools/` | Workspace-bound read-only review tools |
 | `internal/jobs/` | Job dispatcher and review worker |
 | `internal/github/` | GitHub API client and webhook handling |
-| `internal/mcp/` | MCP server and tool implementations |
 | `internal/storage/` | PostgreSQL persistence |
 | `internal/core/` | Domain types and interfaces |
 | `internal/llm/` | LLM client wrappers and prompt management |

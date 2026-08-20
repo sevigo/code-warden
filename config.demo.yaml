@@ -57,23 +57,3 @@ logging:
   level: "info"
   format: "text"
   output: "stdout"
-
-# Agent (autonomous /implement command) — disabled by default in demo mode.
-# To enable: set agent.enabled: true and configure a GitHub App + ngrok tunnel.
-#
-# mode: "warden" uses the phased Go agent workflow with in-process tools.
-agent:
-  enabled: false
-  mode: "warden"
-  model: "kimi-k2.5"          # Ollama cloud model — same as generator, no extra download
-  max_iterations: 5
-  max_concurrent_sessions: 3
-  timeout: "1h"
-  mcp_addr: "127.0.0.1:8081"
-  working_dir: "./data/agent-workspaces"
-  # Per-phase iteration budgets (warden mode). Omit or set to 0 to use built-in defaults.
-  # plan_iterations: 8      # Planning loop (read-only exploration before editing)
-  # edit_iterations: 50     # Edit/implement loop (main coding budget)
-  # review_rounds: 10       # Max orchestrator-driven review+fix cycles
-  # fix_iterations: 8       # Fix loop iterations per review round
-  # publish_iterations: 8   # Publish loop (push branch + open PR)

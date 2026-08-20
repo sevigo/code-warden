@@ -56,7 +56,7 @@ Each pass uses read-only tools (grep, find, read_file, list_dir) in an isolated 
 | Package | Responsibility |
 |---------|---------------|
 | `internal/agent/review/` | Multi-angle agent-based review runner |
-| `internal/agent/` | Orchestrator for `/implement` (plan → edit → review → publish) |
+| `internal/agent/reviewtools/` | Workspace-bound read-only review tools |
 | `internal/jobs/` | Job dispatcher and review worker pool |
 | `internal/repomanager/` | Git repository lifecycle (clone, sync, diff) |
 | `internal/storage/` | PostgreSQL persistence |
@@ -64,7 +64,6 @@ Each pass uses read-only tools (grep, find, read_file, list_dir) in an isolated 
 | `internal/github/` | GitHub API client and webhook handling |
 | `internal/core/` | Domain types and interfaces |
 | `internal/wire/` | Dependency injection with Google Wire |
-| `internal/mcp/` | MCP server exposing tools to agents |
 | `cmd/server/` | HTTP server entry point |
 
 ### Core Interfaces

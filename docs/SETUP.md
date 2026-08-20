@@ -116,7 +116,7 @@ make build
 ./bin/code-warden
 ```
 
-You should see logs confirming: database connected, Qdrant connected, MCP server listening, HTTP server on port 8080.
+You should see logs confirming that the database connected and the HTTP server is listening on port 8080.
 
 For development:
 
@@ -153,12 +153,6 @@ To index a repository, add it from the dashboard UI and trigger a scan. For incr
 1. Open a pull request in a repository where the GitHub App is installed
 2. Comment `/review` on the PR
 3. Code-Warden will post a status check, then review findings as inline comments
-
----
-
-## Agent Setup (Optional)
-
-To enable `/implement`, see [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md).
 
 ---
 

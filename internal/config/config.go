@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,171 +22,9 @@ type Config struct {
 	Server   ServerConfig  `mapstructure:"server"`
 	GitHub   GitHubConfig  `mapstructure:"github"`
 	AI       AIConfig      `mapstructure:"ai"`
-	Agent    AgentConfig   `mapstructure:"agent"`
 	Database DBConfig      `mapstructure:"database"`
 	Storage  StorageConfig `mapstructure:"storage"`
 	Logging  logger.Config `mapstructure:"logging"`
-}
-
-// AgentConfig holds configuration for the autonomous agent system.
-type AgentConfig struct {
-	// Enabled determines if agent functionality is active.
-	Enabled bool `mapstructure:"enabled"`
-
-	// Mode selects the phased implementation workflow. "pi" is a compatibility alias for "warden".
-	Mode string `mapstructure:"mode"`
-
-	// Model is the LLM model to use for the agent.
-	Model string `mapstructure:"model"`
-
-	// Timeout is the maximum time for an agent session.
-	Timeout string `mapstructure:"timeout"`
-
-	// MaxIterations is the maximum review iterations before escalation.
-	MaxIterations int `mapstructure:"max_iterations"`
-
-	// MaxConcurrentSessions is the maximum number of concurrent agent sessions.
-	MaxConcurrentSessions int `mapstructure:"max_concurrent_sessions"`
-
-	// MCPAddr is the address for the MCP server.
-	MCPAddr string `mapstructure:"mcp_addr"`
-
-	// WorkingDir is the directory for agent workspaces.
-	WorkingDir string `mapstructure:"working_dir"`
-
-	// DefaultWorkspace is an optional path to a repository that should be used
-	// as the default workspace for standalone MCP mode.
-	DefaultWorkspace string `mapstructure:"default_workspace"`
-
-	// DefaultWorkspaceRepo is the full name of the default workspace repository (e.g., "owner/repo").
-	DefaultWorkspaceRepo string `mapstructure:"default_workspace_repo"`
-
-	// InProcessOnly skips starting the MCP HTTP server.
-	InProcessOnly bool `mapstructure:"in_process_only"`
-
-	// BaseBranch is the target base branch for pull requests (default: "main").
-	BaseBranch string `mapstructure:"base_branch"`
-
-	// Per-phase iteration budgets for warden mode (0 = use built-in default).
-
-	// PlanIterations is the max iterations for the planning loop (default: 8).
-	PlanIterations int `mapstructure:"plan_iterations"`
-
-	// EditIterations is the max iterations for the edit/implement loop (default: 50).
-	EditIterations int `mapstructure:"edit_iterations"`
-
-	// ReviewRounds is the max number of orchestrator-driven review+fix cycles (default: 10).
-	ReviewRounds int `mapstructure:"review_rounds"`
-
-	// FixIterations is the max iterations for each per-round fix loop (default: 8).
-	FixIterations int `mapstructure:"fix_iterations"`
-
-	// PublishIterations is the max iterations for the publish loop (default: 8).
-	PublishIterations int `mapstructure:"publish_iterations"`
-}
-
-// GetTimeout parses and returns the timeout duration.
-func (c *AgentConfig) GetTimeout() (time.Duration, error) {
-	return time.ParseDuration(c.Timeout)
-}
-
-// Validate validates the agent configuration.
-func (c *AgentConfig) Validate() error {
-	if !c.Enabled {
-		return nil // No validation needed if disabled
-	}
-
-	// Mode validation
-	validModes := map[string]bool{
-		"pi":     true,
-		"warden": true,
-	}
-	if !validModes[c.Mode] {
-		return fmt.Errorf("agent.mode must be 'warden' or 'pi', got: %s", c.Mode)
-	}
-
-	// Model validation
-	if c.Model == "" {
-		return errors.New("agent.model is required when agent is enabled")
-	}
-
-	// Timeout validation
-	if _, err := c.GetTimeout(); err != nil {
-		return fmt.Errorf("agent.timeout is invalid: %w", err)
-	}
-
-	// Iterations validation
-	if c.MaxIterations < 1 {
-		return errors.New("agent.max_iterations must be >= 1")
-	}
-
-	// Concurrent sessions validation
-	if c.MaxConcurrentSessions < 1 {
-		c.MaxConcurrentSessions = 3
-	}
-
-	// MCP address validation (not required in in-process-only mode)
-	if c.MCPAddr == "" && !c.InProcessOnly {
-		return errors.New("agent.mcp_addr is required when agent is enabled (or set in_process_only: true)")
-	}
-
-	// Validate MCP address doesn't contain path separator
-	if c.MCPAddr != "" && (strings.Contains(c.MCPAddr, "/") || strings.Contains(c.MCPAddr, "\\")) {
-		return fmt.Errorf("agent.mcp_addr should not contain path separators: %s", c.MCPAddr)
-	}
-
-	// Default workspace validation
-	if err := c.validateDefaultWorkspace(); err != nil {
-		return err
-	}
-
-	// Working directory validation
-	return c.validateWorkingDir()
-}
-
-// validateWorkingDir validates the working directory.
-func (c *AgentConfig) validateWorkingDir() error {
-	if c.WorkingDir == "" {
-		return errors.New("agent.working_dir is required when agent is enabled")
-	}
-	// Check for path traversal
-	cleanPath := filepath.Clean(c.WorkingDir)
-	if strings.Contains(cleanPath, "..") {
-		return fmt.Errorf("agent.working_dir contains path traversal: %s", c.WorkingDir)
-	}
-	// Must be an absolute path
-	if !filepath.IsAbs(cleanPath) {
-		return fmt.Errorf("agent.working_dir must be an absolute path: %s", c.WorkingDir)
-	}
-	return nil
-}
-
-// validateDefaultWorkspace validates the default workspace configuration.
-func (c *AgentConfig) validateDefaultWorkspace() error {
-	if c.DefaultWorkspace == "" {
-		return nil // Optional, no validation needed
-	}
-
-	// Check path exists
-	info, err := os.Stat(c.DefaultWorkspace)
-	if err != nil {
-		return fmt.Errorf("agent.default_workspace path does not exist: %s", c.DefaultWorkspace)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("agent.default_workspace must be a directory: %s", c.DefaultWorkspace)
-	}
-
-	// Require repository name if workspace is set
-	if c.DefaultWorkspaceRepo == "" {
-		return errors.New("agent.default_workspace_repo is required when agent.default_workspace is set")
-	}
-
-	// Validate repo name format: "owner/repo"
-	if !strings.Contains(c.DefaultWorkspaceRepo, "/") || strings.Count(c.DefaultWorkspaceRepo, "/") != 1 {
-		return fmt.Errorf("agent.default_workspace_repo must be in format 'owner/repo', got: %s", c.DefaultWorkspaceRepo)
-	}
-
-	return nil
 }
 
 type ServerConfig struct {
@@ -343,21 +180,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.ssl_mode", "disable")
 	v.SetDefault("database.conn_max_lifetime", "5m")
 	v.SetDefault("database.conn_max_idle_time", "5m")
-
-	// Agent
-	v.SetDefault("agent.enabled", false)
-	v.SetDefault("agent.mode", "warden")
-	v.SetDefault("agent.model", "qwen2.5-coder")
-	v.SetDefault("agent.timeout", "30m")
-	v.SetDefault("agent.max_iterations", 3)
-	v.SetDefault("agent.max_concurrent_sessions", 3)
-	v.SetDefault("agent.mcp_addr", "127.0.0.1:8081")
-	v.SetDefault("agent.working_dir", "")
-	v.SetDefault("agent.plan_iterations", 0)    // 0 = use built-in default (8)
-	v.SetDefault("agent.edit_iterations", 0)    // 0 = use built-in default (50)
-	v.SetDefault("agent.review_rounds", 0)      // 0 = use built-in default (10)
-	v.SetDefault("agent.fix_iterations", 0)     // 0 = use built-in default (8)
-	v.SetDefault("agent.publish_iterations", 0) // 0 = use built-in default (8)
 }
 
 func (c *Config) Validate() error {
@@ -463,10 +285,6 @@ func (c *Config) ValidateForServer() error {
 			errs = append(errs, err.Error())
 		}
 	}
-	if err := c.Agent.Validate(); err != nil {
-		errs = append(errs, err.Error())
-	}
-
 	if len(errs) > 0 {
 		return fmt.Errorf("configuration errors: %s", strings.Join(errs, "; "))
 	}
