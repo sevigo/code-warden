@@ -490,7 +490,8 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, error) {
 	repoURL := j.buildAgentCloneURL(event)
 
-	runner := agentreview.NewRunner(j.llm, j.promptMgr, agent.ReadOnlyReviewTools, j.logger, nil)
+	executor := agentreview.NewGoframeAngleExecutor(j.llm, j.promptMgr, agent.ReadOnlyReviewTools, j.logger)
+	runner := agentreview.NewRunner(executor, j.logger, nil)
 	result, err := runner.Run(ctx, agentreview.Params{
 		Diff:           diff,
 		ChangedFiles:   changedFiles,

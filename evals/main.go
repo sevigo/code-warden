@@ -296,7 +296,8 @@ func runLiveEval(ctx context.Context, c EvalCase, model llms.Model, promptMgr *l
 func runLiveReview(ctx context.Context, c EvalCase, workspace string, model llms.Model, promptMgr *llmpkg.PromptManager, log *slog.Logger) (*agentreview.Result, error) {
 	reviewConfig := agentreview.DefaultConfig()
 	reviewConfig.MinSeverity = "low"
-	runner := agentreview.NewRunner(model, promptMgr, agent.ReadOnlyReviewTools, log, nil)
+	executor := agentreview.NewGoframeAngleExecutor(model, promptMgr, agent.ReadOnlyReviewTools, log)
+	runner := agentreview.NewRunner(executor, log, nil)
 	return runner.Run(ctx, agentreview.Params{
 		Diff:          c.Diff,
 		ChangedFiles:  evalChangedFiles(c),

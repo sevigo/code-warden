@@ -38,6 +38,7 @@ type ReviewOptions struct {
 type ReviewResult struct {
 	Review *core.StructuredReview
 	Raw    string
+	Angles []agentreview.AngleResult
 }
 
 // ReviewSource loads review input from an integration such as a local checkout
@@ -63,7 +64,8 @@ type Service struct {
 
 // NewService creates a review service using the standard multi-angle runner.
 func NewService(model llms.Model, promptMgr *llm.PromptManager, tools agentreview.ToolBuilder, logger *slog.Logger) *Service {
-	return &Service{runner: agentreview.NewRunner(model, promptMgr, tools, logger, nil)}
+	executor := agentreview.NewGoframeAngleExecutor(model, promptMgr, tools, logger)
+	return &Service{runner: agentreview.NewRunner(executor, logger, nil)}
 }
 
 // Review executes one provider-neutral review request.
@@ -86,7 +88,7 @@ func (s *Service) Review(ctx context.Context, input ReviewInput, opts ReviewOpti
 	if result == nil {
 		return nil, errors.New("review runner returned no result")
 	}
-	return &ReviewResult{Review: result.Review, Raw: result.Raw}, nil
+	return &ReviewResult{Review: result.Review, Raw: result.Raw, Angles: result.Angles}, nil
 }
 
 var _ Reviewer = (*Service)(nil)

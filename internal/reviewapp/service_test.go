@@ -17,7 +17,8 @@ func TestServiceReviewMapsInputAndOptions(t *testing.T) {
 	t.Parallel()
 
 	wantReview := &core.StructuredReview{Summary: "done"}
-	runner := &recordingRunner{result: &agentreview.Result{Review: wantReview, Raw: "raw review"}}
+	wantAngles := []agentreview.AngleResult{{Angle: "bug", Status: agentreview.AngleStatusCompleted}}
+	runner := &recordingRunner{result: &agentreview.Result{Review: wantReview, Raw: "raw review", Angles: wantAngles}}
 	service := &Service{runner: runner}
 	reviewConfig := agentreview.DefaultConfig()
 	input := ReviewInput{
@@ -40,6 +41,7 @@ func TestServiceReviewMapsInputAndOptions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, wantReview, result.Review)
 	assert.Equal(t, "raw review", result.Raw)
+	assert.Equal(t, wantAngles, result.Angles)
 	assert.Equal(t, input.Diff, runner.params.Diff)
 	assert.Equal(t, input.ChangedFiles, runner.params.ChangedFiles)
 	assert.Equal(t, input.CloneURL, runner.params.RepoURL)
