@@ -9,13 +9,13 @@ import (
 )
 
 // diffFilter holds the valid new-side line ranges per changed file, used to
-// validate and snap findings to the diff hunks (mirrors Kodus's snapLinesToDiff).
+// validate and snap findings to the diff hunks.
 type diffFilter struct {
 	fileLines map[string]map[int]struct{}
 }
 
 // newDiffFilter builds a diff filter from the changed files' patches.
-func newDiffFilter(changedFiles []internalgithub.ChangedFile) *diffFilter {
+func newDiffFilter(changedFiles []core.ChangedFile) *diffFilter {
 	return &diffFilter{fileLines: internalgithub.BuildValidLineMap(changedFiles)}
 }
 
@@ -55,8 +55,8 @@ func (f *diffFilter) Snap(s core.Suggestion) *core.Suggestion {
 	if _, inDiff := lines[s.LineNumber]; inDiff {
 		return &s
 	}
-	// Snap to the nearest valid line within a small window. Kodus uses a
-	// similar approach to avoid losing real findings due to off-by-N errors.
+	// Snap to the nearest valid line within a small window to avoid losing real
+	// findings due to off-by-N errors.
 	const snapWindow = 5
 	sorted := sortedLines(lines)
 	bestLine := 0
@@ -98,7 +98,7 @@ func stripPrefix(p string) string {
 type DiffFilter = diffFilter
 
 // NewDiffFilterForTest builds a diff filter for use in tests/evals.
-func NewDiffFilterForTest(changedFiles []internalgithub.ChangedFile) *DiffFilter {
+func NewDiffFilterForTest(changedFiles []core.ChangedFile) *DiffFilter {
 	return newDiffFilter(changedFiles)
 }
 

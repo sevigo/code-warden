@@ -308,7 +308,7 @@ func runLiveReview(ctx context.Context, c EvalCase, workspace string, model llms
 	})
 }
 
-func evalChangedFiles(c EvalCase) []internalgithub.ChangedFile {
+func evalChangedFiles(c EvalCase) []core.ChangedFile {
 	if c.ChangedFiles != nil {
 		return c.ChangedFiles
 	}
@@ -492,11 +492,11 @@ func printResult(r EvalResult, verbose bool) {
 
 // EvalCase is a single test case for the eval harness.
 type EvalCase struct {
-	Name         string                       `json:"name"`
-	Suite        string                       `json:"suite"`
-	Diff         string                       `json:"diff"`
-	ChangedFiles []internalgithub.ChangedFile `json:"changed_files,omitempty"`
-	WorkspaceDir string                       `json:"workspace_dir,omitempty"`
+	Name         string             `json:"name"`
+	Suite        string             `json:"suite"`
+	Diff         string             `json:"diff"`
+	ChangedFiles []core.ChangedFile `json:"changed_files,omitempty"`
+	WorkspaceDir string             `json:"workspace_dir,omitempty"`
 	// WorkspaceFiles are extra files to write to the eval workspace that
 	// aren't part of the diff but are needed for context (e.g. existing
 	// files the diff depends on). Map of path → content.

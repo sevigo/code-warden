@@ -48,7 +48,7 @@ The detailed proposed types and migration sequence are in [DISCOVERY_ARCHITECTUR
 **Outcome:** one command gives a developer a useful review before push.
 
 1. Treat `cmd/review --local` as the canonical path and document it with a minimal config example.
-2. Extract a `LocalSource` from the CLI option-building code. It returns `ReviewInput` (diff, changed files, commit messages, workspace path, and repository identity).
+2. **Complete:** extract a `LocalSource` from the CLI option-building code. It returns `ReviewInput` (diff, changed files, commit messages, workspace path, and repository identity).
 3. Extract the terminal renderers into a `TerminalReporter`; preserve JSON, prompt-only, colour, and exit-code modes as presentation options.
 4. Load `.code-warden/config.yml` from a local repository, merged over global defaults and under command-line flags. Start with severity, ignored paths, categories, and max files.
 5. Add fixture-based end-to-end tests that never call a live model.

@@ -21,16 +21,19 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/sevigo/code-warden/internal/agent"
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
+	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
+	"github.com/sevigo/code-warden/internal/reviewapp"
 	"github.com/sevigo/code-warden/internal/reviewcli"
 	"github.com/sevigo/code-warden/internal/reviewcli/render"
 )
@@ -99,33 +102,29 @@ func main() {
 
 	rc := buildReviewConfig(*sev, *ignore, *cats, *maxF)
 
-	opts, err := buildOptions(ctx, *local, *pr, *prNum, *token, *base, *timeout, *maxIter, *ctxWin, rc)
+	source, reviewOpts, err := buildReviewRequest(*local, *pr, *prNum, *token, *base, *timeout, *maxIter, *ctxWin, rc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	result, err := reviewcli.Run(ctx, cfg, logger, opts)
+	input, err := source.Load(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	result, err := executeReview(ctx, cfg, logger, input, reviewOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: review failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	if *asJSON {
-		if err := json.NewEncoder(os.Stdout).Encode(result.Review); err != nil {
-			fmt.Fprintf(os.Stderr, "error: encode review: %v\n", err)
-			os.Exit(1)
-		}
-		os.Exit(exitCodeForReview(result.Review))
+	exitCode, err := presentReview(os.Stdout, result.Review, *asJSON, *prompt)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: encode review: %v\n", err)
+		os.Exit(1)
 	}
-
-	if *prompt {
-		renderPromptOnly(os.Stdout, result.Review)
-		os.Exit(exitCodeForReview(result.Review))
-	}
-
-	render.Render(os.Stdout, result.Review, render.Options{})
-	os.Exit(exitCodeForReview(result.Review))
+	os.Exit(exitCode)
 }
 
 // exitCodeForReview returns the process exit code based on the review verdict.
@@ -172,7 +171,7 @@ func buildReviewConfig(severity, ignore, categories string, maxFiles int) *agent
 
 // renderPromptOnly writes a compact, structured text format optimized for AI
 // coding agents (Claude Code, Cursor, etc.) to parse and act on.
-func renderPromptOnly(w *os.File, review *core.StructuredReview) {
+func renderPromptOnly(w io.Writer, review *core.StructuredReview) {
 	if review == nil {
 		return
 	}
@@ -201,53 +200,58 @@ func renderPromptOnly(w *os.File, review *core.StructuredReview) {
 	}
 }
 
-// buildOptions resolves the review inputs (local diff or public PR).
-func buildOptions(ctx context.Context, local, pr string, prNum int, token, base string, timeout time.Duration, maxIter, ctxWin int, rc *agentreview.Config) (reviewcli.Options, error) {
+// buildReviewRequest selects the input source and shared review options.
+func buildReviewRequest(local, pr string, prNum int, token, base string, timeout time.Duration, maxIter, ctxWin int, rc *agentreview.Config) (reviewapp.ReviewSource, reviewapp.ReviewOptions, error) {
+	opts := reviewapp.ReviewOptions{
+		Timeout:       timeout,
+		MaxIterations: maxIter,
+		ContextWindow: ctxWin,
+		Config:        rc,
+	}
 	if local != "" {
-		abs, err := filepath.Abs(local)
-		if err != nil {
-			return reviewcli.Options{}, err
-		}
-		if _, err := os.Stat(abs); err != nil {
-			return reviewcli.Options{}, fmt.Errorf("not a directory: %s", abs)
-		}
-		diff, err := reviewcli.GitDiff(ctx, abs, base)
-		if err != nil {
-			return reviewcli.Options{}, err
-		}
-		commits, _ := reviewcli.GitLog(ctx, abs, base)
-		return reviewcli.Options{
-			Diff:           diff,
-			ChangedFiles:   reviewcli.ChangedFilesFromDiff(diff),
-			WorkspaceDir:   abs,
-			RepoFullName:   filepath.Base(abs),
-			CommitMessages: commits,
-			Timeout:        timeout,
-			MaxIterations:  maxIter,
-			ContextWindow:  ctxWin,
-			Config:         rc,
-		}, nil
+		return reviewcli.NewLocalSource(local, base), opts, nil
 	}
 
 	owner, repo, err := splitOwnerRepo(pr)
 	if err != nil {
-		return reviewcli.Options{}, err
+		return nil, reviewapp.ReviewOptions{}, err
 	}
-	data, err := reviewcli.FetchPR(ctx, reviewcli.PRInput{Owner: owner, Repo: repo, Number: prNum, Token: token})
+	return reviewcli.NewPRSource(reviewcli.PRInput{Owner: owner, Repo: repo, Number: prNum, Token: token}), opts, nil
+}
+
+func newReviewService(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*reviewapp.Service, error) {
+	model, err := llm.NewGenerator(ctx, cfg.AI, logger)
 	if err != nil {
-		return reviewcli.Options{}, err
+		return nil, fmt.Errorf("build LLM: %w", err)
 	}
-	return reviewcli.Options{
-		Diff:           data.Diff,
-		ChangedFiles:   data.ChangedFiles,
-		RepoURL:        data.CloneURL,
-		RepoFullName:   owner + "/" + repo,
-		CommitMessages: data.CommitMessages,
-		Timeout:        timeout,
-		MaxIterations:  maxIter,
-		ContextWindow:  ctxWin,
-		Config:         rc,
-	}, nil
+	promptMgr, err := llm.NewPromptManager()
+	if err != nil {
+		return nil, fmt.Errorf("load prompts: %w", err)
+	}
+	return reviewapp.NewService(model, promptMgr, agent.ReadOnlyReviewTools, logger), nil
+}
+
+func executeReview(ctx context.Context, cfg *config.Config, logger *slog.Logger, input reviewapp.ReviewInput, opts reviewapp.ReviewOptions) (*reviewapp.ReviewResult, error) {
+	service, err := newReviewService(ctx, cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	return service.Review(ctx, input, opts)
+}
+
+func presentReview(w io.Writer, review *core.StructuredReview, asJSON, promptOnly bool) (int, error) {
+	if asJSON {
+		if err := json.NewEncoder(w).Encode(review); err != nil {
+			return 1, err
+		}
+		return exitCodeForReview(review), nil
+	}
+	if promptOnly {
+		renderPromptOnly(w, review)
+		return exitCodeForReview(review), nil
+	}
+	render.Render(w, review, render.Options{})
+	return exitCodeForReview(review), nil
 }
 
 // loadConfig loads configuration, optionally from an explicit path.

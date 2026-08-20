@@ -11,7 +11,7 @@ import (
 	"time"
 
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
-	internalgithub "github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/core"
 )
 
 // PRInput describes a public GitHub pull request to review without a GitHub App.
@@ -29,7 +29,7 @@ type PRInput struct {
 // commit messages describing the changes.
 type PRData struct {
 	Diff           string
-	ChangedFiles   []internalgithub.ChangedFile
+	ChangedFiles   []core.ChangedFile
 	CloneURL       string
 	CommitMessages []string
 }

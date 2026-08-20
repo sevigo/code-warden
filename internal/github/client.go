@@ -7,14 +7,13 @@ import (
 	"log/slog"
 
 	"github.com/google/go-github/v73/github"
+
+	"github.com/sevigo/code-warden/internal/core"
 )
 
-// ChangedFile holds the filename and patch data for a single file
-// included in a pull request. This helps in focusing the review on specific changes.
-type ChangedFile struct {
-	Filename string
-	Patch    string
-}
+// ChangedFile is retained as an alias for compatibility with the GitHub
+// adapter. Review-domain code should use core.ChangedFile directly.
+type ChangedFile = core.ChangedFile
 
 // DraftReviewComment represents a single comment to be posted as part of a review.
 type DraftReviewComment struct {

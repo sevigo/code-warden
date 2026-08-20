@@ -8,7 +8,6 @@ import (
 	"github.com/sevigo/goframe/output"
 
 	"github.com/sevigo/code-warden/internal/core"
-	internalgithub "github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
 )
 
@@ -36,10 +35,10 @@ func (p *StructuredReviewParser) Parse(ctx context.Context, outputStr string) (*
 	return parsed, nil
 }
 
-// ParseDiff splits a unified diff string into per-file [internalgithub.ChangedFile] entries.
-func ParseDiff(diff string) []internalgithub.ChangedFile {
-	var files []internalgithub.ChangedFile
-	var currentFile *internalgithub.ChangedFile
+// ParseDiff splits a unified diff string into per-file [core.ChangedFile] entries.
+func ParseDiff(diff string) []core.ChangedFile {
+	var files []core.ChangedFile
+	var currentFile *core.ChangedFile
 
 	lines := strings.Split(diff, "\n")
 	for _, line := range lines {
@@ -54,7 +53,7 @@ func ParseDiff(diff string) []internalgithub.ChangedFile {
 				// Format: diff --git a/path/to/file b/path/to/file
 				// We want the path after b/
 				filename := strings.TrimPrefix(parts[3], "b/")
-				currentFile = &internalgithub.ChangedFile{
+				currentFile = &core.ChangedFile{
 					Filename: filename,
 				}
 			}
