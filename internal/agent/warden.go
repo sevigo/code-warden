@@ -34,6 +34,7 @@ import (
 	"github.com/sevigo/goframe/schema"
 
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
+	"github.com/sevigo/code-warden/internal/agent/reviewtools"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/cryptoutil"
 	gh "github.com/sevigo/code-warden/internal/github"
@@ -245,7 +246,7 @@ func (o *Orchestrator) runReviewPhase(
 		"max_rounds", maxRounds,
 	)
 
-	angleExecutor := agentreview.NewGoframeAngleExecutor(o.llm, o.promptMgr, ReadOnlyReviewTools, o.logger)
+	angleExecutor := agentreview.NewGoframeAngleExecutor(o.llm, o.promptMgr, reviewtools.New, o.logger)
 	executor := agentreview.NewRunner(angleExecutor, o.logger, nil)
 
 	totalFixIters := 0
@@ -463,12 +464,12 @@ func (o *Orchestrator) buildEditLoop(agentLLM llms.Model, session *Session, ws *
 	}
 
 	// File tools — auto-format Go files after write/edit (unless disabled by repo config).
-	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig)) {
+	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig), ws.dir) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	// Search tools (grep + find) — read-only, no workspace modifications.
-	for _, t := range searchTools() {
+	for _, t := range searchTools(ws.dir) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
@@ -504,12 +505,12 @@ func (o *Orchestrator) buildFixLoop(agentLLM llms.Model, session *Session, ws *a
 	}
 
 	// File tools — read/write/edit/list_dir with auto-formatting.
-	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig)) {
+	for _, t := range fileTools(newFormatterFromConfig(o.logger, o.repoConfig), ws.dir) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	// Search tools (grep + find) — useful for locating the specific line to fix.
-	for _, t := range searchTools() {
+	for _, t := range searchTools(ws.dir) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sevigo/code-warden/internal/agent"
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
+	"github.com/sevigo/code-warden/internal/agent/reviewtools"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
@@ -490,7 +491,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, error) {
 	repoURL := j.buildAgentCloneURL(event)
 
-	executor := agentreview.NewGoframeAngleExecutor(j.llm, j.promptMgr, agent.ReadOnlyReviewTools, j.logger)
+	executor := agentreview.NewGoframeAngleExecutor(j.llm, j.promptMgr, reviewtools.New, j.logger)
 	runner := agentreview.NewRunner(executor, j.logger, nil)
 	result, err := runner.Run(ctx, agentreview.Params{
 		Diff:           diff,

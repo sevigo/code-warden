@@ -19,6 +19,7 @@ import (
 	goframeagent "github.com/sevigo/goframe/agent"
 	"github.com/sevigo/goframe/llms"
 
+	"github.com/sevigo/code-warden/internal/agent/reviewtools"
 	"github.com/sevigo/code-warden/internal/mcp"
 )
 
@@ -94,14 +95,14 @@ func (o *Orchestrator) buildPlannerLoop(agentLLM llms.Model, session *Session, w
 
 	// Read-only file tools: read_file and list_dir only (no write/edit).
 	for _, t := range []mcp.Tool{
-		&readFileTool{},
-		&listDirTool{},
+		reviewtools.NewReadFile(ws.dir),
+		reviewtools.NewListDir(ws.dir),
 	} {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
 	// Search tools (grep + find) — read-only, safe during planning.
-	for _, t := range searchTools() {
+	for _, t := range searchTools(ws.dir) {
 		registerTool(registry, allowedTools, t, ws, session.ID, tracker, o.logger)
 	}
 
