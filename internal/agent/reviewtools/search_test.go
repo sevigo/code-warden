@@ -1,4 +1,4 @@
-package agent
+package reviewtools
 
 import (
 	"context"
@@ -9,13 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/sevigo/code-warden/internal/mcp/tools"
 )
 
-// newSearchCtx builds a context with the given temp dir as workspace root.
-func newSearchCtx(dir string) context.Context {
-	return tools.WithProjectRoot(context.Background(), dir)
+func newSearchCtx(_ string) context.Context {
+	return context.Background()
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -34,7 +31,7 @@ func TestGrepTool_FindsPattern(t *testing.T) {
 	writeSearchFixture(t, dir, "src/foo.go", "package foo\n\nfunc Hello() string { return \"hello\" }\n")
 	writeSearchFixture(t, dir, "src/bar.go", "package bar\n\nfunc World() {}\n")
 
-	gt := newGrepTool()
+	gt := newGrepTool(dir)
 	ctx := newSearchCtx(dir)
 
 	result, err := gt.Execute(ctx, map[string]any{"pattern": "Hello"})
@@ -51,7 +48,7 @@ func TestGrepTool_GlobFilter(t *testing.T) {
 	writeSearchFixture(t, dir, "main.go", "target")
 	writeSearchFixture(t, dir, "main.txt", "target")
 
-	gt := newGrepTool()
+	gt := newGrepTool(dir)
 	ctx := newSearchCtx(dir)
 
 	result, err := gt.Execute(ctx, map[string]any{
@@ -75,7 +72,7 @@ func TestGrepTool_LimitRespected(t *testing.T) {
 	}
 	writeSearchFixture(t, dir, "file.go", content)
 
-	gt := newGrepTool()
+	gt := newGrepTool(dir)
 	ctx := newSearchCtx(dir)
 
 	result, err := gt.Execute(ctx, map[string]any{
@@ -93,7 +90,7 @@ func TestGrepTool_LimitRespected(t *testing.T) {
 
 func TestGrepTool_PathEscapeRejected(t *testing.T) {
 	dir := t.TempDir()
-	gt := newGrepTool()
+	gt := newGrepTool(dir)
 	ctx := newSearchCtx(dir)
 
 	_, err := gt.Execute(ctx, map[string]any{
@@ -107,7 +104,7 @@ func TestGrepTool_NoMatchesReturnsEmptyOutput(t *testing.T) {
 	dir := t.TempDir()
 	writeSearchFixture(t, dir, "a.go", "package a\n")
 
-	gt := newGrepTool()
+	gt := newGrepTool(dir)
 	ctx := newSearchCtx(dir)
 
 	result, err := gt.Execute(ctx, map[string]any{"pattern": "zzz_nomatch_zzz"})
@@ -125,7 +122,7 @@ func TestFindTool_GlobBasename(t *testing.T) {
 	writeSearchFixture(t, dir, "src/bar.go", "")
 	writeSearchFixture(t, dir, "src/readme.txt", "")
 
-	ft := &findTool{}
+	ft := &findTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	result, err := ft.Execute(ctx, map[string]any{"pattern": "*.go"})
@@ -145,7 +142,7 @@ func TestFindTool_DoubleStarGlob(t *testing.T) {
 	writeSearchFixture(t, dir, "a/b/bar_test.go", "")
 	writeSearchFixture(t, dir, "a/nottest.go", "")
 
-	ft := &findTool{}
+	ft := &findTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	result, err := ft.Execute(ctx, map[string]any{"pattern": "**/*_test.go"})
@@ -164,7 +161,7 @@ func TestFindTool_SkipsGitDir(t *testing.T) {
 	writeSearchFixture(t, dir, ".git/HEAD", "ref: refs/heads/main")
 	writeSearchFixture(t, dir, "src/main.go", "")
 
-	ft := &findTool{}
+	ft := &findTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	result, err := ft.Execute(ctx, map[string]any{"pattern": "*"})
@@ -183,7 +180,7 @@ func TestFindTool_LimitRespected(t *testing.T) {
 		writeSearchFixture(t, dir, filepath.Join("src", filepath.FromSlash("file"+string(rune('a'+i))+".go")), "")
 	}
 
-	ft := &findTool{}
+	ft := &findTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	result, err := ft.Execute(ctx, map[string]any{"pattern": "*.go", "limit": 3})
@@ -197,7 +194,7 @@ func TestFindTool_LimitRespected(t *testing.T) {
 
 func TestFindTool_PathEscapeRejected(t *testing.T) {
 	dir := t.TempDir()
-	ft := &findTool{}
+	ft := &findTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	_, err := ft.Execute(ctx, map[string]any{
@@ -212,7 +209,7 @@ func TestFindTool_ScopedToSubdir(t *testing.T) {
 	writeSearchFixture(t, dir, "internal/agent/foo.go", "")
 	writeSearchFixture(t, dir, "cmd/main.go", "")
 
-	ft := &findTool{}
+	ft := &findTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	result, err := ft.Execute(ctx, map[string]any{
@@ -265,7 +262,7 @@ func TestReadFileTool_TruncationHint(t *testing.T) {
 	}
 	writeSearchFixture(t, dir, "big.go", content)
 
-	rt := &readFileTool{}
+	rt := &readFileTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	result, err := rt.Execute(ctx, map[string]any{
@@ -286,7 +283,7 @@ func TestReadFileTool_NoHintWhenNotTruncated(t *testing.T) {
 	dir := t.TempDir()
 	writeSearchFixture(t, dir, "small.go", "line1\nline2\n")
 
-	rt := &readFileTool{}
+	rt := &readFileTool{projectRoot: dir}
 	ctx := newSearchCtx(dir)
 
 	result, err := rt.Execute(ctx, map[string]any{"path": "small.go"})

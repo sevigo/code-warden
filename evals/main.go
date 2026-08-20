@@ -30,8 +30,8 @@ import (
 
 	"github.com/sevigo/goframe/llms"
 
-	"github.com/sevigo/code-warden/internal/agent"
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
+	"github.com/sevigo/code-warden/internal/agent/reviewtools"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	internalgithub "github.com/sevigo/code-warden/internal/github"
@@ -296,7 +296,7 @@ func runLiveEval(ctx context.Context, c EvalCase, model llms.Model, promptMgr *l
 func runLiveReview(ctx context.Context, c EvalCase, workspace string, model llms.Model, promptMgr *llmpkg.PromptManager, log *slog.Logger) (*agentreview.Result, error) {
 	reviewConfig := agentreview.DefaultConfig()
 	reviewConfig.MinSeverity = "low"
-	executor := agentreview.NewGoframeAngleExecutor(model, promptMgr, agent.ReadOnlyReviewTools, log)
+	executor := agentreview.NewGoframeAngleExecutor(model, promptMgr, reviewtools.New, log)
 	runner := agentreview.NewRunner(executor, log, nil)
 	return runner.Run(ctx, agentreview.Params{
 		Diff:          c.Diff,

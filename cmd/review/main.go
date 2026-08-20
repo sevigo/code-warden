@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sevigo/code-warden/internal/agent"
 	agentreview "github.com/sevigo/code-warden/internal/agent/review"
+	"github.com/sevigo/code-warden/internal/agent/reviewtools"
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/llm"
@@ -275,7 +275,7 @@ func newReviewService(ctx context.Context, cfg *config.Config, logger *slog.Logg
 	if err != nil {
 		return nil, fmt.Errorf("load prompts: %w", err)
 	}
-	return reviewapp.NewService(model, promptMgr, agent.ReadOnlyReviewTools, logger), nil
+	return reviewapp.NewService(model, promptMgr, reviewtools.New, logger), nil
 }
 
 func executeReview(ctx context.Context, cfg *config.Config, logger *slog.Logger, input reviewapp.ReviewInput, opts reviewapp.ReviewOptions) (*reviewapp.ReviewResult, error) {
