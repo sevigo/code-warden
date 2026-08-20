@@ -24,7 +24,7 @@ import { cn } from '@/lib/utils'
 const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.04 } } }
 const fadeUp = { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0, transition: { duration: 0.25 } } }
 
-type FilterType = 'all' | 'review' | 'implement' | 'rereview'
+type FilterType = 'all' | 'review' | 'rereview'
 type StatusFilter = 'all' | 'completed' | 'failed' | 'running' | 'queued'
 
 // ── Helper Functions ─────────────────────────────────────────────────────────
@@ -244,7 +244,6 @@ export default function JobsPage() {
   const FILTERS: { key: FilterType; label: string }[] = [
     { key: 'all', label: 'All Types' },
     { key: 'review', label: 'Review' },
-    { key: 'implement', label: 'Implement' },
     { key: 'rereview', label: 'Re-review' },
   ]
 
@@ -371,7 +370,7 @@ export default function JobsPage() {
           </p>
           <p className="text-sm text-[#8c919b]">
             {jobs?.length === 0
-              ? 'Jobs will appear here when you trigger reviews or implementations'
+              ? 'Jobs will appear here when you trigger reviews'
               : 'Try adjusting your filters'}
           </p>
         </Card>

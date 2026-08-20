@@ -72,40 +72,6 @@ ai:
   enable_code_suggestions: true
 
 # ============================================================================
-# Agent Configuration (Autonomous Issue Implementation)
-# ============================================================================
-# The agent system implements GitHub issues autonomously using AI.
-#
-#   "warden" (recommended) — phased plan→implement→review→publish loop using
-#   the agent-based review engine (grep + read_file). Tools injected in-process.
-agent:
-  # Enable the agent system for /implement comments on GitHub issues
-  enabled: true
-
-  # "warden" activates the phased plan→implement→publish harness.
-  mode: "warden"
-
-  # Skip the MCP HTTP server — tools are registered directly in the goframe
-  # agent registry.
-  in_process_only: true
-
-  # Base branch for pull requests opened by the agent (default: "main").
-  base_branch: "main"
-
-  # Maximum review→fix iterations in the implement loop before the agent
-  # yields a draft PR for human review.
-  max_iterations: 3
-
-  # Maximum concurrent agent sessions.
-  max_concurrent_sessions: 3
-
-  # Maximum time for a single agent session.
-  timeout: "1h"
-
-  # Working directory for isolated agent workspaces.
-  working_dir: "/tmp/code-warden-agents"
-
-# ============================================================================
 # Storage Configuration
 # ============================================================================
 storage:

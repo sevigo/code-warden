@@ -50,22 +50,6 @@ The agent was unable to investigate the diff against the repository. Common caus
 
 ---
 
-## Agent (`/implement`) not starting
-
-1. `agent.enabled: true` in `config.yaml`
-2. `agent.mode` is set to `warden`
-3. `agent.max_concurrent_sessions` limit not reached — check active sessions in logs
-
----
-
-## Agent workspace errors
-
-**Symptom:** "no such file or directory" when the agent tries to access workspace files.
-
-See [AGENT_WORKSPACE_SETUP.md](./AGENT_WORKSPACE_SETUP.md). Make sure `agent.working_dir` in `config.yaml` is an absolute path and the directory exists and is writable.
-
----
-
 ## Database connection errors
 
 **Symptom:** Log line: `failed to connect to database` at startup.

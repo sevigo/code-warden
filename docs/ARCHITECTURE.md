@@ -10,8 +10,8 @@ Code-Warden is a self-hosted GitHub App that reviews pull requests using an agen
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐ │
-│  │   GitHub App   │  │  MCP Server    │  │  Job System    │  │  Repo Manager  │ │
-│  │  (webhooks)    │  │  (tools)       │  │  (dispatcher)  │  │  (git ops)    │ │
+│  │   GitHub App   │  │  Job System    │  │  Repo Manager  │  │ Review Tools   │ │
+│  │  (webhooks)    │  │  (dispatcher)  │  │  (git ops)     │  │ (read-only)    │ │
 │  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘ │
 │          │                   │                   │                   │          │
 │          └───────────────────┴───────────────────┴───────────────────┘          │
@@ -19,11 +19,6 @@ Code-Warden is a self-hosted GitHub App that reviews pull requests using an agen
 │                          ┌───────────▼───────────┐                              │
 │                          │  Agent Review Runner  │                              │
 │                          │  (multi-angle passes) │                              │
-│                          └───────────┬───────────┘                              │
-│                                      │                                           │
-│                          ┌───────────▼───────────┐                              │
-│                          │    Agent Orchestrator │                              │
-│                          │    (/implement cmd)   │                              │
 │                          └───────────┬───────────┘                              │
 │                                      │                                           │
 └──────────────────────────────────────┼───────────────────────────────────────────┘
@@ -55,7 +50,7 @@ GoFrame provides the agent runtime and LLM abstraction:
 | Package | Purpose |
 |---------|---------|
 | `llms/` | LLM abstraction — Model interface, Ollama/Gemini/OpenAI implementations |
-| `agent/` | Agent loop, tool registry, governance, observer |
+| `agent/` | Agent loop and tool registry |
 | `chains/` | Parallel map-reduce with quorum (used for multi-angle review) |
 | `gitutil/` | Pure-Go shallow clone for isolated workspaces |
 
@@ -63,10 +58,9 @@ GoFrame provides the agent runtime and LLM abstraction:
 
 | Component | Purpose | Location |
 |-----------|---------|----------|
-| **GitHub App** | Webhook handling, PR/issue processing | `internal/github/`, `internal/server/` |
+| **GitHub App** | Webhook handling and PR processing | `internal/github/`, `internal/server/` |
 | **Agent Review** | Multi-angle agent-based review runner | `internal/agent/review/` |
-| **MCP Server** | Tools for AI agents | `internal/mcp/` |
-| **Agent Orchestrator** | Session management, workspace isolation | `internal/agent/` |
+| **Review Tools** | Workspace-bound read-only tools | `internal/agent/reviewtools/` |
 | **Job System** | Background job dispatch and execution | `internal/jobs/` |
 | **Storage** | PostgreSQL persistence | `internal/storage/` |
 | **Repo Manager** | Git clone, sync, diff calculation | `internal/repomanager/` |
@@ -103,8 +97,6 @@ GoFrame provides the agent runtime and LLM abstraction:
                                        └────────────────┘      └────────────────┘
 ```
 
-The `/implement` flow is documented in [IMPLEMENT_ARCHITECTURE.md](./IMPLEMENT_ARCHITECTURE.md).
-
 ## Key Interfaces
 
 ### Storage Layer
@@ -125,20 +117,6 @@ type Runner struct { /* llm, promptMgr, tools, angles, logger */ }
 func (r *Runner) Run(ctx, params) (*Result, error)
 ```
 
-### MCP Tools
-
-```go
-type Tool interface {
-    Name() string
-    Description() string
-    ParametersSchema() map[string]any
-    Execute(ctx context.Context, args map[string]any) (any, error)
-}
-```
-
----
-
 - [SETUP.md](./SETUP.md) — Deployment and first-run guide
-- [IMPLEMENT_ARCHITECTURE.md](./IMPLEMENT_ARCHITECTURE.md) — `/implement` flow and agent design
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — Common issues and fixes
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — How to contribute

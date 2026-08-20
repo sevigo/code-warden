@@ -3,7 +3,6 @@ package github
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"github.com/google/go-github/v73/github"
@@ -23,34 +22,6 @@ type DraftReviewComment struct {
 	Body      string
 }
 
-// PullRequestOptions contains options for creating a pull request.
-type PullRequestOptions struct {
-	Title string
-	Body  string
-	Head  string // Branch with changes
-	Base  string // Branch to merge into (default: "main")
-	Draft bool
-}
-
-// IssueOptions contains options for listing issues.
-type IssueOptions struct {
-	State    string // "open", "closed", "all" (default: "open")
-	Labels   []string
-	Assignee string
-	Limit    int // Max issues to return (default: 30)
-}
-
-// Issue represents a GitHub issue.
-type Issue struct {
-	Number    int
-	Title     string
-	Body      string
-	State     string
-	Labels    []string
-	Assignees []string
-	URL       string
-}
-
 // Client defines a set of operations for interacting with the GitHub API,
 // focusing on pull requests, comments, and check runs.
 //
@@ -61,19 +32,9 @@ type Client interface {
 	GetPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 	GetChangedFiles(ctx context.Context, owner, repo string, number int) ([]ChangedFile, error)
 	CreateComment(ctx context.Context, owner, repo string, number int, body string) error
-	// CreateCommentID creates a comment and returns its ID for later editing.
-	CreateCommentID(ctx context.Context, owner, repo string, number int, body string) (int64, error)
-	// UpdateComment edits an existing comment body in-place.
-	UpdateComment(ctx context.Context, owner, repo string, commentID int64, body string) error
 	CreateReview(ctx context.Context, owner, repo string, number int, commitSHA, body string, comments []DraftReviewComment) error
 	CreateCheckRun(ctx context.Context, owner, repo string, opts github.CreateCheckRunOptions) (*github.CheckRun, error)
 	UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, opts github.UpdateCheckRunOptions) (*github.CheckRun, error)
-
-	// New methods for agent operations
-	CreatePullRequest(ctx context.Context, owner, repo string, opts PullRequestOptions) (*github.PullRequest, error)
-	ListIssues(ctx context.Context, owner, repo string, opts IssueOptions) ([]Issue, error)
-	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
-	GetBranch(ctx context.Context, owner, repo, branch string) (*github.Branch, error)
 }
 
 type gitHubClient struct {
@@ -210,27 +171,6 @@ func (g *gitHubClient) CreateComment(ctx context.Context, owner, repo string, nu
 	return err
 }
 
-// CreateCommentID creates a new comment and returns its integer ID for later editing.
-func (g *gitHubClient) CreateCommentID(ctx context.Context, owner, repo string, number int, body string) (int64, error) {
-	comment := &github.IssueComment{Body: &body}
-	created, _, err := g.client.Issues.CreateComment(ctx, owner, repo, number, comment)
-	if err != nil {
-		g.logger.Error("failed to create comment", "owner", owner, "repo", repo, "pr", number, "error", err)
-		return 0, err
-	}
-	return created.GetID(), nil
-}
-
-// UpdateComment edits the body of an existing issue comment.
-func (g *gitHubClient) UpdateComment(ctx context.Context, owner, repo string, commentID int64, body string) error {
-	comment := &github.IssueComment{Body: &body}
-	_, _, err := g.client.Issues.EditComment(ctx, owner, repo, commentID, comment)
-	if err != nil {
-		g.logger.Error("failed to update comment", "owner", owner, "repo", repo, "comment_id", commentID, "error", err)
-	}
-	return err
-}
-
 // CreateCheckRun creates a new check run.
 func (g *gitHubClient) CreateCheckRun(ctx context.Context, owner, repo string, opts github.CreateCheckRunOptions) (*github.CheckRun, error) {
 	checkRun, _, err := g.client.Checks.CreateCheckRun(ctx, owner, repo, opts)
@@ -248,135 +188,4 @@ func (g *gitHubClient) UpdateCheckRun(ctx context.Context, owner, repo string, c
 		g.logger.Error("failed to update check run", "owner", owner, "repo", repo, "checkRunID", checkRunID, "error", err)
 	}
 	return checkRun, err
-}
-
-// CreatePullRequest creates a new pull request.
-func (g *gitHubClient) CreatePullRequest(ctx context.Context, owner, repo string, opts PullRequestOptions) (*github.PullRequest, error) {
-	if opts.Base == "" {
-		opts.Base = "main"
-	}
-
-	prOpts := &github.NewPullRequest{
-		Title: &opts.Title,
-		Body:  &opts.Body,
-		Head:  &opts.Head,
-		Base:  &opts.Base,
-		Draft: &opts.Draft,
-	}
-
-	pr, _, err := g.client.PullRequests.Create(ctx, owner, repo, prOpts)
-	if err != nil {
-		g.logger.Error("failed to create pull request", "owner", owner, "repo", repo, "head", opts.Head, "error", err)
-		return nil, err
-	}
-
-	g.logger.Info("created pull request", "owner", owner, "repo", repo, "pr", pr.GetNumber(), "url", pr.GetHTMLURL())
-	return pr, nil
-}
-
-// ListIssues lists issues in a repository.
-func (g *gitHubClient) ListIssues(ctx context.Context, owner, repo string, opts IssueOptions) ([]Issue, error) {
-	if opts.State == "" {
-		opts.State = "open"
-	}
-	if opts.Limit == 0 {
-		opts.Limit = 30
-	}
-	if opts.Limit > 100 {
-		opts.Limit = 100
-	}
-
-	issueOpts := &github.IssueListByRepoOptions{
-		State: opts.State,
-		ListOptions: github.ListOptions{
-			PerPage: opts.Limit,
-		},
-	}
-
-	if len(opts.Labels) > 0 {
-		issueOpts.Labels = opts.Labels
-	}
-	if opts.Assignee != "" {
-		issueOpts.Assignee = opts.Assignee
-	}
-
-	issues, _, err := g.client.Issues.ListByRepo(ctx, owner, repo, issueOpts)
-	if err != nil {
-		g.logger.Error("failed to list issues", "owner", owner, "repo", repo, "error", err)
-		return nil, err
-	}
-
-	result := make([]Issue, 0, len(issues))
-	for _, issue := range issues {
-		if issue.PullRequestLinks != nil {
-			// Skip pull requests (they appear in issues list too)
-			continue
-		}
-
-		labels := make([]string, 0, len(issue.Labels))
-		for _, label := range issue.Labels {
-			labels = append(labels, label.GetName())
-		}
-
-		assignees := make([]string, 0, len(issue.Assignees))
-		for _, assignee := range issue.Assignees {
-			assignees = append(assignees, assignee.GetLogin())
-		}
-
-		result = append(result, Issue{
-			Number:    issue.GetNumber(),
-			Title:     issue.GetTitle(),
-			Body:      issue.GetBody(),
-			State:     issue.GetState(),
-			Labels:    labels,
-			Assignees: assignees,
-			URL:       issue.GetHTMLURL(),
-		})
-	}
-
-	return result, nil
-}
-
-// GetIssue retrieves a single issue by its number.
-func (g *gitHubClient) GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error) {
-	issue, _, err := g.client.Issues.Get(ctx, owner, repo, number)
-	if err != nil {
-		g.logger.Error("failed to get issue", "owner", owner, "repo", repo, "issue", number, "error", err)
-		return nil, err
-	}
-
-	// Check if it's actually a pull request
-	if issue.PullRequestLinks != nil {
-		return nil, fmt.Errorf("issue #%d is a pull request, not an issue", number)
-	}
-
-	labels := make([]string, 0, len(issue.Labels))
-	for _, label := range issue.Labels {
-		labels = append(labels, label.GetName())
-	}
-
-	assignees := make([]string, 0, len(issue.Assignees))
-	for _, assignee := range issue.Assignees {
-		assignees = append(assignees, assignee.GetLogin())
-	}
-
-	return &Issue{
-		Number:    issue.GetNumber(),
-		Title:     issue.GetTitle(),
-		Body:      issue.GetBody(),
-		State:     issue.GetState(),
-		Labels:    labels,
-		Assignees: assignees,
-		URL:       issue.GetHTMLURL(),
-	}, nil
-}
-
-// GetBranch retrieves a single branch by its name.
-func (g *gitHubClient) GetBranch(ctx context.Context, owner, repo, branch string) (*github.Branch, error) {
-	b, _, err := g.client.Repositories.GetBranch(ctx, owner, repo, branch, 0)
-	if err != nil {
-		g.logger.Warn("failed to get branch", "owner", owner, "repo", repo, "branch", branch, "error", err)
-		return nil, err
-	}
-	return b, nil
 }

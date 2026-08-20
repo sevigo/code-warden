@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sevigo/code-warden/internal/mcp"
+	goframeagent "github.com/sevigo/goframe/agent"
 )
 
 // getDiffTool lets the review agent re-fetch the PR diff and a structured
@@ -117,4 +117,4 @@ func buildFilenameIndex(fileLines map[string]map[int]struct{}) string {
 }
 
 // Compile-time interface check.
-var _ mcp.Tool = (*getDiffTool)(nil)
+var _ goframeagent.Tool = (*getDiffTool)(nil)

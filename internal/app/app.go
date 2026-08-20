@@ -3,13 +3,11 @@ package app
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
 	"github.com/sevigo/code-warden/internal/gitutil"
-	"github.com/sevigo/code-warden/internal/globalmcp"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -26,7 +24,6 @@ type App struct {
 	CredentialStore *config.CredentialStore
 	Server          *server.Server
 	GitClient       *gitutil.Client
-	MCPServer       *globalmcp.Server
 }
 
 // NewApp creates a new App instance.
@@ -38,7 +35,6 @@ func NewApp(
 	dispatcher core.JobDispatcher,
 	srv *server.Server,
 	gitClient *gitutil.Client,
-	mcpServer *globalmcp.Server,
 	logger *slog.Logger,
 ) *App {
 	logger.Info("initializing Code Warden application",
@@ -56,7 +52,6 @@ func NewApp(
 		Dispatcher: dispatcher,
 		Server:     srv,
 		GitClient:  gitClient,
-		MCPServer:  mcpServer,
 		Logger:     logger,
 	}
 }
@@ -89,20 +84,12 @@ func (a *App) LoadCredentials() {
 	}
 }
 
-// Start runs the HTTP server and MCP server.
+// Start runs the HTTP server.
 func (a *App) Start() error {
 	a.Logger.Info("application config",
 		"port", a.Cfg.Server.Port,
 		"max_workers", a.Cfg.Server.MaxWorkers,
 	)
-
-	// Start MCP server if configured
-	if a.MCPServer != nil {
-		if err := a.MCPServer.Start(context.Background()); err != nil {
-			a.Logger.Error("failed to start MCP server", "error", err)
-			return err
-		}
-	}
 
 	if err := a.Server.Start(); err != nil {
 		a.Logger.Error("failed to start HTTP server", "error", err)
@@ -116,17 +103,6 @@ func (a *App) Start() error {
 func (a *App) Stop() error {
 	var shutdownErr error
 	a.Logger.Info("shutting down Code Warden services")
-
-	// Stop MCP server with timeout
-	if a.MCPServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := a.MCPServer.Stop(ctx)
-		cancel()
-		if err != nil {
-			a.Logger.Error("error during MCP server shutdown", "error", err)
-			shutdownErr = err
-		}
-	}
 
 	// Stop the job dispatcher, allowing in-flight jobs to finish.
 	a.Dispatcher.Stop()

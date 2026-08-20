@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/google/go-github/v73/github"
 
@@ -18,16 +17,14 @@ import (
 type WebhookHandler struct {
 	cfg        *config.Config
 	dispatcher core.JobDispatcher
-	canceller  core.SessionCanceller // optional; nil when agent is disabled
 	logger     *slog.Logger
 }
 
 // NewWebhookHandler creates a new webhook handler with the given configuration and dispatcher.
-func NewWebhookHandler(cfg *config.Config, dispatcher core.JobDispatcher, canceller core.SessionCanceller, logger *slog.Logger) *WebhookHandler {
+func NewWebhookHandler(cfg *config.Config, dispatcher core.JobDispatcher, logger *slog.Logger) *WebhookHandler {
 	return &WebhookHandler{
 		cfg:        cfg,
 		dispatcher: dispatcher,
-		canceller:  canceller,
 		logger:     logger,
 	}
 }
@@ -67,40 +64,9 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 		return
 	}
 
-	// Handle /cancel <session-id> on any issue comment.
 	if !event.GetIssue().IsPullRequest() {
-		if handled := h.handleCancelCommand(w, event.GetComment().GetBody()); handled {
-			return
-		}
-	}
-
-	// Try to parse as /implement command on issue first
-	if !event.GetIssue().IsPullRequest() {
-		implementEvent, err := core.ImplementEventFromIssueComment(event)
-		if err != nil {
-			h.logger.Debug("ignoring issue comment", "reason", err.Error(), "repo", event.GetRepo().GetFullName())
-			_, _ = fmt.Fprint(w, "Comment ignored")
-			return
-		}
-
-		// Check if agent functionality is enabled
-		if !h.cfg.Agent.Enabled {
-			h.logger.Warn("agent functionality is disabled, ignoring /implement command",
-				"repo", implementEvent.RepoFullName,
-				"issue", implementEvent.IssueNumber)
-			_, _ = fmt.Fprint(w, "Agent functionality is disabled. Enable it in config to use /implement.")
-			return
-		}
-
-		if err := h.dispatcher.Dispatch(ctx, implementEvent); err != nil {
-			h.logger.Error("failed to dispatch implement job", "error", err, "repo", implementEvent.RepoFullName)
-			http.Error(w, "Failed to start implement job", http.StatusInternalServerError)
-			return
-		}
-
-		h.logger.Info("implement job dispatched successfully", "repo", implementEvent.RepoFullName, "issue", implementEvent.IssueNumber)
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = fmt.Fprint(w, "Implement job accepted")
+		h.logger.Debug("ignoring issue comment", "reason", "comment is not on a pull request", "repo", event.GetRepo().GetFullName())
+		_, _ = fmt.Fprint(w, "Comment ignored")
 		return
 	}
 
@@ -121,27 +87,4 @@ func (h *WebhookHandler) handleIssueComment(ctx context.Context, w http.Response
 	h.logger.Info("review job dispatched successfully", "repo", reviewEvent.RepoFullName, "pr", reviewEvent.PRNumber)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = fmt.Fprint(w, "Review job accepted")
-}
-
-// handleCancelCommand checks if body is a /cancel command and cancels the session.
-// Returns true if the command was handled (caller should return).
-func (h *WebhookHandler) handleCancelCommand(w http.ResponseWriter, body string) bool {
-	trimmed := strings.TrimSpace(body)
-	if !strings.HasPrefix(trimmed, "/cancel ") {
-		return false
-	}
-	sessionID := strings.TrimSpace(strings.TrimPrefix(trimmed, "/cancel "))
-	if h.canceller == nil {
-		h.logger.Warn("received /cancel but agent is not enabled")
-		_, _ = fmt.Fprint(w, "Agent not enabled")
-		return true
-	}
-	if err := h.canceller.CancelSession(sessionID); err != nil {
-		h.logger.Warn("cancel session failed", "session_id", sessionID, "error", err)
-		_, _ = fmt.Fprintf(w, "Cancel failed: %v", err)
-		return true
-	}
-	h.logger.Info("session cancelled via webhook", "session_id", sessionID)
-	_, _ = fmt.Fprint(w, "Session cancelled")
-	return true
 }
