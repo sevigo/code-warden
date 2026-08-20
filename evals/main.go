@@ -41,6 +41,39 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+type evalOptions struct {
+	suite   string
+	mock    bool
+	verbose bool
+	cfgPath string
+}
+
+func run() int {
+	opts := parseEvalOptions()
+	cases, err := loadCases(opts.suite)
+	if err != nil {
+		return printEvalError(err)
+	}
+	if len(cases) == 0 {
+		return printEvalError(fmt.Errorf("no eval cases found"))
+	}
+
+	printHeader(len(cases), opts)
+	log := newEvalLogger(opts.verbose)
+	model, promptMgr, err := loadLiveResources(context.Background(), opts, log)
+	if err != nil {
+		return printEvalError(err)
+	}
+
+	results, infraError := runCases(context.Background(), cases, opts, model, promptMgr, log)
+	failed := printSummary(results)
+	return evalExitCode(infraError, failed)
+}
+
+func parseEvalOptions() evalOptions {
 	var (
 		suite   = flag.String("suite", "", "run only cases in this suite (bug, security, performance, conventions, clean)")
 		mock    = flag.Bool("mock", false, "pipeline-only mode: no LLM calls, tests parsing/filtering/snap")
@@ -48,84 +81,91 @@ func main() {
 		cfgPath = flag.String("config", "", "path to config file")
 	)
 	flag.Parse()
+	return evalOptions{suite: *suite, mock: *mock, verbose: *verbose, cfgPath: *cfgPath}
+}
 
-	ctx := context.Background()
-
-	cases, err := loadCases(*suite)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(2)
-	}
-	if len(cases) == 0 {
-		fmt.Fprintln(os.Stderr, "no eval cases found")
-		os.Exit(2)
-	}
-
+func printHeader(caseCount int, opts evalOptions) {
 	fmt.Printf("code-warden eval harness\n")
-	fmt.Printf("  cases: %d\n", len(cases))
-	if *suite != "" {
-		fmt.Printf("  suite: %s\n", *suite)
+	fmt.Printf("  cases: %d\n", caseCount)
+	if opts.suite != "" {
+		fmt.Printf("  suite: %s\n", opts.suite)
 	}
-	if *mock {
+	if opts.mock {
 		fmt.Printf("  mode:  mock (no LLM)\n")
 	} else {
 		fmt.Printf("  mode:  live (with LLM)\n")
 	}
 	fmt.Println()
+}
 
-	// Load config for live mode (needs LLM config).
-	var cfg *config.Config
-	if !*mock {
-		cfg, err = loadConfig(*cfgPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(2)
-		}
-		if err := cfg.ValidateForCLI(); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(2)
-		}
-	}
-
+func newEvalLogger(verbose bool) *slog.Logger {
 	logLvl := "warn"
-	if *verbose {
+	if verbose {
 		logLvl = "info"
 	}
 	log := logger.NewLogger(logger.Config{Level: logLvl, Output: "stderr"}, os.Stderr)
 	slog.SetDefault(log)
+	return log
+}
 
+func loadLiveResources(ctx context.Context, opts evalOptions, log *slog.Logger) (llms.Model, *llmpkg.PromptManager, error) {
+	if opts.mock {
+		return nil, nil, nil
+	}
+	cfg, err := loadConfig(opts.cfgPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := cfg.ValidateForCLI(); err != nil {
+		return nil, nil, err
+	}
+	model, err := buildLLM(ctx, cfg, log)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build LLM: %w", err)
+	}
+	promptMgr, err := llmpkg.NewPromptManager()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load prompts: %w", err)
+	}
+	return model, promptMgr, nil
+}
+
+func runCases(ctx context.Context, cases []EvalCase, opts evalOptions, model llms.Model, promptMgr *llmpkg.PromptManager, log *slog.Logger) ([]EvalResult, bool) {
 	var results []EvalResult
 	var infraError bool
-
 	for _, c := range cases {
-		var result EvalResult
-		result.Case = c.Name
-		result.Suite = c.Suite
-
-		start := time.Now()
-
-		if *mock {
-			result = runMockEval(ctx, c)
-		} else {
-			result, err = runLiveEval(ctx, c, cfg, log)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "infra error on %s: %v\n", c.Name, err)
-				result.InfraError = true
-				infraError = true
-			}
+		result, isInfraError := runCase(ctx, c, opts.mock, model, promptMgr, log)
+		if isInfraError {
+			infraError = true
 		}
-
-		result.Duration = time.Since(start)
 		results = append(results, result)
+		printResult(result, opts.verbose)
+	}
+	return results, infraError
+}
 
-		printResult(result, *verbose)
+func runCase(ctx context.Context, c EvalCase, mock bool, model llms.Model, promptMgr *llmpkg.PromptManager, log *slog.Logger) (EvalResult, bool) {
+	start := time.Now()
+	if mock {
+		result := runMockEval(ctx, c)
+		result.Duration = time.Since(start)
+		return result, false
 	}
 
-	// Summary.
+	result, err := runLiveEval(ctx, c, model, promptMgr, log)
+	result.Duration = time.Since(start)
+	if err == nil {
+		return result, false
+	}
+	fmt.Fprintf(os.Stderr, "infra error on %s: %v\n", c.Name, err)
+	result.InfraError = true
+	return result, true
+}
+
+func printSummary(results []EvalResult) int {
 	fmt.Println()
 	fmt.Println("--- Summary ---")
-	var passed, failed int
-	var totalTP, totalFP, totalFN int
+	var passed, failed, totalTP, totalFP, totalFN int
 	for _, r := range results {
 		if r.InfraError {
 			continue
@@ -139,16 +179,8 @@ func main() {
 		totalFP += r.FalsePositives
 		totalFN += r.FalseNegatives
 	}
-
-	precision := 0.0
-	if totalTP+totalFP > 0 {
-		precision = float64(totalTP) / float64(totalTP+totalFP) * 100
-	}
-	recall := 0.0
-	if totalTP+totalFN > 0 {
-		recall = float64(totalTP) / float64(totalTP+totalFN) * 100
-	}
-
+	precision := percentage(totalTP, totalTP+totalFP)
+	recall := percentage(totalTP, totalTP+totalFN)
 	fmt.Printf("  passed:      %d\n", passed)
 	fmt.Printf("  failed:      %d\n", failed)
 	fmt.Printf("  true positives:  %d\n", totalTP)
@@ -156,16 +188,32 @@ func main() {
 	fmt.Printf("  false negatives: %d\n", totalFN)
 	fmt.Printf("  precision:   %.1f%%\n", precision)
 	fmt.Printf("  recall:      %.1f%%\n", recall)
+	return failed
+}
 
+func percentage(numerator, denominator int) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	return float64(numerator) / float64(denominator) * 100
+}
+
+func evalExitCode(infraError bool, failed int) int {
 	if infraError {
 		fmt.Println("\nexit 2 (infrastructure error)")
-		os.Exit(2)
+		return 2
 	}
 	if failed > 0 {
 		fmt.Println("\nexit 1 (eval failure)")
-		os.Exit(1)
+		return 1
 	}
 	fmt.Println("\nexit 0 (all passed)")
+	return 0
+}
+
+func printEvalError(err error) int {
+	fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	return 2
 }
 
 // EvalResult holds the outcome of a single eval case.
@@ -226,107 +274,105 @@ func runMockEval(_ context.Context, c EvalCase) EvalResult {
 }
 
 // runLiveEval runs the full review pipeline with an LLM and scores the output
-// against expected findings.
-func runLiveEval(ctx context.Context, c EvalCase, cfg *config.Config, log *slog.Logger) (EvalResult, error) {
+// against expected findings. The model and prompt manager are pre-built and
+// reused across cases.
+func runLiveEval(ctx context.Context, c EvalCase, model llms.Model, promptMgr *llmpkg.PromptManager, log *slog.Logger) (EvalResult, error) {
 	result := EvalResult{Case: c.Name, Suite: c.Suite}
-
-	model, err := buildLLM(ctx, cfg, log)
-	if err != nil {
-		return result, fmt.Errorf("build LLM: %w", err)
-	}
-
-	promptMgr, err := llmpkg.NewPromptManager()
-	if err != nil {
-		return result, fmt.Errorf("load prompts: %w", err)
-	}
-
-	runner := agentreview.NewRunner(model, promptMgr, agent.ReadOnlyReviewTools, log, nil)
-
-	changedFiles := agentreview.ParseDiff(c.Diff)
-	if c.ChangedFiles != nil {
-		changedFiles = c.ChangedFiles
-	}
-
-	// Create a temp workspace for the agent to investigate. The eval
-	// cases contain synthetic diffs, so we write the "new" version of
-	// each changed file to a temp dir. The agent can then read_file
-	// and grep against it.
 	workspace, cleanup, err := createEvalWorkspace(c)
 	if err != nil {
 		return result, fmt.Errorf("create eval workspace: %w", err)
 	}
 	defer cleanup()
 
-	reviewConfig := agentreview.DefaultConfig()
-	reviewConfig.MinSeverity = "low" // eval mode: keep everything
+	reviewResult, err := runLiveReview(ctx, c, workspace, model, promptMgr, log)
+	if err != nil {
+		return result, fmt.Errorf("review failed: %w", err)
+	}
+	if reviewResult == nil || reviewResult.Review == nil {
+		return result, fmt.Errorf("nil review result")
+	}
+	return scoreLiveReview(c, reviewResult.Review), nil
+}
 
-	reviewResult, err := runner.Run(ctx, agentreview.Params{
+func runLiveReview(ctx context.Context, c EvalCase, workspace string, model llms.Model, promptMgr *llmpkg.PromptManager, log *slog.Logger) (*agentreview.Result, error) {
+	reviewConfig := agentreview.DefaultConfig()
+	reviewConfig.MinSeverity = "low"
+	runner := agentreview.NewRunner(model, promptMgr, agent.ReadOnlyReviewTools, log, nil)
+	return runner.Run(ctx, agentreview.Params{
 		Diff:          c.Diff,
-		ChangedFiles:  changedFiles,
+		ChangedFiles:  evalChangedFiles(c),
 		WorkspaceDir:  workspace,
 		RepoFullName:  "eval/" + c.Name,
 		Timeout:       10 * time.Minute,
 		MaxIterations: 20,
 		Config:        &reviewConfig,
 	})
-	if err != nil {
-		return result, fmt.Errorf("review failed: %w", err)
+}
+
+func evalChangedFiles(c EvalCase) []internalgithub.ChangedFile {
+	if c.ChangedFiles != nil {
+		return c.ChangedFiles
 	}
+	return agentreview.ParseDiff(c.Diff)
+}
 
-	if reviewResult == nil || reviewResult.Review == nil {
-		return result, fmt.Errorf("nil review result")
+func scoreLiveReview(c EvalCase, review *core.StructuredReview) EvalResult {
+	result := EvalResult{
+		Case:          c.Name,
+		Suite:         c.Suite,
+		Verdict:       review.Verdict,
+		FindingsCount: len(review.Suggestions),
 	}
-
-	result.Verdict = reviewResult.Review.Verdict
-	result.FindingsCount = len(reviewResult.Review.Suggestions)
-
-	// Score: match actual findings against expected findings.
-	actual := reviewResult.Review.Suggestions
 	matched := make([]bool, len(c.ExpectedFindings))
+	scoreFindings(&result, review.Suggestions, c.ExpectedFindings, matched)
+	appendMissedFindingNotes(&result, c.ExpectedFindings, matched)
+	appendExpectationNotes(&result, c)
+	result.Passed = evalPassed(result, c)
+	return result
+}
 
-	for _, a := range actual {
-		matchedAny := false
-		for i, ef := range c.ExpectedFindings {
-			if matched[i] {
-				continue
-			}
-			if findingMatches(a, ef) {
-				matched[i] = true
-				result.TruePositives++
-				matchedAny = true
-				break
-			}
+func scoreFindings(result *EvalResult, actual []core.Suggestion, expected []ExpectedFinding, matched []bool) {
+	for _, finding := range actual {
+		if matchFinding(finding, expected, matched) {
+			result.TruePositives++
+			continue
 		}
-		if !matchedAny {
-			result.FalsePositives++
+		result.FalsePositives++
+	}
+}
+
+func matchFinding(actual core.Suggestion, expected []ExpectedFinding, matched []bool) bool {
+	for i, finding := range expected {
+		if !matched[i] && findingMatches(actual, finding) {
+			matched[i] = true
+			return true
 		}
 	}
+	return false
+}
 
-	for i, m := range matched {
-		if !m {
-			result.FalseNegatives++
-			result.Notes = append(result.Notes, fmt.Sprintf("missed: %s:%s (expected at %s:%d-%d)",
-				c.ExpectedFindings[i].Category, c.ExpectedFindings[i].Severity,
-				c.ExpectedFindings[i].File, c.ExpectedFindings[i].LineRange[0], c.ExpectedFindings[i].LineRange[1]))
+func appendMissedFindingNotes(result *EvalResult, expected []ExpectedFinding, matched []bool) {
+	for i, wasMatched := range matched {
+		if wasMatched {
+			continue
 		}
+		result.FalseNegatives++
+		finding := expected[i]
+		result.Notes = append(result.Notes, fmt.Sprintf("missed: %s:%s (expected at %s:%d-%d)", finding.Category, finding.Severity, finding.File, finding.LineRange[0], finding.LineRange[1]))
 	}
+}
 
-	// Check verdict.
+func appendExpectationNotes(result *EvalResult, c EvalCase) {
 	if c.ExpectedVerdict != "" && c.ExpectedVerdict != result.Verdict {
 		result.Notes = append(result.Notes, fmt.Sprintf("verdict mismatch: expected %s, got %s", c.ExpectedVerdict, result.Verdict))
 	}
-
-	// Check false positive cap.
 	if result.FalsePositives > c.MaxFalsePositives {
 		result.Notes = append(result.Notes, fmt.Sprintf("too many false positives: %d (max %d)", result.FalsePositives, c.MaxFalsePositives))
 	}
+}
 
-	// Pass if: all expected findings found, FP within limit, verdict matches.
-	result.Passed = result.FalseNegatives == 0 &&
-		result.FalsePositives <= c.MaxFalsePositives &&
-		(c.ExpectedVerdict == "" || c.ExpectedVerdict == result.Verdict)
-
-	return result, nil
+func evalPassed(result EvalResult, c EvalCase) bool {
+	return result.FalseNegatives == 0 && result.FalsePositives <= c.MaxFalsePositives && (c.ExpectedVerdict == "" || c.ExpectedVerdict == result.Verdict)
 }
 
 // findingMatches reports whether an actual suggestion matches an expected finding.
@@ -447,14 +493,18 @@ func printResult(r EvalResult, verbose bool) {
 
 // EvalCase is a single test case for the eval harness.
 type EvalCase struct {
-	Name              string                       `json:"name"`
-	Suite             string                       `json:"suite"`
-	Diff              string                       `json:"diff"`
-	ChangedFiles      []internalgithub.ChangedFile `json:"changed_files,omitempty"`
-	WorkspaceDir      string                       `json:"workspace_dir,omitempty"`
-	ExpectedFindings  []ExpectedFinding            `json:"expected_findings"`
-	ExpectedVerdict   string                       `json:"expected_verdict,omitempty"`
-	MaxFalsePositives int                          `json:"max_false_positives"`
+	Name         string                       `json:"name"`
+	Suite        string                       `json:"suite"`
+	Diff         string                       `json:"diff"`
+	ChangedFiles []internalgithub.ChangedFile `json:"changed_files,omitempty"`
+	WorkspaceDir string                       `json:"workspace_dir,omitempty"`
+	// WorkspaceFiles are extra files to write to the eval workspace that
+	// aren't part of the diff but are needed for context (e.g. existing
+	// files the diff depends on). Map of path → content.
+	WorkspaceFiles    map[string]string `json:"workspace_files,omitempty"`
+	ExpectedFindings  []ExpectedFinding `json:"expected_findings"`
+	ExpectedVerdict   string            `json:"expected_verdict,omitempty"`
+	MaxFalsePositives int               `json:"max_false_positives"`
 }
 
 // ExpectedFinding describes a finding the review should produce.
@@ -511,8 +561,9 @@ func loadConfig(cfgPath string) (*config.Config, error) {
 }
 
 // createEvalWorkspace creates a temporary directory with the "new" version
-// of each changed file written to the correct path. This gives the agent a
-// workspace to read_file, grep, and check_build against during eval runs.
+// of each changed file written to the correct path, plus any extra workspace
+// files the case needs for context. This gives the agent a workspace to
+// read_file, grep, and check_build against during eval runs.
 func createEvalWorkspace(c EvalCase) (string, func(), error) {
 	tmpDir, err := os.MkdirTemp("", "code-warden-eval-*")
 	if err != nil {
@@ -523,17 +574,40 @@ func createEvalWorkspace(c EvalCase) (string, func(), error) {
 	// Write the "new" version of each file from the diff.
 	newFiles := extractNewFiles(c.Diff)
 	for path, content := range newFiles {
-		fullPath := filepath.Join(tmpDir, path)
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
-			cleanup()
-			return "", nil, err
-		}
-		if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+		if err := writeWorkspaceFile(tmpDir, path, content); err != nil {
 			cleanup()
 			return "", nil, err
 		}
 	}
+
+	// Write extra workspace files (dependencies the diff references but
+	// aren't part of the diff itself).
+	for path, content := range c.WorkspaceFiles {
+		if err := writeWorkspaceFile(tmpDir, path, content); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
+
 	return tmpDir, cleanup, nil
+}
+
+// writeWorkspaceFile writes one fixture file while ensuring that case data
+// cannot escape the temporary evaluation workspace.
+func writeWorkspaceFile(root, path, content string) error {
+	cleanPath := filepath.Clean(path)
+	if filepath.IsAbs(cleanPath) || cleanPath == "." || cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("invalid workspace file path %q", path)
+	}
+
+	fullPath := filepath.Join(root, cleanPath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
+		return err
+	}
+	if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+		return err
+	}
+	return nil
 }
 
 // extractNewFiles parses a unified diff and returns the "new" version of
@@ -542,67 +616,51 @@ func createEvalWorkspace(c EvalCase) (string, func(), error) {
 // For modified files, this is the patched version (context + added lines, minus deleted lines).
 func extractNewFiles(diff string) map[string]string {
 	files := make(map[string]string)
-	var currentFile string
-	var currentLines []string
-	inHunk := false
-
+	var file diffFile
 	for _, line := range strings.Split(diff, "\n") {
-		if strings.HasPrefix(line, "+++ b/") {
-			currentFile = strings.TrimPrefix(line, "+++ b/")
-			inHunk = false
+		if strings.HasPrefix(line, "diff --git ") {
+			file.store(files)
+			file = diffFile{}
 			continue
 		}
-		if strings.HasPrefix(line, "@@") {
-			inHunk = true
-			continue
-		}
-		if !inHunk || currentFile == "" {
-			continue
-		}
-		// Added line or context line goes into the new file.
-		if strings.HasPrefix(line, "+") {
-			currentLines = append(currentLines, strings.TrimPrefix(line, "+"))
-		} else if strings.HasPrefix(line, " ") {
-			currentLines = append(currentLines, strings.TrimPrefix(line, " "))
-		}
-		// Deleted lines are skipped — they're not in the new version.
+		file.consume(line)
 	}
-
-	// For new-file diffs, all lines are additions — the full file content.
-	if currentFile != "" && len(currentLines) > 0 {
-		files[currentFile] = strings.Join(currentLines, "\n") + "\n"
-	}
-
-	// Handle multiple files in one diff (reset state for each file).
-	currentFile = ""
-	currentLines = nil
-	inHunk = false
-	for _, line := range strings.Split(diff, "\n") {
-		switch {
-		case strings.HasPrefix(line, "diff --git "):
-			if currentFile != "" && len(currentLines) > 0 {
-				files[currentFile] = strings.Join(currentLines, "\n") + "\n"
-			}
-			currentFile = ""
-			currentLines = nil
-			inHunk = false
-		case strings.HasPrefix(line, "+++ b/"):
-			currentFile = strings.TrimPrefix(line, "+++ b/")
-		case strings.HasPrefix(line, "@@"):
-			inHunk = true
-		case inHunk && currentFile != "":
-			if strings.HasPrefix(line, "+") {
-				currentLines = append(currentLines, strings.TrimPrefix(line, "+"))
-			} else if strings.HasPrefix(line, " ") {
-				currentLines = append(currentLines, strings.TrimPrefix(line, " "))
-			}
-		}
-	}
-	if currentFile != "" && len(currentLines) > 0 {
-		files[currentFile] = strings.Join(currentLines, "\n") + "\n"
-	}
-
+	file.store(files)
 	return files
+}
+
+type diffFile struct {
+	path   string
+	lines  []string
+	inHunk bool
+}
+
+func (f *diffFile) consume(line string) {
+	switch {
+	case strings.HasPrefix(line, "+++ b/"):
+		f.path = strings.TrimPrefix(line, "+++ b/")
+		f.inHunk = false
+	case strings.HasPrefix(line, "@@"):
+		f.inHunk = true
+	case f.inHunk && f.path != "":
+		f.appendNewLine(line)
+	}
+}
+
+func (f *diffFile) appendNewLine(line string) {
+	if strings.HasPrefix(line, "+") {
+		f.lines = append(f.lines, strings.TrimPrefix(line, "+"))
+		return
+	}
+	if strings.HasPrefix(line, " ") {
+		f.lines = append(f.lines, strings.TrimPrefix(line, " "))
+	}
+}
+
+func (f *diffFile) store(files map[string]string) {
+	if f.path != "" && len(f.lines) > 0 {
+		files[f.path] = strings.Join(f.lines, "\n") + "\n"
+	}
 }
 
 // buildLLM builds the LLM model from config.
