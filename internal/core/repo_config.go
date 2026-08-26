@@ -36,6 +36,37 @@ type RepoConfig struct {
 	// format all modified files (e.g. "npm run format", "ruff format .").
 	// If empty, no batch formatting is performed.
 	FormatCommand string `yaml:"format_command"`
+
+	// Readiness configures the operational readiness review skill. When absent,
+	// defaults apply (all categories enabled, no context or instructions).
+	Readiness ReadinessConfig `yaml:"readiness"`
+}
+
+// ReadinessConfig controls the operational readiness review for a repository.
+type ReadinessConfig struct {
+	// Enabled toggles the readiness review. Defaults to true.
+	Enabled *bool `yaml:"enabled"`
+	// Checks enable or disable individual readiness categories.
+	Checks ReadinessChecks `yaml:"checks"`
+	// Context carries repository-specific platform facts (e.g. messaging: nats)
+	// used to ground the agent's investigation.
+	Context map[string]string `yaml:"context"`
+	// Instructions are repo-specific operational guidance for the agent.
+	Instructions []string `yaml:"instructions"`
+}
+
+// ReadinessChecks enables/disables each readiness category.
+type ReadinessChecks struct {
+	OutboundHTTP       *CategoryCheck `yaml:"outbound_http"`
+	BackgroundJobs     *CategoryCheck `yaml:"background_jobs"`
+	Messaging          *CategoryCheck `yaml:"messaging"`
+	Migrations         *CategoryCheck `yaml:"migrations"`
+	ExternalSideEffect *CategoryCheck `yaml:"external_side_effects"`
+}
+
+// CategoryCheck configures one readiness category.
+type CategoryCheck struct {
+	Enabled *bool `yaml:"enabled"`
 }
 
 // DefaultRepoConfig returns a config with default values.
@@ -46,5 +77,22 @@ func DefaultRepoConfig() *RepoConfig {
 		ExcludeExts:        []string{},
 		ExcludeFiles:       []string{},
 		VerifyCommands:     []string{}, // Empty means use agent defaults
+		Readiness:          DefaultReadinessConfig(),
 	}
 }
+
+// DefaultReadinessConfig returns readiness settings with every category enabled.
+func DefaultReadinessConfig() ReadinessConfig {
+	return ReadinessConfig{
+		Enabled: boolPtr(true),
+		Checks: ReadinessChecks{
+			OutboundHTTP:       &CategoryCheck{Enabled: boolPtr(true)},
+			BackgroundJobs:     &CategoryCheck{Enabled: boolPtr(true)},
+			Messaging:          &CategoryCheck{Enabled: boolPtr(true)},
+			Migrations:         &CategoryCheck{Enabled: boolPtr(true)},
+			ExternalSideEffect: &CategoryCheck{Enabled: boolPtr(true)},
+		},
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
