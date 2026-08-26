@@ -90,7 +90,6 @@ function PipelineRow({ job, repos }: { job: JobRun; repos: Repository[] | undefi
   const getTypeColor = () => {
     switch (job.type) {
       case 'review': return 'text-blue-500'
-      case 'implement': return 'text-amber-500'
       case 'rereview': return 'text-sky-500'
       default: return 'text-[#8c919b]'
     }
