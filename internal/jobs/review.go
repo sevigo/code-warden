@@ -17,6 +17,7 @@ import (
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/repomanager"
+	"github.com/sevigo/code-warden/internal/skills"
 	"github.com/sevigo/code-warden/internal/storage"
 	"github.com/sevigo/code-warden/internal/stringsutil"
 
@@ -270,23 +271,28 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 	return structuredReview, validLineMaps, nil
 }
 
-// runAgentReview runs the agent-based multi-angle review.
+// runAgentReview runs the agent-based multi-angle review through the skill engine.
 func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, error) {
 	repoURL := j.buildAgentCloneURL(event)
 
 	executor := agentreview.NewGoframeAngleExecutor(j.llm, j.promptMgr, reviewtools.New, j.logger)
 	runner := agentreview.NewRunner(executor, j.logger, nil)
-	result, err := runner.Run(ctx, agentreview.Params{
+	registry := skills.NewRegistry(j.logger, skills.NewReviewSkill(runner))
+
+	results, err := registry.Run(ctx, skills.RunContext{
 		Diff:           diff,
 		ChangedFiles:   changedFiles,
-		RepoURL:        repoURL,
+		CloneURL:       repoURL,
 		RepoFullName:   event.RepoFullName,
 		CommitMessages: event.CommitMessages,
-	})
+	}, nil)
 	if err != nil {
 		return nil, err
 	}
-	return result.Review, nil
+	if len(results) == 0 || results[0].Review == nil {
+		return nil, fmt.Errorf("no review produced by skill engine")
+	}
+	return results[0].Review, nil
 }
 
 // completeReview reserves the review in the database, publishes it to GitHub,

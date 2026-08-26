@@ -32,6 +32,17 @@ type Suggestion struct {
 	// Source is the citation for where this finding originated (anti-hallucination grounding).
 	// Format: "diff:L{line}", "context:{file}:{line}", "inference:{type}", or "external:{description}"
 	Source string `json:"source,omitempty" xml:"source,omitempty"`
+	// Resource names the affected infra/config object, e.g. "aws:rds/primary" or
+	// "deployment/app/web". Populated by deterministic analyzer skills.
+	Resource string `json:"resource,omitempty" xml:"resource,omitempty"`
+	// Change records the before -> after delta, e.g. "replicas 4 -> 1".
+	Change string `json:"change,omitempty" xml:"change,omitempty"`
+	// RuleID is a stable identifier for the deterministic rule that produced the
+	// finding (e.g. "TF-K8S-002"), enabling policy references and audits.
+	RuleID string `json:"rule_id,omitempty" xml:"rule_id,omitempty"`
+	// Evidence cites the concrete file:line + snippet that grounded the finding,
+	// so deterministic findings remain traceable to the source diff.
+	Evidence string `json:"evidence,omitempty" xml:"evidence,omitempty"`
 }
 
 // StructuredReview represents the complete output from the LLM in a structured,
