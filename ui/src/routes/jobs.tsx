@@ -9,7 +9,6 @@ import {
   Activity,
   RotateCcw,
   GitPullRequest,
-  Zap,
   Filter,
   ChevronDown,
   ChevronUp,
@@ -101,10 +100,6 @@ function JobTypeBadge({ type }: { type: JobRun['type'] }) {
     review: {
       icon: GitPullRequest,
       className: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
-    },
-    implement: {
-      icon: Zap,
-      className: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
     },
     rereview: {
       icon: RotateCcw,

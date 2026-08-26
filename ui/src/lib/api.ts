@@ -139,7 +139,7 @@ export interface GlobalStats {
 
 export interface JobRun {
   id: string
-  type: 'review' | 'implement' | 'rereview'
+  type: 'review' | 'rereview'
   repo_full_name: string
   pr_number: number
   status: 'pending' | 'running' | 'completed' | 'failed'
