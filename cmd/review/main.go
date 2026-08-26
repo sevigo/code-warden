@@ -33,6 +33,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/logger"
+	"github.com/sevigo/code-warden/internal/readiness"
 	"github.com/sevigo/code-warden/internal/reviewapp"
 	"github.com/sevigo/code-warden/internal/reviewcli"
 	"github.com/sevigo/code-warden/internal/reviewcli/render"
@@ -42,24 +43,25 @@ func main() {
 	fs := flag.NewFlagSet("review", flag.ExitOnError)
 
 	var (
-		local    = fs.String("local", "", "path to a local git checkout to review")
-		pr       = fs.String("pr", "", "PR to review as owner/repo")
-		prNum    = fs.Int("number", 0, "pull request number (used with --pr)")
-		token    = fs.String("token", "", "GitHub token (optional; private repos / higher limits)")
-		base     = fs.String("base", "", "git ref to diff against (default: HEAD = uncommitted changes)")
-		asJSON   = fs.Bool("json", false, "print raw structured review as JSON (no color)")
-		prompt   = fs.Bool("prompt-only", false, "print compact structured text for AI agent consumption (no color)")
-		noColor  = fs.Bool("no-color", false, "disable colorized output")
-		cfgPath  = fs.String("config", "", "path to a config file (default: ./config.yaml, $HOME/.code-warden)")
-		timeout  = fs.Duration("timeout", 0, "per-angle timeout (default: 3m; raise for slow local models)")
-		maxIter  = fs.Int("max-iterations", 0, "per-angle agent-loop iteration cap (default: 8)")
-		logLvl   = fs.String("log-level", "info", "log level: debug, info, warn, error")
-		ctxWin   = fs.Int("context-window", 0, "model context window in tokens (default: 128000; compaction triggers at 60%)")
-		sev      = fs.String("severity", "", "minimum severity to report: low, medium, high, critical (default: medium)")
-		ignore   = fs.String("ignore", "", "comma-separated glob patterns to ignore (e.g. \"vendor/**,*.lock\")")
-		cats     = fs.String("categories", "", "comma-separated categories to enable (e.g. \"bug,security\"); default: all")
-		maxF     = fs.Int("max-files", 0, "skip review when more than N files changed (default: 100)")
-		traceDir = fs.String("trace-dir", "", "write private review trace artifacts beneath this directory")
+		local     = fs.String("local", "", "path to a local git checkout to review")
+		pr        = fs.String("pr", "", "PR to review as owner/repo")
+		prNum     = fs.Int("number", 0, "pull request number (used with --pr)")
+		token     = fs.String("token", "", "GitHub token (optional; private repos / higher limits)")
+		base      = fs.String("base", "", "git ref to diff against (default: HEAD = uncommitted changes)")
+		asJSON    = fs.Bool("json", false, "print raw structured review as JSON (no color)")
+		prompt    = fs.Bool("prompt-only", false, "print compact structured text for AI agent consumption (no color)")
+		noColor   = fs.Bool("no-color", false, "disable colorized output")
+		cfgPath   = fs.String("config", "", "path to a config file (default: ./config.yaml, $HOME/.code-warden)")
+		timeout   = fs.Duration("timeout", 0, "per-angle timeout (default: 3m; raise for slow local models)")
+		maxIter   = fs.Int("max-iterations", 0, "per-angle agent-loop iteration cap (default: 8)")
+		logLvl    = fs.String("log-level", "info", "log level: debug, info, warn, error")
+		ctxWin    = fs.Int("context-window", 0, "model context window in tokens (default: 128000; compaction triggers at 60%)")
+		sev       = fs.String("severity", "", "minimum severity to report: low, medium, high, critical (default: medium)")
+		ignore    = fs.String("ignore", "", "comma-separated glob patterns to ignore (e.g. \"vendor/**,*.lock\")")
+		cats      = fs.String("categories", "", "comma-separated categories to enable (e.g. \"bug,security\"); default: all")
+		maxF      = fs.Int("max-files", 0, "skip review when more than N files changed (default: 100)")
+		readiness = fs.Bool("readiness", false, "run the operational readiness review instead of the general review")
+		traceDir  = fs.String("trace-dir", "", "write private review trace artifacts beneath this directory")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "review — run the agent-based code review standalone")
@@ -114,18 +116,47 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	result, err := executeReviewRun(ctx, cfg, logger, input, reviewOpts, *traceDir)
+
+	exitCode, err := runReview(ctx, cfg, logger, input, reviewOpts, *local, *traceDir, *readiness, *asJSON, *prompt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-
-	exitCode, err := presentReview(os.Stdout, result, *asJSON, *prompt)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: encode review: %v\n", err)
-		os.Exit(1)
-	}
 	os.Exit(exitCode)
+}
+
+// runReview executes either the general review or the readiness review and
+// returns the process exit code.
+func runReview(ctx context.Context, cfg *config.Config, logger *slog.Logger, input reviewapp.ReviewInput, opts reviewapp.ReviewOptions, localPath, traceDir string, readinessMode, asJSON, promptOnly bool) (int, error) {
+	if readinessMode {
+		review, err := executeReadiness(ctx, cfg, logger, input, localPath)
+		if err != nil {
+			return 0, err
+		}
+		return presentStructuredReview(os.Stdout, review, asJSON, promptOnly)
+	}
+	result, err := executeReviewRun(ctx, cfg, logger, input, opts, traceDir)
+	if err != nil {
+		return 0, err
+	}
+	return presentReview(os.Stdout, result, asJSON, promptOnly)
+}
+
+// presentStructuredReview writes a structured review to stdout in the requested
+// format and returns the process exit code based on its verdict.
+func presentStructuredReview(w io.Writer, review *core.StructuredReview, asJSON, promptOnly bool) (int, error) {
+	if asJSON {
+		if err := json.NewEncoder(w).Encode(review); err != nil {
+			return 1, err
+		}
+		return exitCodeForReview(review), nil
+	}
+	if promptOnly {
+		renderPromptOnly(w, review)
+		return exitCodeForReview(review), nil
+	}
+	render.Render(w, review, render.Options{})
+	return exitCodeForReview(review), nil
 }
 
 func executeReviewRun(ctx context.Context, cfg *config.Config, logger *slog.Logger, input reviewapp.ReviewInput, opts reviewapp.ReviewOptions, traceDir string) (*reviewapp.ReviewResult, error) {
@@ -286,6 +317,7 @@ func executeReview(ctx context.Context, cfg *config.Config, logger *slog.Logger,
 	return service.Review(ctx, input, opts)
 }
 
+// presentReview renders a review result and returns the process exit code.
 func presentReview(w io.Writer, result *reviewapp.ReviewResult, asJSON, promptOnly bool) (int, error) {
 	review := result.Review
 	if asJSON {
@@ -302,6 +334,40 @@ func presentReview(w io.Writer, result *reviewapp.ReviewResult, asJSON, promptOn
 	render.Render(w, review, render.Options{})
 	render.Coverage(w, result.Coverage)
 	return exitCodeForReview(review), nil
+}
+
+// executeReadiness runs the operational readiness review for a local checkout
+// (or, when localPath is empty, a fetched input without a workspace).
+func executeReadiness(ctx context.Context, cfg *config.Config, logger *slog.Logger, input reviewapp.ReviewInput, localPath string) (*core.StructuredReview, error) {
+	model, err := llm.NewGenerator(ctx, cfg.AI, logger)
+	if err != nil {
+		return nil, fmt.Errorf("build LLM: %w", err)
+	}
+	promptMgr, err := llm.NewPromptManager()
+	if err != nil {
+		return nil, fmt.Errorf("load prompts: %w", err)
+	}
+
+	var rc *core.RepoConfig
+	if localPath != "" {
+		rc = config.LoadRepoConfigWithDefaults(localPath, input.Repository, logger)
+	} else {
+		rc = core.DefaultRepoConfig()
+	}
+
+	runner := readiness.NewRunner(model, promptMgr, reviewtools.New, nil, logger)
+	result, err := runner.Run(ctx, readiness.Input{
+		Diff:           input.Diff,
+		ChangedFiles:   input.ChangedFiles,
+		WorkspaceDir:   input.WorkspaceDir,
+		CloneURL:       input.CloneURL,
+		RepoFullName:   input.Repository,
+		CommitMessages: input.CommitMessages,
+	}, readiness.ConfigFromRepo(rc))
+	if err != nil {
+		return nil, fmt.Errorf("readiness failed: %w", err)
+	}
+	return result.Review, nil
 }
 
 // loadConfig loads configuration, optionally from an explicit path.

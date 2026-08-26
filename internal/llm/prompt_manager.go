@@ -23,6 +23,8 @@ const (
 	ReviewPerformancePrompt PromptKey = "review_performance"
 	// ReviewConventionsPrompt is the conventions review lens system prompt key.
 	ReviewConventionsPrompt PromptKey = "review_conventions"
+	// ReadinessPrompt is the operational readiness review system prompt key.
+	ReadinessPrompt PromptKey = "readiness"
 )
 
 type PromptManager struct {

@@ -26,6 +26,10 @@ type GitHubEvent struct {
 	PRBody   string // The body/description of the pull request
 	HeadSHA  string // The HEAD commit SHA of the PR
 
+	// Command is the slash command that triggered the event, e.g. "review",
+	// "rereview", or "readiness".
+	Command string
+
 	// UserInstructions captures optional text provided with the command
 	// (e.g., "/review check security"). This allows users to provide
 	// custom guidance to the code review process.
@@ -53,7 +57,7 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 	}
 
 	commentBody := strings.TrimSpace(strings.ToLower(event.GetComment().GetBody()))
-	instructions, err := parseReviewCommand(commentBody)
+	command, instructions, err := parseCommand(commentBody)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +90,7 @@ func EventFromIssueComment(event *github.IssueCommentEvent) (*GitHubEvent, error
 		PRNumber:         prNumber,
 		PRTitle:          event.GetIssue().GetTitle(),
 		PRBody:           event.GetIssue().GetBody(),
+		Command:          command,
 		UserInstructions: instructions,
 		Commenter:        event.GetComment().GetUser().GetLogin(),
 	}, nil
@@ -108,30 +113,28 @@ func sanitizeInstructions(instructions string) string {
 	}, instructions)
 }
 
-// parseReviewCommand parses the comment body and returns any user-provided
-// instructions.
+// parseCommand parses a normalized comment body into a command name and any
+// trailing instructions. Supported commands are "/review", "/rereview", and
+// "/readiness". Both "/review" and "/rereview" map to a full review.
 //
-// Both "/review" and "/rereview" map to a full review: since the RAG re-review
-// pipeline was removed, a re-review is identical to a fresh review of the
-// current diff. The command is kept as an alias for backward compatibility.
-//
-// Returns the instructions string, and an error if the command is not recognized.
-func parseReviewCommand(commentBody string) (string, error) {
+// Returns the command name, the instructions string, and an error if the command
+// is not recognized.
+func parseCommand(commentBody string) (string, string, error) {
 	if commentBody == "/review" || commentBody == reReviewCmd {
-		return "", nil
+		return "review", "", nil
+	}
+	if commentBody == "/readiness" {
+		return "readiness", "", nil
 	}
 
-	// Accept "/rereview <instructions>" (with a space).
-	if strings.HasPrefix(commentBody, reReviewCmd+" ") {
-		args := strings.TrimPrefix(commentBody, reReviewCmd)
-		return sanitizeInstructions(strings.TrimSpace(args)), nil
+	// Accept "<cmd> <instructions>" (with a space).
+	for _, prefix := range []string{"/readiness", reReviewCmd, "/review"} {
+		if strings.HasPrefix(commentBody, prefix+" ") {
+			args := strings.TrimPrefix(commentBody, prefix)
+			cmd := strings.TrimPrefix(prefix, "/")
+			return cmd, sanitizeInstructions(strings.TrimSpace(args)), nil
+		}
 	}
 
-	// Accept "/review <instructions>" (with a space).
-	if strings.HasPrefix(commentBody, "/review ") {
-		args := strings.TrimPrefix(commentBody, "/review")
-		return sanitizeInstructions(strings.TrimSpace(args)), nil
-	}
-
-	return "", fmt.Errorf("comment is not a valid review command: expected /review or /rereview")
+	return "", "", fmt.Errorf("comment is not a valid command: expected /review, /rereview, or /readiness")
 }

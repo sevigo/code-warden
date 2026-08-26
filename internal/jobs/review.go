@@ -16,6 +16,7 @@ import (
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
 	"github.com/sevigo/code-warden/internal/llm"
+	"github.com/sevigo/code-warden/internal/readiness"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/skills"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -77,6 +78,10 @@ func (j *ReviewJob) Run(ctx context.Context, event *core.GitHubEvent) error {
 		return err
 	}
 
+	if event.Command == "readiness" {
+		return j.runReadiness(ctx, event)
+	}
+
 	return j.runFullReview(ctx, event)
 }
 
@@ -87,6 +92,69 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	err := j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
 	finish(ctx, err)
 	return err
+}
+
+// runReadiness handles the `/readiness` command: it detects applicable
+// operational-readiness categories and posts a single PR summary.
+func (j *ReviewJob) runReadiness(ctx context.Context, event *core.GitHubEvent) error {
+	j.logger.Info("Starting Operational Readiness Review", "repo", event.RepoFullName, "pr", event.PRNumber)
+	finish := j.startJobRun(ctx, "readiness", event, "webhook:/readiness")
+	err := j.executeReadinessWorkflow(ctx, event)
+	finish(ctx, err)
+	return err
+}
+
+// executeReadinessWorkflow runs the readiness review and posts the result.
+func (j *ReviewJob) executeReadinessWorkflow(ctx context.Context, event *core.GitHubEvent) error {
+	reviewEnv, err := j.setupReviewEnvironment(ctx, event, "Readiness Review", "Operational readiness analysis in progress...")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
+		}
+	}()
+
+	diff, err := reviewEnv.ghClient.GetPullRequestDiff(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR diff: %w", err)
+	}
+	changedFiles, err := reviewEnv.ghClient.GetChangedFiles(ctx, event.RepoOwner, event.RepoName, event.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get changed files: %w", err)
+	}
+	if commits, cErr := reviewEnv.ghClient.GetPullRequestCommits(ctx, event.RepoOwner, event.RepoName, event.PRNumber); cErr == nil {
+		event.CommitMessages = commits
+	} else {
+		j.logger.Warn("failed to fetch commit messages, readiness will proceed without them", "error", cErr)
+	}
+
+	runner := readiness.NewRunner(j.llm, j.promptMgr, reviewtools.New, nil, j.logger)
+	result, err := runner.Run(ctx, readiness.Input{
+		Diff:           diff,
+		ChangedFiles:   changedFiles,
+		WorkspaceDir:   reviewEnv.updateResult.RepoPath,
+		RepoFullName:   event.RepoFullName,
+		CommitMessages: event.CommitMessages,
+	}, readiness.ConfigFromRepo(reviewEnv.repoConfig))
+	if err != nil {
+		return fmt.Errorf("readiness review failed: %w", err)
+	}
+
+	if result.Partial {
+		j.logger.Warn("readiness review completed partially; not presenting as a full pass",
+			"repo", event.RepoFullName, "pr", event.PRNumber)
+	}
+
+	if err := reviewEnv.statusUpdater.PostSimpleComment(ctx, event, formatReadinessComment(result)); err != nil {
+		return fmt.Errorf("failed to post readiness comment: %w", err)
+	}
+
+	if err := reviewEnv.statusUpdater.Completed(ctx, event, reviewEnv.checkRunID, "success", "Readiness Review", summaryOf(result)); err != nil {
+		return fmt.Errorf("failed to complete readiness check: %w", err)
+	}
+	return nil
 }
 
 // startJobRun records a job as "running" and returns a function to finalize it.
@@ -516,4 +584,110 @@ func (j *ReviewJob) buildAgentCloneURL(event *core.GitHubEvent) string {
 		return "https://x-access-token:" + token + "@" + strings.TrimPrefix(base, "https://")
 	}
 	return base
+}
+
+// formatReadinessComment renders the PR-level operational readiness summary.
+func formatReadinessComment(result *readiness.Result) string {
+	if result == nil || result.Review == nil {
+		return "Readiness review produced no result."
+	}
+
+	detected := renderDetectedCategories(result.Detected)
+
+	var b strings.Builder
+	b.WriteString("## Production Readiness\n\n")
+	if result.Partial {
+		b.WriteString("> ⚠️ This review is **partial**. Some categories were not fully investigated and the result is not a complete readiness pass.\n\n")
+	}
+	b.WriteString(detected)
+	b.WriteString("\n")
+	if result.Review.Summary != "" {
+		b.WriteString("\n**Summary:** " + result.Review.Summary + "\n")
+	}
+
+	bySeverity := map[string][]core.Suggestion{}
+	order := []string{"Critical", "High", "Medium", "Low"}
+	for _, s := range result.Review.Suggestions {
+		bySeverity[s.Severity] = append(bySeverity[s.Severity], s)
+	}
+
+	var hasFindings bool
+	for _, sev := range order {
+		findings := bySeverity[sev]
+		if len(findings) == 0 {
+			continue
+		}
+		hasFindings = true
+		fmt.Fprintf(&b, "\n### %s\n\n", sev)
+		for _, f := range findings {
+			fmt.Fprintf(&b, "- **%s** — %s\n", severityMarker(sev), f.Comment)
+			if f.FilePath != "" {
+				fmt.Fprintf(&b, "  File: `%s:%d`\n", f.FilePath, f.LineNumber)
+			}
+			if f.RuleID != "" {
+				fmt.Fprintf(&b, "  Rule: `%s`\n", f.RuleID)
+			}
+			if f.Evidence != "" {
+				fmt.Fprintf(&b, "  Evidence: `%s`\n", f.Evidence)
+			}
+		}
+	}
+	if !hasFindings {
+		b.WriteString("\n✅ No operational readiness findings.\n")
+	}
+	return b.String()
+}
+
+// summaryOf returns the review summary for a check-run conclusion.
+func summaryOf(result *readiness.Result) string {
+	if result == nil || result.Review == nil {
+		return "No readiness review produced."
+	}
+	return result.Review.Summary
+}
+
+// renderDetectedCategories renders the list of detected change categories.
+func renderDetectedCategories(dets []readiness.Detection) string {
+	if len(dets) == 0 {
+		return "_No production-facing change categories detected._"
+	}
+	var b strings.Builder
+	b.WriteString("**Detected changes:**\n")
+	for _, d := range dets {
+		b.WriteString("- " + categoryLabel(d.Category) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// categoryLabel returns a human-readable label for a readiness category.
+func categoryLabel(cat readiness.Category) string {
+	switch cat {
+	case readiness.CategoryOutboundHTTP:
+		return "External HTTP/API integration"
+	case readiness.CategoryBackgroundJob:
+		return "Background worker/job"
+	case readiness.CategoryMessaging:
+		return "Queue/message consumer"
+	case readiness.CategoryMigration:
+		return "Database migration"
+	case readiness.CategoryExternalSideEffect:
+		return "External side effect / payment"
+	default:
+		return string(cat)
+	}
+}
+
+func severityMarker(sev string) string {
+	switch strings.ToLower(sev) {
+	case "critical":
+		return "🔴"
+	case "high":
+		return "🟠"
+	case "medium":
+		return "🟡"
+	case "low":
+		return "🟢"
+	default:
+		return "•"
+	}
 }
