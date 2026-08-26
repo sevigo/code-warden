@@ -54,7 +54,7 @@ cd code-warden
 make quickstart             # guided interactive setup
 ```
 
-Starts everything in Docker with a web dashboard at `localhost:8080`. The wizard checks prerequisites, configures `.env`, detects your GPU, and pulls a local model. The review model (`kimi-k2.5`) runs as an Ollama cloud model — no GPU needed for that.
+Starts everything in Docker with a setup wizard at `localhost:8080`. The wizard checks prerequisites, configures `.env`, detects your GPU, and pulls a local model. The review model (`kimi-k2.5`) runs as an Ollama cloud model — no GPU needed for that.
 
 **GPU support** (optional — CPU works fine for demos):
 ```sh

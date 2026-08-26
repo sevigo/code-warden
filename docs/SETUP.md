@@ -142,9 +142,7 @@ Update the **Webhook URL** in your GitHub App settings to the tunnel URL + `/web
 
 ### Step 6: Index the repository
 
-Before reviews work, Code-Warden needs to index the repository into Qdrant. This happens automatically on the first `/review`, but for large repos you should run a full scan from the dashboard first.
-
-To index a repository, add it from the dashboard UI and trigger a scan. For incremental updates after a scan, `/review` re-indexes changed files automatically.
+Before reviews work, Code-Warden needs to index the repository. This happens automatically on the first `/review`, but for large repos you should run a full scan first. For incremental updates after a scan, `/review` re-indexes changed files automatically.
 
 ---
 

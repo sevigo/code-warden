@@ -1,16 +1,3 @@
-export interface Repository {
-  id: number
-  full_name: string
-  clone_path: string
-  last_indexed_sha: string
-  created_at: string
-  updated_at: string
-}
-
-export interface RegisterRepoRequest {
-  full_name: string
-}
-
 export interface SetupStatus {
   github_app: {
     configured: boolean
@@ -31,13 +18,6 @@ export interface SetupGitHubManifestResponse {
   state?: string
   url?: string
   explanation?: string
-}
-
-export interface SetupGitHubCallbackResponse {
-  success: boolean
-  app_id: number
-  app_name: string
-  message: string
 }
 
 export interface GitHubAppCredentials {
@@ -65,90 +45,6 @@ export interface SetupTestLLMResponse {
   detail: string
 }
 
-export interface AppConfig {
-  ai: {
-    llm_provider: string
-    generator_model: string
-  }
-  github: {
-    app_id: number
-    webhook_configured: boolean
-  }
-}
-
-export interface ReviewSummary {
-  id: number
-  pr_number: number
-  pr_title: string
-  head_sha: string
-  status: string
-  severity_counts: {
-    critical: number
-    high: number
-    medium: number
-    low: number
-  }
-  total_findings: number
-  reviewed_at: string
-  created_at: string
-  revision: number
-  is_re_review: boolean
-}
-
-export interface ReviewFinding {
-  id: string
-  severity: 'critical' | 'high' | 'medium' | 'low'
-  category: string
-  file: string
-  line_start: number
-  line_end: number
-  title: string
-  description: string
-  suggestion: string
-}
-
-export interface ReviewDetail extends ReviewSummary {
-  findings: ReviewFinding[]
-  history: ReviewHistoryItem[]
-}
-
-export interface ReviewHistoryItem {
-  id: number
-  head_sha: string
-  created_at: string
-  revision: number
-  is_latest: boolean
-  total_critical: number
-}
-
-export interface GlobalStats {
-  total_repos: number
-  total_reviews: number
-  reviews_this_week: number
-  total_findings: number
-  findings_by_severity: {
-    critical: number
-    high: number
-    medium: number
-    low: number
-  }
-  avg_findings_per_review: number
-  jobs_running: number
-  jobs_queued: number
-}
-
-export interface JobRun {
-  id: string
-  type: 'review' | 'rereview'
-  repo_full_name: string
-  pr_number: number
-  status: 'pending' | 'running' | 'completed' | 'failed'
-  triggered_by: string
-  triggered_at: string
-  completed_at: string
-  duration_ms: number
-}
-
 const API_BASE = '/api/v1'
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -174,16 +70,6 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
 }
 
 export const api = {
-  repos: {
-    list: () => fetchApi<Repository[]>('/repos'),
-    get: (id: number) => fetchApi<Repository>(`/repos/${id}`),
-    register: (data: RegisterRepoRequest) =>
-      fetchApi<Repository>('/repos', {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-  },
-
   setup: {
     status: () => fetchApi<SetupStatus>('/setup/status'),
     githubManifest: () =>
@@ -195,34 +81,5 @@ export const api = {
       }),
     testLLM: () =>
       fetchApi<SetupTestLLMResponse>('/setup/test-llm', { method: 'POST' }),
-  },
-
-  config: {
-    get: () => fetchApi<AppConfig>('/config'),
-  },
-
-  stats: {
-    global: () => fetchApi<GlobalStats>('/stats/global'),
-  },
-
-  jobs: {
-    list: (limit = 50, offset = 0) =>
-      fetchApi<JobRun[]>(`/jobs?limit=${limit}&offset=${offset}`),
-  },
-
-  reviews: {
-    list: (repoId: number) =>
-      fetchApi<ReviewSummary[]>(`/repos/${repoId}/reviews`),
-    get: (repoId: number, prNumber: number, id?: number) =>
-      fetchApi<ReviewDetail>(`/repos/${repoId}/reviews/${prNumber}${id ? `?id=${id}` : ''}`),
-    feedback: (
-      repoId: number,
-      prNumber: number,
-      data: { finding_id: string; verdict: string; note?: string }
-    ) =>
-      fetchApi<{ ok: boolean }>(`/repos/${repoId}/reviews/${prNumber}/feedback`, {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
   },
 }

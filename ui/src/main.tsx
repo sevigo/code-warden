@@ -6,16 +6,7 @@ import './index.css'
 
 import { router } from './router.tsx'
 
-// Restore persisted theme; default to dark
-const saved = localStorage.getItem('theme')
-const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-if (saved === 'light') {
-  document.documentElement.classList.remove('dark')
-} else if (saved === 'dark' || !saved) {
-  document.documentElement.classList.add('dark')
-} else if (prefersDark) {
-  document.documentElement.classList.add('dark')
-}
+document.documentElement.classList.add('dark')
 
 const queryClient = new QueryClient({
   defaultOptions: {

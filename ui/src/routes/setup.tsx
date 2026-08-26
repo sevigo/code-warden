@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   Shield,
@@ -9,7 +8,6 @@ import {
   ExternalLink,
   Github,
   Database,
-  ArrowRight,
   Zap,
   AlertCircle,
   Cpu,
@@ -168,7 +166,7 @@ export default function SetupPage() {
         </Step>
 
         <Step num={4} title="Trigger your first review" done={false} active={activeStep === 4}>
-          <p>Add a repository from the dashboard, then open a PR and comment:</p>
+          <p>Install the app on your repositories, then open a PR and comment:</p>
           <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-[6px] bg-[#2264d6]/10 text-[#2264d6] font-mono text-sm">
             <Zap className="h-3.5 w-3.5" />
             /review
@@ -524,29 +522,18 @@ function SetupCompleteCard() {
       className="mt-8"
     >
       <Card className="p-5 border-emerald-500/30 bg-emerald-500/5">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-[8px] bg-emerald-500/15 flex items-center justify-center">
-              <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-            </div>
-            <div>
-              <p className="font-medium text-emerald-500">Setup complete!</p>
-              <p className="text-xs text-[#8c919b]">
-                You're ready to add repositories and start reviewing PRs
-              </p>
-            </div>
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 rounded-[8px] bg-emerald-500/15 flex items-center justify-center">
+            <CheckCircle2 className="h-5 w-5 text-emerald-500" />
           </div>
-          <Button asChild>
-            <Link to="/" className="flex items-center gap-1.5">
-              Go to Dashboard
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </Button>
+          <div>
+            <p className="font-medium text-emerald-500">Setup complete!</p>
+            <p className="text-xs text-[#8c919b]">
+              Code Warden is ready. Install the app on your repositories to start reviewing PRs.
+            </p>
+          </div>
         </div>
       </Card>
     </motion.div>
   )
 }
-
-// Re-export for type re-use by other parts of the UI if needed.
-export type { SetupStatus }
