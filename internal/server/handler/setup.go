@@ -14,12 +14,16 @@ import (
 	"time"
 
 	"github.com/sevigo/code-warden/internal/config"
+	"github.com/sevigo/code-warden/internal/storage"
 )
+
+const statusError = "error"
 
 // SetupHandler handles the first-boot setup wizard endpoints.
 type SetupHandler struct {
 	cfg       *config.Config
 	credStore *config.CredentialStore
+	store     storage.Store
 	logger    *slog.Logger
 }
 
@@ -31,11 +35,98 @@ func (h *SetupHandler) SetCredentialStore(cs *config.CredentialStore) {
 	h.credStore = cs
 }
 
+func (h *SetupHandler) SetStore(store storage.Store) {
+	h.store = store
+}
+
 func (h *SetupHandler) writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		h.logger.Error("failed to encode JSON response", "error", err)
 	}
+}
+
+// SetupStatus reports the health and configuration state for the setup wizard.
+func (h *SetupHandler) SetupStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	configured := h.cfg.GitHub.AppID != 0
+	appName := h.cfg.GitHub.AppName
+	if configured && appName == "" {
+		appName = "Code Warden"
+	}
+
+	dbStatus, dbLatency := h.pingDatabase(ctx)
+	llmStatus, llmLatency := h.pingLLM()
+
+	installURL := ""
+	if configured && appName != "" {
+		installURL = fmt.Sprintf("https://github.com/apps/%s/installations/new",
+			strings.ToLower(strings.ReplaceAll(appName, " ", "-")))
+	}
+
+	h.writeJSON(w, map[string]any{
+		"github_app": map[string]any{
+			"configured":  configured,
+			"app_id":      h.cfg.GitHub.AppID,
+			"app_name":    appName,
+			"install_url": installURL,
+		},
+		"services": map[string]any{
+			"database": map[string]any{"status": dbStatus, "latency_ms": dbLatency},
+			"llm":      map[string]any{"status": llmStatus, "latency_ms": llmLatency, "provider": h.cfg.AI.LLMProvider},
+		},
+		"ready": configured && dbStatus == "ok" && llmStatus == "ok",
+	})
+}
+
+// pingDatabase pings the store and returns (status, latency_ms).
+func (h *SetupHandler) pingDatabase(ctx context.Context) (string, int64) {
+	start := time.Now()
+	var err error
+	if h.store != nil {
+		_, err = h.store.GetReviewStats(ctx)
+	}
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return statusError, latency
+	}
+	return "ok", latency
+}
+
+// pingURL performs a GET health check against a service URL.
+func pingURL(host, path string) (string, int64) {
+	if !strings.HasPrefix(host, "http") {
+		host = "http://" + host
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(host + path) //nolint:noctx // short health check
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		return statusError, latency
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode < 300 {
+		return "ok", latency
+	}
+	return statusError, latency
+}
+
+// pingLLM checks reachability of the configured LLM provider.
+func (h *SetupHandler) pingLLM() (string, int64) {
+	var url string
+	switch h.cfg.AI.LLMProvider {
+	case "gemini":
+		url = "https://generativelanguage.googleapis.com/v1beta/models"
+	default: // ollama
+		host := h.cfg.AI.OllamaHost
+		if host == "" {
+			host = "http://localhost:11434"
+		}
+		url = host + "/api/tags"
+	}
+	return pingURL(url, "")
 }
 
 // isLoopbackHost returns true for localhost, 127.0.0.1, ::1, etc.
@@ -302,7 +393,7 @@ func (h *SetupHandler) TestLLM(w http.ResponseWriter, _ *http.Request) {
 		detail = fmt.Sprintf("unknown provider: %s", provider)
 	}
 
-	status := "error"
+	status := statusError
 	if ok {
 		status = "ok"
 	}

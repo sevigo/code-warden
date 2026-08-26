@@ -7,7 +7,6 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/db"
-	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/repomanager"
 	"github.com/sevigo/code-warden/internal/server"
 	"github.com/sevigo/code-warden/internal/storage"
@@ -23,7 +22,6 @@ type App struct {
 	DB              *db.DB
 	CredentialStore *config.CredentialStore
 	Server          *server.Server
-	GitClient       *gitutil.Client
 }
 
 // NewApp creates a new App instance.
@@ -34,7 +32,6 @@ func NewApp(
 	repoMgr repomanager.RepoManager,
 	dispatcher core.JobDispatcher,
 	srv *server.Server,
-	gitClient *gitutil.Client,
 	logger *slog.Logger,
 ) *App {
 	logger.Info("initializing Code Warden application",
@@ -51,7 +48,6 @@ func NewApp(
 		RepoMgr:    repoMgr,
 		Dispatcher: dispatcher,
 		Server:     srv,
-		GitClient:  gitClient,
 		Logger:     logger,
 	}
 }

@@ -57,8 +57,8 @@ func InitializeApp(ctx context.Context) (*app.App, func(), error) {
 	}
 	reviewJob := jobs.NewReviewJob(configConfig, store, repoManager, logger, model, promptManager)
 	jobDispatcher := jobs.NewDispatcher(ctx, reviewJob, configConfig, logger)
-	serverServer := server.NewServerWithStore(ctx, configConfig, jobDispatcher, store, repoManager, client, logger)
-	appApp := app.NewApp(configConfig, dbDB, store, repoManager, jobDispatcher, serverServer, client, logger)
+	serverServer := server.NewServerWithStore(ctx, configConfig, jobDispatcher, store, logger)
+	appApp := app.NewApp(configConfig, dbDB, store, repoManager, jobDispatcher, serverServer, logger)
 	return appApp, func() {
 		cleanup()
 	}, nil
