@@ -29,7 +29,7 @@ Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHu
 |---|---|
 | GitHub App name | `code-warden` (or whatever you prefer) |
 | Homepage URL | Your server URL, e.g. `https://code-warden.example.com` |
-| Webhook URL | `https://your-host/webhook` |
+| Webhook URL | `https://your-host/api/v1/webhook/github` |
 | Webhook secret | Generate a random string — you'll need it in config |
 
 **Permissions** (under Repository permissions):
@@ -41,7 +41,7 @@ Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHu
 | Metadata | Read |
 | Pull requests | Read & Write |
 
-**Subscribe to events:** Issue comment, Issues, Pull request, Push
+**Subscribe to events:** Issue comment (the only event Code-Warden acts on)
 
 **After creating:**
 
@@ -101,12 +101,6 @@ Pull the Ollama models:
 ollama pull qwen2.5-coder:7b
 ```
 
-Or if using Docker Compose Ollama:
-
-```sh
-docker-compose -f docker-compose.setup.yml up --build
-```
-
 ---
 
 ### Step 4: Build and run
@@ -140,29 +134,17 @@ Update the **Webhook URL** in your GitHub App settings to the tunnel URL + `/web
 
 ---
 
-### Step 6: Index the repository
-
-Before reviews work, Code-Warden needs to index the repository. This happens automatically on the first `/review`, but for large repos you should run a full scan first. For incremental updates after a scan, `/review` re-indexes changed files automatically.
-
----
-
-### Step 7: Trigger a review
+### Step 6: Trigger a review
 
 1. Open a pull request in a repository where the GitHub App is installed
 2. Comment `/review` on the PR
-3. Code-Warden will post a status check, then review findings as inline comments
+3. Code-Warden clones (or updates) the repository, then posts a status check followed by review findings as inline comments
+
+Comment `/readiness` instead of `/review` to run the operational-readiness pass — it posts a single PR comment on missing timeouts, retries, metrics, and alerting instead of inline findings.
 
 ---
 
 ## Verifying the setup
-
-**Qdrant collections created?**
-
-```sh
-curl http://localhost:6333/collections
-```
-
-After the first scan you should see a collection named after the repository.
 
 **Webhook receiving events?**
 
@@ -170,7 +152,7 @@ Check your GitHub App → **Advanced** → **Recent Deliveries** to see incoming
 
 **Reviews posting?**
 
-Check the server logs — look for `generating review` and `posted review comment` lines.
+Check the server logs — look for `🚀 Starting Code Review` and `Full review job completed successfully` lines.
 
 ---
 

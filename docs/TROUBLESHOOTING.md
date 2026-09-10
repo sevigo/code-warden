@@ -19,9 +19,9 @@ Common issues and how to fix them.
 
 **Symptom:** Webhook is received (200 OK) but no review is posted.
 
-1. The comment must be exactly `/review` (case-insensitive, no trailing text unless supported).
+1. The comment must be exactly `/review`, `/rereview`, or `/readiness` (case-insensitive, no trailing text unless supported).
 2. The GitHub App must be installed on the repository.
-3. Check server logs for `processing review job` — if missing, the event was received but not enqueued.
+3. Check server logs for `processing GitHub event` — if missing, the event was received but not enqueued.
 4. Check the job queue isn't full — `server.max_workers` controls concurrency.
 
 ---

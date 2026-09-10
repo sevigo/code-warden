@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Code-Warden has two Go entry points under `cmd/`: `server` (the GitHub App + web UI) and `review` (a standalone CLI that runs the agent-based review locally or against a public PR, without GitHub integration). Application code lives in `internal/`: `agent/review/` runs the multi-angle review, `agent/reviewtools/` provides workspace-bound read-only tools, `reviewcli/` and `reviewcli/render/` implement the standalone CLI, `github/` integrates with GitHub, and `storage/` and `db/migrations/` manage persistence. Generated mocks belong in `mocks/`. The React/TypeScript dashboard is in `ui/src/`; documentation and helper scripts live in `docs/` and `scripts/`.
+Code-Warden has two Go entry points under `cmd/`: `server` (the GitHub App + setup wizard) and `review` (a standalone CLI that runs the agent-based review locally or against a public PR, without GitHub integration). Application code lives in `internal/`: `agent/review/` runs the multi-angle review, `agent/reviewtools/` provides workspace-bound read-only tools, `skills/` is the review-lens engine (`review` is currently the only registered skill), `readiness/` is the operational-readiness pass behind `/readiness`, `reviewcli/` and `reviewcli/render/` implement the standalone CLI, `github/` integrates with GitHub, and `storage/` and `db/migrations/` manage persistence. Generated mocks belong in `mocks/`. `ui/src/` is a React/TypeScript setup wizard (no dashboard); documentation and helper scripts live in `docs/` and `scripts/`.
 
 ## Build, Test, and Development Commands
 

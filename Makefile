@@ -14,7 +14,7 @@ GOLINT_VERSION=v2.11.3
 
 .DEFAULT_GOAL := all
 .PHONY: all build build/server build/review run run/review clean test lint dev ui-deps build-ui dev-ui run/server run/ui \
-	quickstart pull-models demo-up demo-down demo-logs
+	quickstart pull-models demo-up demo-down demo-logs context
 
 all: build
 
@@ -64,7 +64,11 @@ clean:
 # Clean up database and local data
 clean-data:
 	@echo "Cleaning up data..."
+ifeq ($(OS),Windows_NT)
 	@powershell -ExecutionPolicy Bypass -File ./scripts/cleanup.ps1
+else
+	@bash scripts/cleanup.sh
+endif
 
 # Web UI targets
 ui-deps:
@@ -110,3 +114,7 @@ demo-down:
 ## Stream server logs from the demo stack
 demo-logs:
 	docker compose -f docker-compose.demo.yml logs -f server
+
+## Bundle project structure, core Go source, and docs into llm-context.md
+context:
+	@bash scripts/llm-context.sh

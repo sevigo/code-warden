@@ -61,9 +61,13 @@ GoFrame provides the agent runtime and LLM abstraction:
 | **GitHub App** | Webhook handling and PR processing | `internal/github/`, `internal/server/` |
 | **Agent Review** | Multi-angle agent-based review runner | `internal/agent/review/` |
 | **Review Tools** | Workspace-bound read-only tools | `internal/agent/reviewtools/` |
+| **Skills** | Review-lens registry (`/review` runs the `review` skill) | `internal/skills/` |
+| **Readiness** | Operational-readiness pass behind `/readiness` | `internal/readiness/` |
 | **Job System** | Background job dispatch and execution | `internal/jobs/` |
 | **Storage** | PostgreSQL persistence | `internal/storage/` |
 | **Repo Manager** | Git clone, sync, diff calculation | `internal/repomanager/` |
+
+`internal/reviewapp/` is a provider-neutral review service used by the standalone `review` CLI. The GitHub webhook job does not use it yet — see [ROADMAP.md](./ROADMAP.md) and [DISCOVERY_ARCHITECTURE.md](./DISCOVERY_ARCHITECTURE.md) for the plan to unify both.
 
 ## Data Flow
 
@@ -118,5 +122,7 @@ func (r *Runner) Run(ctx, params) (*Result, error)
 ```
 
 - [SETUP.md](./SETUP.md) — Deployment and first-run guide
+- [ROADMAP.md](./ROADMAP.md) — Product direction and the skill engine
+- [DISCOVERY_ARCHITECTURE.md](./DISCOVERY_ARCHITECTURE.md) — Provider-neutral review service design
 - [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) — Common issues and fixes
 - [../CONTRIBUTING.md](../CONTRIBUTING.md) — How to contribute
