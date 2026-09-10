@@ -80,6 +80,19 @@ func (a *App) LoadCredentials() {
 	}
 }
 
+// PruneWorktrees removes git worktree metadata for any known repository
+// orphaned by a crash (a job that fetched a PR head and added a worktree but
+// never reached its cleanup). Best-effort: logs and continues on failure
+// rather than blocking startup.
+func (a *App) PruneWorktrees(ctx context.Context) {
+	if a.RepoMgr == nil {
+		return
+	}
+	if err := a.RepoMgr.PruneWorktrees(ctx); err != nil {
+		a.Logger.Warn("failed to prune orphaned worktrees at startup", "error", err)
+	}
+}
+
 // Start runs the HTTP server.
 func (a *App) Start() error {
 	a.Logger.Info("application config",

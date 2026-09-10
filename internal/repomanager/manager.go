@@ -35,6 +35,10 @@ type RepoManager interface {
 	LoadRepoConfig(repoPath string) (*core.RepoConfig, error)
 	// Clear Locks removes all cached repository locks to free memory.
 	ClearLocks()
+	// PruneWorktrees removes git worktree metadata orphaned by a crash (a
+	// job that fetched a PR head and added a worktree but never reached its
+	// cleanup). Safe to call at startup, before any repository operation.
+	PruneWorktrees(ctx context.Context) error
 }
 
 // New creates a manager that implements core.RepoManager.
@@ -172,6 +176,28 @@ func (m *manager) ClearLocks() {
 		m.repoMux.Delete(key)
 		return true
 	})
+}
+
+// PruneWorktrees is best-effort: a failure for one repository is logged and
+// does not stop the sweep over the rest.
+func (m *manager) PruneWorktrees(ctx context.Context) error {
+	repos, err := m.store.GetAllRepositories(ctx)
+	if err != nil {
+		return fmt.Errorf("list repositories for worktree prune: %w", err)
+	}
+	for _, repo := range repos {
+		if repo.ClonePath == "" {
+			continue
+		}
+		if _, statErr := os.Stat(repo.ClonePath); statErr != nil {
+			continue // not cloned locally (yet); nothing to prune
+		}
+		if pruneErr := m.gitClient.WorktreePrune(ctx, repo.ClonePath); pruneErr != nil {
+			m.logger.Warn("failed to prune worktrees for repo",
+				"repo", repo.FullName, "path", repo.ClonePath, "error", pruneErr)
+		}
+	}
+	return nil
 }
 
 func (m *manager) lockFor(key string) *sync.Mutex {

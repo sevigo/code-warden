@@ -69,6 +69,50 @@ func (mr *MockRepoManagerMockRecorder) GetRepoRecord(ctx, repoFullName any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRepoRecord", reflect.TypeOf((*MockRepoManager)(nil).GetRepoRecord), ctx, repoFullName)
 }
 
+// GetRepoRecordByPath mocks base method.
+func (m *MockRepoManager) GetRepoRecordByPath(ctx context.Context, repoPath string) (*storage.Repository, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRepoRecordByPath", ctx, repoPath)
+	ret0, _ := ret[0].(*storage.Repository)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetRepoRecordByPath indicates an expected call of GetRepoRecordByPath.
+func (mr *MockRepoManagerMockRecorder) GetRepoRecordByPath(ctx, repoPath any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRepoRecordByPath", reflect.TypeOf((*MockRepoManager)(nil).GetRepoRecordByPath), ctx, repoPath)
+}
+
+// LoadRepoConfig mocks base method.
+func (m *MockRepoManager) LoadRepoConfig(repoPath string) (*core.RepoConfig, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LoadRepoConfig", repoPath)
+	ret0, _ := ret[0].(*core.RepoConfig)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LoadRepoConfig indicates an expected call of LoadRepoConfig.
+func (mr *MockRepoManagerMockRecorder) LoadRepoConfig(repoPath any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadRepoConfig", reflect.TypeOf((*MockRepoManager)(nil).LoadRepoConfig), repoPath)
+}
+
+// PruneWorktrees mocks base method.
+func (m *MockRepoManager) PruneWorktrees(ctx context.Context) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PruneWorktrees", ctx)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// PruneWorktrees indicates an expected call of PruneWorktrees.
+func (mr *MockRepoManagerMockRecorder) PruneWorktrees(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PruneWorktrees", reflect.TypeOf((*MockRepoManager)(nil).PruneWorktrees), ctx)
+}
+
 // ScanLocalRepo mocks base method.
 func (m *MockRepoManager) ScanLocalRepo(ctx context.Context, repoPath, repoFullName string, force bool) (*core.UpdateResult, error) {
 	m.ctrl.T.Helper()
