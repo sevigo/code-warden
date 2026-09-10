@@ -28,7 +28,7 @@ heading() { echo -e "\n${BOLD}$*${NC}"; }
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 
 heading "Code-Warden Quickstart"
-echo "  Full server mode: PostgreSQL + Qdrant + Ollama + Code-Warden"
+echo "  Full server mode: PostgreSQL + Ollama + Code-Warden"
 echo "  Web UI will be available at http://localhost:8080"
 echo ""
 

@@ -37,7 +37,7 @@ function Check-Dep($name) {
 # -- Banner ------------------------------------------------------------------
 
 Heading 'Code-Warden Quickstart'
-Write-Host '  Full server mode: PostgreSQL + Qdrant + Ollama + Code-Warden'
+Write-Host '  Full server mode: PostgreSQL + Ollama + Code-Warden'
 Write-Host '  Web UI will be available at http://localhost:8080'
 Write-Host ''
 

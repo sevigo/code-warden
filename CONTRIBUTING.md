@@ -42,6 +42,8 @@ All tests and lint must pass before submitting a PR.
 | `cmd/` | Binary entry points (`server` and standalone `review`) |
 | `internal/agent/review/` | Multi-angle agent-based review runner |
 | `internal/agent/reviewtools/` | Workspace-bound read-only review tools |
+| `internal/skills/` | Review-lens registry (`/review` runs the `review` skill) |
+| `internal/readiness/` | Operational-readiness pass behind `/readiness` |
 | `internal/jobs/` | Job dispatcher and review worker |
 | `internal/github/` | GitHub API client and webhook handling |
 | `internal/storage/` | PostgreSQL persistence |
@@ -59,20 +61,6 @@ All tests and lint must pass before submitting a PR.
 1. Create `internal/llm/prompts/review_<angle>.prompt`
 2. Add the prompt key constant to `internal/llm/prompt_manager.go`
 3. Register the angle in `internal/agent/review/angles.go`
-
-### Adding a new MCP tool
-
-1. Create `internal/mcp/tools/<tool>.go` implementing the `Tool` interface:
-   ```go
-   type Tool interface {
-       Name() string
-       Description() string
-       ParametersSchema() map[string]any
-       Execute(ctx context.Context, args map[string]any) (any, error)
-   }
-   ```
-2. Register it in `internal/mcp/server.go`
-3. Add input validation (length limits, type assertions)
 
 ### Adding a new GitHub command
 

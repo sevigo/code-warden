@@ -25,6 +25,10 @@ reviews/
 review-traces/
 *.sh
 !scripts/quickstart.sh
+!scripts/llm-context.sh
+
+# generated LLM context bundle
+llm-context.md
 
 # Go workspace file
 go.work

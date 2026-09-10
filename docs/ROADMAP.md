@@ -35,11 +35,13 @@ The existing GitHub App remains the only remote integration. Keep its webhook va
 
 **Outcome:** the `Skill` abstraction exists, the current review engine is a skill, and behavior is unchanged.
 
-1. Introduce `internal/skills.Skill`: `Name`, `Mode` (`agent` | `analyzer`), `Detect(changedFiles) bool`, `Run(ctx, RunContext) (*core.StructuredReview, error)`.
-2. Refactor `internal/agent/review.Angle` into the `agent` skill mode. `DefaultAngles` (bug, security, performance, conventions) become agent-mode skills; the existing `Runner` is the agent-mode executor.
-3. Add a `skills.Registry`: an ordered list of skills plus `RunApplicable(ctx, changedFiles, overrides)`.
-4. Extend `core.Suggestion` with optional deterministic fields — `Resource`, `Change`, `RuleID`, `Evidence` — all `omitempty` so existing renderers are unaffected.
-5. Introduce the skill-command table in `internal/core/events.go` (`/review`, `/rereview`, optional `/infra`, `/policy`, `/readiness`) mapping to skill overrides.
+**Status:** shipped, except item 5.
+
+1. **Done.** `internal/skills.Skill`: `Name`, `Mode` (`agent` | `analyzer`), `Detect(changedFiles) bool`, `Run(ctx, RunContext) (*core.StructuredReview, error)`.
+2. **Done.** `internal/skills.ReviewSkill` wraps the existing multi-angle `agent/review.Runner` as a single agent-mode skill named `review` (bug, security, performance, and conventions still run inside it as angles, not as separate skills).
+3. **Done.** `skills.Registry`: an ordered list of skills, `Applicable(changedFiles)`, and `Run(ctx, rc, overrides)`.
+4. Extend `core.Suggestion` with optional deterministic fields — `Resource`, `Change`, `RuleID`, `Evidence` — all `omitempty` so existing renderers are unaffected. Not started.
+5. **Not started.** `/readiness` is handled as its own code path in `internal/jobs/review.go`, not as a skill run through `skills.Registry`; `skills.ParseCommand` still only recognizes `/review` and `/rereview`. Unifying it — and adding `/infra`, `/policy` overrides — is this item.
 
 **Exit criteria:** all existing tests pass; `/review` behaves identically; a PR touching only `.tf`/`k8s` files runs the applicable skills.
 
@@ -67,10 +69,12 @@ The existing GitHub App remains the only remote integration. Keep its webhook va
 
 **Outcome:** for every backend/infra change, a "is this safe to operate?" scorecard.
 
-1. `internal/skills/readiness` — an agent-mode skill that investigates the diff for operational patterns: timeout configured, retries bounded, idempotency, metrics, alerting, circuit breaker, queue + DLQ, max retry count, failed-job metric.
-2. Emit a `ReadinessScore` block in the review (percents, missing items, warnings). Deterministic for the parts that are parseable; LLM for ambiguous patterns.
+**Status:** shipped as `/readiness`, but as a standalone package, not yet a `skills.Skill` (see Milestone 0, item 5).
 
-**Exit criteria:** a PR adding a background worker or external API integration yields a scorecard with missing-items listed and a composite score.
+1. **Done**, at `internal/readiness` (not `internal/skills/readiness`) — an agent-mode pass that detects applicable categories from changed files (outbound HTTP, background job, messaging, migration, external side effect) and investigates the diff for operational patterns.
+2. **Done**, in a different shape than originally sketched: `internal/jobs/review.go` posts a single "Production Readiness" PR comment listing detected categories and findings, rather than emitting a `ReadinessScore` block inside `core.StructuredReview`.
+
+**Exit criteria:** a PR adding a background worker or external API integration yields a scorecard with missing-items listed and a composite score. Met for missing-items; there is no composite score yet.
 
 ## Milestone 3 — Configurable per-repo skill & policy surface
 

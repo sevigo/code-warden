@@ -88,6 +88,8 @@ When someone comments `/review` on a PR:
 
 `/rereview` is an alias for `/review` — it always reviews the current diff fresh.
 
+`/readiness` runs a separate operational-readiness pass instead: it detects patterns such as outbound HTTP calls, background jobs, and migrations, then posts a single PR summary of what's missing (timeouts, retries, metrics, alerting).
+
 ---
 
 ## Features
@@ -112,7 +114,7 @@ Required for full server mode (webhook-triggered reviews on PRs).
 1. Create a new GitHub App in your organization settings
 2. Set the webhook URL to `https://your-host/api/v1/webhook/github`
 3. Request permissions: `Pull requests: Read & Write`, `Issues: Read & Write`, `Contents: Read`
-4. Subscribe to events: `Pull request`, `Issue comment`, `Push`
+4. Subscribe to events: `Issue comment` (this is the only event Code-Warden acts on)
 5. Generate and download a private key → save to `keys/`
 6. Install the app on the repositories you want reviewed
 
@@ -168,6 +170,7 @@ Full reference: [config.yaml.example](config.yaml.example)
 |---|---|
 | [docs/SETUP.md](docs/SETUP.md) | Deployment and first-run guide |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component relationships and system design |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Product direction and the skill engine |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common issues and fixes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 
