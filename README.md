@@ -81,8 +81,8 @@ make pull-models  # pull models to host Ollama (outside Docker)
 
 When someone comments `/review` on a PR:
 
-1. **Sync** — clone or update the repo to the PR's default branch
-2. **Investigate** — the agent clones the PR's checkout and runs grep + `read_file` to understand the diff in context
+1. **Sync** — clone or update the repo to the default branch (used to load `.code-warden.yml`)
+2. **Investigate** — the agent checks out the PR's exact head commit and runs grep + `read_file` to understand the diff in context
 3. **Review** — parallel agent passes (bug, security, performance, conventions) each review the diff with read-only tools, then merge + dedupe findings
 4. **Post** — severity-rated findings as inline GitHub comments
 

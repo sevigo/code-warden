@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/readiness"
 	"github.com/sevigo/code-warden/internal/repomanager"
@@ -130,11 +130,17 @@ func (j *ReviewJob) executeReadinessWorkflow(ctx context.Context, event *core.Gi
 		j.logger.Warn("failed to fetch commit messages, readiness will proceed without them", "error", cErr)
 	}
 
+	workspace, cleanup, err := j.buildHeadWorkspace(ctx, event, reviewEnv.ghToken)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	runner := readiness.NewRunner(j.llm, j.promptMgr, reviewtools.New, nil, j.logger)
 	result, err := runner.Run(ctx, readiness.Input{
 		Diff:           diff,
 		ChangedFiles:   changedFiles,
-		WorkspaceDir:   reviewEnv.updateResult.RepoPath,
+		WorkspaceDir:   workspace,
 		RepoFullName:   event.RepoFullName,
 		CommitMessages: event.CommitMessages,
 	}, readiness.ConfigFromRepo(reviewEnv.repoConfig))
@@ -227,6 +233,7 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 
 type reviewEnvironment struct {
 	ghClient      github.Client
+	ghToken       string // installation token; used to check out the PR's exact head commit
 	repo          *storage.Repository
 	statusUpdater github.StatusUpdater
 	checkRunID    int64
@@ -297,6 +304,7 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 
 	return &reviewEnvironment{
 		ghClient:      ghClient,
+		ghToken:       ghToken,
 		repo:          repo,
 		statusUpdater: statusUpdater,
 		checkRunID:    checkRunID,
@@ -305,6 +313,20 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		skipReview:    skipReview,
 		pendingReview: pendingReview,
 	}, nil
+}
+
+// buildHeadWorkspace clones the repository and checks out the PR's exact head
+// commit into a temporary workspace, so review/readiness agents investigate
+// what will actually be merged rather than the repository's default branch
+// (which is all repoMgr.SyncRepo ever keeps checked out). The caller must
+// always run the returned cleanup once the workspace is no longer needed.
+func (j *ReviewJob) buildHeadWorkspace(ctx context.Context, event *core.GitHubEvent, ghToken string) (string, func(), error) {
+	client := gitutil.NewClient(j.logger)
+	workspace, cleanup, err := client.ClonePRHeadTemp(ctx, event.RepoCloneURL, event.PRNumber, event.HeadSHA, ghToken)
+	if err != nil {
+		return "", nil, fmt.Errorf("checkout PR head: %w", err)
+	}
+	return workspace, cleanup, nil
 }
 
 // processRepository fetches the PR diff and changed files from GitHub, validates them,
@@ -329,9 +351,15 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 	validLineMaps := github.BuildValidLineMap(changedFiles)
 
+	workspace, cleanup, err := j.buildHeadWorkspace(ctx, event, env.ghToken)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanup()
+
 	// Agent-based review is the default engine. RAG retrieval is no longer used
 	// for /review — the agent investigates the diff with grep + read_file.
-	structuredReview, err := j.runAgentReview(ctx, event, diff, changedFiles)
+	structuredReview, err := j.runAgentReview(ctx, event, diff, changedFiles, workspace)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate review: %w", err)
 	}
@@ -339,10 +367,9 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 	return structuredReview, validLineMaps, nil
 }
 
-// runAgentReview runs the agent-based multi-angle review through the skill engine.
-func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, error) {
-	repoURL := j.buildAgentCloneURL(event)
-
+// runAgentReview runs the agent-based multi-angle review through the skill
+// engine, investigating the given workspace (the PR's checked-out head commit).
+func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile, workspace string) (*core.StructuredReview, error) {
 	executor := agentreview.NewGoframeAngleExecutor(j.llm, j.promptMgr, reviewtools.New, j.logger)
 	runner := agentreview.NewRunner(executor, j.logger, nil)
 	registry := skills.NewRegistry(j.logger, skills.NewReviewSkill(runner))
@@ -350,7 +377,7 @@ func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent,
 	results, err := registry.Run(ctx, skills.RunContext{
 		Diff:           diff,
 		ChangedFiles:   changedFiles,
-		CloneURL:       repoURL,
+		Workspace:      workspace,
 		RepoFullName:   event.RepoFullName,
 		CommitMessages: event.CommitMessages,
 	}, nil)
@@ -561,29 +588,6 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 
 func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *core.RepoConfig {
 	return config.LoadRepoConfigWithDefaults(repoPath, repoFullName, j.logger)
-}
-
-// buildAgentCloneURL constructs a clone URL for the agent review workspace,
-// embedding the installation token so the pure-Go Cloner can authenticate.
-func (j *ReviewJob) buildAgentCloneURL(event *core.GitHubEvent) string {
-	base := event.RepoCloneURL
-	if base == "" {
-		base = fmt.Sprintf("https://github.com/%s/%s.git", event.RepoOwner, event.RepoName)
-	}
-
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		token = os.Getenv("GH_TOKEN")
-	}
-	if token == "" {
-		return base
-	}
-
-	// https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
-	if strings.HasPrefix(base, "https://") {
-		return "https://x-access-token:" + token + "@" + strings.TrimPrefix(base, "https://")
-	}
-	return base
 }
 
 // formatReadinessComment renders the PR-level operational readiness summary.

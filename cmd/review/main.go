@@ -105,24 +105,33 @@ func main() {
 
 	rc := buildReviewConfig(*sev, *ignore, *cats, *maxF)
 
-	source, reviewOpts, err := buildReviewRequest(*local, *pr, *prNum, *token, *base, *timeout, *maxIter, *ctxWin, rc)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+	// Run in a closure, not inline: a PRSource holds a temporary workspace that
+	// must be cleaned up via a deferred Close, and os.Exit below never runs
+	// deferred functions — so the defer has to live inside a function that
+	// returns normally, with os.Exit called only after it's done.
+	os.Exit(func() int {
+		source, reviewOpts, err := buildReviewRequest(*local, *pr, *prNum, *token, *base, *timeout, *maxIter, *ctxWin, rc)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		if closer, ok := source.(interface{ Close() }); ok {
+			defer closer.Close()
+		}
 
-	input, err := source.Load(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+		input, err := source.Load(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
 
-	exitCode, err := runReview(ctx, cfg, logger, input, reviewOpts, *local, *traceDir, *readiness, *asJSON, *prompt)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	os.Exit(exitCode)
+		exitCode, err := runReview(ctx, cfg, logger, input, reviewOpts, *local, *traceDir, *readiness, *asJSON, *prompt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		return exitCode
+	}())
 }
 
 // runReview executes either the general review or the readiness review and
