@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -24,13 +23,15 @@ type PRInput struct {
 	Token string
 }
 
-// PRData is the result of fetching PR info: the diff, the changed files, a
-// clone URL that the runner can use to investigate the PR's state, and the
-// commit messages describing the changes.
+// PRData is the result of fetching PR info: the diff, the changed files, the
+// base repository's clone URL (refs/pull/<N>/head lives there even for PRs
+// from a fork), the exact head commit SHA, and the commit messages describing
+// the changes.
 type PRData struct {
 	Diff           string
 	ChangedFiles   []core.ChangedFile
 	CloneURL       string
+	HeadSHA        string
 	CommitMessages []string
 }
 
@@ -51,18 +52,23 @@ func FetchPR(ctx context.Context, in PRInput) (*PRData, error) {
 	}
 	var pr struct {
 		Head struct {
-			SHA  string `json:"sha"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
 			Repo struct {
 				CloneURL string `json:"clone_url"`
 			} `json:"repo"`
-		} `json:"head"`
+		} `json:"base"`
 	}
 	if err := json.Unmarshal(prBytes, &pr); err != nil {
 		return nil, fmt.Errorf("decode PR metadata: %w", err)
 	}
-	cloneURL := pr.Head.Repo.CloneURL
+	if pr.Head.SHA == "" {
+		return nil, fmt.Errorf("PR %d has no head SHA", in.Number)
+	}
+	cloneURL := pr.Base.Repo.CloneURL
 	if cloneURL == "" {
-		return nil, fmt.Errorf("PR head repo has no clone URL")
+		return nil, fmt.Errorf("PR base repo has no clone URL")
 	}
 
 	// 2. PR diff (unified diff via the .diff endpoint).
@@ -98,6 +104,7 @@ func FetchPR(ctx context.Context, in PRInput) (*PRData, error) {
 		Diff:           diff,
 		ChangedFiles:   agentreview.ParseDiff(diff),
 		CloneURL:       cloneURL,
+		HeadSHA:        pr.Head.SHA,
 		CommitMessages: commitMessages,
 	}, nil
 }
@@ -129,18 +136,4 @@ func getBody(ctx context.Context, client *http.Client, rawURL, token, accept str
 		return nil, fmt.Errorf("GET %s: status %d: %s", rawURL, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return io.ReadAll(resp.Body)
-}
-
-// embedTokenInCloneURL injects a token into an https clone URL so the pure-Go
-// cloner can authenticate for private repos.
-func embedTokenInCloneURL(cloneURL, token string) string {
-	if token == "" || !strings.HasPrefix(cloneURL, "https://") {
-		return cloneURL
-	}
-	u, err := url.Parse(cloneURL)
-	if err != nil {
-		return cloneURL
-	}
-	u.User = url.UserPassword("x-access-token", token)
-	return u.String()
 }

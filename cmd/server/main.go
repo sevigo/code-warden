@@ -39,6 +39,10 @@ func run() error {
 		return fmt.Errorf("server configuration validation failed: %w", err)
 	}
 
+	// Remove worktree metadata orphaned by a crash, before any job can add a
+	// new one for the same repository.
+	app.PruneWorktrees(ctx)
+
 	app.Logger.Info("starting Code-Warden application")
 
 	go func() {

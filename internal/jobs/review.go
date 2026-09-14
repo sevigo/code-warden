@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/sevigo/code-warden/internal/config"
 	"github.com/sevigo/code-warden/internal/core"
 	"github.com/sevigo/code-warden/internal/github"
+	"github.com/sevigo/code-warden/internal/gitutil"
 	"github.com/sevigo/code-warden/internal/llm"
 	"github.com/sevigo/code-warden/internal/readiness"
 	"github.com/sevigo/code-warden/internal/repomanager"
@@ -24,6 +24,12 @@ import (
 
 	"github.com/sevigo/goframe/llms"
 )
+
+// ErrJobSuperseded indicates a PR moved to a new head commit after a job was
+// created for its previous head. The job stops rather than review a commit
+// different from the one it was triggered for; the webhook for the new head
+// will trigger its own job.
+var ErrJobSuperseded = errors.New("job superseded by a newer commit")
 
 type ReviewJob struct {
 	cfg         *config.Config
@@ -91,6 +97,9 @@ func (j *ReviewJob) runFullReview(ctx context.Context, event *core.GitHubEvent) 
 	finish := j.startJobRun(ctx, "review", event, "webhook:/review")
 	err := j.executeReviewWorkflow(ctx, event, "Code Review", "AI analysis in progress...")
 	finish(ctx, err)
+	if errors.Is(err, ErrJobSuperseded) {
+		return nil
+	}
 	return err
 }
 
@@ -101,6 +110,9 @@ func (j *ReviewJob) runReadiness(ctx context.Context, event *core.GitHubEvent) e
 	finish := j.startJobRun(ctx, "readiness", event, "webhook:/readiness")
 	err := j.executeReadinessWorkflow(ctx, event)
 	finish(ctx, err)
+	if errors.Is(err, ErrJobSuperseded) {
+		return nil
+	}
 	return err
 }
 
@@ -110,6 +122,7 @@ func (j *ReviewJob) executeReadinessWorkflow(ctx context.Context, event *core.Gi
 	if err != nil {
 		return err
 	}
+	defer reviewEnv.workspaceCleanup()
 	defer func() {
 		if err != nil {
 			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
@@ -134,7 +147,7 @@ func (j *ReviewJob) executeReadinessWorkflow(ctx context.Context, event *core.Gi
 	result, err := runner.Run(ctx, readiness.Input{
 		Diff:           diff,
 		ChangedFiles:   changedFiles,
-		WorkspaceDir:   reviewEnv.updateResult.RepoPath,
+		WorkspaceDir:   reviewEnv.workspace,
 		RepoFullName:   event.RepoFullName,
 		CommitMessages: event.CommitMessages,
 	}, readiness.ConfigFromRepo(reviewEnv.repoConfig))
@@ -177,7 +190,10 @@ func (j *ReviewJob) startJobRun(ctx context.Context, jobType string, event *core
 			return
 		}
 		status := "completed"
-		if runErr != nil {
+		switch {
+		case errors.Is(runErr, ErrJobSuperseded):
+			status = "superseded"
+		case runErr != nil:
 			status = "failed"
 		}
 		completedAt := time.Now()
@@ -192,6 +208,7 @@ func (j *ReviewJob) executeReviewWorkflow(ctx context.Context, event *core.GitHu
 	if err != nil {
 		return err
 	}
+	defer reviewEnv.workspaceCleanup()
 	defer func() {
 		if err != nil {
 			j.updateStatusOnError(ctx, reviewEnv.statusUpdater, event, reviewEnv.checkRunID, err)
@@ -234,11 +251,18 @@ type reviewEnvironment struct {
 	repoConfig    *core.RepoConfig
 	skipReview    bool // Set to true if review should be skipped (duplicate SHA)
 	pendingReview *core.Review
+
+	// workspace is a detached worktree checked out at the PR's exact head
+	// commit — see buildHeadWorkspace. workspaceCleanup removes it and is
+	// always non-nil when setupReviewEnvironment returns without error.
+	workspace        string
+	workspaceCleanup func()
 }
 
 // setupReviewEnvironment initializes clients, syncs the repo to the default branch,
-// and loads all necessary configs. The repo mutex is held only for this phase to
-// prevent concurrent git operations on the same repo. It is released before any
+// builds a workspace at the PR's exact head commit, and loads all necessary
+// configs. The repo mutex is held for the sync and workspace-build phases,
+// both of which mutate the shared on-disk clone; it is released before any
 // LLM call so multiple PRs can generate reviews concurrently.
 func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitHubEvent, title, summary string) (*reviewEnvironment, error) {
 	ghClient, ghToken, statusUpdater, checkRunID, err := j.setupReview(ctx, event, title, summary)
@@ -246,9 +270,10 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		return nil, err
 	}
 
-	// ── Mutex: protect only the Git sync phase ─────────────────────────────
-	// The lock is acquired here and released at the end of this function.
-	// The review (LLM call) runs completely outside the lock.
+	// ── Mutex: protect the Git sync + workspace-build phase ────────────────
+	// SyncRepo, the PR-head fetch, and the worktree add all mutate the same
+	// on-disk clone and must not race each other. The lock is released once
+	// that phase is done; the review (LLM call) runs completely outside it.
 	mutex := j.getRepoMutex(event.RepoFullName)
 	mutex.Lock()
 
@@ -266,6 +291,22 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 		repoErr = fmt.Errorf("failed to retrieve repository record after sync for %s: %w", event.RepoFullName, repoErr)
 		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, repoErr)
 		return nil, repoErr
+	}
+
+	workspace, workspaceCleanup, wsErr := j.buildHeadWorkspace(ctx, updateResult.RepoPath, event, ghToken)
+	if wsErr != nil {
+		mutex.Unlock()
+		if errors.Is(wsErr, gitutil.ErrPRHeadSuperseded) {
+			j.logger.Warn("PR head moved before its workspace was built; marking job superseded",
+				"repo", event.RepoFullName, "pr", event.PRNumber, "expected_sha", event.HeadSHA, "error", wsErr)
+			if updateErr := statusUpdater.Completed(ctx, event, checkRunID, "neutral", "Review Superseded",
+				"A newer commit was pushed to this pull request before the review started; that commit will be reviewed instead."); updateErr != nil {
+				j.logger.Warn("failed to update check run for superseded job", "error", updateErr)
+			}
+			return nil, fmt.Errorf("%w: %w", ErrJobSuperseded, wsErr)
+		}
+		j.updateStatusOnError(ctx, statusUpdater, event, checkRunID, wsErr)
+		return nil, wsErr
 	}
 
 	// Check for duplicate review WHILE HOLDING THE LOCK ───────────────────
@@ -296,15 +337,37 @@ func (j *ReviewJob) setupReviewEnvironment(ctx context.Context, event *core.GitH
 	repoConfig := j.loadAndProcessRepoConfig(updateResult.RepoPath, event.RepoFullName)
 
 	return &reviewEnvironment{
-		ghClient:      ghClient,
-		repo:          repo,
-		statusUpdater: statusUpdater,
-		checkRunID:    checkRunID,
-		updateResult:  updateResult,
-		repoConfig:    repoConfig,
-		skipReview:    skipReview,
-		pendingReview: pendingReview,
+		ghClient:         ghClient,
+		repo:             repo,
+		statusUpdater:    statusUpdater,
+		checkRunID:       checkRunID,
+		updateResult:     updateResult,
+		repoConfig:       repoConfig,
+		skipReview:       skipReview,
+		pendingReview:    pendingReview,
+		workspace:        workspace,
+		workspaceCleanup: workspaceCleanup,
 	}, nil
+}
+
+// buildHeadWorkspace fetches the PR's head ref into the repository's existing
+// default-branch clone at clonePath and creates a detached worktree checked
+// out at the PR's exact head commit — so review/readiness agents investigate
+// what will actually be merged, without a fresh network clone per job. The
+// caller must hold the repo mutex around this call (it mutates clonePath),
+// and must always run the returned cleanup once the workspace is no longer
+// needed. Returns an error wrapping gitutil.ErrPRHeadSuperseded, never a
+// fallback to the default branch, if the PR moved past event.HeadSHA.
+func (j *ReviewJob) buildHeadWorkspace(ctx context.Context, clonePath string, event *core.GitHubEvent, ghToken string) (string, func(), error) {
+	client := gitutil.NewClient(j.logger)
+	workspace, cleanup, err := client.FetchPRHeadWorktree(ctx, clonePath, event.PRNumber, event.HeadSHA, ghToken)
+	if err != nil {
+		if errors.Is(err, gitutil.ErrPRHeadSuperseded) {
+			return "", nil, err
+		}
+		return "", nil, fmt.Errorf("checkout PR head: %w", err)
+	}
+	return workspace, cleanup, nil
 }
 
 // processRepository fetches the PR diff and changed files from GitHub, validates them,
@@ -331,7 +394,7 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 
 	// Agent-based review is the default engine. RAG retrieval is no longer used
 	// for /review — the agent investigates the diff with grep + read_file.
-	structuredReview, err := j.runAgentReview(ctx, event, diff, changedFiles)
+	structuredReview, err := j.runAgentReview(ctx, event, diff, changedFiles, env.workspace)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate review: %w", err)
 	}
@@ -339,10 +402,9 @@ func (j *ReviewJob) processRepository(ctx context.Context, event *core.GitHubEve
 	return structuredReview, validLineMaps, nil
 }
 
-// runAgentReview runs the agent-based multi-angle review through the skill engine.
-func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile) (*core.StructuredReview, error) {
-	repoURL := j.buildAgentCloneURL(event)
-
+// runAgentReview runs the agent-based multi-angle review through the skill
+// engine, investigating the given workspace (the PR's checked-out head commit).
+func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent, diff string, changedFiles []github.ChangedFile, workspace string) (*core.StructuredReview, error) {
 	executor := agentreview.NewGoframeAngleExecutor(j.llm, j.promptMgr, reviewtools.New, j.logger)
 	runner := agentreview.NewRunner(executor, j.logger, nil)
 	registry := skills.NewRegistry(j.logger, skills.NewReviewSkill(runner))
@@ -350,7 +412,7 @@ func (j *ReviewJob) runAgentReview(ctx context.Context, event *core.GitHubEvent,
 	results, err := registry.Run(ctx, skills.RunContext{
 		Diff:           diff,
 		ChangedFiles:   changedFiles,
-		CloneURL:       repoURL,
+		Workspace:      workspace,
 		RepoFullName:   event.RepoFullName,
 		CommitMessages: event.CommitMessages,
 	}, nil)
@@ -561,29 +623,6 @@ func (j *ReviewJob) validateInputs(event *core.GitHubEvent) error {
 
 func (j *ReviewJob) loadAndProcessRepoConfig(repoPath, repoFullName string) *core.RepoConfig {
 	return config.LoadRepoConfigWithDefaults(repoPath, repoFullName, j.logger)
-}
-
-// buildAgentCloneURL constructs a clone URL for the agent review workspace,
-// embedding the installation token so the pure-Go Cloner can authenticate.
-func (j *ReviewJob) buildAgentCloneURL(event *core.GitHubEvent) string {
-	base := event.RepoCloneURL
-	if base == "" {
-		base = fmt.Sprintf("https://github.com/%s/%s.git", event.RepoOwner, event.RepoName)
-	}
-
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		token = os.Getenv("GH_TOKEN")
-	}
-	if token == "" {
-		return base
-	}
-
-	// https://github.com/owner/repo.git -> https://x-access-token:TOKEN@github.com/owner/repo.git
-	if strings.HasPrefix(base, "https://") {
-		return "https://x-access-token:" + token + "@" + strings.TrimPrefix(base, "https://")
-	}
-	return base
 }
 
 // formatReadinessComment renders the PR-level operational readiness summary.

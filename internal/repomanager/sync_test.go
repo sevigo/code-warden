@@ -61,7 +61,11 @@ func (s *mockStore) GetRepositoryByID(_ context.Context, _ int64) (*storage.Repo
 	return nil, nil
 }
 func (s *mockStore) GetAllRepositories(_ context.Context) ([]*storage.Repository, error) {
-	return nil, nil
+	repos := make([]*storage.Repository, 0, len(s.repos))
+	for _, r := range s.repos {
+		repos = append(repos, r)
+	}
+	return repos, nil
 }
 func (s *mockStore) GetFilesForRepo(_ context.Context, _ int64) (map[string]storage.FileRecord, error) {
 	return nil, nil

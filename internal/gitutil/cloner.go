@@ -264,6 +264,45 @@ func (c *Client) CloneAndCheckoutTemp(ctx context.Context, repoURL, sha, token s
 	return repoPath, cleanup, nil
 }
 
+// ClonePRHeadTemp clones repoURL into a new temporary directory, fetches the
+// pull request's head ref (refs/pull/<prNumber>/head), and checks out headSHA
+// exactly. GitHub exposes refs/pull/<N>/head on the base repository even when
+// the PR's commits live in a fork, so repoURL must be the base repo's clone
+// URL, not the head repo's. It never falls back to the default branch: if the
+// fetch or checkout fails, it returns an error and the temporary directory is
+// removed.
+func (c *Client) ClonePRHeadTemp(ctx context.Context, repoURL string, prNumber int, headSHA, token string) (string, func(), error) {
+	repoPath, err := os.MkdirTemp("", "code-warden-pr-head-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	cleanup := func() {
+		c.Logger.Info("cleaning up temporary PR head workspace", "path", repoPath)
+		if removeErr := os.RemoveAll(repoPath); removeErr != nil {
+			c.Logger.Error("failed to remove temp repo", "path", repoPath, "error", removeErr)
+		}
+	}
+
+	if _, err := c.Clone(ctx, repoURL, repoPath, token); err != nil {
+		cleanup()
+		return "", nil, err // Error is already well-formatted and token-masked.
+	}
+
+	refSpec := fmt.Sprintf("refs/pull/%d/head", prNumber)
+	if err := c.Fetch(ctx, repoPath, token, refSpec); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("failed to fetch PR #%d head: %w", prNumber, err)
+	}
+
+	if err := c.Checkout(ctx, repoPath, headSHA); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("failed to checkout PR #%d head %s: %w", prNumber, headSHA, err)
+	}
+
+	c.Logger.InfoContext(ctx, "checked out pull request head", "pr", prNumber, "sha", headSHA)
+	return repoPath, cleanup, nil
+}
+
 func (c *Client) getAuthenticatedURL(repoURL, token string) (string, error) {
 	// Handle local paths. file:// is explicitly blocked for security (SSRF risk).
 	if strings.HasPrefix(strings.ToLower(repoURL), "file://") {
