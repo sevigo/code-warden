@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/bradleyfalzon/ghinstallation/v2 v2.17.0
-	github.com/go-chi/chi/v5 v5.2.2
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/golang-migrate/migrate/v4 v4.18.3
 	github.com/google/go-github/v73 v73.0.0
